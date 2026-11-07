@@ -41,7 +41,10 @@ already runs the project exports and hands you privately. Bundles never go in
 this repo.
 
 1. Clone this repo and check out the project's own code somewhere on your Mac.
-2. Open Claude Code in the harness folder and run `/install`.
+2. Run `./harness.sh tui` in the harness folder. With no project installed
+   yet, it runs `/install` first, in Claude Code in the same terminal, and
+   starts the dashboard when that session ends. (Or open Claude Code in the
+   harness folder and run `/install` yourself.)
 3. Answer its questions: the bundle's path, your project checkout's folder,
    and the Lima folder (default `~/.lima`).
 4. It installs the project into `data/projects/<project>/`, then walks you
@@ -49,11 +52,16 @@ this repo.
    tokens; it never sees them), the `glab`/`gcloud` logins, building the
    golden VM image and starting Hindsight. If a step can't finish, it says
    which one is left and why.
-5. Start the harness:
+5. Quit Claude Code when `/install` is done: the dashboard starts, with
+   control and the downloader. If no project got installed, it asks whether
+   to start the dashboard anyway. Afterwards, start the harness with:
 
    ```sh
    ./harness.sh tui
    ```
+
+   It skips `/install` once a project is installed, when the terminal isn't
+   interactive, or with `HARNESS_SKIP_INSTALL=1`.
 
 `/install` does its file work through a command you can also run yourself:
 

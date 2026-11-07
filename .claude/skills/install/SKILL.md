@@ -238,7 +238,14 @@ Each project has its own Hindsight memory server (`memory:up`).
 
 Sum up what's done and what isn't. For each step left, give the step, why
 it's left, and the command to finish it. Then tell them how to start the
-harness:
+harness.
+
+If this session was started by `./harness.sh tui` (it runs `/install` first
+when no project is installed, ASS-290), `echo "$HARNESS_INSTALL_FROM_TUI"`
+prints `1`. Then don't tell them to run it again:
+tell them to quit Claude Code (`/exit` or Ctrl-D) and the dashboard starts on
+its own. If no project got installed, it asks whether to start the dashboard
+anyway. Otherwise, they start it with:
 
 ```sh
 ./harness.sh tui
