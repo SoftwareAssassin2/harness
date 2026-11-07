@@ -47,7 +47,8 @@ import { dataDir } from '../data-folder.js';
 // 4. The off-board tickets (adapters.offBoard, off-board.js), when the project
 //    has an off-board work source: at Backlog to the backlog, the rest to the
 //    sprint with their own scan, the same two calls — but a Done one not
-//    already in the active sprint, left in an old one, to neither (ASS-142).
+//    already in the active sprint, left in an old one, to neither (ASS-142),
+//    unless backlog.json lists it not yet Done: to the backlog (ASS-296).
 // 5. Comments (ASS-37), on a comment cycle: for each Jira sprint and backlog
 //    ticket, its comments (adapters.jira.fetchComments) — `ticket:sync-jira-
 //    comments <project> <key> <file>`. One that fails keeps what it had and
@@ -145,10 +146,14 @@ export async function runCycle({ root, project, now = new Date(), adapters, exec
       const tickets = await adapters.offBoard.fetchTickets({ root, project }, exec);
       // A Done ticket joins no sprint it is not already in: one finished stays in its old sprint (ASS-142).
       const done = t => t['ticket-system-status'] === 'Done' && !recorded.has(t.key.toLowerCase());
+      // But one closed straight from Backlog, still listed in backlog.json at another status, goes to the backlog sync
+      // (ASS-296), which takes a ticket fetched Done (ASS-202), so its entry becomes Done; one Done there, or in neither file, is left out.
+      const listed = new Map((existsSync(join(projects, project, 'backlog.json')) ? read('backlog.json') : {}).tickets?.map(t => [t.key.toLowerCase(), t['ticket-system-status']]) ?? []);
+      const closed = tickets.filter(t => done(t) && listed.has(t.key.toLowerCase()) && listed.get(t.key.toLowerCase()) !== 'Done');
       const taken = tickets.filter(t => t['ticket-system-status'] !== 'Backlog' && !done(t)), waiting = tickets.filter(t => t['ticket-system-status'] === 'Backlog');
-      log(`off-board: ${tickets.length} tickets, ${taken.length} in the sprint, ${waiting.length} in the backlog${tickets.some(done) ? `, ${tickets.filter(done).length} Done outside it` : ''}`);
+      log(`off-board: ${tickets.length} tickets, ${taken.length} in the sprint, ${waiting.length} in the backlog${tickets.some(done) ? `, ${tickets.filter(done).length} Done outside it` : ''}${closed.length ? `, ${closed.length} Done in the backlog` : ''}`);
       if (taken.length && sprint !== undefined) await call(['ticket:sync', project, 'sprint'], { 'fetched-at': fetchedAt, tickets: taken, 'merge-requests': await scan(taken.map(t => t.key)) });
-      if (waiting.length) await call(['ticket:sync', project, 'backlog'], { 'fetched-at': fetchedAt, tickets: waiting });
+      if (waiting.length || closed.length) await call(['ticket:sync', project, 'backlog'], { 'fetched-at': fetchedAt, tickets: [...waiting, ...closed] });
     }
 
     // 5. Comments: a ticket that fails is logged once, until it works again.

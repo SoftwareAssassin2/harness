@@ -304,6 +304,43 @@ test('an off-board project\'s first cycle after its sprint\'s last day advances 
   assert.deepEqual(sprint(2).features.map(t => t.key), ['ASS-1', 'ASS-5']);
 });
 
+test('an off-board ticket closed straight from Backlog (ASS-296): the next cycle sends it to the backlog sync, so its backlog.json entry becomes Done; once Done there it is not sent again; a Done one in neither file is still left out; the log counts them', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'cycle-'));
+  const p = join(dir, 'data', 'projects', 'p');
+  mkdirSync(join(p, 'sprints', 'sprint-1'), { recursive: true });
+  mkdirSync(join(dir, 'engines', 'dev'), { recursive: true });
+  writeFileSync(join(dir, 'engines', 'dev', 'state-engine.json'), JSON.stringify({ steps: [
+    { id: 'todo', sequence: 1, 'paired-ticket-system-status': 'To Do' }, { id: 'done', sequence: 2, 'is-done': true, 'paired-ticket-system-status': 'Done' }] }));
+  writeFileSync(join(p, 'project.json'), JSON.stringify({ 'execution-state-engine': 'dev', 'work-sources': [{ name: 'Off', type: 'off-board', folder: 'p' }] }));
+  writeFileSync(join(p, 'backlog.json'), JSON.stringify({ tickets: [] }));
+  writeFileSync(join(p, 'sprints.json'), JSON.stringify({ list: [{ number: 1, 'is-active': true }] }));
+  writeFileSync(join(p, 'sprints', 'sprint-1', 'sprint.json'), JSON.stringify({ number: 1, name: 'Harness Sprint 1', start: '2026-10-12', end: '2026-10-25', features: [], bugs: [], spikes: [] }));
+  const now = local(2026, 10, 20, 12);
+  writeFileSync(join(p, 'last-data-download'), local(2026, 10, 20, 11).toISOString());
+  const offBoard = (key, status) => ({ key, title: key, description: '', url: null, 'ticket-system-status': status, 'ticket-system-priority': null, 'ticket-system-assignment': null, points: null, 'issue-type': 'Story', dependencies: [], 'sprint-tag': null });
+  const env = { ...process.env, PROJECTS_DIR: join(dir, 'data', 'projects'), ENGINES_DIR: join(dir, 'engines') };
+  const calls = [];
+  const exec = (file, args) => { calls.push([args[0], args[2], args[3] && existsSync(args[3]) ? JSON.parse(readFileSync(args[3], 'utf8')).tickets?.map(t => t.key) : undefined]); return promisify(execFile)(AGENT, args, { env }).then(r => r.stdout); };
+  let fetched = [offBoard('ASS-7', 'Backlog')];
+  const lines = [];
+  const cycle = () => { calls.length = 0; lines.length = 0; return runCycle({ root: dir, project: 'p', now, adapters: { offBoard: { fetchTickets: async () => fetched } }, exec, log: l => lines.push(l) }); };
+  const backlog = () => JSON.parse(readFileSync(join(p, 'backlog.json'), 'utf8')).tickets.map(t => [t.key, t['ticket-system-status']]);
+  await cycle();
+  assert.deepEqual(backlog(), [['ASS-7', 'Backlog']]);
+  // Marked Done off-board straight from Backlog; ASS-8, Done, was never in either file.
+  fetched = [offBoard('ASS-7', 'Done'), offBoard('ASS-8', 'Done')];
+  await cycle();
+  assert.deepEqual(backlog(), [['ASS-7', 'Done']]);
+  assert.deepEqual(calls.filter(c => c[0] === 'ticket:sync'), [['ticket:sync', 'backlog', ['ASS-7']]]);
+  assert.ok(lines.includes('off-board: 2 tickets, 0 in the sprint, 0 in the backlog, 2 Done outside it, 1 Done in the backlog'), lines.join('\n'));
+  // The next cycle: ASS-7 already Done in backlog.json, so nothing is sent.
+  await cycle();
+  assert.deepEqual(calls.filter(c => c[0] === 'ticket:sync'), []);
+  assert.deepEqual(backlog(), [['ASS-7', 'Done']]);
+  assert.ok(lines.includes('off-board: 2 tickets, 0 in the sprint, 0 in the backlog, 2 Done outside it'), lines.join('\n'));
+  assert.equal(JSON.parse(readFileSync(join(p, 'sprints', 'sprint-1', 'sprint.json'), 'utf8')).features.length, 0);
+});
+
 test('the sprint advance runs only on a new day, and never for a project with a jira work source (ASS-142 AC5)', async () => {
   const advances = async (opts, last, now) => {
     const { calls, exec } = recorder();
