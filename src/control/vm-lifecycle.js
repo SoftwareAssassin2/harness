@@ -6,14 +6,19 @@
 // variation's status that sets `vm` deciding (statusOf: Setup through Review
 // and Self Healing, and a step beneath that runs in it) — unless the
 // variation is held (isHeld: it or its ticket paused, or the ticket worked by
-// hand, ASS-166) or it was set aside
+// hand, ASS-166) or its project is (ASS-297: a human pause, its own or "all",
+// moves.js humanPause — an AI pause, self-healing or a rate limit, brief
+// holds, never stop a VM; one with an assignment on its variation is left as
+// it is, neither stopped under its agent nor started, until it ends) or it was set aside
 // (is-deleted) or waits for a slot (ASS-233: in motion but holding none,
 // plan.js planFor's `waiting`; a seat holder at a gate or a human step,
 // ASS-203, keeps its seat and so its VM); stopped anywhere else (Release,
 // Done, Blocked, Blocked for Human, a sprint that ended). A VM that should run is started (vm:start),
 // or, when it is gone — deleted to make room (vm:create's make_room) —
 // recreated (vm:create, which the variation records); one that should not is
-// stopped (vm:stop), and stays, until room is needed. One Running and due to
+// stopped (vm:stop), and stays, until room is needed — one stopped for a
+// project's pause logged with it ("…; <p> is paused"), and started again,
+// once released, as its step says. One Running and due to
 // run whose credential kind (vms.json credential-kind, recorded by vm:start)
 // is not the one its project declares now (~/.harness/vm-credentials.json;
 // a project declaring neither is never compared) is refreshed (vm:start,
@@ -50,6 +55,7 @@ import { planFor } from './plan.js';
 import { backoffDelay, held } from './backoff.js';
 import { limaEnv } from './vm.js';
 import { diskHeld } from './disk.js';
+import { humanPause } from './moves.js';
 
 const PHASE = 'vm';
 
@@ -103,9 +109,12 @@ function declaredVmKind(ctx, id) {
 
 // The project's VMs: name → { ticket, variation, state (its variation's top-level step, in the sprint), run (whether it should), waits (for a slot),
 // kind (its recorded credential kind), busy (an assignment on its variation, its agent started or not), unlinked (ASS-234: only the
-// inventory knows it, yet its variation is in the sprint — a vm:create that failed before linking it — logged so when it is stopped) }.
+// inventory knows it, yet its variation is in the sprint — a vm:create that failed before linking it — logged so when it is stopped),
+// paused (ASS-297: the scope of the human pause holding the project, when only that keeps it from running), keep (paused and busy:
+// left as it is till its assignment ends) }.
 function vmsOf(ctx, state, project) {
   const vms = new Map();
+  const pause = humanPause(state, project.id);
   let plan;
   for (const [name, e] of Object.entries(inventoryOf(ctx, project.id))) {
     const unlinked = project.tickets.some(t => t.key.toLowerCase() === e.ticket?.toLowerCase() && t.variations?.some(v => v.name === e.variation && !v['is-deleted']));
@@ -114,9 +123,10 @@ function vmsOf(ctx, state, project) {
   for (const t of project.tickets) for (const v of t.variations ?? []) {
     if (!v.vm?.name) continue;
     const wants = !v['is-deleted'] && !isHeld(t, v) && vmUse(project.engines ?? state.engines, project.engineName, v) === 'running';
-    const waits = wants && waitsForSlot(plan ??= planFor(state, project), t, v), run = wants && !waits;
     const busy = state.assignments.some(a => a.project === project.id && a['work-item'] === t.key && a.variation === v.name);
-    vms.set(v.vm.name, { ...vms.get(v.vm.name), ticket: t.key, variation: v.name, state: v['harness-status']?.state, run, waits, busy });
+    const waits = wants && !pause && waitsForSlot(plan ??= planFor(state, project), t, v), run = wants && !waits && !pause;
+    const paused = wants && pause ? pause : undefined, keep = !!pause && busy;   // ASS-297: paused, stopped once idle, never started
+    vms.set(v.vm.name, { ...vms.get(v.vm.name), ticket: t.key, variation: v.name, state: v['harness-status']?.state, run, waits, busy, paused, keep });
   }
   return vms;
 }
@@ -165,6 +175,7 @@ async function match(ctx, id, vms, r, status, diskHold = false) {
   const up = (ctx.memory.vmsUp ??= new Set());
   const declared = declaredVmKind(ctx, id);
   for (const [name, vm] of vms) {
+    if (vm.keep) continue;   // ASS-297: its project paused, an assignment on it: left as it is till that ends
     const now = ctx.now().getTime(), s = status.get(name);
     if (vm.run && s === 'Running' && !up.has(name)) {
       try { await probe(ctx, name); isUp(ctx, name); } catch { /* not yet reachable; probed again next job */ }
@@ -172,7 +183,7 @@ async function match(ctx, id, vms, r, status, diskHold = false) {
     let args, did, refreshing = false;
     if (vm.run && s == null) [args, did] = [['vm:create', id, vm.ticket, vm.variation], `recreated (${vm.ticket} ${vm.variation} at ${vm.state}; it had been deleted)`];
     else if (vm.run && s != null && s !== 'Running') [args, did] = [['vm:start', id, vm.ticket, vm.variation], `started (${vm.ticket} ${vm.variation} at ${vm.state})`];
-    else if (!vm.run && s === 'Running') [args, did] = [['vm:stop', id, name], `stopped (${vm.ticket} ${vm.variation} ${vm.state ? `at ${vm.state}` : vm.unlinked ? 'not linked to its variation' : 'is not in the sprint'}${vm.waits ? '; waits for a slot' : ''})`];
+    else if (!vm.run && s === 'Running') [args, did] = [['vm:stop', id, name], `stopped (${vm.ticket} ${vm.variation} ${vm.state ? `at ${vm.state}` : vm.unlinked ? 'not linked to its variation' : 'is not in the sprint'}${vm.waits ? '; waits for a slot' : ''}${vm.paused ? `; ${vm.paused === 'all' ? 'all projects are' : `${id} is`} paused` : ''})`];
     else if (vm.run && s === 'Running' && up.has(name) && declared && vm.kind !== declared) {
       const waiting = `vm-refresh/${name}/${declared}`;
       if (vm.busy) {

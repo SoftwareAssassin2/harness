@@ -123,6 +123,12 @@ export function weeklyHeld(ctx, project) {
   return held;
 }
 
+// humanPause(state, project) — the scope of the human pause holding the
+// project ("all", or its own id, in that order), or undefined: a human's
+// pause holds everything there (isPaused), its VMs too (vm-lifecycle.js,
+// ASS-297); an AI's is a brief hold, and not one.
+export const humanPause = (state, project) => ['all', project].find(scope => state.pauses[scope]?.human);
+
 // isPaused(state, project, workItem, variation, runId?) — the project's agents
 // are paused (assignments.json pauses, by scope: "all" and the project's own;
 // a human's holds everything there, an AI's all but its health check's work,
@@ -132,9 +138,9 @@ export function weeklyHeld(ctx, project) {
 // background work off (ASS-127). runId names the run the work is for, when it
 // is a run's.
 export function isPaused(state, project, workItem, variation, runId) {
+  if (humanPause(state, project)) return true;
   for (const scope of ['all', project]) {
     const pause = state.pauses[scope];
-    if (pause?.human) return true;
     if (pause?.ai && !exempt(state, pause.ai, workItem, runId)) return true;
   }
   if (runId != null && heldBackground(state, runId)) return true;

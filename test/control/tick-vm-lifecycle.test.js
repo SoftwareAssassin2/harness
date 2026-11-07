@@ -448,3 +448,57 @@ test('ASS-288 AC4: while the disk hold is on (disk-space.json level hold) no VM 
   record('ok');
   assert.deepEqual(await l.pass(), ['vm:create p ABC-3 B', 'vm:start p ABC-3 A', 'vm:stop p abc-3-e']);
 });
+
+// ASS-297: a human pause of a project (assignments.json pauses: its own scope
+// or "all", `human`) holds its VMs too — each running one stopped once no
+// assignment is on its variation, none started — so a paused project neither
+// keeps its VMs up nor starts again those stopped by hand. An AI pause, self-
+// healing and a rate limit are brief holds, and stop none.
+const pauseWith = (l, pauses, assignments = [], extra = {}) => {
+  const file = l.f.ctx.paths.assignments, data = JSON.parse(readFileSync(file, 'utf8'));
+  writeFileSync(file, JSON.stringify({ ...data, pauses, assignments, status: Object.keys(pauses).length ? 'Paused' : 'Running', ...extra }));
+};
+const HUMAN = { human: { since: '2026-10-24T11:00:00Z' } };
+const AI = { ai: { since: '2026-10-24T11:00:00Z', reason: 'rotating a token', eta: '2099-01-01T00:00:00Z', agent: 'Ripley', project: 'p', run: 'hc' } };
+const working = variation => ({ 'agent-name': 'Zed', project: 'p', 'work-item': 'ABC-3', variation, 'state-engine': 'grouped-build', state: 'generate-solution', status: 'Starting', 'process-id': null });
+
+for (const scope of ['p', 'all']) {
+  test(`ASS-297 AC1, AC4: a human pause on ${scope} stops the project's idle running VMs, logged with the reason, and starts none; the VMs are kept`, async () => {
+    const l = lifecycle({ A: [BUILDING, 'Running'], B: [BUILDING, 'Stopped'], C: [at('done'), 'Stopped'] });
+    pauseWith(l, { [scope]: HUMAN });
+    assert.deepEqual(await l.pass(), ['vm:stop p abc-3-a']);
+    const why = scope === 'all' ? 'all projects are paused' : 'p is paused';
+    assert.ok(l.f.lines.includes(`vm p abc-3-a: stopped (ABC-3 A at build; ${why})`), l.f.lines.join('\n'));
+    writeFileSync(join(l.v.instances, 'abc-3-a', 'status'), 'Stopped');   // as vm:stop left it
+    assert.deepEqual(await l.pass(), []);
+    assert.equal(l.f.lines.filter(x => /paused\)$/.test(x)).length, 1, l.f.lines.join('\n'));
+    assert.ok(!l.calls.some(c => /^vm:(start|create|delete)/.test(c)), l.calls.join('\n'));
+  });
+}
+
+test('ASS-297 AC1: a paused project\'s VM with an assignment running on its variation is kept until it ends, then stopped; a stopped one with an assignment is not started', async () => {
+  const l = lifecycle({ A: [BUILDING, 'Running'], B: [BUILDING, 'Stopped'] });
+  pauseWith(l, { p: HUMAN }, [working('A'), working('B')]);
+  assert.deepEqual(await l.pass(), []);
+  pauseWith(l, { p: HUMAN }, [working('B')]);
+  assert.deepEqual(await l.pass(), ['vm:stop p abc-3-a']);
+  assert.ok(l.f.lines.includes('vm p abc-3-a: stopped (ABC-3 A at build; p is paused)'), l.f.lines.join('\n'));
+});
+
+test('ASS-297 AC1, AC2: no VM started while paused, one stopped by hand included; once the pause is released those due to run are started', async () => {
+  const l = lifecycle({ A: [BUILDING, 'Stopped'], B: [at('setup', ['grouped-setup', 'mark-setup-complete']), 'Stopped'], C: [at('done'), 'Stopped'] });
+  pauseWith(l, { p: HUMAN });
+  assert.deepEqual(await l.pass(), []);
+  assert.deepEqual(await l.pass(), []);
+  pauseWith(l, {});
+  assert.deepEqual(await l.pass(), ['vm:start p ABC-3 A', 'vm:start p ABC-3 B']);
+});
+
+test('ASS-297 AC3: another project\'s human pause, an AI pause (its own or "all"), self-healing and a rate limit stop no VM and hold no start', async () => {
+  for (const [pauses, extra, limited] of [[{ q: HUMAN }], [{ p: AI }], [{ all: AI }], [{}, { 'self-healing': { 'ABC-9': { since: '2026-10-24T11:00:00Z' } } }], [{}, {}, true]]) {
+    const l = lifecycle({ A: [BUILDING, 'Running'], B: [BUILDING, 'Stopped'] });
+    pauseWith(l, pauses, [], extra);
+    if (limited) writeFileSync(l.file('projects', 'p', 'rate-limit.json'), JSON.stringify({ claude: { 'resets-at': '2026-10-24T13:00:00Z' }, anthropic: { 'resets-at': '2026-10-24T13:00:00Z' } }));
+    assert.deepEqual(await l.pass(), ['vm:start p ABC-3 B'], JSON.stringify({ pauses, extra, limited }));
+  }
+});
