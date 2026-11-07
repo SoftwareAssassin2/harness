@@ -223,3 +223,41 @@ test('ASS-288 AC3: a second vm:reclaim-all while one runs (another control\'s) d
   assert.deepEqual(out, { skipped: 'another vm:reclaim-all is running' });
   assert.equal(r.exists('abc-1-a'), true);
 });
+
+// ASS-289 AC3/AC4: a failed golden build's VM left over (golden-<project>-build, stopped, no build in progress)
+// goes first, before any ticket VM of any project, whatever its last access; one a build holds (golden-build.lock)
+// or a running one is never touched.
+test('ASS-289 AC3: vm:reclaim-all deletes a stopped leftover golden-p-build before any ticket VM, less recently accessed though they are; golden-q-build, stopped but its build in progress, and a running build are left', async t => {
+  const r = reclaim({ warn: 0.0001 });                    // 100000 bytes
+  r.vm('golden-p-build', 5);                              // a failed build, left over: its disk last written 2026-10-20
+  r.vm('golden-q-build', 5);                              // stopped between its build's steps: in progress
+  r.vm('abc-1-a', 5);                                     // p's, an ended sprint's: deletable, accessed before it
+  r.vm('q-0-a', 5);                                       // q's: deletable
+  r.inventory('p', [['abc-1-a', 'ABC-1', '2026-10-01T00:00:00Z']]);
+  r.inventory('q', [['q-0-a', 'Q-0', '2026-10-02T00:00:00Z']]);
+  const holder = spawn('perl', ['-MFcntl=:flock', '-e', 'open(my $fh, ">>", $ARGV[0]) or die; flock($fh, LOCK_EX) or die; print "locked\\n"; $| = 1; sleep 600;', r.at('projects', 'q', 'golden-build.lock')]);
+  t.after(() => holder.kill('SIGKILL'));
+  await new Promise(resolve => holder.stdout.once('data', resolve));
+  // 30 KiB short of the warn level: two 20 KiB VMs.
+  r.volume(r.used() + Math.ceil(100000 / 1024) - 30);
+  const dry = JSON.parse((await r.reclaimAll('--dry-run')).stdout);
+  assert.deepEqual(dry.deleted.map(x => [x.project, x.name, x.kind]), [['p', 'golden-p-build', 'leftover-golden-build'], ['p', 'abc-1-a', 'ticket-vm']]);
+  const { stdout, stderr } = await r.reclaimAll();
+  const out = JSON.parse(stdout);
+  assert.deepEqual(out.deleted.map(x => [x.project, x.name, x.kind, x.ticket, x['disk-bytes']]), [
+    ['p', 'golden-p-build', 'leftover-golden-build', null, 5 * KB],
+    ['p', 'abc-1-a', 'ticket-vm', 'ABC-1', 5 * KB],
+  ]);
+  assert.match(stderr, /vm:reclaim-all: deleted golden-p-build \(p's leftover golden image build, last accessed 2026-10-20T00:00:00Z\): \d+ bytes freed/);
+  assert.deepEqual(['golden-p-build', 'golden-q-build', 'abc-1-a', 'q-0-a'].map(r.exists), [false, true, false, true]);
+});
+
+test('ASS-289 AC3: vm:reclaim-all never deletes a running golden build', async () => {
+  const r = reclaim({ warn: 1000 });
+  r.vm('golden-p-build', 5, 'Running');
+  r.inventory('p', []);
+  r.volume(r.used() + 100);
+  const out = JSON.parse((await r.reclaimAll()).stdout);
+  assert.deepEqual(out.deleted, []);
+  assert.equal(r.exists('golden-p-build'), true);
+});

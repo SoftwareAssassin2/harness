@@ -15,6 +15,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { until } from '../support/until.js';
 
+const esc = text => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
 const run = promisify(execFile);
 const AGENT = join(import.meta.dirname, '..', '..', 'agent.sh');
 const SHARED = join(import.meta.dirname, '..', '..', 'src', 'agent-cli', 'vm', 'golden-image');
@@ -38,6 +40,7 @@ function setup({ images = '', warm = false, registry = true, upstream = true, re
   // shell [--workdir D] <vm> -- bash -c <script> <script name> <args…>: logs "shell <vm> <name> <args…>" and keeps its stdin; FAIL_SCRIPT=<name> fails it,
   // LEAK_SCRIPT=<name> writes its stdin, and LEAK=<text> anything, to the VM's disk; RUN_SCRIPT=<name> runs it here, its output in the log.
   // Each call but list also logs whether the project's VM lock is held then (ASS-149): "<subcommand> <held|free>".
+  // start and stop (ASS-289) write the instance's status file, Running or Stopped; FAIL_STOP=<vm> fails a stop of it, as with a plain stop.
   // list [<vm>] --format <f> (ASS-287: the inventory, unlogged) prints <f> for each instance folder, or the one (exit 1 when none), its
   // {{.Name}}, {{.Dir}} and {{.Status}} (the folder's status file, else Stopped) filled.
   fake('limactl', `printf 'LIMA_HOME=%s\\n' "$LIMA_HOME" > '${log}/lima-home'
@@ -59,6 +62,9 @@ case "$1" in
          [[ "$name" != "\${FAIL_SCRIPT:-}" ]] || { echo "$name broke" >&2; exit 1; } ;;
   rename) mv "$LIMA_HOME/$2" "$LIMA_HOME/$3"; echo "$*" >> '${log}/limactl' ;;
   delete) rm -rf "$LIMA_HOME/$3"; echo "$*" >> '${log}/limactl' ;;
+  start|stop) vm="\${@: -1}"; echo "$*" >> '${log}/limactl'
+              [[ "$1" != stop || "$vm" != "\${FAIL_STOP:-}" ]] || { echo "stop broke" >&2; exit 1; }
+              [[ ! -d "$LIMA_HOME/$vm" ]] || { [[ "$1" == start ]] && echo Running || echo Stopped; } > "$LIMA_HOME/$vm/status" ;;
   *) echo "$*" >> '${log}/limactl' ;;
 esac`);
   // GH_LOGGED_OUT and GLAB_LOGGED_OUT expire the login: auth status fails, as it does then.
@@ -173,17 +179,47 @@ test('with images to bake in and the project\'s zot down, it fails before creati
   assert.match(s.logOf('curl'), /http:\/\/127\.0\.0\.1:5101\/v2\//);
 });
 
-test('a failed step keeps the old image and leaves the build for inspection; the next run deletes it first', async () => {
+test('a failed step keeps the old image and keeps the build, stopped, for inspection; the next run deletes it first', async () => {
   const s = setup();
   await s.build();
   const label = s.label();
   writeFileSync(join(s.def, 'provision.sh'), '#!/bin/bash\necho v2\n');
-  await assert.rejects(s.build({ FAIL_SCRIPT: 'repositories.sh' }), e => /repositories failed — see .*golden-image-build\.log; golden-p-build is left/.test(e.stderr));
+  await assert.rejects(s.build({ FAIL_SCRIPT: 'repositories.sh' }), e => /repositories failed — see .*golden-image-build\.log; golden-p-build is stopped and kept for inspection/.test(e.stderr));
   assert.deepEqual(s.label(), label);
   assert.match(readFileSync(join(s.dir, 'projects', 'p', 'golden-image-build.log'), 'utf8'), /repositories\.sh broke/);
   s.reset();
   await s.build();
   assert.deepEqual(s.calls().slice(0, 2), ['delete -f golden-p-build', 'create golden-p-build template.yaml']);
+});
+
+// ASS-289 AC1/AC4: a failed golden build once left its VM running for hours, holding
+// 10 GiB of RAM. A failed build's VM is stopped — not deleted — before vm:build-golden exits.
+test('ASS-289 AC1: a failed build stops its VM before exiting, keeping it, and says how to start it for inspection; one already stopped, or never created, is not stopped again', async () => {
+  const s = setup();
+  const start = `LIMA_HOME=${esc(s.lima)} limactl start golden-p-build`;
+  await assert.rejects(s.build({ FAIL_SCRIPT: 'repositories.sh' }), e => {
+    assert.match(e.stderr, new RegExp(`vm:build-golden: repositories failed — see .*golden-image-build\\.log; golden-p-build is stopped and kept for inspection: start it with ${start}`));
+    assert.equal(e.stderr.match(/inspection/g).length, 1, 'said once, though the step ran in a pipe\'s subshell');
+    return true;
+  });
+  assert.equal(s.calls().at(-1), 'stop golden-p-build', s.calls().join('\n'));
+  assert.equal(readFileSync(join(s.lima, 'golden-p-build', 'status'), 'utf8').trim(), 'Stopped');
+  assert.ok(existsSync(join(s.lima, 'golden-p-build', 'disk')), 'kept, not deleted');
+
+  s.reset();                                                                         // the scan fails: the build stopped itself already
+  await assert.rejects(s.build({ LEAK: PAT }), e => new RegExp(`scan failed — see .*; golden-p-build is stopped and kept for inspection: start it with ${start}`).test(e.stderr));
+  assert.equal(s.calls().filter(c => c === 'stop golden-p-build').length, 2, 'the build\'s own two stops, no third');
+
+  s.reset();                                                                         // a stop that fails is said, with how to stop it
+  await assert.rejects(s.build({ FAIL_SCRIPT: 'provision.sh', FAIL_STOP: 'golden-p-build' }), e =>
+    new RegExp(`provision failed — see .*; golden-p-build could not be stopped: stop it with LIMA_HOME=${esc(s.lima)} limactl stop -f golden-p-build`).test(e.stderr));
+  assert.deepEqual(s.calls().slice(-2), ['stop golden-p-build', 'stop -f golden-p-build']);
+});
+
+test('ASS-289 AC1: a build that fails before creating its VM stops nothing and names no VM to inspect', async () => {
+  const s = setup({ images: 'us-central1-docker.pkg.dev/x/y:1\n' });
+  await assert.rejects(s.build(), e => !/inspection/.test(e.stderr));
+  assert.deepEqual(s.calls(), []);
 });
 
 test('AC5: build time and disk size are printed, recorded in the label and the build log', async () => {
@@ -237,7 +273,7 @@ test('AC4: the build is scanned for the declared tokens and the gh and glab toke
   writeFileSync(join(s.def, 'provision.sh'), '#!/bin/bash\necho v2\n');
   for (const [extra, kind] of [[{ LEAK_SCRIPT: 'repositories.sh' }, /glab's token .* is in .*golden-p-build\/disk/], [{ LEAK: PAT }, /github's token .* is in .*golden-p-build\/disk/]]) {
     await assert.rejects(s.build(extra), e => {
-      assert.match(e.stderr, /scan failed — see .*golden-image-build\.log; golden-p-build is left/);
+      assert.match(e.stderr, /scan failed — see .*golden-image-build\.log; golden-p-build is stopped and kept for inspection/);
       for (const t of [GH, GL, PAT]) assert.ok(!e.stdout.includes(t) && !e.stderr.includes(t) && !buildLog().includes(t), t);
       return true;
     });

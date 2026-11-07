@@ -34,8 +34,12 @@ set -euo pipefail
 # the repositories' commits or files: VMs fetch master when they start. When
 # golden-<project> already has the current hash, nothing is built (AC2).
 # Otherwise it is built as golden-<project>-build, and replaces golden-<project>
-# only once complete; a failed build is left for inspection and deleted by the
-# next run. Tokens for private clones (gh, glab) reach the VM over stdin only.
+# only once complete. A failed build's VM is stopped as it fails (ASS-289: a
+# running one held its RAM for hours) and kept, for inspection — the failure
+# says how to start it (limactl start under this LIMA_HOME) — until the next
+# run deletes it, or, stopped and no build in progress, make_room or
+# vm:reclaim-all do when the disk is short (vm.bash reconcile_vms'
+# golden-build), before any ticket VM. Tokens for private clones (gh, glab) reach the VM over stdin only.
 # Before it is recorded, the stopped build is scanned (vm:scan-image, AC4) for
 # the project's declared tokens and those gh and glab tokens, which go to the
 # scan in its environment; any found fails the build. So the scan cannot fail
@@ -93,11 +97,32 @@ tokens() { printf '%s\n%s\n' "$gh_token" "$gl_token"; }
 log="$(cd "$projects/$project" && pwd -P)/golden-image-build.log"
 : > "$log"
 started=$SECONDS
+# kept — what becomes of the build VM on a failure (ASS-289): stopped if it runs (plain, else forced), kept for inspection; empty without one.
+kept() {
+  local lima; lima="LIMA_HOME=$(printf '%q' "$LIMA_HOME")"
+  [[ -d "$LIMA_HOME/$build" ]] || return 0
+  if [[ "$(limactl list "$build" --format '{{.Status}}' 2>/dev/null)" == Running ]] \
+    && ! limactl stop "$build" >> "$log" 2>&1 && ! limactl stop -f "$build" >> "$log" 2>&1; then
+    echo "$build could not be stopped: stop it with $lima limactl stop -f $build (the next run deletes it)"
+    return 0
+  fi
+  echo "$build is stopped and kept for inspection: start it with $lima limactl start $build (the next run deletes it, or a disk-space reclaim does when the disk is short)"
+}
+# fail <why> — the build VM stopped (kept), and the failure said with what became of it; exits 1. $failed
+# marks it said: a step fed by a pipe fails in a subshell of its own.
+failed="$(mktemp "${TMPDIR:-/tmp}/build-golden.XXXXXX")"
+fail() {
+  local vm; vm="$(kept)"; echo 1 > "$failed"
+  echo "vm:build-golden: $1${vm:+; $vm}" >&2
+  exit 1
+}
+# Any other failure (set -e, a lock not taken) stops it too.
+trap 'code=$?; if [[ $code -ne 0 && ! -s "$failed" ]]; then vm="$(kept)"; [[ -z "$vm" ]] || echo "vm:build-golden: failed; $vm" >&2; fi; rm -f "$failed"' EXIT
 # step <name> <command…> — runs it with its output in the log, printing how long it took; stops the build on failure.
 step() {
   local name="$1" t=$SECONDS; shift
   echo "== $name" >> "$log"
-  "$@" >> "$log" 2>&1 || { echo "vm:build-golden: $name failed — see $log; $build is left for inspection (the next run deletes it)" >&2; exit 1; }
+  "$@" >> "$log" 2>&1 || fail "$name failed — see $log"
   echo "vm:build-golden: $name $((SECONDS - t))s"
 }
 # in_vm <script> <args…> — runs a local script in the build VM, as its user.

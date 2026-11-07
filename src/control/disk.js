@@ -87,7 +87,10 @@ async function reclaim(ctx, memory) {
     return;
   }
   if (out.skipped) return;
-  for (const d of out.deleted ?? []) ctx.log(PHASE, `deleted ${d.name} (${d.project} ${d.ticket} ${d.variation}, last accessed ${d['last-accessed']}): ${d['freed-bytes']} bytes freed (${gib(d['freed-bytes'])} GiB)`);
+  for (const d of out.deleted ?? []) {
+    const what = d.kind === 'leftover-golden-build' ? `${d.project}'s leftover golden image build` : `${d.project} ${d.ticket} ${d.variation}`;   // ASS-289
+    ctx.log(PHASE, `deleted ${d.name} (${what}, last accessed ${d['last-accessed']}): ${d['freed-bytes']} bytes freed (${gib(d['freed-bytes'])} GiB)`);
+  }
   if (out.deleted?.length) memory.at = null;
   if (out.short && !memory.short) ctx.log(PHASE, `nothing more to delete: ${gib(out['free-bytes'])} GiB free on the volume holding the VMs, still below the ${gb(out['warn-bytes'])} GB warning level; every other VM runs or its variation is in flight — free space on the volume by hand`);
   memory.short = Boolean(out.short);

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Description: Delete every project's stopped VMs no variation in flight needs, least recently accessed first across all projects, until the volume holding LIMA_HOME is back above disk-free-warn-gb — vm:reclaim-all [--dry-run]; prints { dry-run, warn-bytes, free-bytes-before, free-bytes, deleted, short }.
+# Description: Delete every project's leftover failed golden build VM, then its stopped VMs no variation in flight needs, least recently accessed first across all projects, until the volume holding LIMA_HOME is back above disk-free-warn-gb — vm:reclaim-all [--dry-run]; prints { dry-run, warn-bytes, free-bytes-before, free-bytes, deleted, short }.
 set -euo pipefail
 
 # ASS-288 AC3: control runs it, beside its tick, while the free space is below

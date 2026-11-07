@@ -70,7 +70,9 @@ const ALLOWED = {
   'src/agent-cli/vm/build-golden.sh': {
     '"$log"': 'the build log, written by the one build holding golden-build.lock',
     '"$LIMA_HOME/$build/golden-image.json"': 'inside the build VM\'s own folder, under golden-build.lock',
+    '"$failed"': 'a mktemp file: the failure said (ASS-289)',
   },
+  'src/agent-cli/vm.bash': { '", $ARGV[0]) or exit 1; exit(flock($f, LOCK_EX | LOCK_NB) ? 1 : 0)\' "': 'perl\'s open mode in a lock probe (build_in_progress), not a redirect' },
   'src/agent-cli/vm/build-golden-start.sh': {
     '"$3"': 'the run log, one start at a time (golden-build-start.lock)',
     '"$4"': 'the run exit code, one start at a time (golden-build-start.lock)',

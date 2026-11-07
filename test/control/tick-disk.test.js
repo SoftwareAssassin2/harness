@@ -74,6 +74,21 @@ test('ASS-288 AC3: below the warn level control logs it once and runs vm:reclaim
   assert.equal(w.f.lines.filter(l => /^disk Disk low/.test(l)).length, 1);
 });
 
+test('ASS-289 AC3: control logs a leftover golden build vm:reclaim-all deleted as that, not as a ticket\'s VM', async () => {
+  const w = watching();
+  const cli = w.f.ctx.cli;
+  w.f.ctx.cli = (args, env) => (args[0] === 'vm:reclaim-all'
+    ? Promise.resolve(JSON.stringify({ 'dry-run': false, 'warn-bytes': 100000, 'free-bytes-before': 92160, 'free-bytes': 200000, short: false, deleted: [
+      { project: 'p', name: 'golden-p-build', kind: 'leftover-golden-build', ticket: null, variation: null, 'last-accessed': '2026-11-01T05:09:00Z', 'disk-bytes': 4096, 'freed-bytes': 4096 },
+      { project: 'p', name: 'abc-1-a', kind: 'ticket-vm', ticket: 'ABC-1', variation: 'A', 'last-accessed': '2026-10-01T00:00:00Z', 'disk-bytes': 4096, 'freed-bytes': 4096 }] }))
+    : cli(args, env));
+  w.free(90);
+  await tick(w.f.ctx);
+  await w.reclaimed();
+  assert.ok(w.f.lines.includes("disk deleted golden-p-build (p's leftover golden image build, last accessed 2026-11-01T05:09:00Z): 4096 bytes freed (0.0 GiB)"), w.f.lines.join('\n'));
+  assert.ok(w.f.lines.includes('disk deleted abc-1-a (p ABC-1 A, last accessed 2026-10-01T00:00:00Z): 4096 bytes freed (0.0 GiB)'), w.f.lines.join('\n'));
+});
+
 test('ASS-288 AC4/AC6: below the hold level control starts no agent and runs no step that makes a VM or golden image, logging the hold once; running agents finish their turn; once the free space is back above the warn level — not before — the hold releases itself and work goes on', async () => {
   const w = watching();
   await tick(w.f.ctx);                                          // the plan agent is dispatched

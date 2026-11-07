@@ -8,7 +8,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { randomBytes } from 'node:crypto';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { writeFileSync, readFileSync, existsSync, utimesSync, appendFileSync, rmSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { lima, edit } from './vm-fixture.js';
@@ -53,7 +53,7 @@ test('vm:inventory p reconciles vms.json with limactl list and the sprint, and l
   }));
   const inventory = await d.inventory();
   assert.deepEqual(inventory, {
-    project: 'p', 'limit-bytes': 1e9, 'use-bytes': 7 * KB, 'golden-bytes': 4 * KB, 'golden-built-at': null,
+    project: 'p', 'limit-bytes': 1e9, 'use-bytes': 7 * KB, 'golden-bytes': 4 * KB, 'golden-built-at': null, 'golden-build': null,
     vms: [
       { name: 'abc-1-a', ticket: 'ABC-1', variation: 'A', state: 'Stopped', 'disk-bytes': 3 * KB, 'last-accessed': '2026-10-01T00:00:00Z', deletable: true, 'golden-built-at': null, 'old-generation': false },
       { name: 'abc-3-c', ticket: 'ABC-3', variation: 'C', state: 'Stopped', 'disk-bytes': 2 * KB, 'last-accessed': '2026-10-10T00:00:00Z', deletable: false, 'golden-built-at': null, 'old-generation': false },
@@ -297,4 +297,84 @@ test('ASS-287 AC1: vm:reclaim p deletes p\'s stopped VMs of an older golden gene
   assert.deepEqual(Object.keys(JSON.parse(readFileSync(join(d.home, '.harness', 'vm-tokens.json'), 'utf8'))), ['abc-3-b']);
   assert.deepEqual((await reclaim()).deleted, [], 'nothing more to reclaim');
   await assert.rejects(d.cli('vm:reclaim', 'p', '--now'), /usage: vm:reclaim <project> \[--dry-run\]/);
+});
+
+// ASS-289: a failed golden build's VM (golden-p-build), left over. holdLock(file) holds a lock on file, as a
+// running vm:build-golden holds golden-build.lock, until released.
+async function holdLock(file) {
+  const holder = spawn('perl', ['-MFcntl=:flock', '-e', 'open(my $f, ">>", $ARGV[0]) or die; flock($f, LOCK_EX) or die; $| = 1; print "held\\n"; sleep 60', file]);
+  await new Promise(resolve => holder.stdout.once('data', resolve));
+  return { release: () => holder.kill('SIGKILL') };
+}
+const status = (d, vm, state) => writeFileSync(join(d.v.instances, vm, 'status'), state);
+
+test('ASS-289 AC2: vm:inventory reports a leftover golden-p-build apart from the ticket VMs, with its disk bytes, deletable once stopped; running, or stopped while a build holds golden-build.lock (in progress), it is not', async () => {
+  const d = disk();
+  assert.equal((await d.inventory())['golden-build'], null, 'none left over');
+  d.vm('golden-p-build', 3, 'Running', '2026-10-15T00:00:00Z');
+  d.vm('abc-1-a', 1, 'Stopped', '2026-10-01T00:00:00Z');
+  writeFileSync(d.at('projects', 'p', 'vms.json'), entries([['abc-1-a', 'ABC-1']]));
+  const build = state => ({ name: 'golden-p-build', state, 'disk-bytes': 3 * KB, 'last-accessed': '2026-10-15T00:00:00Z' });
+  let inventory = await d.inventory();
+  assert.deepEqual(inventory['golden-build'], { ...build('Running'), leftover: true, deletable: false });
+  assert.deepEqual(inventory.vms.map(v => v.name), ['abc-1-a'], 'not a ticket VM');
+  assert.deepEqual([inventory['use-bytes'], inventory['golden-bytes']], [1 * KB, 7 * KB]);
+  assert.equal(d.vms()['golden-p-build'], undefined, 'never taken into vms.json');
+
+  status(d, 'golden-p-build', 'Stopped');
+  inventory = await d.inventory();
+  assert.deepEqual(inventory['golden-build'], { ...build('Stopped'), leftover: true, deletable: true });
+
+  const lock = await holdLock(d.at('projects', 'p', 'golden-build.lock'));            // a build in progress, between its stop and start
+  try {
+    assert.deepEqual((await d.inventory())['golden-build'], { ...build('Stopped'), leftover: false, deletable: false });
+  } finally { lock.release(); }
+
+  writeFileSync(d.at('projects', 'p', 'golden-build-run.json'), JSON.stringify({ pid: process.pid, 'started-at': '2026-11-07T00:00:00Z' }));   // one vm:build-golden-start started, still going
+  assert.equal((await d.inventory())['golden-build'].deletable, false);
+  writeFileSync(d.at('projects', 'p', 'golden-build-run.exit'), '1\n');                // it ended: failed
+  assert.equal((await d.inventory())['golden-build'].deletable, true);
+});
+
+test('ASS-289 AC3: vm:create deletes a stopped leftover golden-p-build before any ticket VM, less recently accessed though they are, to fit within p\'s VM disk limit', async () => {
+  const d = disk({ limit: ROOM });
+  d.mount();
+  d.vm('golden-p-build', 3, 'Stopped', '2026-10-15T00:00:00Z');
+  d.vm('abc-1-a', 5, 'Stopped', '2026-10-01T00:00:00Z');
+  writeFileSync(d.at('projects', 'p', 'vms.json'), entries([['abc-1-a', 'ABC-1']]));
+  // 5 blocks used, golden images 4 + 3, 4 needed: 16 of 15; deleting the build's 3 brings it to 13.
+  const { stdout, stderr } = await d.cli('vm:create', 'p', 'ABC-3', 'A');
+  assert.equal(JSON.parse(stdout).created, true);
+  assert.match(stderr, /vm:create: deleted golden-p-build \(p's leftover golden image build, last accessed 2026-10-15T00:00:00Z, [\d.]+ GB\) to make room within p's VM disk limit/);
+  assert.ok(!/deleted abc-1-a/.test(stderr), stderr);
+  assert.deepEqual(['golden-p-build', 'abc-1-a', 'abc-3-a'].map(d.exists), [false, true, true]);
+});
+
+test('ASS-289 AC3: vm:create short of free space on the volume deletes a stopped leftover golden-p-build before any ticket VM', async () => {
+  const d = disk({ limit: 100 });
+  d.mount();
+  d.vm('golden-p-build', 3, 'Stopped', '2026-10-15T00:00:00Z');
+  d.vm('abc-1-a', 2, 'Stopped', '2026-10-01T00:00:00Z');
+  writeFileSync(d.at('projects', 'p', 'vms.json'), entries([['abc-1-a', 'ABC-1']]));
+  const used = Number(execFileSync('du', ['-sk', d.v.instances], { encoding: 'utf8' }).split('\t')[0]);
+  d.volume(used + 8);                                                               // 8 KiB free; golden-p's 16 KiB needed; the build holds 12
+  const { stderr } = await d.cli('vm:create', 'p', 'ABC-3', 'A');
+  assert.match(stderr, /vm:create: deleted golden-p-build \(p's leftover golden image build, last accessed 2026-10-15T00:00:00Z, [\d.]+ GB\) to make room on the volume holding/);
+  assert.deepEqual(['golden-p-build', 'abc-1-a', 'abc-3-a'].map(d.exists), [false, true, true]);
+});
+
+test('ASS-289 AC3: vm:create never deletes golden-p-build while a build is in progress (golden-build.lock held), stopped though it is; nor a running one', async () => {
+  for (const inProgress of [true, false]) {
+    const d = disk({ limit: ROOM });
+    d.mount();
+    d.vm('golden-p-build', 3, inProgress ? 'Stopped' : 'Running', '2026-10-15T00:00:00Z');
+    d.vm('abc-1-a', 5, 'Stopped', '2026-10-01T00:00:00Z');
+    writeFileSync(d.at('projects', 'p', 'vms.json'), entries([['abc-1-a', 'ABC-1']]));
+    const lock = inProgress ? await holdLock(d.at('projects', 'p', 'golden-build.lock')) : { release() {} };
+    try {
+      const { stderr } = await d.cli('vm:create', 'p', 'ABC-3', 'A');
+      assert.match(stderr, /vm:create: deleted abc-1-a/);
+      assert.deepEqual(['golden-p-build', 'abc-1-a', 'abc-3-a'].map(d.exists), [true, false, true]);
+    } finally { lock.release(); }
+  }
 });

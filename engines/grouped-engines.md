@@ -228,7 +228,10 @@ Blocked for Human, saying what was found and what to do.
 - **The inventory.** `data/projects/<p>/vms.json` (untracked) holds each VM of the
   project: ticket, variation, state, disk bytes, last accessed (started or
   stopped). `vm:inventory <p>` reconciles it with `limactl list` and the sprint
-  and prints it against the limit.
+  and prints it against the limit, with a leftover `golden-<p>-build` (a failed
+  golden build's VM, which vm:build-golden stops as it fails) apart from the
+  ticket VMs: deletable once stopped and no build is in progress, and deleted
+  before any ticket VM when room is made (ASS-289).
 - **The limit.** `vm-disk-limit-gb` in harness.json is every project's default
   and ceiling; a project's own in project.json may only be lower (a higher one
   is held to the ceiling, with a warning). Only each VM's own disk counts, at
