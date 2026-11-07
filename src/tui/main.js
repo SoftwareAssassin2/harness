@@ -15,11 +15,11 @@ import { readUsage } from '../agents/session-usage.js';
 import { chatRunner, chatSpendArgs } from '../agents/chats.js';
 import { configDir } from '../control/dispatch.js';
 import { ticketChat, opening, briefing, chatId, problems } from './collaboration.js';
-import { memoryLoaded } from './memory.js';
+import { memoryLoaded, healthPoller, memoryChecked } from './memory.js';
 import { loadFeatures, featureOn } from './features.js';
 import { settlePending, refused } from './screens/agents.js';
 import { refinementSteps } from './status.js';
-import { listMemories, deleteMemory } from '../agents/memory.js';
+import { listMemories, deleteMemory, memoryHealthy } from '../agents/memory.js';
 import { dataDir } from '../data-folder.js';
 
 const ROOT = join(import.meta.dirname, '..', '..');
@@ -417,9 +417,23 @@ stdout.on('resize', () => {
   stdout.write('\x1b[2J');
   draw();
 });
+// Each project's Hindsight, checked by the dashboard itself (ASS-293: see
+// tui/memory.js healthPoller), polled with the clock; an answer that changes
+// the control box's hindsight line is drawn at once.
+const health = healthPoller({
+  check: port => memoryHealthy(port),
+  onResult: (id, result) => {
+    const next = memoryChecked(state, id, result);
+    if (next === state) return;
+    state = next;
+    draw();
+  },
+});
 setInterval(() => { // keeps the clock and an open session log current
+  health.poll(state.projects, Date.now());
   state = withSession(state);
   draw();
 }, 1000);
+health.poll(state.projects, Date.now());
 state = withSession(state);
 draw();

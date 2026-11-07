@@ -5,7 +5,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { initialState, handleKey, render } from '../../src/tui/app.js';
-import { memoryLoaded } from '../../src/tui/memory.js';
+import { memoryLoaded, healthPoller, memoryChecked, HEALTH_EVERY } from '../../src/tui/memory.js';
 
 const strip = s => s.replace(/\x1b\[[0-9;]*m/g, '').replace(/\x1b\]8;;[^\x07]*\x07/g, '');
 const screen = { columns: 160, rows: 40, now: new Date('2026-10-25T16:00:00Z') };
@@ -103,4 +103,59 @@ test('ASS-156 AC2: an observation shows its source as its source facts\' tickets
     { id: 'o1', text: 'vm credentials live in ~/.harness/vm-credentials.json', document_id: null, fact_type: 'observation', metadata: {}, mentioned_at: '2026-10-26T08:00:00Z', source_memory_ids: ['f1', 'f2', 'f3', 'gone'] }];
   const row = lines(memoryLoaded(opened(), 'harness', { items })).find(l => l.includes('vm credentials live'));
   for (const cell of ['obs ← ASS-154, ASS-62', 'classify, build', 'claude-opus-5-5, claude-sonnet-5', '2026-10-26']) assert.ok(row.includes(cell), row);
+});
+
+// ===== ASS-293: the dashboard checks each project's Hindsight itself =====
+// A poller whose checks are held open until settled: check(port) recorded, answered by settle(i, healthy | Error).
+function checks() {
+  const asked = [], pending = [], results = [];
+  const check = port => new Promise((resolve, reject) => { asked.push(port); pending.push({ resolve, reject }); });
+  const poller = healthPoller({ check, onResult: (id, result) => results.push([id, result]) });
+  const settle = async (i, answer) => { if (answer instanceof Error) pending[i].reject(answer); else pending[i].resolve(answer); await new Promise(r => setImmediate(r)); };
+  return { asked, results, poller, settle };
+}
+const watched = [{ id: 'harness', hindsight: { port: 8891 } }, { id: 'bare' }, { id: 'other', hindsight: { port: 8892 } }];
+const at = s => Date.parse(`2026-10-25T16:00:${s}Z`);
+
+test('ASS-293 AC1: the dashboard checks each project with a hindsight at once and every 15 seconds after, one check in flight per project; poll never waits for a check', async () => {
+  const c = checks();
+  assert.equal(HEALTH_EVERY, 15_000);
+  assert.equal(c.poller.poll(watched, at('00')), undefined);            // returns at once, the checks still open
+  assert.deepEqual(c.asked, [8891, 8892]);
+  c.poller.poll(watched, at('20'));                                      // still in flight: not asked again
+  assert.deepEqual(c.asked, [8891, 8892]);
+  await c.settle(0, true);
+  assert.deepEqual(c.results, [['harness', { port: 8891, healthy: true, at: at('00') }]]);
+  c.poller.poll(watched, at('20'));                                      // 15 seconds since harness's began: again; other still in flight
+  assert.deepEqual(c.asked, [8891, 8892, 8891]);
+  await c.settle(2, false);
+  c.poller.poll(watched, at('34'));
+  assert.deepEqual(c.asked, [8891, 8892, 8891]);
+  c.poller.poll(watched, at('35'));
+  assert.deepEqual(c.asked, [8891, 8892, 8891, 8891]);
+  assert.deepEqual(c.results.at(-1), ['harness', { port: 8891, healthy: false, at: at('20') }]);
+});
+
+test('ASS-293 AC1: a check that throws counts as down; a project whose port changes is checked on the new port at once', async () => {
+  const c = checks();
+  c.poller.poll([watched[0]], at('00'));
+  await c.settle(0, new Error('boom'));
+  assert.deepEqual(c.results, [['harness', { port: 8891, healthy: false, at: at('00') }]]);
+  c.poller.poll([{ id: 'harness', hindsight: { port: 9999 } }], at('01'));
+  assert.deepEqual(c.asked, [8891, 9999]);
+});
+
+test('ASS-293 AC2: memoryChecked keeps each project\'s last check in memoryHealth — down since the first check that found it down, until one finds it up or its port changes', () => {
+  let s = initialState({ projects });
+  s = memoryChecked(s, 'harness', { port: 8891, healthy: false, at: at('00') });
+  assert.deepEqual(s.memoryHealth.harness, { port: 8891, healthy: false, since: at('00') });
+  s = memoryChecked(s, 'harness', { port: 8891, healthy: false, at: at('15') });
+  assert.deepEqual(s.memoryHealth.harness, { port: 8891, healthy: false, since: at('00') });
+  s = memoryChecked(s, 'harness', { port: 8891, healthy: true, at: at('30') });
+  assert.deepEqual(s.memoryHealth.harness, { port: 8891, healthy: true, since: at('30') });
+  s = memoryChecked(s, 'harness', { port: 8891, healthy: true, at: at('45') });
+  assert.equal(s.memoryHealth.harness.since, at('30'));
+  s = memoryChecked(s, 'harness', { port: 8892, healthy: true, at: at('50') });
+  assert.equal(s.memoryHealth.harness.since, at('50'));
+  assert.equal(memoryChecked(s, 'harness', { port: 8892, healthy: true, at: at('55') }), s);   // nothing changed: the same state, nothing to draw
 });

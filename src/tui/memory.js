@@ -20,6 +20,48 @@ export const memoryOpened = state => ({ ...state, memorySelected: 0, memoryScrol
 // memoryLoaded(state, project, result) — main.js's answer: { items } or { error }.
 export const memoryLoaded = (state, project, result) => ({ ...state, memories: { ...state.memories, [project]: result } });
 
+// The dashboard's own check of each project's Hindsight (ASS-293), for the
+// control box's hindsight line (frame.js): the dashboard asks rather than
+// reading what control found, so the line stays live while control is down
+// or has never run. main.js polls every second; healthPoller starts, for each
+// project with a hindsight in its project.json, a check (src/agents/memory.js
+// memoryHealthy: GET /health, 2 seconds) at once, then HEALTH_EVERY after the
+// last began — at once on a new port — never two in flight for a project; poll
+// returns at once, so a check never holds up drawing. Each answer goes to
+// onResult(id, { port, healthy, at }), at when its check began, which main.js
+// hands to memoryChecked. A check that throws counts as down.
+export const HEALTH_EVERY = 15_000;
+
+export function healthPoller({ check, onResult, every = HEALTH_EVERY }) {
+  const checks = new Map();   // id → { port, began, running }
+  return {
+    poll(projects, now) {
+      for (const { id, hindsight } of projects) {
+        const port = hindsight?.port;
+        if (port == null) continue;
+        const last = checks.get(id);
+        if (last?.running || (last?.port === port && now - last.began < every)) continue;
+        const current = { port, began: now, running: true };
+        checks.set(id, current);
+        new Promise(resolve => resolve(check(port))).then(healthy => healthy === true, () => false).then(healthy => {
+          current.running = false;
+          onResult(id, { port, healthy, at: now });
+        });
+      }
+    },
+  };
+}
+
+// memoryChecked(state, project, { port, healthy, at }) — a check's answer
+// (ASS-293) in memoryHealth: id → { port, healthy, since }, since when the
+// first check that found it so (on this port) began; the very same state when
+// nothing changed, so there is nothing to draw.
+export function memoryChecked(state, project, { port, healthy, at }) {
+  const last = state.memoryHealth?.[project];
+  if (last?.port === port && last.healthy === healthy) return state;
+  return { ...state, memoryHealth: { ...state.memoryHealth, [project]: { port, healthy, since: at } } };
+}
+
 const memoriesOf = state => state.memories[state.projects[state.project]?.id]?.items ?? [];
 const cell = value => (value ? String(value) : NONE);
 // A memory's row: its text, cut, then its source; the date it was saved when its metadata names none.

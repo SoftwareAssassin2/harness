@@ -30,6 +30,16 @@ export function memoryMcpConfig(project, { vm = false } = {}) {
 export const memoryAnswers = (port, ms = 2000) =>
   fetch(`http://${HOST}:${port}/health`, { signal: AbortSignal.timeout(ms) }).then(res => res.ok, () => false);
 
+// memoryHealthy(port, ms, fetcher) — the dashboard's check (ASS-293), stricter
+// than memoryAnswers: whether the health check answers 200 with JSON status
+// "healthy" (Hindsight's { status, database, … }) in `ms`; false when it
+// answers unhealthy, otherwise or not at all. `fetcher` is fetch (tests).
+export const memoryHealthy = (port, ms = 2000, fetcher = fetch) =>
+  Promise.resolve()
+    .then(() => fetcher(`http://${HOST}:${port}/health`, { signal: AbortSignal.timeout(ms) }))
+    .then(async res => res.status === 200 && (await res.json())?.status === 'healthy')
+    .catch(() => false);
+
 // Hindsight's HTTP API on the port, path under /v1/default/banks/<bank>; its
 // JSON, or thrown — naming the bank's project — when it does not answer or fails.
 async function api(port, bank, path, init = {}) {

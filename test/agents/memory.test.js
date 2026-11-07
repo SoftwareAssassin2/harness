@@ -34,3 +34,21 @@ test('AC8: listMemories lists a project\'s memories with their source; deleteMem
   await h.close();
   await assert.rejects(listMemories(h.port, 'p'), /p's Hindsight is not answering on 127\.0\.0\.1:\d+/);
 });
+
+// ASS-293: the dashboard's own check of a project's Hindsight, fetch injected so no test opens a socket.
+test('ASS-293: memoryHealthy is whether GET /health on 127.0.0.1:<port> answers 200 with status "healthy", in 2 seconds by default; unhealthy, another status, not JSON or no answer, false', async () => {
+  const { memoryHealthy } = await import('../../src/agents/memory.js');
+  const asked = [];
+  const answering = (status, body) => async (url, init) => { asked.push([url, init?.signal instanceof AbortSignal]); return new Response(body, { status }); };
+  assert.equal(await memoryHealthy(9077, undefined, answering(200, JSON.stringify({ status: 'healthy', database: 'connected' }))), true);
+  assert.deepEqual(asked, [['http://127.0.0.1:9077/health', true]]);
+  assert.equal(await memoryHealthy(9077, undefined, answering(200, JSON.stringify({ status: 'unhealthy', database: 'disconnected' }))), false);
+  assert.equal(await memoryHealthy(9077, undefined, answering(503, JSON.stringify({ status: 'healthy' }))), false);
+  assert.equal(await memoryHealthy(9077, undefined, answering(200, 'ok')), false);
+  assert.equal(await memoryHealthy(9077, undefined, async () => { throw new TypeError('fetch failed'); }), false);
+  let timeout;
+  const original = AbortSignal.timeout;
+  AbortSignal.timeout = ms => { timeout = ms; return original.call(AbortSignal, ms); };
+  try { await memoryHealthy(9077, undefined, answering(200, '{}')); } finally { AbortSignal.timeout = original; }
+  assert.equal(timeout, 2000);
+});

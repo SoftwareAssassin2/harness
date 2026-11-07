@@ -1418,7 +1418,7 @@ test('above the bottom line, with a blank line between: a control box and one bo
     ],
   };
   const out = lines(initialState({ projects: [project] }));
-  const boxes = out.slice(-11, -2);
+  const boxes = out.slice(-12, -2);
   assert.match(out.at(-1), /press \? for menu/);
   assert.equal(out.at(-2), '');
   assert.match(boxes[0], /^ +┌─+┐ {4}┌─+┐ {4}┌─+┐ {4}┌─+┐$/);                 // the models box last, always there
@@ -1429,7 +1429,8 @@ test('above the bottom line, with a blank line between: a control box and one bo
   assert.match(boxes[5], /│ uptime: 13m +│ {4}│ +│ {4}│ +│ {4}│ +│$/);
   assert.match(boxes[6], /│ disk free: unknown +│ {4}│ +│ {4}│ +│ {4}│ +│$/);   // ASS-292
   assert.match(boxes[7], /│ golden image: none +│ {4}│ +│ {4}│ +│ {4}│ +│$/);
-  assert.match(boxes[8], /^ +└─+┘ {4}└─+┘ {4}└─+┘ {4}└─+┘$/);
+  assert.match(boxes[8], /│ hindsight: none +│ {4}│ +│ {4}│ +│ {4}│ +│$/);   // ASS-293
+  assert.match(boxes[9], /^ +└─+┘ {4}└─+┘ {4}└─+┘ {4}└─+┘$/);
   assert.ok(!boxes.join().includes('start-time'));
   assert.ok(!boxes.join().includes('type'));
   assert.equal(boxes[0].length - boxes[0].trimStart().length, Math.floor((120 - boxes[0].trim().length) / 2));
@@ -6480,4 +6481,46 @@ test('ASS-292 AC2: the red control DOWN box shows the same two lines', () => {
   const box = controlBox(controlExited(logged, 'p', 1));
   assert.equal(box[0], 'control DOWN');
   assert.deepEqual(box.slice(-2), ['disk free: 120.0 GiB', `golden image: golden-p (built ${localDate(new Date('2026-11-01T05:42:33Z'))})`]);
+});
+
+// ===== ASS-293: the project's Hindsight, as the dashboard last checked it, in the control box =====
+// p with a Hindsight on 9077 (project.json's hindsight) and the dashboard's last check of it (memoryHealth, tui/memory.js memoryChecked).
+const withHindsight = { id: 'p', name: 'P', sprint: null, control: { status: 'Online' }, environments: [], golden: goldenBuilt, hindsight: { port: 9077 } };
+const checked = (healthy, extra = {}) => ({ p: { port: 9077, healthy, since: Date.parse('2026-10-01T15:58:00Z'), ...extra } });
+const memoryBox = s => lines(s).map(l => l.match(/│ ((control|status|uptime|disk free|golden image|hindsight|exited|last)[^│]*?) +│/)?.[1]).filter(Boolean);
+const hindsightLine = s => render(s, screen).find(l => strip(l).includes('hindsight: '));
+const since1558 = timestamp(new Date('2026-10-01T15:58:00Z'));
+
+test('ASS-293 AC2: after the golden image line the control box ends with the project\'s Hindsight: up with its port, down with its port and since when, checking before the first check', () => {
+  const box = memoryHealth => memoryBox({ ...initialState({ projects: [withHindsight] }), memoryHealth });
+  assert.deepEqual(box(checked(true)).slice(-2), [`golden image: golden-p (built ${localDate(new Date('2026-11-01T05:42:33Z'))})`, 'hindsight: up (port 9077)']);
+  assert.equal(box(checked(false)).at(-1), `hindsight: down (port 9077) since ${since1558}`);
+  assert.equal(box(undefined).at(-1), 'hindsight: checking');
+  assert.equal(box({}).at(-1), 'hindsight: checking');
+  assert.equal(box(checked(true, { port: 9078 })).at(-1), 'hindsight: checking');   // a check of the port it had: the new one not yet checked
+});
+
+test('ASS-293 AC2: up is green, down red, checking and none plain', () => {
+  const line = (memoryHealth, project = withHindsight) => hindsightLine({ ...initialState({ projects: [project] }), memoryHealth });
+  assert.ok(line(checked(true)).includes('\x1b[32mhindsight: up (port 9077)'));
+  assert.ok(line(checked(false)).includes(`\x1b[31mhindsight: down (port 9077) since ${since1558}`));
+  assert.ok(!/\x1b\[(32|31)mhindsight/.test(line({})));
+  assert.ok(!/\x1b\[(32|31)mhindsight/.test(line(checked(true), { ...withHindsight, hindsight: null })));
+});
+
+test('ASS-293 AC2: a project without a hindsight says none, whatever check is left', () => {
+  const box = (project, memoryHealth) => memoryBox({ ...initialState({ projects: [project] }), memoryHealth }).at(-1);
+  assert.equal(box({ ...withHindsight, hindsight: null }, checked(true)), 'hindsight: none');
+  assert.equal(box({ ...withHindsight, hindsight: undefined }, undefined), 'hindsight: none');
+});
+
+test('ASS-293 AC3: the red control DOWN box shows the same line, still checked live', () => {
+  const down = memoryHealth => {
+    const logged = { ...initialState({ projects: [withHindsight] }), memoryHealth, controlLog: [{ text: 'boom', project: 'p' }, { text: 'control exited (code 1)', project: 'p' }] };
+    return memoryBox(controlExited(logged, 'p', 1));
+  };
+  assert.equal(down(checked(true))[0], 'control DOWN');
+  assert.equal(down(checked(true)).at(-1), 'hindsight: up (port 9077)');
+  assert.equal(down(checked(false)).at(-1), `hindsight: down (port 9077) since ${since1558}`);
+  assert.equal(down({}).at(-1), 'hindsight: checking');
 });
