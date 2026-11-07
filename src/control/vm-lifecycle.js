@@ -27,7 +27,9 @@
 // the tick, one job per project at a time, so a slow start (7–30 s) holds up
 // nothing; each start, stop or recreation is logged, and one that fails is
 // logged and tried again after a failing step's backoff (backoff.js: 30
-// seconds doubling to 30 minutes).
+// seconds doubling to 30 minutes). While the disk hold is on (ASS-288,
+// disk.js) no VM is recreated or started — said once per VM — stops and
+// credential refreshes going on.
 //
 // A step judged while its VM is still starting reads it as down (ASS-133:
 // Check Setup Complete sent a set-up ticket on to Create VM), so a variation
@@ -47,6 +49,7 @@ import { statusOf, isHeld } from './engine.js';
 import { planFor } from './plan.js';
 import { backoffDelay, held } from './backoff.js';
 import { limaEnv } from './vm.js';
+import { diskHeld } from './disk.js';
 
 const PHASE = 'vm';
 
@@ -143,7 +146,7 @@ export async function superviseVms(ctx, state) {
   for (const [project, vms] of projects) {
     const r = jobs.get(project.id) ?? { job: null, held: new Map() };
     jobs.set(project.id, r);
-    r.job ??= match(ctx, project.id, vms, r, status).catch(error => ctx.log('error', `${PHASE} ${project.id}: ${error.message}`)).finally(() => { r.job = null; });
+    r.job ??= match(ctx, project.id, vms, r, status, diskHeld(state)).catch(error => ctx.log('error', `${PHASE} ${project.id}: ${error.message}`)).finally(() => { r.job = null; });
   }
 }
 
@@ -158,7 +161,7 @@ const probe = (ctx, name) => new Promise((resolve, reject) => execFile('limactl'
 // seconds before its sshd accepts connections) — silently, so a VM not yet
 // reachable is simply tried again next job, same as one still starting; then
 // each VM started, recreated, stopped or refreshed as it should be (not while backed off).
-async function match(ctx, id, vms, r, status) {
+async function match(ctx, id, vms, r, status, diskHold = false) {
   const up = (ctx.memory.vmsUp ??= new Set());
   const declared = declaredVmKind(ctx, id);
   for (const [name, vm] of vms) {
@@ -181,6 +184,12 @@ async function match(ctx, id, vms, r, status) {
       [args, did] = [['vm:start', id, vm.ticket, vm.variation], `credentials refreshed (${vm.ticket} ${vm.variation} at ${vm.state}; ${vm.kind ?? 'no recorded kind'} → ${declared})`];
     }
     else continue;
+    // The disk nearly full (ASS-288, disk.js): no VM recreated (a clone) or started; stops and refreshes go on.
+    if (diskHold && (args[0] === 'vm:create' || (args[0] === 'vm:start' && !refreshing))) {
+      if (!ctx.memory.warned.has(`disk/${name}`)) { ctx.memory.warned.add(`disk/${name}`); ctx.log(PHASE, `${id} ${name}: not ${args[0] === 'vm:create' ? 'recreated' : 'started'}: the disk is nearly full`); }
+      continue;
+    }
+    ctx.memory.warned.delete(`disk/${name}`);
     const h = r.held.get(name) ?? { failures: 0, until: 0 };
     if (now < h.until) continue;
     try {

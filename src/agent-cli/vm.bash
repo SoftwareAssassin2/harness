@@ -21,6 +21,7 @@
 #   delete_vm <command> <project> <vm>        # deleted, and dropped from the inventory and the forwarder tokens
 #   reclaim_generations <command> <project> [dry-run]   # the project's deletable VMs of an older golden generation deleted (ASS-287); prints what was, and what was kept
 #   volume_free                               # the bytes free on the volume holding LIMA_HOME (df)
+#   reclaim_all <command> [dry-run]           # every project's deletable VMs deleted, least recently accessed first across all, until that volume is back above disk-free-warn-gb (ASS-288)
 #
 # One VM per ticket variation, a copy-on-write clone of the project's golden
 # image (golden-<project>, vm:build-golden) under LIMA_HOME (lima-home.bash:
@@ -36,6 +37,7 @@ here_vm="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
 source "$here_vm/sprint.bash"
 source "$here_vm/ticket-system.bash"
 source "$here_vm/lima-home.bash"
+source "$here_vm/disk.bash"
 LIMA_HOME="$(lima_home)"; export LIMA_HOME
 agent="$here_vm/../../agent.sh"
 harness_file="${HARNESS_FILE:-$here_vm/../../data/harness.json}"
@@ -171,14 +173,8 @@ golden_bytes() { disk_bytes "$(limactl list "golden-$1" --format '{{.Dir}}' 2>/d
 # built_at <instance folder> — the built-at of the golden image label in it, empty without one.
 built_at() { jq -r '.["built-at"] // empty' "$1/golden-image.json" 2>/dev/null || true; }
 
-# volume_free — df's free bytes on the volume holding LIMA_HOME (its nearest existing folder).
-volume_free() {
-  local dir="$LIMA_HOME" free
-  while [[ ! -e "$dir" ]]; do dir="$(dirname "$dir")"; done
-  free="$(df -kP "$dir" 2>/dev/null | awk 'NR == 2 { printf "%.0f\n", $4 * 1024 }')"
-  [[ "$free" =~ ^[0-9]+$ ]] || { echo "could not read the free space on the volume holding $LIMA_HOME (df)" >&2; return 1; }
-  echo "$free"
-}
+# volume_free — df's free bytes on the volume holding LIMA_HOME (its nearest existing folder: disk.bash volume_of).
+volume_free() { local line; line="$(volume_of "$LIMA_HOME")" || return 1; echo "${line%%$'\t'*}"; }
 
 gb() { jq -n --argjson b "$1" '$b / 1e7 | round / 100'; }
 
@@ -319,4 +315,63 @@ reclaim_generations() {
     for name in $(jq -r '.deleted[].name' <<<"$plan"); do delete_vm "$command" "$project" "$name" || return 1; done
   fi
   echo "$plan"
+}
+
+# reclaim_all (ASS-288): below disk-free-warn-gb on the volume holding
+# LIMA_HOME, the deletable VMs of every project — stopped, their variation not
+# in flight: reconcile_vms's deletable, as make_room deletes — are deleted,
+# least recently accessed first across all of them, until df says the volume
+# is back at or above the warn level or none is left. Each project's inventory
+# is read under its VM lock, one project at a time; each deletion takes that
+# project's lock again and reconciles first, so a VM started or put back in
+# flight since is skipped (no two locks are ever held at once). Each deletion
+# is said on stderr with its VM, project, ticket, variation, last access and
+# the bytes df says it freed. Prints { dry-run, warn-bytes, free-bytes-before,
+# free-bytes, deleted: [{ project, name, ticket, variation, last-accessed,
+# disk-bytes, freed-bytes }], short } — short: still below the warn level.
+# With dry-run, those it would delete — counting each one's disk-bytes as
+# freed — deleting none. A project whose inventory cannot be read is passed
+# over, said on stderr.
+reclaim_all() {
+  local command="$1" dry="${2:-}" warn hold free before candidates="[]" deleted="[]" dir project inventory next name bytes ticket variation accessed after freed
+  read -r warn hold < <(disk_levels "$command") || true
+  [[ -n "${warn:-}" ]] || return 1
+  free="$(volume_free 2>&1)" || { echo "$command: $free" >&2; return 1; }
+  before="$free"
+  if (( free < warn )); then
+    for dir in "$projects"/*/; do
+      project="$(basename "$dir")"
+      [[ "$project" =~ ^[A-Za-z0-9_-]+$ && -f "$dir/project.json" ]] || continue
+      lock_vms "$command" "$project" || { echo "$command: $project passed over: its VM lock could not be taken" >&2; continue; }
+      inventory="$(reconcile_vms "$command" "$project")" || { unlock_vms; echo "$command: $project passed over: its inventory could not be read" >&2; continue; }
+      unlock_vms
+      candidates="$(jq -c --slurpfile c <(printf '%s' "$candidates") --arg p "$project" \
+        '$c[0] + [.vms[] | select(.deletable) | { project: $p, name, ticket, variation, "last-accessed", "disk-bytes" }]' <<<"$inventory")"
+    done
+    candidates="$(jq -c 'sort_by(.["last-accessed"], .name)' <<<"$candidates")"
+  fi
+  while (( free < warn )); do
+    next="$(jq -c 'first(.[]) // empty' <<<"$candidates")"
+    [[ -n "$next" ]] || break
+    candidates="$(jq -c '.[1:]' <<<"$candidates")"
+    IFS=$'\t' read -r project name bytes ticket variation accessed < <(jq -r '[.project, .name, .["disk-bytes"], .ticket, .variation, .["last-accessed"]] | @tsv' <<<"$next")
+    if [[ -n "$dry" ]]; then
+      deleted="$(jq -c --argjson x "$next" '. + [$x + { "freed-bytes": $x["disk-bytes"] }]' <<<"$deleted")"
+      free=$(( free + bytes ))
+      continue
+    fi
+    lock_vms "$command" "$project" || { echo "$command: $name passed over: $project's VM lock could not be taken" >&2; continue; }
+    if ! reconcile_vms "$command" "$project" | jq -e --arg n "$name" 'any(.vms[]; .name == $n and .deletable)' >/dev/null; then
+      unlock_vms; echo "$command: $name passed over: it runs or its variation is in flight now" >&2; continue
+    fi
+    delete_vm "$command" "$project" "$name" || { unlock_vms; continue; }
+    unlock_vms
+    after="$(volume_free 2>&1)" || { echo "$command: $after" >&2; return 1; }
+    freed=$(( after > free ? after - free : 0 ))
+    free="$after"
+    deleted="$(jq -c --argjson x "$next" --argjson f "$freed" '. + [$x + { "freed-bytes": $f }]' <<<"$deleted")"
+    echo "$command: deleted $name ($project $ticket $variation, last accessed $accessed): $freed bytes freed ($(gib "$freed") GiB), $(gib "$free") GiB free" >&2
+  done
+  jq -n --argjson d "$deleted" --argjson dry "$( [[ -n "$dry" ]] && echo true || echo false)" --argjson w "$warn" --argjson b "$before" --argjson f "$free" \
+    '{ "dry-run": $dry, "warn-bytes": $w, "free-bytes-before": $b, "free-bytes": $f, deleted: $d, short: ($f < $w) }'
 }

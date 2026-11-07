@@ -27,7 +27,11 @@ merged change, with a person approving at the gates.
 - An Apple Silicon Mac, on a macOS version Lima's `vz` driver supports
 - [Node.js](https://nodejs.org/) (a current LTS) and `jq`
 - [Lima](https://lima-vm.io/) (`brew install lima`), with room for VMs in its
-  folder (`vm-disk-limit-gb` in `data/harness.json`, 120 by default)
+  folder (`vm-disk-limit-gb` in `data/harness.json`, 120 by default). Control
+  watches the free space on that volume and the data folder's: below
+  `disk-free-warn-gb` (50) it warns and deletes the stopped VMs no ticket
+  needs; below `disk-free-hold-gb` (15) it starts no new work until there is
+  room again
 - Python 3.11 or newer, for Hindsight (`brew install python@3.12`)
 - [Claude Code](https://claude.com/claude-code)
 - `git`, plus whichever of `glab`, `gcloud` and `gh` your project uses

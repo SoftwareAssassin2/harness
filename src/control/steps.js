@@ -15,6 +15,7 @@ import { awaitsVm } from './vm-lifecycle.js';
 import { awaitsDependencies } from './dependencies.js';
 import { overSpent, spendText, runningOn } from './spend.js';
 import { readSession } from '../agents/session.js';
+import { diskHeld, makesDisk } from './disk.js';
 
 const PHASE = 'steps';
 const CHAIN = 20;   // moves one variation or run may make in a tick
@@ -61,6 +62,17 @@ export function scriptDue(ctx, who, key, visit, step, now) {
     memory.ran.add(visit);
   }
   memory.lastRun.set(key, now);
+  return true;
+}
+
+// diskWaits(ctx, state, step, who) — a script step that makes a VM or a golden
+// image (disk.js makesDisk: vm:create's clone, vm:build-golden) waits, not run,
+// while the disk hold is on (ASS-288), said once per hold; it runs once the
+// hold lifts.
+function diskWaits(ctx, state, step, who) {
+  if (!makesDisk(step.action?.command)) return false;
+  if (!diskHeld(state)) { ctx.memory.warned.delete(`disk/${who}`); return false; }
+  warnOnce(ctx, `disk/${who}`, `${who}: waits: the disk is nearly full`);
   return true;
 }
 
@@ -163,6 +175,7 @@ async function runVariation(ctx, state, project, key, name) {
         // A timer step polls: no gate holds it (moves.js TIMER, ASS-236), nor one marked before.
         const held = ticketKey(project.id, ticket.key, variation.name, step.id), timer = step.action.mode === 'timer';
         if (waiting(ctx.memory, held, ctx.now().getTime()) || (!timer && heldAtGate(variation))) return;
+        if (diskWaits(ctx, state, step, who)) return;
         if (!scriptDue(ctx, who, `${project.id}/${who}`, `${project.id}/${who}/${(variation['state-changes'] ?? []).length}`, step, ctx.now().getTime())) return;
         const values = ticketValues(project, ticket, variation);
         Object.assign(facts, await runScriptStep(ctx, step, values, who, variation));
@@ -281,6 +294,7 @@ async function runTransient(ctx, state, id) {
       case 'script': {
         const held = runKey(run.id, run.state), at = ticketPath(run, state.transient), timer = step.action.mode === 'timer';
         if (waiting(ctx.memory, held, ctx.now().getTime()) || (!timer && variation && at && heldAtGate(variation, run['state-engine'], run.state, at.path.length + 1))) return;
+        if (diskWaits(ctx, state, step, who)) return;
         if (!scriptDue(ctx, who, `${run.id}/${run.state}`, `${run.id}/${run.state}/${changes.length}`, step, ctx.now().getTime())) return;
         const values = runValues(run, context);
         Object.assign(facts, await runScriptStep(ctx, step, values, who, variation));

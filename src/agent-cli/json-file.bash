@@ -14,7 +14,8 @@
 #   included. A lock can never go stale.
 # - The new content goes to a temp file beside the original, keeping its
 #   permissions, and is renamed over it: readers see the old file or the new
-#   one, never half of one, and a failed write leaves the original as it was.
+#   one, never half of one, and a failed write leaves the original as it was:
+#   the temp file is renamed only once it parses as JSON (ASS-288).
 # - Waiting for the lock gives up after JSON_LOCK_TIMEOUT seconds (default 30)
 #   rather than hang behind a stuck writer.
 # - The path is resolved first, so every spelling of it, symlinks included,
@@ -65,12 +66,15 @@ update_json() {
 # write_json <file> [jq options…] <filter> — update_json's write without its
 # lock, for a caller already holding <file>.lock (lock_on on another
 # descriptor) across a read of its own (ticket:renumber-backlog, ASS-179).
+# The temp file is moved over <file> only when jq succeeded and what it wrote
+# is there and parses as JSON (ASS-288): a write cut short — a full disk — is
+# never moved in, so <file> stays as it was, and this fails.
 write_json() {
   local file="$1" tmp
   shift
   tmp="$(mktemp "$file.XXXXXX")" || return 1
   cp -p "$file" "$tmp"
-  jq --indent 4 "$@" "$file" > "$tmp" && [[ -s "$tmp" ]] && mv "$tmp" "$file" || { rm -f "$tmp"; return 1; }
+  jq --indent 4 "$@" "$file" > "$tmp" && [[ -s "$tmp" ]] && jq empty "$tmp" 2>/dev/null && mv "$tmp" "$file" || { rm -f "$tmp"; return 1; }
 }
 
 # replace_file <file> — <file> becomes stdin, whole (ASS-176): written to a

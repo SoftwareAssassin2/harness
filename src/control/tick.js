@@ -31,8 +31,11 @@
 // track, refinement and dispatch are skipped; the rest run — the non-agent
 // steps and VM work too (ASS-236), so a ticket's scripts go on — so the
 // running agents' ended turns are finished and paused ones shut down.
+// While the disk is nearly full (disk.js, ASS-288: its hold, harness-wide)
+// no agent starts either, and no VM, clone or golden build; it lifts by itself
+// once the free space is back above the warn level.
 import { spawnSync, execFile } from 'node:child_process';
-import { paths, loadState } from './state.js';
+import { paths, loadState, readDiskSpace } from './state.js';
 import { runCli, runScript, scriptSucceeds } from './cli.js';
 import { finishEnded, spentSoFar } from './finish.js';
 import { runningSpend } from './spend.js';
@@ -50,6 +53,7 @@ import { checkUsage } from './usage.js';
 import { checkApiCost } from './api-cost.js';
 import { detectReverts } from './reverts.js';
 import { raiseDependencies } from './dependencies.js';
+import { checkDisk, diskHeld } from './disk.js';
 import { sessionUsage } from '../agents/usage.js';
 import { monthCost } from '../agents/api-cost.js';
 
@@ -138,12 +142,22 @@ const PHASES = [finishEnded, superviseRegistries, superviseMemory, backupMemory,
 // tick(ctx) — the twenty phases, in order, each reading the data afresh; a
 // phase that throws is logged under "error" and the next still runs. The
 // rate limits — recorded by the finish phase, so checked after it — are
-// logged and cleared (checkRateLimits), the tick going on.
+// logged and cleared (checkRateLimits), the tick going on. Then the disk
+// (disk.js checkDisk, ASS-288, at most once a minute): while its hold is on
+// no agent starts — fast track, refinement and dispatch are skipped, as while
+// a restart drains — and the VM and step phases start no VM, clone or golden
+// build (vm-lifecycle.js, steps.js); the rest runs, so running agents' turns
+// are finished.
 export async function tick(ctx) {
   const now = ctx.now().getTime();
+  let held = false;
   for (const phase of PHASES) {
-    if (phase === fastTrack) await checkRateLimits(ctx, now);
-    if (ctx.drain && NEW_WORK.has(phase)) continue;
+    if (phase === fastTrack) {
+      await checkRateLimits(ctx, now);
+      await ctx.attempt('disk', 'check', () => checkDisk(ctx));
+      held = diskHeld({ diskSpace: readDiskSpace(ctx.paths.diskSpace) });
+    }
+    if ((ctx.drain || held) && NEW_WORK.has(phase)) continue;
     try {
       await phase(ctx, ctx.load());
     } catch (error) {

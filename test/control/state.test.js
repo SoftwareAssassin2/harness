@@ -9,12 +9,23 @@ import { fixture, SELF_HEALING_ENGINE, TEST_ENGINE } from '../agent-cli/harness-
 
 test('paths are under the root, the data in its data/ folder, unless the env names them, as the agent-cli commands take them', () => {
   assert.deepEqual(paths('/repo', {}), {
-    assignments: '/repo/data/assignments.json', harness: '/repo/data/harness.json', engines: '/repo/engines', projects: '/repo/data/projects', agents: '/repo/data/agents', prompts: '/repo/prompts', contextWindows: '/repo/data/context-windows.json',
+    assignments: '/repo/data/assignments.json', harness: '/repo/data/harness.json', engines: '/repo/engines', projects: '/repo/data/projects', agents: '/repo/data/agents', prompts: '/repo/prompts', contextWindows: '/repo/data/context-windows.json', diskSpace: '/repo/data/disk-space.json',
   });
   const f = fixture();
   assert.deepEqual(paths('/repo', f.env), {
-    assignments: join(f.dir, 'assignments.json'), harness: join(f.dir, 'harness.json'), engines: join(f.dir, 'engines'), projects: join(f.dir, 'projects'), agents: join(f.dir, 'agents'), prompts: join(f.dir, 'prompts'), contextWindows: f.env.CONTEXT_WINDOWS_FILE,
+    assignments: join(f.dir, 'assignments.json'), harness: join(f.dir, 'harness.json'), engines: join(f.dir, 'engines'), projects: join(f.dir, 'projects'), agents: join(f.dir, 'agents'), prompts: join(f.dir, 'prompts'), contextWindows: f.env.CONTEXT_WINDOWS_FILE, diskSpace: f.env.DISK_SPACE_FILE,
   });
+  // ASS-288: disk-space.json beside the harness.json in use, without DISK_SPACE_FILE.
+  assert.equal(paths('/repo', { HARNESS_FILE: '/elsewhere/harness.json' }).diskSpace, '/elsewhere/disk-space.json');
+});
+
+test('ASS-288: loadState reads disk-space.json into diskSpace (null without it, or caught half-written)', () => {
+  const f = fixture();
+  assert.equal(loadState(paths('/repo', f.env)).diskSpace, null);
+  writeFileSync(f.env.DISK_SPACE_FILE, JSON.stringify({ level: 'hold', 'free-bytes': 1 }));
+  assert.deepEqual(loadState(paths('/repo', f.env)).diskSpace, { level: 'hold', 'free-bytes': 1 });
+  writeFileSync(f.env.DISK_SPACE_FILE, '{"lev');
+  assert.equal(loadState(paths('/repo', f.env)).diskSpace, null);
 });
 
 // ASS-190 AC2: control reads the learned context-window cache so a tile can

@@ -1,0 +1,13 @@
+Decide whether the health check on project {project} found something that must be fixed now.
+
+1. Read the five reports in {ticket-folder}/: harness.md, local-environment.md, local-data.md, project.md, worktrees.md — and disk.md when it is there: written only when a volume holding the VMs or the data is below the harness's disk warning level. Low disk is a real problem; control already deletes the VMs no ticket needs and holds new work by itself, so it needs a fix of yours only when that cannot free enough (the report names the volumes): then the summary names the volume and its free space.
+2. Ignore cosmetic findings. For each real problem answer:
+   - Does it block, or will it block, any sprint ticket?
+   - Would fixing it mean pausing agent work: a shared resource (dev container, database, harness, sign-in) that sprint tickets depend on?
+   - Can the highest-priority workable ticket still make progress without the fix?
+3. Pick the most serious problem for the summary.
+
+Finish with JSON: {"needs-fix": <bool>, "summary": "<120 chars or fewer>", "blocks-tickets": <bool>, "must-interrupt-work": <bool>, "can-continue-without-fix": <bool>}. When nothing is wrong: needs-fix false, can-continue-without-fix true.
+
+We want small deliberate changes. You're working with a scalpel, not a broadsword. You're a doctor: get in, fix the root cause using best practices and the patterns already in the repo, get out. Avoid scope creep.
+Be extremely concise. Sacrifice grammar for the sake of concision.

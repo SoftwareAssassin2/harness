@@ -115,6 +115,8 @@ export function fixture() {
     ANTHROPIC_API_COST_DISABLED: '1', API_COST_FILE: at('api-cost.json'),
     // The learned context-window cache (ASS-190): harness:set-context-window writes here, not the real data folder.
     CONTEXT_WINDOWS_FILE: at('context-windows.json'),
+    // Control's disk watch (ASS-288) is off, so a test's control never reads the real disk with df; its record is the fixture's.
+    DISK_SPACE_DISABLED: '1', DISK_SPACE_FILE: at('disk-space.json'),
     // memory:up finds no Hindsight installed and no Python to install one, so a test's control never starts the real one (ASS-62).
     HINDSIGHT_DIR: at('hindsight-install'), HINDSIGHT_PYTHON: 'false',
   };

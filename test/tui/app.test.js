@@ -6418,3 +6418,29 @@ test('ASS-244 AC1/AC2/AC3: the ticket screen\'s panel lists the ticket\'s screen
   assert.ok(render(open, narrow).join('\n').includes('\x1b]8;;file:///d/p/work/ABC-6/screenshots\x1b\\'));
   assert.ok(!lines(press(atGate(), 'return'), { ...wide, rows: 60 }).some(l => l.includes('Screenshots')));
 });
+
+// The harness's disk as control last read it (ASS-288: disk-space.json).
+const GIB = 2 ** 30;
+const diskAt = (level, gib) => ({ level, 'free-bytes': gib * GIB, 'warn-bytes': 50e9, 'hold-bytes': 15e9, 'held-since': level === 'hold' ? '2026-10-01T16:00:00Z' : null, volumes: [] });
+
+test('ASS-288 AC2: below disk-free-warn-gb the header shows the free space under the banner in amber, not red, on every project; above it, or never read, nothing', () => {
+  for (const disk of [undefined, null, diskAt('ok', 120)]) assert.ok(!lines({ ...state, disk }).some(l => /Disk|GiB free/.test(l)), JSON.stringify(disk));
+  const out = render({ ...state, disk: diskAt('warn', 42) }, screen);
+  centered(strip(out[1]), 'Disk low: 42.0 GiB free, below the 50 GB warning level — control deletes stopped VMs no ticket needs');
+  assert.match(out[1], /\x1b\[38;2;255;176;0mDisk low: /);
+  assert.doesNotMatch(out[1], /\x1b\[31m|\x1b\[41/);
+  centered(lines({ ...state, disk: diskAt('warn', 42), project: 1 })[1], 'Disk low: 42.0 GiB free, below the 50 GB warning level — control deletes stopped VMs no ticket needs');
+  for (const line of lines({ ...state, disk: diskAt('warn', 42) }, { ...screen, columns: 30 })) assert.ok(line.length <= 30, line);
+});
+
+test('ASS-288 AC4: below disk-free-hold-gb the header says "Disk nearly full — work held (N GiB free)", stronger than the warning (black on amber), and on the flow screens too', () => {
+  const out = render({ ...state, disk: diskAt('hold', 12) }, screen);
+  centered(strip(out[1]), ' Disk nearly full — work held (12.0 GiB free): nothing new starts until 50 GB is free ');
+  assert.match(out[1], /\x1b\[1;30;48;2;255;176;0m Disk nearly full — work held \(12\.0 GiB free\)/);
+  for (const flow of FLOWS) {
+    const header = strip(headerLines({ ...state, screen: flow, disk: diskAt('hold', 12) }, 160, at160.now).join('\n'));
+    assert.match(header, /Disk nearly full — work held \(12\.0 GiB free\)/, flow);
+    assert.match(strip(headerLines({ ...state, screen: flow, disk: diskAt('warn', 42) }, 160, at160.now).join('\n')), /Disk low: 42\.0 GiB free/, flow);
+    assert.doesNotMatch(strip(headerLines({ ...state, screen: flow, disk: diskAt('ok', 99) }, 160, at160.now).join('\n')), /Disk/, flow);
+  }
+});

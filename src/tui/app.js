@@ -189,8 +189,8 @@ const pastDays = project => Object.keys(project?.days ?? {})
 // chat; ticketChatLog, its log, which main.js reads; ticketChatScroll,
 // ticketChatDraft, ticketChatCursor, ticketChatMessage, as the agent's; ticketChatSend, a message
 // to send — { project, key, text } — which main.js runs and clears.
-export const initialState = ({ projects = [], workflows = [], assignments = [], transientEngines = [], pauses = {}, selfHealing = {}, menuHidden = false, chats = [], chatsRunning = [], chatsWritten = {}, agentsGrid = agents.AGENTS_GRID, features = {} } = {}) => ({
-  screen: 's', features, projects, project: 0, focus: menuHidden ? 'day' : 'menu', menuHidden, day: null,
+export const initialState = ({ projects = [], workflows = [], assignments = [], transientEngines = [], pauses = {}, selfHealing = {}, menuHidden = false, chats = [], chatsRunning = [], chatsWritten = {}, agentsGrid = agents.AGENTS_GRID, features = {}, disk = null } = {}) => ({
+  screen: 's', features, disk, projects, project: 0, focus: menuHidden ? 'day' : 'menu', menuHidden, day: null,
   selected: null, scroll: null, repoSelected: 0, repoScroll: 0, workflows, assignments, transientEngines, pauses, selfHealing, quit: false,
   draft: null, submit: null, message: '',
   controlLog: [], flowchartView: 'metrics', flowchartScroll: 0, backlogFlowScroll: 0, backlogFlowView: 'tickets',

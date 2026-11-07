@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { until } from '../support/until.js';
 import * as load from '../../src/tui/load.js';   // loadHarness is ASS-188's, by the namespace so the suite still runs before it is there
-import { loadProjects, loadPauses, loadSelfHealing, loadAssignments, loadTransientEngines, loadQuestions, loadChats, watchFiles, dataFiles, keepSame, projectsChanged, loadWorkflows, loadApiCost } from '../../src/tui/load.js';
+import { loadProjects, loadPauses, loadSelfHealing, loadAssignments, loadTransientEngines, loadQuestions, loadChats, watchFiles, dataFiles, keepSame, projectsChanged, loadWorkflows, loadApiCost, loadDiskSpace } from '../../src/tui/load.js';
 
 const write = (file, json) => {
   mkdirSync(join(file, '..'), { recursive: true });
@@ -270,7 +270,7 @@ test('dataFiles: every file the dashboard reads, with one sprint file — the se
   mkdirSync(p('b'), { recursive: true });
   const state = { projects: [{ id: 'a' }, { id: 'b' }], workflows: [{ name: 'standard' }], project: 0, day: null };
   const common = [
-    join(root, 'data', 'assignments.json'), join(root, 'data', 'chats.json'), join(root, 'data', 'api-cost.json'), join(root, 'data', 'context-windows.json'), join(root, 'data', 'harness.json'), join(root, 'engines', 'standard', 'state-engine.json'),
+    join(root, 'data', 'assignments.json'), join(root, 'data', 'chats.json'), join(root, 'data', 'api-cost.json'), join(root, 'data', 'context-windows.json'), join(root, 'data', 'harness.json'), join(root, 'data', 'disk-space.json'), join(root, 'engines', 'standard', 'state-engine.json'),
     join(p('a'), 'project.json'), join(p('a'), 'gcloud-requires-reauthentication'), join(p('a'), 'glab-requires-reauthentication'), join(p('a'), 'rate-limit.json'), join(p('a'), 'claude-usage.json'), join(p('a'), 'api-cost.json'), join(p('a'), 'memory-spend.json'), join(p('a'), 'sprints.json'), join(p('a'), 'backlog.json'), join(p('a'), 'global-questions-and-answers.json'), join(p('a'), 'chat-spend.json'), join(p('a'), 'work', 'abc-1', 'questions-and-answers.json'), join(p('a'), 'work', 'abc-1', 'collaboration.json'),
     join(p('b'), 'project.json'), join(p('b'), 'gcloud-requires-reauthentication'), join(p('b'), 'glab-requires-reauthentication'), join(p('b'), 'rate-limit.json'), join(p('b'), 'claude-usage.json'), join(p('b'), 'api-cost.json'), join(p('b'), 'memory-spend.json'), join(p('b'), 'sprints.json'), join(p('b'), 'backlog.json'), join(p('b'), 'global-questions-and-answers.json'), join(p('b'), 'chat-spend.json'),
   ];
@@ -417,4 +417,13 @@ test('loadApiCost: data/api-cost.json (ASS-153) with harness.json\'s api-monthly
   assert.deepEqual(loadApiCost(dir), { month: '2026-10', usd: 12.34, 'as-of': '2026-10-26T13:00:00Z', budget: null });
   write(join(dir, 'harness.json'), { 'api-monthly-budget-usd': 50 });
   assert.equal(loadApiCost(dir).budget, 50);
+});
+
+test('ASS-288 AC2: loadDiskSpace: the data folder\'s disk-space.json (control\'s last reading of the disk); null without it, or caught half-written', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'tui-'));
+  assert.equal(loadDiskSpace(dir), null);
+  write(join(dir, 'disk-space.json'), { level: 'warn', 'free-bytes': 42e9, 'warn-bytes': 50e9, 'hold-bytes': 15e9 });
+  assert.deepEqual(loadDiskSpace(dir), { level: 'warn', 'free-bytes': 42e9, 'warn-bytes': 50e9, 'hold-bytes': 15e9 });
+  writeFileSync(join(dir, 'disk-space.json'), '{"level": "wa');
+  assert.equal(loadDiskSpace(dir), null);
 });

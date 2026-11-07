@@ -433,3 +433,18 @@ test('ASS-233 AC2, AC3: once the seat holder leaves, the waiting variation\'s VM
   await l.settle(); await l.tick();
   assert.ok(l.calls.some(c => c.endsWith(' in abc-3-b')), l.calls.join('\n'));
 });
+
+test('ASS-288 AC4: while the disk hold is on (disk-space.json level hold) no VM is started or recreated — said once each — while stops go on; once it lifts they are', async () => {
+  const l = lifecycle({
+    A: [at('setup', ['grouped-setup', 'mark-setup-complete']), 'Stopped'],
+    B: [at('setup', ['grouped-setup', 'mark-setup-complete']), null],                     // deleted to make room
+    E: [at('release', ['grouped-release-example', 'team-code-review']), 'Running'],
+  });
+  const record = level => writeFileSync(l.f.env.DISK_SPACE_FILE, JSON.stringify({ level, 'free-bytes': 1e9, 'warn-bytes': 50e9, 'hold-bytes': 15e9 }));
+  record('hold');
+  assert.deepEqual(await l.pass(), ['vm:stop p abc-3-e']);
+  assert.deepEqual(await l.pass(), ['vm:stop p abc-3-e']);                                // the recorder stops nothing: asked again
+  assert.deepEqual(l.f.lines.filter(line => /the disk is nearly full/.test(line)), ['vm p abc-3-a: not started: the disk is nearly full', 'vm p abc-3-b: not recreated: the disk is nearly full']);
+  record('ok');
+  assert.deepEqual(await l.pass(), ['vm:create p ABC-3 B', 'vm:start p ABC-3 A', 'vm:stop p abc-3-e']);
+});

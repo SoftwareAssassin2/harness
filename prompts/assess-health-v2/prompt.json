@@ -1,0 +1,56 @@
+{
+    "description": "Prompt for reading the health reports — and the disk report, when the disk is low (ASS-288) — and deciding whether a fix is needed now",
+    "supported-command-line-interfaces": [
+        "claude"
+    ],
+    "supported-models": [
+        "claude-opus-5-5",
+        "claude-opus-5",
+        "claude-sonnet-5",
+        "claude-opus-4-8",
+        "claude-opus-4-7"
+    ],
+    "persona": "harness-doctor",
+    "input-arguments": [
+        {
+            "name": "project",
+            "description": "Project folder name under data/projects/",
+            "example": "my-project",
+            "required": true
+        }
+    ],
+    "output": {
+        "type": "object",
+        "properties": {
+            "needs-fix": {
+                "type": "boolean",
+                "description": "true if any report found a real problem"
+            },
+            "summary": {
+                "type": "string",
+                "maxLength": 120,
+                "description": "The problem in one line, 120 characters or fewer"
+            },
+            "blocks-tickets": {
+                "type": "boolean",
+                "description": "true if the problem blocks, or will block, sprint tickets"
+            },
+            "must-interrupt-work": {
+                "type": "boolean",
+                "description": "true if fixing it means pausing agent work on a shared resource"
+            },
+            "can-continue-without-fix": {
+                "type": "boolean",
+                "description": "true if the highest-priority workable ticket can still progress without the fix"
+            }
+        },
+        "required": [
+            "needs-fix",
+            "summary",
+            "blocks-tickets",
+            "must-interrupt-work",
+            "can-continue-without-fix"
+        ],
+        "additionalProperties": false
+    }
+}

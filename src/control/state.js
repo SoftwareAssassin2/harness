@@ -3,13 +3,15 @@
 // dashboard's loaders (src/tui/load.js) trim the sprints and read what control
 // does not need.
 import { readdirSync, readFileSync, existsSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
 import { flattenSprint, isLiveBacklogEntry } from './rank.js';
 import { dataDir } from '../data-folder.js';
 import { switchOff, blocksTicket } from './engine.js';
 import { switchedOffStepErrors } from '../workflow/validate.js';
 
 const readJson = file => JSON.parse(readFileSync(file, 'utf8'));
+// readDiskSpace(file) — disk-space.json (ASS-288), or null without it or caught half-written.
+export const readDiskSpace = file => { try { return readJson(file); } catch { return null; } };
 
 // requiresReauthentication(projectDir, tool) — whether the project's
 // <tool>-requires-reauthentication file (gcloud, glab; written by
@@ -77,7 +79,8 @@ function openBlocking(dir, tickets) {
 // under `root`, each overridden by the env the agent-cli commands take
 // (ASSIGNMENTS_FILE, HARNESS_FILE, ENGINES_DIR, PROJECTS_DIR, AGENTS_DIR,
 // PROMPTS_DIR, CONTEXT_WINDOWS_FILE), so control and the commands it runs read
-// the same files.
+// the same files; and disk-space.json (ASS-288: harness:check-disk-space's
+// record) beside harness.json, DISK_SPACE_FILE overriding it.
 export const paths = (root, env = process.env) => ({
   assignments: env.ASSIGNMENTS_FILE ?? join(dataDir(root), 'assignments.json'),
   harness: env.HARNESS_FILE ?? join(dataDir(root), 'harness.json'),
@@ -86,6 +89,7 @@ export const paths = (root, env = process.env) => ({
   agents: env.AGENTS_DIR ?? join(dataDir(root), 'agents'),
   prompts: env.PROMPTS_DIR ?? join(root, 'prompts'),
   contextWindows: env.CONTEXT_WINDOWS_FILE ?? join(dataDir(root), 'context-windows.json'),
+  diskSpace: env.DISK_SPACE_FILE ?? join(dirname(env.HARNESS_FILE ?? join(dataDir(root), 'harness.json')), 'disk-space.json'),
 });
 
 // A ticket not soft deleted (ASS-104, ticket:delete's is-deleted): control
@@ -117,8 +121,10 @@ export const readEngines = dir => (!existsSync(dir) ? {} : Object.fromEntries(re
 // glabRequiresReauthentication (see requiresReauthentication), rateLimit (its rate-limit.json —
 // { <credential kind>: { since, type, resets-at }, … } (ASS-215) — or null, ASS-94), claudeUsage (its
 // claude-usage.json — { email, session: { percent, resets-at }, weekly: { percent, resets-at } | null, as-of } — or
-// null, ASS-47) }, in folder order, and contextWindows (the learned
-// context-windows.json — { <model>: tokens } — or {}, ASS-190).
+// null, ASS-47) }, in folder order, contextWindows (the learned
+// context-windows.json — { <model>: tokens } — or {}, ASS-190) and diskSpace
+// (disk-space.json — { level, free-bytes, … }, ASS-288 — or null; one caught
+// half-written reads as null, the next tick reading it again).
 export function loadState(paths) {
   const data = readJson(paths.assignments);
   const engines = readEngines(paths.engines);
@@ -156,6 +162,7 @@ export function loadState(paths) {
     engines,
     projects,
     contextWindows: existsSync(paths.contextWindows) ? readJson(paths.contextWindows) : {},
+    diskSpace: readDiskSpace(paths.diskSpace),
   };
 }
 

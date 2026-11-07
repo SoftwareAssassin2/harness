@@ -1090,13 +1090,30 @@ test('ASS-149 AC1: check-health-v2 is check-health with Check Golden Images firs
   assert.equal(firstStepId(v2), 'check-golden-images');
   assert.deepEqual(working(stepOf(v2, 'check-golden-images')), { id: 'check-golden-images',
     action: { type: 'script', command: './agent.sh vm:raise-golden-rebuilds' },
-    'exit-events': [{ condition: { 'exit-code': 0 }, 'move-to-state': 'check-harness' }, { condition: { not: { 'exit-code': 0 } }, 'move-to-state': 'check-harness' }] });
-  sameShared(v2, flat);
+    'exit-events': [{ condition: { 'exit-code': 0 }, 'move-to-state': 'check-disk-space' }, { condition: { not: { 'exit-code': 0 } }, 'move-to-state': 'check-disk-space' }] });   // ASS-288: Check Disk Space, then Check Harness
+  sameShared(v2, flat, { as: s => (s.id === 'assess' ? { ...s, action: { ...s.action, prompt: 'assess-health' } } : s) });   // ASS-288: its own Assess Health prompt
   assert.ok(inOrder(v2.steps.toSorted((a, b) => a.sequence - b.sequence).map(s => s.id), ['check-golden-images', 'check-harness']));
   assert.deepEqual(validateStateEngine(v2, ROOT, 'check-health-v2', EXAMPLE_ENGINES), []);
   const runs = name => JSON.stringify(engines[name]).includes('"engine":"check-health-v2"');
   assert.deepEqual(Object.keys(engines).filter(runs), ['family-development', TOP]);
   for (const name of ['harness-development', 'harness-development-grouped']) assert.equal(engines[name]['check-health-steps'][0].action.engine, 'check-health', name);
+});
+
+// ASS-288 AC2: the health check reports low disk — a script step writing disk.md beside the reports, read by assess-health-v2.
+test('ASS-288 AC2: check-health-v2 checks the disk after the golden images — harness:check-disk-space --report on the host, either exit going on to Check Harness — and Assess Health reads disk.md with assess-health-v2, assess-health with that one line more; the flat check-health is unchanged', () => {
+  const v2 = engines['check-health-v2'], flat = engines['check-health'];
+  assert.deepEqual(working(stepOf(v2, 'check-disk-space')), { id: 'check-disk-space',
+    action: { type: 'script', command: './agent.sh harness:check-disk-space --report {project} {run}' },
+    'exit-events': [{ condition: { 'exit-code': 0 }, 'move-to-state': 'check-harness' }, { condition: { not: { 'exit-code': 0 } }, 'move-to-state': 'check-harness' }] });
+  assert.deepEqual(stepOf(v2, 'check-golden-images')['exit-events'].map(e => e['move-to-state']), ['check-disk-space', 'check-disk-space']);
+  assert.equal(stepOf(v2, 'assess').action.prompt, 'assess-health-v2');
+  assert.equal(stepOf(flat, 'assess').action.prompt, 'assess-health');
+  assert.ok(!JSON.stringify(flat).includes('check-disk-space'));
+  const text = name => readFileSync(join(ROOT, 'prompts', name, 'prompt.txt'), 'utf8');
+  assert.match(text('assess-health-v2'), /disk\.md when it is there/);
+  assert.equal(text('assess-health-v2').split('\n').filter(l => !text('assess-health').split('\n').includes(l)).length, 1);
+  const json = name => JSON.parse(readFileSync(join(ROOT, 'prompts', name, 'prompt.json'), 'utf8'));
+  assert.deepEqual({ ...json('assess-health-v2'), description: null }, { ...json('assess-health'), description: null });
 });
 
 test('ASS-151 AC1: a fast-tracked ticket passes the Review group\'s human steps by itself, each to its approving exit — Human Review to the Token Expense Check, the Payment Gate to Variation Selection; a human\'s choice still comes first, and any other ticket waits for one; Blocked for Human never passes by itself; grouped-review has the same exits, and validate.js accepts them', () => {

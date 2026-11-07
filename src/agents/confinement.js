@@ -19,7 +19,7 @@
 // working-directory allowance never reaches a checkout, and the data folder's
 // deny takes it back; it reads the project's code where its prompt says, and
 // reading is not limited.
-import { mkdirSync, realpathSync, writeFileSync } from 'node:fs';
+import { mkdirSync, realpathSync, writeFileSync, renameSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { dataDir } from '../data-folder.js';
@@ -66,11 +66,17 @@ export function hostAgentSettings(root, data = dataDir(root)) {
 // confineHostAgent({ root, data, project }) — where a host agent of the
 // project runs and the settings file it starts with (data as for
 // hostAgentSettings): { cwd: <data>/projects/<project>/, settings:
-// <data>/projects/<project>/host-agent-settings.json, written now }.
+// <data>/projects/<project>/host-agent-settings.json, written now, through a
+// temp file renamed over it }.
 export function confineHostAgent({ root, data = dataDir(root), project }) {
   const cwd = join(data, 'projects', project);
   mkdirSync(cwd, { recursive: true });
   const settings = join(cwd, SETTINGS);
-  writeFileSync(settings, `${JSON.stringify(hostAgentSettings(root, data), null, 4)}\n`);
+  // Written beside and renamed over (ASS-288): a write cut short — a full disk — throws before the rename, never leaving half a file.
+  const temp = `${settings}.${process.pid}.tmp`;
+  try {
+    writeFileSync(temp, `${JSON.stringify(hostAgentSettings(root, data), null, 4)}\n`);
+    renameSync(temp, settings);
+  } catch (error) { rmSync(temp, { force: true }); throw error; }
   return { cwd, settings };
 }

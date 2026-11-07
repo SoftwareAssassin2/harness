@@ -7,7 +7,7 @@ import { homedir } from 'node:os';
 import { execFile, execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import { initialState, handleKey, render, decided, controlExited, controlDraining } from './app.js';
-import { loadProjects, loadWorkflows, loadPauses, loadSelfHealing, loadAssignments, loadTransientEngines, loadChats, loadHarness, loadModelUsage, watchFiles, dataFiles, keepSame, projectsChanged } from './load.js';
+import { loadProjects, loadWorkflows, loadPauses, loadSelfHealing, loadAssignments, loadTransientEngines, loadChats, loadHarness, loadModelUsage, loadDiskSpace, watchFiles, dataFiles, keepSame, projectsChanged } from './load.js';
 import { startControl } from '../control/process.js';
 import { ender, stillNamed } from './shutdown.js';
 import { sessionDir, readSession, readSessionTail, sessionModified } from '../agents/session.js';
@@ -43,6 +43,7 @@ let state = { ...initialState({
   chats: loadChats(CHATS),
   agentsGrid: loadHarness(join(DATA, 'projects')),
   modelUsage: loadModelUsage(join(DATA, 'projects')),
+  disk: loadDiskSpace(DATA),
   menuHidden: true,   // / shows it
   features: loadFeatures(),   // read once, here (ASS-262)
 }), updatedAt: {} };
@@ -263,6 +264,7 @@ function reload() {
       selfHealing: loadSelfHealing(ASSIGNMENTS),
       chats: loadChats(CHATS),
       modelUsage: loadModelUsage(join(DATA, 'projects')),
+      disk: loadDiskSpace(DATA),
     };
   } catch { return; }
   const changed = Object.entries(loaded).map(([key, value]) => [key, keepSame(state[key], value)]).filter(([key, value]) => value !== state[key]);

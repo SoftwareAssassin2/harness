@@ -4,56 +4,64 @@
         { "id": "check-golden-images", "sequence": 1, "name": "Check Golden Images", "description": "Checking every project's golden image against its inputs: a stale one raises a fast-tracked Rebuild golden-<project> ticket, joined to the sprint, unless one is open (ASS-149); a failure is logged and the check goes on",
             "action": { "type": "script", "command": "./agent.sh vm:raise-golden-rebuilds" },
             "exit-events": [
+                { "condition": { "exit-code": 0 }, "move-to-state": "check-disk-space" },
+                { "condition": { "not": { "exit-code": 0 } }, "move-to-state": "check-disk-space" }
+            ]
+        },
+
+        { "id": "check-disk-space", "sequence": 2, "name": "Check Disk Space", "description": "Reading the free space on the volumes holding the VMs and the data (ASS-288): below disk-free-warn-gb it writes disk.md beside the reports, for Assess Health; either exit goes on",
+            "action": { "type": "script", "command": "./agent.sh harness:check-disk-space --report {project} {run}" },
+            "exit-events": [
                 { "condition": { "exit-code": 0 }, "move-to-state": "check-harness" },
                 { "condition": { "not": { "exit-code": 0 } }, "move-to-state": "check-harness" }
             ]
         },
 
-        { "id": "check-harness", "sequence": 2, "name": "Check Harness", "description": "Checking the agent harnesses: CLIs, models, sign-ins",
+        { "id": "check-harness", "sequence": 3, "name": "Check Harness", "description": "Checking the agent harnesses: CLIs, models, sign-ins",
             "action": { "type": "prompt", "prompt": "reflect-on-harness", "agent-count": 1, "run-in-dev-container": false },
             "exit-events": [
                 { "condition": { "turn-complete": true }, "move-to-state": "check-local-environment" }
             ]
         },
-        { "id": "check-local-environment", "sequence": 3, "name": "Check Local Environment", "description": "Checking the project's local environments and dev containers",
+        { "id": "check-local-environment", "sequence": 4, "name": "Check Local Environment", "description": "Checking the project's local environments and dev containers",
             "action": { "type": "prompt", "prompt": "reflect-on-local-environment", "agent-count": 1, "run-in-dev-container": false },
             "exit-events": [
                 { "condition": { "turn-complete": true }, "move-to-state": "check-local-data" }
             ]
         },
-        { "id": "check-local-data", "sequence": 4, "name": "Check Local Data", "description": "Checking the factory's local data for inconsistencies",
+        { "id": "check-local-data", "sequence": 5, "name": "Check Local Data", "description": "Checking the factory's local data for inconsistencies",
             "action": { "type": "prompt", "prompt": "reflect-on-local-data", "agent-count": 1, "run-in-dev-container": false },
             "exit-events": [
                 { "condition": { "turn-complete": true }, "move-to-state": "check-project" }
             ]
         },
-        { "id": "check-project", "sequence": 5, "name": "Check Project", "description": "Comparing project.json and the sprint data against reality",
+        { "id": "check-project", "sequence": 6, "name": "Check Project", "description": "Comparing project.json and the sprint data against reality",
             "action": { "type": "prompt", "prompt": "reflect-on-project", "agent-count": 1, "run-in-dev-container": false },
             "exit-events": [
                 { "condition": { "turn-complete": true }, "move-to-state": "check-worktrees" }
             ]
         },
-        { "id": "check-worktrees", "sequence": 6, "name": "Check Worktrees", "description": "Flagging stale or dirty worktrees",
+        { "id": "check-worktrees", "sequence": 7, "name": "Check Worktrees", "description": "Flagging stale or dirty worktrees",
             "action": { "type": "prompt", "prompt": "reflect-on-worktrees", "agent-count": 1, "run-in-dev-container": false },
             "exit-events": [
                 { "condition": { "turn-complete": true }, "move-to-state": "assess" }
             ]
         },
-        { "id": "assess", "sequence": 7, "name": "Assess Health", "description": "Reading the five reports and deciding whether a fix is needed now",
-            "action": { "type": "prompt", "prompt": "assess-health", "agent-count": 1, "run-in-dev-container": false },
+        { "id": "assess", "sequence": 8, "name": "Assess Health", "description": "Reading the five reports, and disk.md when the disk is low, and deciding whether a fix is needed now",
+            "action": { "type": "prompt", "prompt": "assess-health-v2", "agent-count": 1, "run-in-dev-container": false },
             "exit-events": [
                 { "condition": { "all": [ { "turn-complete": true }, { "structured-output": { "needs-fix": true } }, { "structured-output": { "can-continue-without-fix": false } } ] }, "move-to-state": "self-heal" },
                 { "condition": { "turn-complete": true }, "move-to-state": "done" }
             ]
         },
-        { "id": "self-heal", "sequence": 8, "name": "Self Heal", "description": "Fixing what the health check found",
+        { "id": "self-heal", "sequence": 9, "name": "Self Heal", "description": "Fixing what the health check found",
             "action": { "type": "state-engine", "engine": "self-healing" },
             "exit-events": [
                 { "condition": { "is-done": true }, "move-to-state": "done" }
             ]
         },
 
-        { "id": "done", "sequence": 9, "name": "Done", "description": "Health check is completed", "is-done": true,
+        { "id": "done", "sequence": 10, "name": "Done", "description": "Health check is completed", "is-done": true,
             "action": { "type": "none" }
         }
     ]

@@ -47,6 +47,22 @@ const warnings = state => [
   idle(state) && 'No work in progress',
 ].filter(Boolean);
 
+// The disk (ASS-288), harness-wide, as control last read it (disk-space.json,
+// state.disk): below disk-free-warn-gb the free space in amber — never red,
+// it is a warning — and below disk-free-hold-gb, while work is held, the hold
+// in black on amber, stronger; at or above the warn level, or never read,
+// nothing. GiB free (2^30), the levels in harness.json's GB (10^9).
+const AMBER = color('38;2;255;176;0');
+const AMBER_CHIP = color('1;30;48;2;255;176;0');
+const gib = bytes => (bytes / 2 ** 30).toFixed(1);
+export function diskText(disk) {
+  if (disk?.level === 'hold') return AMBER_CHIP(` Disk nearly full — work held (${gib(disk['free-bytes'])} GiB free): nothing new starts until ${disk['warn-bytes'] / 1e9} GB is free `);
+  if (disk?.level === 'warn') return AMBER(`Disk low: ${gib(disk['free-bytes'])} GiB free, below the ${disk['warn-bytes'] / 1e9} GB warning level — control deletes stopped VMs no ticket needs`);
+  return null;
+}
+// The disk's line under the banner, clipped to the screen; none when it is fine.
+const diskLines = (disk, columns) => { const text = diskText(disk); return text ? [center(visible(text) > columns ? ellipsis(text, columns) : text, columns)] : []; };
+
 // The flow screens' header (ASS-187): the diagram wants the room, so S and B
 // get the project menu (unless hidden) and a single info line — the project,
 // its sprint, the day on show (in reverse video while focused) and the time
@@ -67,21 +83,23 @@ function compactHeader(state, columns, now) {
   const info = sprint
     ? `${name} — sprint ${sprint.number} — ${state.focus === 'day' ? `\x1b[7m${dayOf}\x1b[0m` : dayOf} — ${ends}`
     : `${name} — no active sprint`;
+  const disk = diskText(state.disk);
   return [
     ...(state.menuHidden ? [] : [...menu(state).map(line => center(line, columns)), '']),
     // Five lines, the info on the third, so all four tile rows hang beside them (besideRight).
-    ...besideRight(['', '', chips ? `${info}  ${chips}` : info, '', ''], metricTiles(state, now), columns),
+    ...besideRight(['', '', [info, chips, disk].filter(Boolean).join('  '), '', ''], metricTiles(state, now), columns),
     '',
   ];
 }
 
-// Everything above the screen body: banner, the health-check agents (which
+// Everything above the screen body: banner, the disk when it is low (diskLines, ASS-288), the health-check agents (which
 // watch the whole system, so from every project) as "🤖 name - status
 // update" lines, project menu (unless hidden), sprint with the project's name
 // beside its day box and its metric tiles at the right. The flow screens take
 // the compact header above instead.
 export const headerLines = (state, columns, now) => (state.screen === 'S' || state.screen === 'B' ? compactHeader(state, columns, now) : [
   ...banner(holding(state), healingFor(state), limitFor(state.projects[state.project]), columns, PAUSABLE.has(state.screen), now, state.projects[state.project]?.accountHold ?? null),
+  ...diskLines(state.disk, columns),
   ...state.assignments.filter(a => a['health-check'] === true)
     .map(a => center(agentLine(a), columns)),
   '',

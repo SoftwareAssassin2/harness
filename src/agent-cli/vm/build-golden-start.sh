@@ -15,11 +15,18 @@ set -euo pipefail
 # building then). Fails, starting nothing, when the project or its
 # definition is missing. One start at a time per project (ASS-179): its
 # golden-build-start.lock is held from the check to the run's record, so a
-# second finds it building; the build itself is started without it.
+# second finds it building; the build itself is started without it. While
+# the disk hold is on (disk.bash disk_held, ASS-288: the disk nearly full) it
+# starts none, and fails saying so.
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/golden.bash"
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../json-file.bash"
+source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../disk.bash"
 
 [[ $# -eq 1 ]] || { echo "usage: vm:build-golden-start <project>" >&2; exit 1; }
+if disk_held; then
+  echo "vm:build-golden-start: Disk nearly full — work held ($(gib "$(jq '.["free-bytes"]' "$disk_space_file")") GiB free): no golden build starts until the free space is back above disk-free-warn-gb" >&2
+  exit 1
+fi
 golden_definition vm:build-golden-start "$1"
 lock_on 6 "$projects/$1/golden-build-start.lock" vm:build-golden-start "${JSON_LOCK_TIMEOUT:-30}"
 now="$(golden_status "$1")"

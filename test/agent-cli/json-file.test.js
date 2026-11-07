@@ -2,7 +2,7 @@
 // commands that use it, run concurrently against the same files.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { execFile, spawn } from 'node:child_process';
+import { execFile, execFileSync, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, statSync, chmodSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -216,4 +216,30 @@ test('lock_on refuses a descriptor this shell already holds a lock on, keeping t
   // A child process given the descriptor (a command run while it is held) locks its own lock on it.
   const child = await withHelper(`lock_on 8 "$1" parent 5; bash -c 'source "$0"; lock_on 8 "$1" child 5 && echo child-locked' "$0" "$2"`, a, b);
   assert.equal(child.stdout.trim(), 'child-locked');
+});
+
+// A jq on the PATH that, asked for a filter (not `jq empty <file>`, the
+// parse check, which the real jq answers), writes `out` and exits `code`: a
+// write cut short (a full disk) or a failed one.
+function fakeJq(out, code) {
+  const bin = mkdtempSync(join(tmpdir(), 'jq-'));
+  const real = execFileSync('bash', ['-c', 'command -v jq'], { encoding: 'utf8' }).trim();
+  writeFileSync(join(bin, 'jq'), `#!/usr/bin/env bash\n[[ "$1" == empty ]] && exec '${real}' "$@"\nprintf '%s' '${out}'\nexit ${code}\n`);
+  chmodSync(join(bin, 'jq'), 0o755);
+  return { ...process.env, PATH: `${bin}:${process.env.PATH}`, JSON_LOCK_TIMEOUT: '600' };
+}
+
+test('ASS-288 AC5: write_json (and update_json) moves its temp file over the data file only when jq succeeded and the temp file parses as JSON: a short write that jq reports as a success, or a failed one, never replaces the file and fails, leaving no temp', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'wj-'));
+  const file = join(dir, 'data.json');
+  const before = '{\n    "list": [1, 2, 3]\n}\n';
+  writeFileSync(file, before);
+  for (const env of [fakeJq('{"list": [1, 2', 0), fakeJq('{"list": [1, 2', 1), fakeJq('', 0)]) {
+    await assert.rejects(run('bash', ['-c', 'source "$0"; update_json "$1" ".list += [4]"', JSON_FILE, file], { env }));
+    await assert.rejects(run('bash', ['-c', 'source "$0"; lock_on 7 "$1.lock" t 5; write_json "$1" ".list += [4]"', JSON_FILE, file], { env }));
+    assert.equal(readFileSync(file, 'utf8'), before);
+    assert.deepEqual(readdirSync(dir).toSorted(), ['data.json', 'data.json.lock']);
+  }
+  await updateJson(file, '.list += [4]');                   // the real jq: written
+  assert.deepEqual(JSON.parse(readFileSync(file, 'utf8')).list, [1, 2, 3, 4]);
 });

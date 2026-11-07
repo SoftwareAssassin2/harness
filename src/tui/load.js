@@ -169,6 +169,14 @@ export function loadApiCost(dir) {
   return { ...readJson(file), budget: harness['api-monthly-budget-usd'] ?? null };
 }
 
+// loadDiskSpace(dir) — the data folder's disk-space.json (ASS-288: control's
+// last reading of the free space on the volumes holding the VMs and the data,
+// { level, free-bytes, warn-bytes, hold-bytes, … }, harness:check-disk-space);
+// null without the file, or one caught half-written.
+export function loadDiskSpace(dir) {
+  try { return readJson(join(dir, 'disk-space.json')); } catch { return null; }
+}
+
 // The project's backlog.json tickets a backlog entry (ASS-202
 // isLiveBacklogEntry) shows: not soft deleted, not Done, not in the active
 // sprint. Given `ofSprint`, the kept entries of its active-sprint tickets
@@ -298,7 +306,7 @@ export function watchFiles(files, onChange, { delay = 50 } = {}) {
 
 // dataFiles(root, { projects, workflows, project, day }) — the files the
 // dashboard reads, to watch: assignments.json, chats.json, api-cost.json,
-// context-windows.json and harness.json (see loadApiCost and loadModelUsage), each workflow's
+// context-windows.json, harness.json (see loadApiCost and loadModelUsage) and disk-space.json (loadDiskSpace), each workflow's
 // state-engine.json (engines/'s, or a project's own), each project's project.json, gcloud- and glab-requires-reauthentication, rate-limit.json, claude-usage.json, api-cost.json, sprints.json, backlog.json, questions
 // files (see loadQuestions), ticket chats (see loadCollaborations) and chat-spend.json (see loadChatSpend) — and of the sprints only the one on show: the
 // selected project's snapshot of the past `day`, or its active sprint.json.
@@ -312,6 +320,7 @@ export function dataFiles(root, { projects, workflows, project, day }) {
     join(dataDir(root), 'api-cost.json'),
     join(dataDir(root), 'context-windows.json'),
     join(dataDir(root), 'harness.json'),
+    join(dataDir(root), 'disk-space.json'),
     ...workflows.map(w => w.file ?? join(root, 'engines', w.name, 'state-engine.json')),   // a project's own at its file (ASS-277)
     ...projects.flatMap(({ id }) => [
       join(dir(id), 'project.json'), join(dir(id), 'gcloud-requires-reauthentication'), join(dir(id), 'glab-requires-reauthentication'), join(dir(id), 'rate-limit.json'), join(dir(id), 'claude-usage.json'), join(dir(id), 'api-cost.json'), join(dir(id), 'memory-spend.json'), join(dir(id), 'sprints.json'), join(dir(id), 'backlog.json'), join(dir(id), 'global-questions-and-answers.json'), join(dir(id), 'chat-spend.json'),
