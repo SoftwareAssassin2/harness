@@ -39,9 +39,9 @@ function connectedEngines(state) {
 // selected project marking its step ◀ now, the agents on each run listed on
 // its step; the boxes from subflowStart that fit across, each body scrolled
 // by subflowScroll, and under them a scrollbar while some are out of sight.
-function subflowView(state, { columns = 0, rows = Infinity, now } = {}) {
+function subflowView(state, { columns = 0, rows = Infinity, now = 0 } = {}) {
   const project = state.projects[state.project];
-  const height = Math.max(1, rows - headerLines(state, columns, 0).length - below(state) - platform(state, columns, 0).length - 4);
+  const height = Math.max(1, rows - headerLines(state, columns, now).length - below(state) - platform(state, columns, now).length - 4);
   const bodies = connectedEngines(state).map(name => {
     const steps = projectWorkflows(state).find(w => w.name === name)?.steps ?? [];
     const runs = state.transientEngines.filter(e => e.project === project?.id && e['state-engine'] === name);

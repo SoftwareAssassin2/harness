@@ -7,7 +7,7 @@ import { clamp, red, gray } from './shared.js';
 // is open, its values, the field being edited in reverse video with a cursor —
 // what the keys do, any message, and the lines listing the progress since the
 // date and time set, in the space left above the platform boxes.
-function updatesView(state, { columns = 0, rows = Infinity }) {
+function updatesView(state, { columns = 0, rows = Infinity, now = 0 }) {
   const form = state.updatesForm;
   const set = state.updatesSince == null ? null : new Date(state.updatesSince).toISOString();
   const field = (id, placeholder, value) => {
@@ -23,8 +23,8 @@ function updatesView(state, { columns = 0, rows = Infinity }) {
   const list = state.updatesSince == null
     ? ['Set a date and time to see the progress made since then.']
     : progressLines(progressSince({ sprint: project?.sprint, steps, since: state.updatesSince }), columns);
-  const bottom = below(state) + platform(state, columns, 0).length;
-  const height = Math.max(1, rows - headerLines(state, columns, 0).length - bottom - 4);
+  const bottom = below(state) + platform(state, columns, now).length;
+  const height = Math.max(1, rows - headerLines(state, columns, now).length - bottom - 4);
   return { head: [fields, keys, state.updatesMessage ? red(state.updatesMessage) : '', ''], list, height };
 }
 

@@ -19,7 +19,7 @@ import { isHeld } from '../../control/engine.js';
 // assignment's, on its variation or the ticket's first row when it names
 // none — and a 💻 while its deepest step is a script, as the progress bar
 // counts them (sprint.js): not at its gate, held, or on a past day.
-function flowchartView(state, { columns = 0, rows = Infinity }) {
+function flowchartView(state, { columns = 0, rows = Infinity, now = 0 }) {
   const steps = projectWorkflows(state).find(w => w.name === state.projects[state.project]?.stateEngine)?.steps ?? [];
   const [choice, hint, gap] = viewChoice(state.flowchartView, state.focus === 'flowchart');
   const head = [choice, `${hint}   ${subflowHint(state.flowchartExpanded)}`, gap];
@@ -38,7 +38,7 @@ function flowchartView(state, { columns = 0, rows = Infinity }) {
   const metrics = state.flowchartView === 'metrics' && stateMetrics(tickets.map(t => t.variation), steps);
   const notes = metrics && Object.fromEntries(steps.map(s => [s.id, metricLines(metrics[s.id], s.action?.type === 'prompt', NOTE_WIDTH)]));
   const floor = nestedFloor(steps, entries, { workflows: projectWorkflows(state), expanded: state.flowchartExpanded, notes });
-  const boxHeight = Math.max(3, rows - headerLines(state, columns, 0).length - below(state) - platform(state, columns, 0).length - head.length);
+  const boxHeight = Math.max(3, rows - headerLines(state, columns, now).length - below(state) - platform(state, columns, now).length - head.length);
   return { head, list: flowchart(steps, { ...floor, columns: columns - 4 }), boxHeight, height: boxHeight - 2 };
 }
 

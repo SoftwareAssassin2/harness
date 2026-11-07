@@ -10,8 +10,8 @@ export function view(state, size) {
   // them, the newest that fit once it is full, each with its UTC time and
   // cut to the box; stderr in red. Beside it, to the right, the project's
   // transient state engines, a box each (see engineBoxes).
-  const { columns } = size;
-  const room = size.rows - headerLines(state, columns, 0).length - below(state) - platform(state, columns, 0).length;
+  const { columns, now = 0 } = size;
+  const room = size.rows - headerLines(state, columns, now).length - below(state) - platform(state, columns, now).length;
   const height = Math.max(1, room - 3);   // less the borders and the log line
   const width = columns;
   const inner = width - 4;                // "│ " … " │"

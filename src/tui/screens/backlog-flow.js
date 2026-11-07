@@ -18,7 +18,7 @@ import { isHeld } from '../../control/engine.js';
 // stations, as on S (nestedFloor, ASS-245): each ticket under its deepest
 // step with a 🤖 per agent refining it and a 💻 while that step is a script
 // and the ticket is not held.
-function backlogFlowView(state, { columns = 0, rows = Infinity }) {
+function backlogFlowView(state, { columns = 0, rows = Infinity, now = 0 }) {
   const steps = refinementSteps(state);
   const station = s => ({ id: s.id, name: s.name ?? s.id, sequence: s.sequence, color: '#5f87af', 'is-active': s['is-active'], action: s.action, area: s.area });   // switched off: marked so (ASS-192)
   const [choice, hint, gap] = viewChoice(state.backlogFlowView, state.focus === 'backlogflow');
@@ -33,7 +33,7 @@ function backlogFlowView(state, { columns = 0, rows = Infinity }) {
       script: status.detailStep?.action?.type === 'script' && !isHeld(t, t.variations?.find(v => !v['is-deleted'])),
     };
   });
-  const boxHeight = Math.max(3, rows - headerLines(state, columns, 0).length - below(state) - platform(state, columns, 0).length - head.length);
+  const boxHeight = Math.max(3, rows - headerLines(state, columns, now).length - below(state) - platform(state, columns, now).length - head.length);
   const metrics = state.backlogFlowView === 'metrics' && stateMetrics(backlogTickets(state).flatMap(t => (t.variations ?? []).filter(v => !v['is-deleted'])), steps);
   const notes = metrics && Object.fromEntries(steps.map(s => [s.id, metricLines(metrics[s.id], s.action?.type === 'prompt', NOTE_WIDTH)]));
   const floor = nestedFloor(steps, entries, { workflows: projectWorkflows(state), expanded: state.backlogFlowExpanded, notes, look: station });

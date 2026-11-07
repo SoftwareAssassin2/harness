@@ -83,9 +83,9 @@ export function fitRows(rows, room) {
 // `view.get(state)` / `view.set(state, { draft, cursor })` indirect the draft and
 // cursor fields (ASS-189) — a trivial flat pass-through for CHAT_LOG/TICKET_LOG,
 // name-keyed on the agents screen so the tile input and the zoom share one draft.
-export function logView(state, { columns = 0, rows = Infinity }, view = AGENT_LOG) {
-  const bottom = below(state) + platform(state, columns, 0).length;
-  const space = Math.max(3, rows - headerLines(state, columns, 0).length - bottom - 4) + 1;   // the box's lines and the prompt's
+export function logView(state, { columns = 0, rows = Infinity, now = 0 }, view = AGENT_LOG) {
+  const bottom = below(state) + platform(state, columns, now).length;
+  const space = Math.max(3, rows - headerLines(state, columns, now).length - bottom - 4) + 1;   // the box's lines and the prompt's
   const { draft: text, cursor } = view.get(state);
   const draft = promptRows(text, cursor, true, columns || Infinity);
   const boxHeight = Math.max(3, space - draft.length);

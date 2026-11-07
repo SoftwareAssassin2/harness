@@ -9,9 +9,9 @@ import { move } from './shared.js';
 // project's Hindsight, and the lines its body may take: what is left under the
 // header and above the legend, less the memory use over it (ASS-147) and a
 // blank line, the line over the table and the one under it.
-function memoryLayout(state, { columns = 0, rows = Infinity }) {
-  const bottom = below(state) + Math.max(1, platform(state, columns, 0).length);
-  const free = rows - headerLines(state, columns, 0).length - bottom;
+function memoryLayout(state, { columns = 0, rows = Infinity, now = 0 }) {
+  const bottom = below(state) + Math.max(1, platform(state, columns, now).length);
+  const free = rows - headerLines(state, columns, now).length - bottom;
   const use = memoryUseLines(state);
   return { use, rows: memoryRows(state.memories[state.projects[state.project]?.id]?.items ?? []), bodyHeight: free - 7 - use.length };
 }

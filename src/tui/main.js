@@ -288,7 +288,8 @@ function rewatch() {
 rewatch();
 
 stdin.on('keypress', (_, key) => {
-  let next = handleKey(state, key, { columns: stdout.columns, rows: stdout.rows });
+  // The time the screens size themselves at, as render draws the footer (ASS-295).
+  let next = handleKey(state, key, { columns: stdout.columns, rows: stdout.rows, now: new Date() });
   if (next.quit) process.exit(0);
   if (next.quitting && !state.quitting) quit();
   // Space holds or releases the human's pause: the banner flips at once; the

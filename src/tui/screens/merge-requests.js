@@ -25,12 +25,12 @@ export function view(state, size) {
     mr.pipeline ? link(mr.pipeline, mr['build-url'] ?? mr.url) : NONE,   // as the sprint and ticket screens link a build (ASS-86)
     agentLines(onMr(mr)),
   ]);
-  const bottom = below(state) + Math.max(1, platform(state, size.columns, 0).length);
+  const bottom = below(state) + Math.max(1, platform(state, size.columns, size.now ?? 0).length);
   return [
     scan ? `last scanned ${timestamp(Date.parse(scan))}` : 'not scanned yet',
     '',
     ...boxTable(MR_HEADERS, rows.length ? rows : [['No merge requests of interest']], {
-      columns: size.columns, stretch: 0, height: size.rows - headerLines(state, size.columns, 0).length - bottom - 2,
+      columns: size.columns, stretch: 0, height: size.rows - headerLines(state, size.columns, size.now ?? 0).length - bottom - 2,
     }),
   ];
 }

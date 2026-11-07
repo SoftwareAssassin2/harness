@@ -20,15 +20,16 @@ const scopedChats = state => state.chats.filter(c => state.chatsRunning.includes
 
 // The old table behind `t`: one row per assignment on show, as they are now,
 // whatever the day, and the lines its body may take.
-function agentLayout(state, { columns = 0, rows = Infinity, now }) {
+function agentLayout(state, { columns = 0, rows = Infinity, now = 0 }) {
   const repos = new Map((state.projects[state.project]?.repositories ?? []).map(r => [repoName(r.url), r.url]));
-  return { rows: agentRows(scoped(state), ticketUrls(state), repos, now, state.sessionWritten), bodyHeight: bodyHeight(state, columns, rows) - 4 };
+  return { rows: agentRows(scoped(state), ticketUrls(state), repos, now, state.sessionWritten), bodyHeight: bodyHeight(state, columns, rows, now) - 4 };
 }
 
 // The lines a screen's body may take: all that is left under the header and
-// above the legend with the platform boxes, or a blank line, over it.
-const bodyHeight = (state, columns, rows) =>
-  rows - headerLines(state, columns, 0).length - below(state) - Math.max(1, platform(state, columns, 0).length);
+// above the legend with the platform boxes, or a blank line, over it — both
+// measured at the size's now, as render draws them (ASS-295).
+const bodyHeight = (state, columns, rows, now = 0) =>
+  rows - headerLines(state, columns, now).length - below(state) - Math.max(1, platform(state, columns, now).length);
 
 export const AGENT_LOG = {
   log: 'agentLog', scroll: 'agentLogScroll', draft: 'agentDraft', cursor: 'agentCursor', events: 'agentEvents', message: 'agentMessage', back: 'the agents',
@@ -136,9 +137,9 @@ const share = (total, n) => Array.from({ length: n }, (_, i) => Math.floor(total
 // every tile at least TILE big; the last line of the body is kept for the
 // "page x of y" footer. `shown` are the agents of the page on show, `at` the
 // focused one among them. `narrow` when not even one tile fits.
-function gridLayout(state, { columns = 0, rows = Infinity }) {
+function gridLayout(state, { columns = 0, rows = Infinity, now = 0 }) {
   const items = tiledAgents(state);
-  const height = bodyHeight(state, columns, rows) - 1;
+  const height = bodyHeight(state, columns, rows, now) - 1;
   const { agentsGridColumns, agentsGridRows } = state.agentsGrid ?? AGENTS_GRID;
   const cols = Math.min(agentsGridColumns, Math.max(1, items.length), Math.floor(columns / TILE.columns));
   const tileRows = Math.min(agentsGridRows, Math.ceil(items.length / Math.max(1, cols)) || 1, Math.floor(height / TILE.rows));

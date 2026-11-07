@@ -261,9 +261,9 @@ const STATES_WIDTH = 28;   // the History tab's states pane, borders included â€
 const ticketParts = state => (state.ticket.backlog ? backlogTicketParts(state) : sprintTicketParts(state));
 const openQuestions = state => ticketQuestions(state).filter(isOpenQuestion).length;
 function ticketView(state, size) {
-  const { columns = 0, rows = Infinity, now } = size;
-  const bottom = below(state) + platform(state, columns, 0).length;
-  const boxHeight = Math.max(9, rows - headerLines(state, columns, 0).length - bottom - 2);
+  const { columns = 0, rows = Infinity, now = 0 } = size;
+  const bottom = below(state) + platform(state, columns, now).length;
+  const boxHeight = Math.max(9, rows - headerLines(state, columns, now).length - bottom - 2);
   const parts = ticketParts(state);
   if (parts.missing) return { head: [`esc returns to ${parts.back}`, ''], list: [parts.missing], width: columns, boxHeight, height: boxHeight - 2 };
   const { t, steps, choices, gateSteps } = parts;

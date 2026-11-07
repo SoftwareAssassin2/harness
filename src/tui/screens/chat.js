@@ -17,11 +17,11 @@ export const CHAT_LOG = {
 // chats, newest first — title, created, last activity (its log's last write),
 // running or ended — and the lines its body may take.
 const CHAT_HEADERS = ['Chat', 'Created', 'Last Activity', 'Status'];
-function chatLayout(state, { columns = 0, rows = Infinity, now } = {}) {
+function chatLayout(state, { columns = 0, rows = Infinity, now = 0 } = {}) {
   const id = state.projects[state.project]?.id;
   const list = state.chats.filter(c => c.project === id).toSorted((a, b) => b.created.localeCompare(a.created));
-  const bottom = below(state) + Math.max(1, platform(state, columns, 0).length);
-  const free = rows - headerLines(state, columns, 0).length - bottom - 2;
+  const bottom = below(state) + Math.max(1, platform(state, columns, now).length);
+  const free = rows - headerLines(state, columns, now).length - bottom - 2;
   const at = iso => iso.replace('T', ' ').replace(/:\d\dZ$/, ' UTC');
   const rowsOf = [['+ New chat', '', '', ''], ...list.map(c => [
     c.title, at(c.created), state.chatsWritten[c.id] == null ? NONE : written(state.chatsWritten[c.id], now), state.chatsRunning.includes(c.id) ? 'running' : 'ended',

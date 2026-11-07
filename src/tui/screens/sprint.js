@@ -45,12 +45,15 @@ function gridAt(state, { rows, bodyHeight }, tickets, done) {
 // (iconKey, ASS-259: the grid gives up rows, never the key) and the legend with
 // the platform boxes, or a blank line, over it — and the grid drawn, `room`
 // the lines it may take: too short a screen for even its headers cuts the
-// grid's own lines, not the key's.
-function layout(state, { columns = 0, rows = Infinity }) {
+// grid's own lines, not the key's. The header and the platform boxes are
+// measured at the size's now, the time render draws them at (ASS-295): the
+// models box's API spend line shows only in now's month, so at time 0 the
+// footer came out a line short and render cut the key.
+function layout(state, { columns = 0, rows = Infinity, now = 0 }) {
   const { tickets, steps, done } = sprintTickets(state);
-  const bottom = below(state) + Math.max(1, platform(state, columns, 0).length);
+  const bottom = below(state) + Math.max(1, platform(state, columns, now).length);
   const key = iconKey(columns);
-  const free = rows - headerLines(state, columns, 0).length - bottom - 5 - key.length;
+  const free = rows - headerLines(state, columns, now).length - bottom - 5 - key.length;
   const ticketGrid = { rows: ticketRows(tickets, liveAssignments(state), steps, state.projects[state.project]?.collaborations, ticketMarks(state, tickets)), bodyHeight: free - 4 };
   const [selected, scroll] = gridAt(state, ticketGrid, tickets, done);
   const table = boxTable(TABLE_HEADERS, ticketGrid.rows.length ? ticketGrid.rows : [['No tickets in this sprint']], {

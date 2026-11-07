@@ -10,9 +10,9 @@ const REPO_HEADERS = ['Repository', 'Branch', 'Folder', 'Server', 'Dev Container
 // is left under the header and above the legend with the platform boxes, or a
 // blank line, over it. Repositories are as project.json has them now, whatever
 // the day on show.
-function repoLayout(state, { columns = 0, rows = Infinity }) {
-  const bottom = below(state) + Math.max(1, platform(state, columns, 0).length);
-  const free = rows - headerLines(state, columns, 0).length - bottom;
+function repoLayout(state, { columns = 0, rows = Infinity, now = 0 }) {
+  const bottom = below(state) + Math.max(1, platform(state, columns, now).length);
+  const free = rows - headerLines(state, columns, now).length - bottom;
   return { rows: repoRows(state.projects[state.project]?.repositories ?? [], projectAssignments(state)), bodyHeight: free - 4 };
 }
 

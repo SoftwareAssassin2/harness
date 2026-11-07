@@ -220,10 +220,11 @@ const focusable = state => [
   ...(state.screen === 'h' ? ['memories'] : []),
 ];
 
-// handleKey(state, key, { columns, rows }) — `key` is a node:readline keypress
+// handleKey(state, key, { columns, rows, now }) — `key` is a node:readline keypress
 // ({ name, ctrl, shift }). Tab moves the focus, shift-tab back; the arrow keys move only the focused
 // component. The screen size decides when a grid must scroll to keep its
-// selected row in view.
+// selected row in view; `now` the time render draws the footer at, so the
+// screens plan the rows it leaves them (ASS-295).
 export function handleKey(state, key, size = {}) {
   if (key.ctrl && key.name === 'c') return { ...state, quit: true };
   if (state.quitting) return state;   // shutting down: nothing else to do
