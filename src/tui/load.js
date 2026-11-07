@@ -324,8 +324,12 @@ export function watchFiles(files, onChange, { delay = 50 } = {}) {
 // context-windows.json, harness.json (see loadApiCost and loadModelUsage) and disk-space.json (loadDiskSpace), each workflow's
 // state-engine.json (engines/'s, or a project's own), each project's project.json, gcloud- and glab-requires-reauthentication, rate-limit.json, claude-usage.json, api-cost.json, sprints.json, backlog.json, questions
 // files (see loadQuestions), ticket chats (see loadCollaborations) and chat-spend.json (see loadChatSpend) — and of the sprints only the one on show: the
-// selected project's snapshot of the past `day`, or its active sprint.json.
-export function dataFiles(root, { projects, workflows, project, day }) {
+// selected project's snapshot of the past `day`, or its active sprint.json;
+// then each project's golden image (ASS-292: loadGolden) as its golden-<id>
+// entry in the Lima folder `lima` — vm:build-golden builds a new one beside
+// it and renames it into place, which a watch on the old folder's
+// golden-image.json would never see.
+export function dataFiles(root, { projects, workflows, project, day }, lima = limaHome()) {
   const dir = id => join(dataDir(root), 'projects', id);
   const work = id => join(dir(id), 'work');
   const shown = projects[project] && (day ? join(dir(projects[project].id), 'sprints', 'days', `${day}.json`) : activeSprintFile(dir(projects[project].id)));
@@ -342,6 +346,7 @@ export function dataFiles(root, { projects, workflows, project, day }) {
       ...(existsSync(work(id)) ? readdirSync(work(id)).toSorted() : []).flatMap(ticket => ['questions-and-answers.json', 'collaboration.json'].map(file => join(work(id), ticket, file))),
     ]),
     ...(shown ? [shown] : []),
+    ...projects.flatMap(({ golden }) => (golden ? [join(lima, golden.name)] : [])),
   ];
 }
 

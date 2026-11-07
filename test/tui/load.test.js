@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync, renameSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, renameSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { until } from '../support/until.js';
@@ -437,4 +437,33 @@ test('ASS-292: a project\'s golden image is the Lima instance golden-<id> in the
   assert.deepEqual(load.loadGolden('p', { 'golden-image': { folder: 'projects/p/golden-image' } }, lima), { name: 'golden-p', 'built-at': '2026-11-01T05:42:33Z' });
   writeFileSync(join(lima, 'golden-p', 'golden-image.json'), '{ half');   // caught half-written
   assert.deepEqual(load.loadGolden('p', { 'golden-image': {} }, lima), { name: 'golden-p', 'built-at': null });
+});
+
+test('ASS-292: dataFiles watches each project\'s golden image in the Lima folder, as its golden-<id> entry there — the folder vm:build-golden swaps in by rename; a project without one adds nothing', () => {
+  const root = '/r', lima = '/lima';
+  const state = { projects: [{ id: 'a', golden: { name: 'golden-a', 'built-at': null } }, { id: 'b', golden: null }], workflows: [], project: 0, day: null };
+  const files = dataFiles(root, state, lima);
+  assert.ok(files.includes(join(lima, 'golden-a')));
+  assert.ok(!files.some(f => f.includes('golden-b')));
+  assert.deepEqual(dataFiles(root, { ...state, projects: [{ id: 'b', golden: null }] }, lima).filter(f => f.startsWith(lima)), []);
+});
+
+test('ASS-292: a golden image rebuilt as vm:build-golden does it — built beside as golden-<id>-build, the old one deleted, the build renamed over it — wakes the dashboard\'s watcher; the build folder\'s own writes do not', async t => {
+  const lima = mkdtempSync(join(tmpdir(), 'lima-'));
+  const golden = join(lima, 'golden-p'), build = join(lima, 'golden-p-build');
+  mkdirSync(golden);
+  writeFileSync(join(golden, 'golden-image.json'), JSON.stringify({ 'built-at': '2026-11-01T05:42:33Z' }));
+  let calls = 0;
+  const watcher = watchFiles([golden], () => { calls++; });
+  t.after(() => watcher.close());
+  await new Promise(resolve => setTimeout(resolve, 500));          // macOS can report the folder's making late
+  calls = 0;
+  mkdirSync(build);
+  writeFileSync(join(build, 'golden-image.json'), JSON.stringify({ 'built-at': '2026-11-07T12:00:00Z' }));
+  await new Promise(resolve => setTimeout(resolve, 500));
+  assert.equal(calls, 0, 'the build folder is not watched');
+  rmSync(golden, { recursive: true });
+  renameSync(build, golden);
+  await until(() => calls > 0, 10_000);
+  assert.equal(load.loadGolden('p', { 'golden-image': {} }, lima)['built-at'], '2026-11-07T12:00:00Z');
 });
