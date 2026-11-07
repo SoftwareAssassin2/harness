@@ -1,0 +1,283 @@
+{
+    "steps": [
+        {
+            "id": "groom",
+            "sequence": 1,
+            "name": "Groom",
+            "description": "Read the ticket as though building it tomorrow; ask what is missing",
+            "action": {
+                "type": "prompt",
+                "prompt": "groom",
+                "agent-count": 1,
+                "run-in-dev-container": false
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "all": [
+                            {
+                                "turn-complete": true
+                            },
+                            {
+                                "structured-output": {
+                                    "is-ready": true
+                                }
+                            }
+                        ]
+                    },
+                    "move-to-state": "check-answers"
+                },
+                {
+                    "condition": {
+                        "turn-complete": true
+                    },
+                    "move-to-state": "awaiting-answers"
+                }
+            ]
+        },
+        {
+            "id": "awaiting-answers",
+            "sequence": 2,
+            "name": "Awaiting Answers",
+            "description": "Rests while a question on the ticket is Asked or Answer Rejected; groomed again once none is",
+            "action": {
+                "type": "human",
+                "instructions": "Answer the ticket's open questions on its screen."
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "open-questions": false
+                    },
+                    "move-to-state": "groom"
+                }
+            ]
+        },
+        {
+            "id": "check-answers",
+            "sequence": 3,
+            "name": "Check the Answers",
+            "description": "Every question on the ticket has an accepted answer",
+            "action": {
+                "type": "script",
+                "command": "./agent.sh ticket:questions-answered {project} {ticket}"
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "exit-code": 0
+                    },
+                    "move-to-state": "check-points"
+                },
+                {
+                    "condition": {
+                        "not": {
+                            "exit-code": 0
+                        }
+                    },
+                    "move-to-state": "awaiting-answers"
+                }
+            ]
+        },
+        {
+            "id": "check-points",
+            "sequence": 4,
+            "name": "Check the Points",
+            "description": "Whether the ticket already has story points: then no estimate",
+            "action": {
+                "type": "script",
+                "command": "./agent.sh ticket:has-points {project} {ticket}"
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "exit-code": 0
+                    },
+                    "move-to-state": "awaiting-approval"
+                },
+                {
+                    "condition": {
+                        "not": {
+                            "exit-code": 0
+                        }
+                    },
+                    "move-to-state": "estimate"
+                }
+            ]
+        },
+        {
+            "id": "estimate",
+            "sequence": 5,
+            "name": "Estimate",
+            "description": "A story's story points, on the project's scale (1, 2, 3, 5, 8, 13), written to the harness and its Jira ticket; a bug or spike gets none",
+            "action": {
+                "type": "prompt",
+                "prompt": "estimate",
+                "agent-count": 1,
+                "run-in-dev-container": false
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "all": [
+                            {
+                                "turn-complete": true
+                            },
+                            {
+                                "structured-output": {
+                                    "points": 1
+                                }
+                            }
+                        ]
+                    },
+                    "move-to-state": "awaiting-approval"
+                },
+                {
+                    "condition": {
+                        "all": [
+                            {
+                                "turn-complete": true
+                            },
+                            {
+                                "structured-output": {
+                                    "points": 2
+                                }
+                            }
+                        ]
+                    },
+                    "move-to-state": "awaiting-approval"
+                },
+                {
+                    "condition": {
+                        "all": [
+                            {
+                                "turn-complete": true
+                            },
+                            {
+                                "structured-output": {
+                                    "points": 3
+                                }
+                            }
+                        ]
+                    },
+                    "move-to-state": "awaiting-approval"
+                },
+                {
+                    "condition": {
+                        "all": [
+                            {
+                                "turn-complete": true
+                            },
+                            {
+                                "structured-output": {
+                                    "points": 5
+                                }
+                            }
+                        ]
+                    },
+                    "move-to-state": "awaiting-approval"
+                },
+                {
+                    "condition": {
+                        "all": [
+                            {
+                                "turn-complete": true
+                            },
+                            {
+                                "structured-output": {
+                                    "points": 8
+                                }
+                            }
+                        ]
+                    },
+                    "move-to-state": "awaiting-approval"
+                },
+                {
+                    "condition": {
+                        "all": [
+                            {
+                                "turn-complete": true
+                            },
+                            {
+                                "structured-output": {
+                                    "points": 13
+                                }
+                            }
+                        ]
+                    },
+                    "move-to-state": "awaiting-approval"
+                },
+                {
+                    "condition": {
+                        "all": [
+                            {
+                                "turn-complete": true
+                            },
+                            {
+                                "structured-output": {
+                                    "points": null
+                                }
+                            }
+                        ]
+                    },
+                    "move-to-state": "awaiting-approval"
+                },
+                {
+                    "condition": {
+                        "turn-complete": true
+                    },
+                    "move-to-state": "groom"
+                }
+            ]
+        },
+        {
+            "id": "awaiting-approval",
+            "sequence": 6,
+            "name": "Awaiting Approval",
+            "description": "Rests for the operator's Accept or Reject on the ticket screen",
+            "action": {
+                "type": "human",
+                "instructions": "Accept the ticket as groomed, or reject it with the reason it is not ready."
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "human-review": "Accept"
+                    },
+                    "move-to-state": "ready"
+                },
+                {
+                    "condition": {
+                        "human-review": "Reject"
+                    },
+                    "move-to-state": "groom",
+                    "asks-for-reason": true
+                },
+                {
+                    "condition": {
+                        "all-questions-accepted": false
+                    },
+                    "move-to-state": "groom"
+                }
+            ]
+        },
+        {
+            "id": "ready",
+            "sequence": 7,
+            "name": "Ready",
+            "description": "Groomed, every question accepted and approved by the operator: ready for a sprint; a question not accepted sends it back to Groom",
+            "is-done": true,
+            "action": {
+                "type": "none"
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "all-questions-accepted": false
+                    },
+                    "move-to-state": "groom"
+                }
+            ]
+        }
+    ]
+}

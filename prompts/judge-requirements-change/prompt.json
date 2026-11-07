@@ -1,0 +1,70 @@
+{
+    "description": "Prompt for judging a variation's work — as built, or its plan when nothing is built yet — against every acceptance criterion revised after a requirements change, one verdict per criterion (ASS-79 AC2)",
+    "supported-command-line-interfaces": [
+        "claude"
+    ],
+    "supported-models": [
+        "claude-opus-5-5",
+        "claude-opus-5",
+        "claude-sonnet-5",
+        "claude-opus-4-8",
+        "claude-opus-4-7"
+    ],
+    "persona": "tester",
+    "input-arguments": [
+        {
+            "name": "project",
+            "description": "Project folder name under data/projects/",
+            "example": "my-project",
+            "required": true
+        },
+        {
+            "name": "ticket",
+            "description": "Ticket number",
+            "example": "ABC-1234",
+            "required": true
+        },
+        {
+            "name": "variation",
+            "description": "The ticket variation",
+            "example": "A",
+            "required": true
+        }
+    ],
+    "output": {
+        "type": "object",
+        "properties": {
+            "criteria": {
+                "type": "array",
+                "description": "One verdict per revised acceptance criterion",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "criteria-number": {
+                            "type": "integer",
+                            "description": "The criterion's criteria-number in the variation's acceptance-criteria"
+                        },
+                        "passes": {
+                            "type": "boolean",
+                            "description": "true if the work, as built or as planned, meets the criterion"
+                        },
+                        "reason": {
+                            "type": "string",
+                            "description": "Why, briefly, with evidence"
+                        }
+                    },
+                    "required": [
+                        "criteria-number",
+                        "passes",
+                        "reason"
+                    ],
+                    "additionalProperties": false
+                }
+            }
+        },
+        "required": [
+            "criteria"
+        ],
+        "additionalProperties": false
+    }
+}

@@ -1,0 +1,31 @@
+{
+    "steps": [
+
+        { "id": "check-done", "sequence": 1, "name": "Check Done", "description": "Is the ticket Done in the ticketing system? Then its status is taken as right, with no investigation",
+            "action": { "type": "none" },
+            "exit-events": [
+                { "condition": { "ticket-system-status": "Done" }, "move-to-state": "accept-done" },
+                { "condition": { "not": { "ticket-system-status": "Done" } }, "move-to-state": "investigate" }
+            ]
+        },
+
+        { "id": "accept-done", "sequence": 2, "name": "Accept Done", "description": "Moving the ticket to the harness's done state to match the ticketing system",
+            "action": { "type": "script", "command": "./agent.sh ticket:accept-ticket-system-status {project} {ticket} {variation}" },
+            "exit-events": [
+                { "condition": { "exit-code": 0 }, "move-to-state": "done" },
+                { "condition": { "not": { "exit-code": 0 } }, "move-to-state": "investigate" }
+            ]
+        },
+
+        { "id": "investigate", "sequence": 3, "name": "Investigate Gap", "description": "Working out which step the ticket belongs in and moving it there",
+            "action": { "type": "prompt", "prompt": "investigate-gap", "agent-count": 1, "run-in-dev-container": false },
+            "exit-events": [
+                { "condition": { "turn-complete": true }, "move-to-state": "done" }
+            ]
+        },
+
+        { "id": "done", "sequence": 4, "name": "Done", "description": "Gap investigation is completed", "is-done": true,
+            "action": { "type": "none" }
+        }
+    ]
+}

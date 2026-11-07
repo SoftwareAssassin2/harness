@@ -1,0 +1,13 @@
+Ticket {ticket}'s requirements changed ({ticket-folder}/requirements-change-{variation}.md). Judge whether variation {variation}'s work passes every one of its revised acceptance criteria (the variation's acceptance-criteria in {ticket-folder}/ticket.json).
+
+{where}
+
+1. Find what has been built: {agent-sh} ticket:merge-request-plan {project} {ticket} {variation}. Every merge request not Closed whose branch is pushed is built work: judge the code on it (git diff origin/<base>...origin/<branch>), running its tests where that helps. If none has been built yet, judge the plan instead: {ticket-folder}/execution-plan-{variation}.md and {ticket-folder}/test-plan-{variation}.md, whichever exist.
+2. For each revised criterion decide: does the work, as built or as planned, meet it? A criterion it partly meets, or would need more work to meet, fails. Back each verdict with evidence (file and line, test output, plan section).
+
+Don't change anything: only judge.
+
+Finish with JSON, one entry per criterion in the variation's acceptance-criteria, none left out:
+{"criteria": [{"criteria-number": 1, "passes": true, "reason": "<short reason, with evidence>"}, ...]}
+
+Be extremely concise. Sacrifice grammar for the sake of concision.

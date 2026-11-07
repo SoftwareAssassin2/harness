@@ -1,0 +1,65 @@
+{
+    "description": "Prompt for working out which step a ticket belongs in when its status and the ticket system disagree",
+    "supported-command-line-interfaces": [
+        "claude"
+    ],
+    "supported-models": [
+        "claude-opus-5-5",
+        "claude-opus-5",
+        "claude-sonnet-5",
+        "claude-opus-4-8",
+        "claude-opus-4-7"
+    ],
+    "persona": "project-manager",
+    "input-arguments": [
+        {
+            "name": "ticket",
+            "description": "Ticket number",
+            "example": "ABC-1234",
+            "required": true
+        }
+    ],
+    "output": {
+        "type": "object",
+        "properties": {
+            "go-to": {
+                "type": "string",
+                "enum": [
+                    "backlog",
+                    "committed",
+                    "create-branch",
+                    "create-worktree",
+                    "create-merge-request",
+                    "root-cause-analysis",
+                    "review-root-cause-analysis",
+                    "write-execution-plan",
+                    "write-test-plan",
+                    "review-plan",
+                    "generate-automated-tests",
+                    "generate-solution",
+                    "automated-testing",
+                    "code-review",
+                    "security-review",
+                    "local-testing",
+                    "steps-to-test",
+                    "update-documentation",
+                    "update-merge-request-details",
+                    "add-screenshots-to-merge-request",
+                    "risk-assessment",
+                    "human-review",
+                    "take-out-of-draft-mode",
+                    "team-code-review",
+                    "address-merge-request-feedback",
+                    "ensure-auto-merge",
+                    "qa-testing",
+                    "done"
+                ],
+                "description": "The step id the ticket should move to"
+            }
+        },
+        "required": [
+            "go-to"
+        ],
+        "additionalProperties": false
+    }
+}

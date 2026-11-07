@@ -1,0 +1,17 @@
+Check whether every project's local environments are ready for agents to work in. The harness checks every project it runs: each folder under {harness-folder}/data/projects/ with a project.json.
+
+1. For each project, read its project.json for its repositories and local-environments.
+2. For each local PC, check:
+   - Each repository is cloned, on the expected branch, and up to date with its remote
+   - No uncommitted changes, stale worktrees, or leftover branches from finished tickets
+   - Dependencies are installed and the project builds
+3. For each dev container, check:
+   - It exists and starts
+   - Whether it needs rebuilding (needs-rebuilt, or its base image or config changed)
+   - The tools the workflow's scripts call are available inside it
+4. Write the report to {ticket-folder}/local-environment.md (through `{agent-sh} work:write {project} <folder> - local-environment.md`, <folder> the last part of {ticket-folder}, the whole file on stdin), one section per project: each problem with its evidence and the fix you'd recommend. Flag any value still set to TODO or null that the factory needs.
+
+Don't change anything — only report. If everything is ready, say so.
+
+We want small deliberate changes. You're working with a scalpel, not a broadsword. You're a doctor: get in, fix the root cause using best practices and the patterns already in the repo, get out. Avoid scope creep.
+Be extremely concise. Sacrifice grammar for the sake of concision.

@@ -1,0 +1,22 @@
+Review ticket {ticket}'s execution plan ({ticket-folder}/execution-plan-{variation}.md), test plan ({ticket-folder}/test-plan-{variation}.md) and variation {variation}'s demo plan before any code is written. Read the demo plan with: {agent-sh} ticket:demo-plan {project} {ticket} {variation}
+
+Check that:
+- The execution plan covers every acceptance criterion and fixes the root cause in {ticket-folder}/root-cause-analysis-{variation}.md
+- The test plan would catch a build that missed any acceptance criterion
+- The approach is the simplest one that works, and fits the existing code
+- Nothing risky is left unaddressed (data migrations, breaking API changes, performance)
+- The demo plan would show the operator the change working in the VM, its ready-check passing only once it is up; or no demo is right
+
+If {ticket-folder}/operator-review-{variation}.md exists, it holds the operator's notes from rejecting earlier passes at Human Review: read it and address each note in this step's work.
+
+Write your findings to {ticket-folder}/plan-review-{variation}.md (through `{agent-sh} work:write {project} {ticket} {variation} plan-review.md`, the whole file on stdin). End it with a "## Demo plan" section showing the demo plan for the operator: setup, ready check, what to view it with, what to look at (or no demo, and why).
+
+Finish with JSON: {"is-approved": true} if the plans can be built as written, or {"is-approved": false, "revise-from": "<step>"} if plan-review-{variation}.md lists changes that must be made first. If ticket:demo-plan fails, the demo plan is missing or malformed: {"is-approved": false, "revise-from": "write-test-plan"}.
+
+"revise-from" is the earliest step whose output a must-fix touches; that step and every step after it run again:
+- "root-cause-analysis": root-cause-analysis-{variation}.md is wrong
+- "write-execution-plan": execution-plan-{variation}.md needs changing
+- "write-test-plan": only the test plan or the demo plan needs changing
+
+We want small deliberate changes. You're working with a scalpel, not a broadsword. You're a doctor: get in, fix the root cause using best practices and the patterns already in the repo, get out. Avoid scope creep.
+Be extremely concise. Sacrifice grammar for the sake of concision.

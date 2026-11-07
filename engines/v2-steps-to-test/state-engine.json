@@ -1,0 +1,35 @@
+{
+    "steps": [
+        {
+            "id": "write-steps-to-test",
+            "sequence": 1,
+            "name": "Write Steps to Test",
+            "description": "Writing steps-to-test.md and posting it on the ticket",
+            "action": {
+                "type": "prompt",
+                "prompt": "write-steps-to-test-grouped",
+                "agent-count": 1,
+                "run-in-dev-container": false
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "turn-complete": true
+                    },
+                    "move-to-state": "done"
+                }
+            ],
+            "run-location": "vm"
+        },
+        {
+            "id": "done",
+            "sequence": 2,
+            "name": "Done",
+            "description": "Steps to test are posted",
+            "is-done": true,
+            "action": {
+                "type": "none"
+            }
+        }
+    ]
+}

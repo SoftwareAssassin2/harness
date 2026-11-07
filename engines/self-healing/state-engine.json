@@ -1,0 +1,64 @@
+{
+    "steps": [
+
+        { "id": "analyze", "sequence": 1, "name": "Analyze", "description": "Finding the root cause — reproduced, traced back, attributed to the harness, the project or the operator, with evidence — and what it means for the sprint",
+            "action": { "type": "prompt", "prompt": "self-healing-analysis", "agent-count": 1, "run-in-dev-container": false },
+            "exit-events": [
+                { "condition": { "all": [ { "turn-complete": true }, { "structured-output": { "needs-fix": false } } ] }, "move-to-state": "done" },
+                { "condition": { "turn-complete": true }, "move-to-state": "verify" }
+            ]
+        },
+        { "id": "verify", "sequence": 2, "name": "Verify", "description": "Another agent re-runs the evidence and tries to prove the root cause wrong, before any ticket is written",
+            "action": { "type": "prompt", "prompt": "self-healing-verify", "agent-count": 1, "run-in-dev-container": false },
+            "exit-events": [
+                { "condition": { "all": [ { "turn-complete": true }, { "structured-output": { "needs-fix": false } } ] }, "move-to-state": "done" },
+                { "condition": { "all": [ { "turn-complete": true }, { "structured-output": { "can-continue-without-fix": true } } ] }, "move-to-state": "done" },
+                { "condition": { "turn-complete": true }, "move-to-state": "classify" }
+            ]
+        },
+        { "id": "classify", "sequence": 3, "name": "Classify", "description": "A harness, project or environment issue, with its reasoning, as Blocked classifies (ASS-107 AC4): a harness or environment issue's ticket goes to the harness project's backlog, a project issue's to the project's own ticket system; an environment issue goes to the operator",
+            "action": { "type": "prompt", "prompt": "classify-issue", "agent-count": 1, "run-in-dev-container": false },
+            "exit-events": [
+                { "condition": { "all": [ { "turn-complete": true }, { "structured-output": { "issue": "harness" } } ] }, "move-to-state": "create-ticket" },
+                { "condition": { "all": [ { "turn-complete": true }, { "structured-output": { "issue": "project" } } ] }, "move-to-state": "create-ticket" },
+                { "condition": { "all": [ { "turn-complete": true }, { "structured-output": { "issue": "environment" } } ] }, "move-to-state": "create-ticket" }
+            ]
+        },
+        { "id": "create-ticket", "sequence": 4, "name": "Create Ticket", "description": "Raising the ticket for the fix where Classify said (facts.js fixTicketIn)",
+            "action": { "type": "state-engine", "engine": "create-ticket" },
+            "exit-events": [
+                { "condition": { "all": [ { "is-done": true }, { "structured-output": { "key": "" } } ] }, "move-to-state": "done" },
+                { "condition": { "is-done": true }, "move-to-state": "file-reports" }
+            ]
+        },
+        { "id": "file-reports", "sequence": 5, "name": "File Reports", "description": "Moving the run's reports (the health check's, the analysis's) into the ticket's folder, beside the ticket",
+            "action": { "type": "script", "command": "./agent.sh ticket:adopt-run-folder {project} {ticket} {run}" },
+            "exit-events": [
+                { "condition": { "all": [ { "exit-code": 0 }, { "structured-output": { "needs-human": true } } ] }, "move-to-state": "hand-to-human" },
+                { "condition": { "all": [ { "exit-code": 0 }, { "structured-output": { "issue": "environment" } } ] }, "move-to-state": "hand-to-human" },
+                { "condition": { "exit-code": 0 }, "move-to-state": "take-on" },
+                { "condition": { "all": [ { "not": { "exit-code": 0 } }, { "structured-output": { "needs-human": true } } ] }, "move-to-state": "hand-to-human" },
+                { "condition": { "all": [ { "not": { "exit-code": 0 } }, { "structured-output": { "issue": "environment" } } ] }, "move-to-state": "hand-to-human" },
+                { "condition": { "not": { "exit-code": 0 } }, "move-to-state": "take-on" }
+            ]
+        },
+        { "id": "hand-to-human", "sequence": 6, "name": "Hand to Human", "description": "The fix needs the operator's own uncommitted work or a credential, or is an environment issue: its ticket joins the sprint at Blocked for Human",
+            "action": { "type": "script", "command": "./agent.sh self-healing:hand-to-human {project} {ticket} {summary} {human-action}" },
+            "exit-events": [
+                { "condition": { "exit-code": 0 }, "move-to-state": "done" },
+                { "condition": { "not": { "exit-code": 0 } }, "move-to-state": "done" }
+            ]
+        },
+        { "id": "take-on", "sequence": 7, "name": "Take On", "description": "An agent will fix it: the ticket becomes sprint work at Self Healing, where self-healing-fix runs on it, its plan (the tickets to pause) recorded on it",
+            "action": { "type": "script", "command": "./agent.sh self-healing:take-on {project} {ticket} {summary} {ticket-url} {pause-tickets}" },
+            "exit-events": [
+                { "condition": { "exit-code": 0 }, "move-to-state": "done" },
+                { "condition": { "not": { "exit-code": 0 } }, "move-to-state": "done" }
+            ]
+        },
+
+        { "id": "done", "sequence": 8, "name": "Done", "description": "Self-healing has done its part: no fix needed, handed to the operator, or the fix ticket at Self Healing", "is-done": true,
+            "action": { "type": "none" }
+        }
+    ]
+}

@@ -1,0 +1,406 @@
+{
+    "steps": [
+        {
+            "id": "groom",
+            "sequence": 1,
+            "name": "Groom",
+            "description": "Read the ticket as though building it tomorrow; ask what is missing",
+            "action": {
+                "type": "prompt",
+                "prompt": "groom",
+                "agent-count": 1,
+                "run-in-dev-container": false
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "all": [
+                            {
+                                "turn-complete": true
+                            },
+                            {
+                                "structured-output": {
+                                    "is-ready": true
+                                }
+                            }
+                        ]
+                    },
+                    "move-to-state": "check-answers"
+                },
+                {
+                    "condition": {
+                        "turn-complete": true
+                    },
+                    "move-to-state": "awaiting-answers"
+                }
+            ]
+        },
+        {
+            "id": "awaiting-answers",
+            "sequence": 2,
+            "name": "Awaiting Answers",
+            "description": "Rests while a question on the ticket is Asked or Answer Rejected; groomed again once none is",
+            "action": {
+                "type": "human",
+                "instructions": "Answer the ticket's open questions on its screen."
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "open-questions": false
+                    },
+                    "move-to-state": "groom"
+                }
+            ]
+        },
+        {
+            "id": "check-answers",
+            "sequence": 3,
+            "name": "Check the Answers",
+            "description": "Every question on the ticket has an accepted answer",
+            "action": {
+                "type": "script",
+                "command": "./agent.sh ticket:questions-answered {project} {ticket}"
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "exit-code": 0
+                    },
+                    "move-to-state": "find-dependencies"
+                },
+                {
+                    "condition": {
+                        "not": {
+                            "exit-code": 0
+                        }
+                    },
+                    "move-to-state": "awaiting-answers"
+                }
+            ]
+        },
+        {
+            "id": "find-dependencies",
+            "sequence": 4,
+            "name": "Find Dependencies",
+            "description": "Record this ticket's dependencies and overlaps against every open backlog and sprint ticket of the project",
+            "action": {
+                "type": "prompt",
+                "prompt": "find-dependencies",
+                "agent-count": 1,
+                "run-in-dev-container": false
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "turn-complete": true
+                    },
+                    "move-to-state": "estimate"
+                }
+            ]
+        },
+        {
+            "id": "estimate",
+            "sequence": 5,
+            "name": "Estimate",
+            "description": "A story's story points, 1, 2, 3 or 5, written to its ticket; a bug or spike gets none; one too large for 5 goes on towards Split",
+            "action": {
+                "type": "prompt",
+                "prompt": "estimate-with-split",
+                "agent-count": 1,
+                "run-in-dev-container": false
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "all": [
+                            {
+                                "turn-complete": true
+                            },
+                            {
+                                "structured-output": {
+                                    "too-large": true
+                                }
+                            }
+                        ]
+                    },
+                    "move-to-state": "check-kept-whole"
+                },
+                {
+                    "condition": {
+                        "all": [
+                            {
+                                "turn-complete": true
+                            },
+                            {
+                                "structured-output": {
+                                    "points": 8
+                                }
+                            }
+                        ]
+                    },
+                    "move-to-state": "check-kept-whole"
+                },
+                {
+                    "condition": {
+                        "all": [
+                            {
+                                "turn-complete": true
+                            },
+                            {
+                                "structured-output": {
+                                    "points": 13
+                                }
+                            }
+                        ]
+                    },
+                    "move-to-state": "check-kept-whole"
+                },
+                {
+                    "condition": {
+                        "all": [
+                            {
+                                "turn-complete": true
+                            },
+                            {
+                                "structured-output": {
+                                    "points": 1
+                                }
+                            }
+                        ]
+                    },
+                    "move-to-state": "ready"
+                },
+                {
+                    "condition": {
+                        "all": [
+                            {
+                                "turn-complete": true
+                            },
+                            {
+                                "structured-output": {
+                                    "points": 2
+                                }
+                            }
+                        ]
+                    },
+                    "move-to-state": "ready"
+                },
+                {
+                    "condition": {
+                        "all": [
+                            {
+                                "turn-complete": true
+                            },
+                            {
+                                "structured-output": {
+                                    "points": 3
+                                }
+                            }
+                        ]
+                    },
+                    "move-to-state": "ready"
+                },
+                {
+                    "condition": {
+                        "all": [
+                            {
+                                "turn-complete": true
+                            },
+                            {
+                                "structured-output": {
+                                    "points": 5
+                                }
+                            }
+                        ]
+                    },
+                    "move-to-state": "ready"
+                },
+                {
+                    "condition": {
+                        "all": [
+                            {
+                                "turn-complete": true
+                            },
+                            {
+                                "structured-output": {
+                                    "points": null
+                                }
+                            }
+                        ]
+                    },
+                    "move-to-state": "ready"
+                },
+                {
+                    "condition": {
+                        "turn-complete": true
+                    },
+                    "move-to-state": "groom"
+                }
+            ]
+        },
+        {
+            "id": "check-kept-whole",
+            "sequence": 6,
+            "name": "Check Kept Whole",
+            "description": "Whether the operator kept the ticket whole at an earlier split: then Ready, else Split",
+            "action": {
+                "type": "script",
+                "command": "./agent.sh ticket:kept-whole {project} {ticket}"
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "exit-code": 0
+                    },
+                    "move-to-state": "ready"
+                },
+                {
+                    "condition": {
+                        "not": {
+                            "exit-code": 0
+                        }
+                    },
+                    "move-to-state": "split"
+                }
+            ]
+        },
+        {
+            "id": "split",
+            "sequence": 7,
+            "name": "Split",
+            "description": "Propose smaller tickets, 1 to 5 points each, that together cover every acceptance criterion, and the dependencies between them",
+            "action": {
+                "type": "prompt",
+                "prompt": "split-ticket",
+                "agent-count": 1,
+                "run-in-dev-container": false
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "turn-complete": true
+                    },
+                    "move-to-state": "awaiting-split-decision"
+                }
+            ]
+        },
+        {
+            "id": "awaiting-split-decision",
+            "sequence": 8,
+            "name": "Awaiting Split Decision",
+            "description": "Rests for the operator: Accept creates the proposed tickets, Reject sends it back to Split with the reason, Keep whole leaves it unsplit",
+            "shows": "split-proposal",
+            "action": {
+                "type": "human",
+                "instructions": "Read the proposed tickets on the ticket's screen: Accept creates them, Reject (with the reason) asks for another proposal, Keep whole leaves the ticket as it is."
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "human-review": "Accept"
+                    },
+                    "move-to-state": "create-split-tickets"
+                },
+                {
+                    "condition": {
+                        "human-review": "Reject"
+                    },
+                    "move-to-state": "split",
+                    "asks-for-reason": true
+                },
+                {
+                    "condition": {
+                        "human-review": "Keep whole"
+                    },
+                    "move-to-state": "keep-whole"
+                },
+                {
+                    "condition": {
+                        "open-questions": true
+                    },
+                    "move-to-state": "awaiting-answers"
+                }
+            ]
+        },
+        {
+            "id": "create-split-tickets",
+            "sequence": 9,
+            "name": "Create the Split Tickets",
+            "description": "The proposed tickets created with their dependencies, the original marked split into them and out of the backlog",
+            "action": {
+                "type": "script",
+                "command": "./agent.sh ticket:apply-split {project} {ticket}"
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "exit-code": 0
+                    },
+                    "move-to-state": "superseded"
+                },
+                {
+                    "condition": {
+                        "not": {
+                            "exit-code": 0
+                        }
+                    },
+                    "move-to-state": "awaiting-split-decision"
+                }
+            ]
+        },
+        {
+            "id": "keep-whole",
+            "sequence": 10,
+            "name": "Keep Whole",
+            "description": "The ticket marked kept whole, so it is never split again",
+            "action": {
+                "type": "script",
+                "command": "./off-board.sh ticket:keep-whole {project} {ticket}"
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "exit-code": 0
+                    },
+                    "move-to-state": "ready"
+                },
+                {
+                    "condition": {
+                        "not": {
+                            "exit-code": 0
+                        }
+                    },
+                    "move-to-state": "awaiting-split-decision"
+                }
+            ]
+        },
+        {
+            "id": "ready",
+            "sequence": 11,
+            "name": "Ready",
+            "description": "Groomed, every question accepted and estimated: ready for a sprint; a question not accepted sends it back to Groom",
+            "is-done": true,
+            "action": {
+                "type": "none"
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "all-questions-accepted": false
+                    },
+                    "move-to-state": "groom"
+                }
+            ]
+        },
+        {
+            "id": "superseded",
+            "sequence": 12,
+            "name": "Superseded",
+            "description": "Split into the tickets it names; Done, out of the backlog, never to join a sprint",
+            "action": {
+                "type": "none"
+            }
+        }
+    ]
+}

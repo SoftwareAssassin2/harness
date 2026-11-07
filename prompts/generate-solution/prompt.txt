@@ -1,0 +1,13 @@
+Build the solution for ticket {ticket}, variation {variation} of project {project}.
+
+{where}
+
+1. Read {ticket-folder}/execution-plan-{variation}.md, {ticket-folder}/test-plan-{variation}.md and the acceptance criteria. Read the review notes there too (plan-review-{variation}.md, code-review-{variation}.md, security-review-{variation}.md, test-results-{variation}.md): the latest ones say what to fix.
+2. Implement the execution plan in this checkout, on the ticket's branch, following the patterns already in the repo. Make the automated tests written for the ticket pass; don't weaken or skip them.
+3. Commit as you go with clear messages, and push the branch when done.
+4. Append to {ticket-folder}/change-log-{variation}.md (through `{agent-sh} work:append {project} {ticket} {variation} change-log.md`, the entry on stdin): what you built, and what deviated from the plan and why.
+
+Don't widen the work beyond the plan and the acceptance criteria.
+
+We want small deliberate changes. You're working with a scalpel, not a broadsword. You're a doctor: get in, fix the root cause using best practices and the patterns already in the repo, get out. Avoid scope creep.
+Be extremely concise. Sacrifice grammar for the sake of concision.

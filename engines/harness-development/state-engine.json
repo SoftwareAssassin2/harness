@@ -1,0 +1,1313 @@
+{
+    "receive-dispatch-prompt": "receive-dispatch",
+    "receive-pair-dispatch-prompt": "receive-pair-dispatch",
+    "receive-message-prompt": "receive-message-from-another-agent",
+    "ask-for-status-update-prompt": "ask-for-status-update",
+    "ask-for-status-update-given-none-was-provided-for-seconds": 480,
+    "shut-down-prompt": "shut-down",
+    "check-health-interval-seconds": 1200,
+    "check-health-steps": [
+        {
+            "id": "check-health",
+            "sequence": 1,
+            "name": "Check Health",
+            "description": "Check on the health of the system",
+            "action": {
+                "type": "state-engine",
+                "engine": "check-health"
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "is-done": true
+                    }
+                }
+            ]
+        }
+    ],
+    "check-ticket-health-sample-every": 5,
+    "ready-tickets-join-sprint-at": "committed",
+    "check-ticket-health-steps": [
+        {
+            "id": "check-ticket-health",
+            "sequence": 1,
+            "name": "Check Ticket Health",
+            "description": "Check on the health of the ticketing system",
+            "action": {
+                "type": "state-engine",
+                "engine": "check-ticket-health"
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "is-done": true
+                    }
+                }
+            ]
+        }
+    ],
+    "check-variation-appeal-interval-seconds": 900,
+    "check-variation-appeal-steps": [
+        {
+            "id": "check-variation-appeal",
+            "sequence": 1,
+            "name": "Check Variation Appeal",
+            "description": "Check on the appeal and progress relative to the other variations for this ticket",
+            "action": {
+                "type": "state-engine",
+                "engine": "check-variation-appeal"
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "is-done": true
+                    }
+                }
+            ]
+        }
+    ],
+    "gap-resolution-steps": [
+        {
+            "id": "gap-resolution",
+            "sequence": 1,
+            "name": "Gap Resolution",
+            "description": "Investigate the gap between the ticketing system's status and our status",
+            "action": {
+                "type": "state-engine",
+                "engine": "investigate-gap"
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "is-done": true
+                    }
+                }
+            ]
+        }
+    ],
+    "steps": [
+        {
+            "id": "blocked-for-human",
+            "sequence": 0,
+            "area": "quarantine",
+            "name": "Blocked for Human",
+            "color": "#ff0000",
+            "description": "A step failed or looped too many times; needs a human",
+            "paired-ticket-system-status": "In Progress",
+            "follow-return-to-state": true,
+            "is-blocked-state": true,
+            "action": {
+                "type": "human",
+                "instructions": "Resolve the block so work can continue on this ticket."
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "human-review": "Resolved"
+                    },
+                    "follow-return-to-state": true
+                },
+                {
+                    "condition": {
+                        "human-review": "Have AI Try Again to Unblock this Ticket"
+                    },
+                    "move-to-state": "blocked"
+                }
+            ],
+            "warning-indicator": true
+        },
+        {
+            "id": "blocked",
+            "sequence": 0,
+            "area": "quarantine",
+            "name": "Blocked",
+            "color": "#ffd700",
+            "description": "A step failed or looped too many times; needs a human",
+            "paired-ticket-system-status": "In Progress",
+            "max-visits": 3,
+            "on-max-visits": "blocked-for-human",
+            "follow-return-to-state": true,
+            "action": {
+                "type": "state-engine",
+                "engine": "blocked"
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "all": [
+                            {
+                                "is-done": true
+                            },
+                            {
+                                "structured-output": {
+                                    "landed": false
+                                }
+                            }
+                        ]
+                    },
+                    "move-to-state": "blocked"
+                },
+                {
+                    "condition": {
+                        "is-done": true
+                    },
+                    "follow-return-to-state": true
+                }
+            ]
+        },
+        {
+            "id": "self-healing",
+            "sequence": 0,
+            "area": "quarantine",
+            "name": "Self Healing",
+            "color": "#00bfff",
+            "description": "A fix ticket self-healing raised: an agent fixes it, the harness restarts on the fix, the tickets it held resume",
+            "paired-ticket-system-status": "In Progress",
+            "return-to-state": "self-healing",
+            "action": {
+                "type": "state-engine",
+                "engine": "self-healing-fix"
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "all": [
+                            {
+                                "is-done": true
+                            },
+                            {
+                                "structured-output": {
+                                    "is-fixed": true
+                                }
+                            }
+                        ]
+                    },
+                    "move-to-state": "done"
+                },
+                {
+                    "condition": {
+                        "is-done": true
+                    },
+                    "move-to-state": "blocked-for-human"
+                }
+            ]
+        },
+        {
+            "id": "backlog",
+            "sequence": 1,
+            "name": "Backlog",
+            "description": "Work that still has an old status but was just committed to",
+            "paired-ticket-system-status": "Backlog",
+            "is-planning-stage": true,
+            "action": {
+                "type": "none"
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "always": true
+                    },
+                    "move-to-state": "committed"
+                }
+            ]
+        },
+        {
+            "id": "committed",
+            "sequence": 2,
+            "name": "Committed",
+            "description": "Queue of work ready to be started",
+            "paired-ticket-system-status": "Committed",
+            "is-planning-stage": true,
+            "action": {
+                "type": "none"
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "agent-needs-work": true
+                    },
+                    "move-to-state": "enrich-ac"
+                }
+            ]
+        },
+        {
+            "id": "enrich-ac",
+            "sequence": 3,
+            "name": "Extract Acceptance Criteria",
+            "description": "Extracting acceptance criteria from the ticket",
+            "paired-ticket-system-status": "In Progress",
+            "is-planning-stage": true,
+            "max-visits": 3,
+            "on-max-visits": "blocked",
+            "return-to-state": "enrich-ac",
+            "action": {
+                "type": "prompt",
+                "prompt": "enrich-ac",
+                "agent-count": 1,
+                "run-in-dev-container": false
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "all": [
+                            {
+                                "turn-complete": true
+                            },
+                            {
+                                "structured-ticket-variation-array-check": {
+                                    "member-name": "acceptance-criteria",
+                                    "min-length": 1
+                                }
+                            }
+                        ]
+                    },
+                    "move-to-state": "create-branch"
+                }
+            ]
+        },
+        {
+            "id": "create-branch",
+            "sequence": 4,
+            "name": "Create Branch",
+            "description": "Creating the branch for the ticket",
+            "paired-ticket-system-status": "In Progress",
+            "is-planning-stage": true,
+            "max-visits": 3,
+            "on-max-visits": "blocked",
+            "return-to-state": "create-branch",
+            "action": {
+                "type": "script",
+                "command": "./agent.sh code:create-branch {project} {ticket} {variation}"
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "exit-code": 0
+                    },
+                    "move-to-state": "create-worktree"
+                },
+                {
+                    "condition": {
+                        "not": {
+                            "exit-code": 0
+                        }
+                    },
+                    "move-to-state": "create-branch"
+                }
+            ]
+        },
+        {
+            "id": "create-worktree",
+            "sequence": 5,
+            "name": "Create Worktree",
+            "description": "Creating the worktree for the ticket",
+            "paired-ticket-system-status": "In Progress",
+            "is-planning-stage": true,
+            "max-visits": 3,
+            "on-max-visits": "blocked",
+            "return-to-state": "create-worktree",
+            "action": {
+                "type": "script",
+                "command": "./agent.sh code:create-worktree {project} {ticket} {variation}"
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "exit-code": 0
+                    },
+                    "move-to-state": "create-merge-request"
+                },
+                {
+                    "condition": {
+                        "not": {
+                            "exit-code": 0
+                        }
+                    },
+                    "move-to-state": "create-worktree"
+                }
+            ]
+        },
+        {
+            "id": "create-merge-request",
+            "sequence": 6,
+            "name": "Create Merge Request",
+            "description": "Opening the ticket's merge request as a draft",
+            "paired-ticket-system-status": "In Progress",
+            "is-planning-stage": true,
+            "max-visits": 3,
+            "on-max-visits": "blocked",
+            "return-to-state": "create-merge-request",
+            "action": {
+                "type": "script",
+                "command": "./agent.sh merge-request:create {project} {ticket} {variation}"
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "exit-code": 0
+                    },
+                    "move-to-state": "root-cause-analysis"
+                },
+                {
+                    "condition": {
+                        "not": {
+                            "exit-code": 0
+                        }
+                    },
+                    "move-to-state": "create-merge-request"
+                }
+            ]
+        },
+        {
+            "id": "root-cause-analysis",
+            "sequence": 7,
+            "name": "Root Cause Analysis",
+            "description": "Analyzing the root cause of issues",
+            "paired-ticket-system-status": "In Progress",
+            "is-planning-stage": true,
+            "max-visits": 3,
+            "on-max-visits": "blocked",
+            "return-to-state": "root-cause-analysis",
+            "action": {
+                "type": "prompt",
+                "prompt": "root-cause-analysis",
+                "agent-count": 1,
+                "run-in-dev-container": true
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "all": [
+                            {
+                                "turn-complete": true
+                            },
+                            {
+                                "file-updated": {
+                                    "file": "root-cause-analysis.md",
+                                    "since": "turn-start"
+                                }
+                            }
+                        ]
+                    },
+                    "move-to-state": "review-root-cause-analysis"
+                },
+                {
+                    "condition": {
+                        "all": [
+                            {
+                                "turn-complete": true
+                            },
+                            {
+                                "not": {
+                                    "file-updated": {
+                                        "file": "root-cause-analysis.md",
+                                        "since": "turn-start"
+                                    }
+                                }
+                            }
+                        ]
+                    },
+                    "move-to-state": "root-cause-analysis"
+                }
+            ]
+        },
+        {
+            "id": "review-root-cause-analysis",
+            "sequence": 8,
+            "name": "Review Root Cause Analysis",
+            "description": "Reviewing the root cause analysis",
+            "paired-ticket-system-status": "In Progress",
+            "is-planning-stage": true,
+            "max-visits": 3,
+            "on-max-visits": "blocked",
+            "return-to-state": "review-root-cause-analysis",
+            "action": {
+                "type": "prompt",
+                "prompt": "review-root-cause-analysis",
+                "agent-count": 1,
+                "run-in-dev-container": false
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "all": [
+                            {
+                                "turn-complete": true
+                            },
+                            {
+                                "structured-output": {
+                                    "is-approved": true
+                                }
+                            }
+                        ]
+                    },
+                    "move-to-state": "write-execution-plan"
+                },
+                {
+                    "condition": {
+                        "all": [
+                            {
+                                "turn-complete": true
+                            },
+                            {
+                                "structured-output": {
+                                    "is-approved": false
+                                }
+                            }
+                        ]
+                    },
+                    "move-to-state": "root-cause-analysis"
+                }
+            ]
+        },
+        {
+            "id": "write-execution-plan",
+            "sequence": 9,
+            "name": "Write Execution Plan",
+            "description": "Planning the work to be done",
+            "paired-ticket-system-status": "In Progress",
+            "is-planning-stage": true,
+            "max-visits": 3,
+            "on-max-visits": "blocked",
+            "return-to-state": "write-execution-plan",
+            "action": {
+                "type": "prompt",
+                "prompt": "write-execution-plan",
+                "agent-count": 1,
+                "run-in-dev-container": false
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "all": [
+                            {
+                                "turn-complete": true
+                            },
+                            {
+                                "file-updated": {
+                                    "file": "execution-plan.md",
+                                    "since": "turn-start"
+                                }
+                            }
+                        ]
+                    },
+                    "move-to-state": "write-test-plan"
+                },
+                {
+                    "condition": {
+                        "all": [
+                            {
+                                "turn-complete": true
+                            },
+                            {
+                                "not": {
+                                    "file-updated": {
+                                        "file": "execution-plan.md",
+                                        "since": "turn-start"
+                                    }
+                                }
+                            }
+                        ]
+                    },
+                    "move-to-state": "write-execution-plan"
+                }
+            ]
+        },
+        {
+            "id": "write-test-plan",
+            "sequence": 10,
+            "name": "Write Test Plan",
+            "description": "Planning the test strategy",
+            "paired-ticket-system-status": "In Progress",
+            "is-planning-stage": true,
+            "max-visits": 3,
+            "on-max-visits": "blocked",
+            "return-to-state": "write-test-plan",
+            "action": {
+                "type": "prompt",
+                "prompt": "write-test-plan",
+                "agent-count": 1,
+                "run-in-dev-container": false
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "all": [
+                            {
+                                "turn-complete": true
+                            },
+                            {
+                                "file-updated": {
+                                    "file": "test-plan.md",
+                                    "since": "turn-start"
+                                }
+                            }
+                        ]
+                    },
+                    "move-to-state": "enrich-automated-test-data"
+                },
+                {
+                    "condition": {
+                        "all": [
+                            {
+                                "turn-complete": true
+                            },
+                            {
+                                "not": {
+                                    "file-updated": {
+                                        "file": "test-plan.md",
+                                        "since": "turn-start"
+                                    }
+                                }
+                            }
+                        ]
+                    },
+                    "move-to-state": "write-test-plan"
+                }
+            ]
+        },
+        {
+            "id": "enrich-automated-test-data",
+            "sequence": 11,
+            "name": "Enrich Automated Test Data",
+            "description": "Enriching the automated test data",
+            "paired-ticket-system-status": "In Progress",
+            "is-planning-stage": true,
+            "max-visits": 3,
+            "on-max-visits": "blocked",
+            "return-to-state": "enrich-automated-test-data",
+            "action": {
+                "type": "prompt",
+                "prompt": "enrich-automated-test-data",
+                "agent-count": 1,
+                "run-in-dev-container": false
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "all": [
+                            {
+                                "turn-complete": true
+                            }
+                        ]
+                    },
+                    "move-to-state": "review-plan"
+                }
+            ]
+        },
+        {
+            "id": "review-plan",
+            "sequence": 12,
+            "name": "Review Plan",
+            "description": "Reviewing the build and test plans",
+            "paired-ticket-system-status": "In Progress",
+            "is-planning-stage": true,
+            "max-visits": 3,
+            "on-max-visits": "blocked",
+            "return-to-state": "review-plan",
+            "action": {
+                "type": "prompt",
+                "prompt": "review-plan",
+                "agent-count": 1,
+                "run-in-dev-container": false
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "all": [
+                            {
+                                "turn-complete": true
+                            },
+                            {
+                                "structured-output": {
+                                    "is-approved": true
+                                }
+                            }
+                        ]
+                    },
+                    "move-to-state": "generate-automated-tests"
+                },
+                {
+                    "condition": {
+                        "all": [
+                            {
+                                "turn-complete": true
+                            },
+                            {
+                                "structured-output": {
+                                    "is-approved": false
+                                }
+                            }
+                        ]
+                    },
+                    "move-to-state": "write-execution-plan"
+                }
+            ]
+        },
+        {
+            "id": "generate-automated-tests",
+            "sequence": 13,
+            "name": "Generate Automated Tests",
+            "description": "Generating the tests",
+            "paired-ticket-system-status": "In Progress",
+            "max-visits": 3,
+            "on-max-visits": "blocked",
+            "return-to-state": "generate-automated-tests",
+            "action": {
+                "type": "prompt",
+                "prompt": "generate-automated-tests",
+                "agent-count": 1,
+                "run-in-dev-container": false
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "all": [
+                            {
+                                "turn-complete": true
+                            },
+                            {
+                                "script-succeeds": "./agent.sh automated-tests:verify-exist-and-runnable {project} {ticket} {variation}"
+                            }
+                        ]
+                    },
+                    "move-to-state": "generate-solution"
+                },
+                {
+                    "condition": {
+                        "all": [
+                            {
+                                "turn-complete": true
+                            },
+                            {
+                                "not": {
+                                    "script-succeeds": "./agent.sh automated-tests:verify-exist-and-runnable {project} {ticket} {variation}"
+                                }
+                            }
+                        ]
+                    },
+                    "move-to-state": "generate-automated-tests"
+                }
+            ]
+        },
+        {
+            "id": "generate-solution",
+            "sequence": 14,
+            "name": "Generate Solution",
+            "description": "Generating the solution",
+            "paired-ticket-system-status": "In Progress",
+            "max-visits": 5,
+            "on-max-visits": "blocked",
+            "return-to-state": "generate-solution",
+            "action": {
+                "type": "prompt",
+                "prompt": "generate-solution",
+                "agent-count": 1,
+                "run-in-dev-container": true
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "turn-complete": true
+                    },
+                    "move-to-state": "automated-testing"
+                }
+            ]
+        },
+        {
+            "id": "automated-testing",
+            "sequence": 15,
+            "name": "Automated Testing",
+            "description": "Run automated tests",
+            "paired-ticket-system-status": "In Progress",
+            "max-visits": 3,
+            "on-max-visits": "blocked",
+            "return-to-state": "automated-testing",
+            "action": {
+                "type": "script",
+                "command": "./agent.sh automated-tests:verify-success {project} {ticket} {variation}"
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "exit-code": 0
+                    },
+                    "move-to-state": "code-review"
+                },
+                {
+                    "condition": {
+                        "exit-code": 3
+                    },
+                    "move-to-state": "blocked"
+                },
+                {
+                    "condition": {
+                        "not": {
+                            "exit-code": 0
+                        }
+                    },
+                    "move-to-state": "generate-solution"
+                }
+            ]
+        },
+        {
+            "id": "code-review",
+            "sequence": 16,
+            "name": "Code Review",
+            "description": "Reviewing the solution",
+            "paired-ticket-system-status": "In Progress",
+            "max-visits": 3,
+            "on-max-visits": "blocked",
+            "return-to-state": "code-review",
+            "action": {
+                "type": "prompt",
+                "prompt": "code-review",
+                "agent-count": 1,
+                "run-in-dev-container": false
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "all": [
+                            {
+                                "turn-complete": true
+                            },
+                            {
+                                "structured-output": {
+                                    "is-approved": true
+                                }
+                            }
+                        ]
+                    },
+                    "move-to-state": "security-review"
+                },
+                {
+                    "condition": {
+                        "all": [
+                            {
+                                "turn-complete": true
+                            },
+                            {
+                                "structured-output": {
+                                    "is-approved": false
+                                }
+                            }
+                        ]
+                    },
+                    "move-to-state": "generate-solution"
+                }
+            ]
+        },
+        {
+            "id": "security-review",
+            "sequence": 17,
+            "name": "Security Review",
+            "description": "Security review",
+            "paired-ticket-system-status": "In Progress",
+            "max-visits": 3,
+            "on-max-visits": "blocked",
+            "return-to-state": "security-review",
+            "action": {
+                "type": "prompt",
+                "prompt": "security-review",
+                "agent-count": 1,
+                "run-in-dev-container": false
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "all": [
+                            {
+                                "turn-complete": true
+                            },
+                            {
+                                "structured-output": {
+                                    "is-approved": true
+                                }
+                            }
+                        ]
+                    },
+                    "move-to-state": "local-testing"
+                },
+                {
+                    "condition": {
+                        "all": [
+                            {
+                                "turn-complete": true
+                            },
+                            {
+                                "structured-output": {
+                                    "is-approved": false
+                                }
+                            }
+                        ]
+                    },
+                    "move-to-state": "generate-solution"
+                }
+            ]
+        },
+        {
+            "id": "local-testing",
+            "sequence": 18,
+            "name": "Local Testing",
+            "description": "Testing locally",
+            "paired-ticket-system-status": "In Progress",
+            "max-visits": 3,
+            "on-max-visits": "blocked",
+            "return-to-state": "local-testing",
+            "record-output-as": "local-testing",
+            "action": {
+                "type": "state-engine",
+                "engine": "test"
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "all": [
+                            {
+                                "is-done": true
+                            },
+                            {
+                                "structured-output": {
+                                    "is-approved": true
+                                }
+                            }
+                        ]
+                    },
+                    "move-to-state": "steps-to-test"
+                },
+                {
+                    "condition": {
+                        "all": [
+                            {
+                                "is-done": true
+                            },
+                            {
+                                "structured-output": {
+                                    "is-approved": false
+                                }
+                            }
+                        ]
+                    },
+                    "move-to-state": "generate-solution"
+                }
+            ]
+        },
+        {
+            "id": "steps-to-test",
+            "sequence": 19,
+            "name": "Steps to Test",
+            "description": "Document the steps to test on the Jira ticket",
+            "paired-ticket-system-status": "In Progress",
+            "max-visits": 3,
+            "on-max-visits": "blocked",
+            "return-to-state": "steps-to-test",
+            "action": {
+                "type": "state-engine",
+                "engine": "steps-to-test"
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "is-done": true
+                    },
+                    "move-to-state": "update-documentation"
+                }
+            ]
+        },
+        {
+            "id": "update-documentation",
+            "sequence": 20,
+            "name": "Update Documentation",
+            "description": "Updating the documentation",
+            "paired-ticket-system-status": "In Progress",
+            "max-visits": 3,
+            "on-max-visits": "blocked",
+            "return-to-state": "update-documentation",
+            "action": {
+                "type": "prompt",
+                "prompt": "update-documentation",
+                "agent-count": 1,
+                "run-in-dev-container": false
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "turn-complete": true
+                    },
+                    "move-to-state": "update-merge-request-details"
+                }
+            ]
+        },
+        {
+            "id": "update-merge-request-details",
+            "sequence": 21,
+            "name": "Update Merge Request Details",
+            "description": "Updating the merge request title and description",
+            "paired-ticket-system-status": "In Progress",
+            "max-visits": 3,
+            "on-max-visits": "blocked",
+            "return-to-state": "update-merge-request-details",
+            "action": {
+                "type": "prompt",
+                "prompt": "update-merge-request-details",
+                "agent-count": 1,
+                "run-in-dev-container": false
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "turn-complete": true
+                    },
+                    "move-to-state": "add-screenshots-to-merge-request"
+                }
+            ]
+        },
+        {
+            "id": "add-screenshots-to-merge-request",
+            "sequence": 22,
+            "name": "Add Screenshots to Merge Request",
+            "description": "Adding screenshots to the merge request",
+            "paired-ticket-system-status": "In Progress",
+            "max-visits": 3,
+            "on-max-visits": "blocked",
+            "return-to-state": "add-screenshots-to-merge-request",
+            "action": {
+                "type": "prompt",
+                "prompt": "add-screenshots-to-merge-request",
+                "agent-count": 1,
+                "run-in-dev-container": false
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "turn-complete": true
+                    },
+                    "move-to-state": "risk-assessment"
+                }
+            ]
+        },
+        {
+            "id": "risk-assessment",
+            "sequence": 23,
+            "name": "Risk Assessment",
+            "description": "Assessing potential risks associated with the merge request",
+            "paired-ticket-system-status": "In Progress",
+            "max-visits": 3,
+            "on-max-visits": "blocked",
+            "return-to-state": "risk-assessment",
+            "action": {
+                "type": "prompt",
+                "prompt": "risk-assessment",
+                "agent-count": 1,
+                "run-in-dev-container": false
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "all": [
+                            {
+                                "turn-complete": true
+                            },
+                            {
+                                "structured-output": {
+                                    "flagged-for-human-review": false
+                                }
+                            }
+                        ]
+                    },
+                    "move-to-state": "token-expense-check"
+                },
+                {
+                    "condition": {
+                        "all": [
+                            {
+                                "turn-complete": true
+                            },
+                            {
+                                "structured-output": {
+                                    "flagged-for-human-review": true
+                                }
+                            }
+                        ]
+                    },
+                    "move-to-state": "human-review"
+                }
+            ]
+        },
+        {
+            "id": "human-review",
+            "sequence": 24,
+            "name": "Human Review",
+            "description": "Human review of high risk merge requests",
+            "paired-ticket-system-status": "In Progress",
+            "max-visits": 3,
+            "on-max-visits": "blocked",
+            "return-to-state": "human-review",
+            "action": {
+                "type": "human",
+                "instructions": "Please review the high risk merge request and approve or reject it accordingly."
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "human-review": "Approved"
+                    },
+                    "move-to-state": "token-expense-check"
+                },
+                {
+                    "condition": {
+                        "human-review": "Rejected"
+                    },
+                    "move-to-state": "write-execution-plan"
+                }
+            ]
+        },
+        {
+            "id": "token-expense-check",
+            "sequence": 25,
+            "name": "AI Token Expense Check",
+            "description": "Check if this is something that will incur AI token expenses",
+            "paired-ticket-system-status": "In Progress",
+            "max-visits": 3,
+            "on-max-visits": "blocked",
+            "return-to-state": "token-expense-check",
+            "action": {
+                "type": "prompt",
+                "prompt": "check-if-ticket-will-spend-tokens",
+                "agent-count": 1,
+                "run-in-dev-container": false
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "all": [
+                            {
+                                "turn-complete": true
+                            },
+                            {
+                                "structured-output": {
+                                    "will-spend-tokens": true
+                                }
+                            }
+                        ]
+                    },
+                    "move-to-state": "payment-gate"
+                },
+                {
+                    "condition": {
+                        "all": [
+                            {
+                                "turn-complete": true
+                            },
+                            {
+                                "structured-output": {
+                                    "will-spend-tokens": false
+                                }
+                            }
+                        ]
+                    },
+                    "move-to-state": "variation-selection"
+                }
+            ]
+        },
+        {
+            "id": "payment-gate",
+            "sequence": 26,
+            "name": "Payment Gate",
+            "description": "Gate for human approval to incur AI token expenses",
+            "paired-ticket-system-status": "In Progress",
+            "max-visits": 3,
+            "on-max-visits": "blocked",
+            "return-to-state": "payment-gate",
+            "action": {
+                "type": "human",
+                "instructions": "Please review the AI token expense and approve or reject it accordingly."
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "human-review": "Approved"
+                    },
+                    "move-to-state": "variation-selection"
+                },
+                {
+                    "condition": {
+                        "human-review": "Rejected"
+                    },
+                    "move-to-state": "write-execution-plan"
+                }
+            ]
+        },
+        {
+            "id": "variation-selection",
+            "sequence": 27,
+            "name": "Variation Selection",
+            "description": "Selecting the appropriate variation for the merge request",
+            "paired-ticket-system-status": "In Progress",
+            "max-visits": 3,
+            "on-max-visits": "blocked",
+            "return-to-state": "variation-selection",
+            "action": {
+                "type": "human",
+                "instructions": "This ticket was built more than one way. Compare the variations and choose the one to go with; the others are set aside."
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "variation-selected": true
+                    },
+                    "move-to-state": "merge-pull-request"
+                },
+                {
+                    "condition": {
+                        "has-variations": false
+                    },
+                    "move-to-state": "merge-pull-request"
+                }
+            ]
+        },
+        {
+            "id": "merge-pull-request",
+            "sequence": 28,
+            "name": "Merge Pull Request",
+            "description": "Merge the ticket's own pull request — no team review",
+            "max-visits": 3,
+            "on-max-visits": "blocked",
+            "return-to-state": "merge-pull-request",
+            "action": {
+                "type": "script",
+                "command": "./agent.sh merge-request:merge {project} {ticket} {variation}"
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "exit-code": 0
+                    },
+                    "move-to-state": "update-workspace"
+                },
+                {
+                    "condition": {
+                        "not": {
+                            "exit-code": 0
+                        }
+                    },
+                    "move-to-state": "blocked"
+                }
+            ],
+            "paired-ticket-system-status": "In Progress"
+        },
+        {
+            "id": "update-workspace",
+            "sequence": 29,
+            "name": "Update the Harness",
+            "description": "Bring the harness's checkout up to date with the merge",
+            "max-visits": 3,
+            "on-max-visits": "blocked",
+            "return-to-state": "update-workspace",
+            "action": {
+                "type": "script",
+                "command": "./agent.sh code:update-workspace {project}"
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "exit-code": 0
+                    },
+                    "move-to-state": "request-restart"
+                },
+                {
+                    "condition": {
+                        "not": {
+                            "exit-code": 0
+                        }
+                    },
+                    "move-to-state": "blocked"
+                }
+            ],
+            "paired-ticket-system-status": "In Progress"
+        },
+        {
+            "id": "request-restart",
+            "sequence": 30,
+            "name": "Request a Restart",
+            "description": "Ask the harness to restart onto the update",
+            "max-visits": 3,
+            "on-max-visits": "blocked",
+            "return-to-state": "request-restart",
+            "action": {
+                "type": "script",
+                "command": "./agent.sh harness:request-restart {ticket}"
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "exit-code": 0
+                    },
+                    "move-to-state": "await-restart"
+                },
+                {
+                    "condition": {
+                        "not": {
+                            "exit-code": 0
+                        }
+                    },
+                    "move-to-state": "blocked"
+                }
+            ],
+            "paired-ticket-system-status": "In Progress"
+        },
+        {
+            "id": "await-restart",
+            "sequence": 31,
+            "name": "Await the Restart",
+            "description": "Wait until the harness runs the updated code",
+            "return-to-state": "await-restart",
+            "action": {
+                "type": "script",
+                "command": "./agent.sh harness:restarted {ticket}",
+                "mode": "timer",
+                "timer-minutes": 1
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "exit-code": 0
+                    },
+                    "move-to-state": "done"
+                }
+            ],
+            "paired-ticket-system-status": "In Progress"
+        },
+        {
+            "id": "done",
+            "sequence": 32,
+            "name": "Done",
+            "description": "Work is completed",
+            "is-done": true,
+            "paired-ticket-system-status": "Done",
+            "action": {
+                "type": "none"
+            }
+        }
+    ],
+    "backlog-refinement-steps": [
+        {
+            "id": "backlog-refinement",
+            "sequence": 1,
+            "name": "Backlog Refinement",
+            "description": "Groom a backlog ticket until it is ready to build",
+            "action": {
+                "type": "state-engine",
+                "engine": "harness-backlog-refinement"
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "is-done": true
+                    }
+                }
+            ]
+        }
+    ]
+}

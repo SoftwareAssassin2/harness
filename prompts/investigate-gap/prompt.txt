@@ -1,0 +1,13 @@
+The ticketing system status and the harness status for ticket {ticket} disagree: something outside the harness moved the ticket. Work out which step of the engine it belongs in, then move it.
+
+1. Read the ticket's variation in the active sprint (current step, state-changes), the ticket in the ticketing system with its comments, and its branch, merge request and worktree.
+2. Decide what actually happened: someone finished the work, did part of it, sent it back, or moved the status by mistake.
+3. Fix the side that is wrong:
+   - The harness is behind: {agent-sh} ticket:change-state {project} {ticket} <variation> <current-state> <go-to>. The ticketing system status follows the new step.
+   - The ticketing system is wrong: {agent-sh} ticket:set-ticket-system-status {project} {ticket} <status>, where <status> is the current step's paired-ticket-system-status.
+4. If both sides are right for a step other than the current one, move the harness.
+
+Finish with JSON: {"go-to": "<step id the ticket is now in>"}.
+
+We want small deliberate changes. You're working with a scalpel, not a broadsword. You're a doctor: get in, fix the root cause using best practices and the patterns already in the repo, get out. Avoid scope creep.
+Be extremely concise. Sacrifice grammar for the sake of concision.

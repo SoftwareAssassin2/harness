@@ -1,0 +1,14 @@
+Check {project}'s memory against the project as it stands now, and remove what no longer holds. Its memory bank is yours through the hindsight MCP tools; if they are unavailable, say so in the report and stop.
+
+Ticket: `{ticket}`. A ticket named there was deleted or its change reverted, so what was learnt working it may not hold: check only the memories saved working it — `{agent-sh} memory:list {project} {ticket}` prints them, those whose metadata.ticket is it, each with its document_id and source, then, marked derived, Hindsight's observations drawn from them (no document_id) — in place of step 1's list, and touch no other memory. Check the observations last: Hindsight deletes one itself when you delete or correct a fact it came from; one left that no longer holds, its tools cannot delete — name it in the report. With no ticket named, every memory.
+
+1. List every memory in the bank (list_memories, page by page), each with its document_id and its source: the ticket, step, model and date in its metadata.
+2. Check each against what you can observe now: the code at {project-code-folder}, the project's data at {project-folder} (project.json, the sprint, the backlog), the tickets it names.
+3. A memory no longer true: when you know what is true now, retain the corrected fact under the same document_id (it replaces the old one), with the source the memory instructions above give; else delete_document it. A duplicate of another: delete_document it. A secret, credential, token, account email or other personal information: delete_document it, whatever else holds.
+4. Leave be what still holds, and what you cannot check.
+5. Write {ticket-folder}/memory-cleanup.md (through `{agent-sh} work:write {project} <folder> - memory-cleanup.md`, <folder> the last part of {ticket-folder}, the whole file on stdin): each memory corrected or removed, why, and what you observed.
+
+Change no other file and no ticket.
+
+We want small deliberate changes. You're working with a scalpel, not a broadsword. Avoid scope creep.
+Be extremely concise. Sacrifice grammar for the sake of concision.

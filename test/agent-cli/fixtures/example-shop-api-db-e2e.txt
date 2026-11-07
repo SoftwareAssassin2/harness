@@ -1,0 +1,533 @@
+
+> nx run example-shop-api-db-e2e:test
+
+> bash ../../scripts/local/e2e-compose-test.sh --up api-db --run pgtap
+
+local e2e-compose-test: compose project example-shop-api-db-e2e-ex-2402
+ Image example-shop-api-db-e2e-ex-2402-pgtap:local Building 
+#1 [internal] load local bake definitions
+#1 DONE 0.0s
+[1m[32m✔[0m Container api-db-1  Healthy
+api-db-1                   | Flyway OSS Edition by Redgate
+api-db-1                   | Successfully applied 171 migrations to schema "public"
+/tests/01_schema.sql .................................... 
+1..12
+ok 1 - schema object exists 1
+ok 2 - schema object exists 2
+ok 3 - schema object exists 3
+ok 4 - schema object exists 4
+ok 5 - schema object exists 5
+ok 6 - schema object exists 6
+ok 7 - schema object exists 7
+ok 8 - schema object exists 8
+ok 9 - schema object exists 9
+ok 10 - schema object exists 10
+ok 11 - schema object exists 11
+ok 12 - schema object exists 12
+ok
+/tests/02_roles.sql ..................................... 
+1..8
+ok 1 - role grant 1
+ok 2 - role grant 2
+ok 3 - role grant 3
+ok 4 - role grant 4
+ok 5 - role grant 5
+ok 6 - role grant 6
+ok 7 - role grant 7
+ok 8 - role grant 8
+ok
+/tests/03_order_rpcs.sql ................................ 
+1..17
+ok 1 - api.order rpc check 1
+ok 2 - api.order rpc check 2
+ok 3 - api.order rpc check 3
+ok 4 - api.order rpc check 4
+ok 5 - api.order rpc check 5
+ok 6 - api.order rpc check 6
+ok 7 - api.order rpc check 7
+ok 8 - api.order rpc check 8
+ok 9 - api.order rpc check 9
+ok 10 - api.order rpc check 10
+ok 11 - api.order rpc check 11
+ok 12 - api.order rpc check 12
+ok 13 - api.order rpc check 13
+psql:/tests/03_order_rpcs.sql:88: ERROR:  function api.cancel_order(uuid) does not exist
+Dubious, test returned 3 (wstat 768, 0x300)
+Failed 4/17 subtests 
+/tests/04_behavior.sql .................................. 
+1..22
+ok 1 - open_order behaviour 1
+ok 2 - open_order behaviour 2
+ok 3 - open_order behaviour 3
+ok 4 - open_order behaviour 4
+ok 5 - open_order behaviour 5
+ok 6 - open_order behaviour 6
+ok 7 - open_order behaviour 7
+ok 8 - open_order behaviour 8
+ok 9 - open_order behaviour 9
+ok 10 - open_order behaviour 10
+ok 11 - open_order behaviour 11
+ok 12 - open_order behaviour 12
+ok 13 - open_order behaviour 13
+ok 14 - open_order behaviour 14
+ok 15 - open_order behaviour 15
+ok 16 - open_order behaviour 16
+ok 17 - open_order behaviour 17
+ok 18 - open_order behaviour 18
+ok 19 - open_order behaviour 19
+ok 20 - open_order behaviour 20
+ok 21 - open_order behaviour 21
+ok 22 - open_order behaviour 22
+ok
+/tests/100_search_boolean_spike.sql ..................... 
+1..25
+ok 1 - search spike check 1
+ok 2 - search spike check 2
+not ok 3 - boolean AND: shoes AND laces does NOT match DOC_ONLY_L (laces only) — intersection
+# Failed test 3: "boolean AND: shoes AND laces does NOT match DOC_ONLY_L (laces only) — intersection"
+#         have: f
+#         want: t
+not ok 4 - boolean AND: shoes AND laces does NOT match DOC_ONLY_S (shoes only) — intersection
+# Failed test 4: "boolean AND: shoes AND laces does NOT match DOC_ONLY_S (shoes only) — intersection"
+#         have: f
+#         want: t
+ok 5 - search spike check 5
+ok 6 - search spike check 6
+not ok 7 - boolean NOT: shoes NOT laces EXCLUDES DOC_BOTH (has both terms) — exclusion works
+# Failed test 7: "boolean NOT: shoes NOT laces EXCLUDES DOC_BOTH (has both terms) — exclusion works"
+#         have: f
+#         want: t
+ok 8 - search spike check 8
+not ok 9 - case-sensitive: "shoes and laces" returns DIFFERENT products from "shoes AND laces"
+# Failed test 9: "case-sensitive: "shoes and laces" returns DIFFERENT products from "shoes AND laces""
+#         have: f
+#         want: t
+not ok 10 - case-sensitive: "shoes not laces" returns DIFFERENT products from "shoes NOT laces"
+# Failed test 10: "case-sensitive: "shoes not laces" returns DIFFERENT products from "shoes NOT laces""
+#         have: f
+#         want: t
+ok 11 - search spike check 11
+not ok 12 - phrase proximity ranks closer terms first # TODO ranking not tuned yet
+ok 13 - search spike check 13
+ok 14 # SKIP no BM25 index on this build
+ok 15 # SKIP no BM25 index on this build
+ok 16 - search spike check 16
+ok 17 - search spike check 17
+ok 18 - search spike check 18
+ok 19 - search spike check 19
+ok 20 - search spike check 20
+ok 21 - search spike check 21
+ok 22 - search spike check 22
+ok 23 - search spike check 23
+ok 24 - search spike check 24
+ok 25 - search spike check 25
+Failed 5/25 subtests 
+/tests/114_payment_ledger.sql ........................... 
+1..40
+ok 1 - 114_payment_ledger check 1
+ok 2 - 114_payment_ledger check 2
+ok 3 - 114_payment_ledger check 3
+ok 4 - 114_payment_ledger check 4
+ok 5 - 114_payment_ledger check 5
+ok 6 - 114_payment_ledger check 6
+ok 7 - 114_payment_ledger check 7
+ok 8 - 114_payment_ledger check 8
+ok 9 - 114_payment_ledger check 9
+ok 10 - 114_payment_ledger check 10
+ok 11 - 114_payment_ledger check 11
+ok 12 - 114_payment_ledger check 12
+ok 13 - 114_payment_ledger check 13
+ok 14 - 114_payment_ledger check 14
+ok 15 - 114_payment_ledger check 15
+ok 16 - 114_payment_ledger check 16
+ok 17 - 114_payment_ledger check 17
+ok 18 - 114_payment_ledger check 18
+ok 19 - 114_payment_ledger check 19
+ok 20 - 114_payment_ledger check 20
+ok 21 - 114_payment_ledger check 21
+ok 22 - 114_payment_ledger check 22
+psql:/tests/114_payment_ledger.sql:12: ERROR:  relation "pg_temp.fixture" does not exist
+Dubious, test returned 3 (wstat 768, 0x300)
+Failed 18/40 subtests 
+/tests/135_cart_row_details.sql ......................... 
+1..30
+ok 1 - 135_cart_row_details check 1
+ok 2 - 135_cart_row_details check 2
+ok 3 - 135_cart_row_details check 3
+ok 4 - 135_cart_row_details check 4
+ok 5 - 135_cart_row_details check 5
+ok 6 - 135_cart_row_details check 6
+ok 7 - 135_cart_row_details check 7
+ok 8 - 135_cart_row_details check 8
+ok 9 - 135_cart_row_details check 9
+psql:/tests/135_cart_row_details.sql:12: ERROR:  relation "pg_temp.fixture" does not exist
+Dubious, test returned 3 (wstat 768, 0x300)
+Failed 21/30 subtests 
+/tests/145_search_phrase.sql ............................ 
+1..20
+ok 1 - phrase search check 1
+ok 2 - phrase search check 2
+ok 3 - phrase search check 3
+ok 4 - phrase search check 4
+not ok 5 - (h) AND: only docs with both zqfoo and zqbar
+# Failed test 5: "(h) AND: only docs with both zqfoo and zqbar"
+#         have: f
+#         want: t
+not ok 6 - (h) NOT: docs with zqfoo excluding those with zqbaz
+# Failed test 6: "(h) NOT: docs with zqfoo excluding those with zqbaz"
+#         have: f
+#         want: t
+ok 7 - phrase search check 7
+not ok 8 - (h) parse: AND activates the constraint path
+# Failed test 8: "(h) parse: AND activates the constraint path"
+#         have: f
+#         want: t
+not ok 9 - (h) parse: NOT produces an exclusion constraint
+# Failed test 9: "(h) parse: NOT produces an exclusion constraint"
+#         have: f
+#         want: t
+ok 10 - phrase search check 10
+not ok 11 - (h) parse: lowercase or does not activate constraint
+# Failed test 11: "(h) parse: lowercase or does not activate constraint"
+#         have: f
+#         want: t
+ok 12 - phrase search check 12
+ok 13 - phrase search check 13
+ok 14 - phrase search check 14
+ok 15 - phrase search check 15
+ok 16 - phrase search check 16
+ok 17 - phrase search check 17
+ok 18 - phrase search check 18
+ok 19 - phrase search check 19
+ok 20 - phrase search check 20
+Failed 5/20 subtests 
+/tests/190_catalog_import.sql ........................... 
+1..9
+ok 1 - catalog import 1
+ok 2 - catalog import 2
+ok 3 - catalog import 3
+ok 4 - catalog import 4
+ok 5 - catalog import 5
+ok 6 - catalog import 6
+ok 7 - catalog import 7
+ok 8 - catalog import 8
+ok 9 - catalog import 9
+ok
+/tests/192_product_embedding_ann.sql .................... 
+1..16
+not ok 1 - V173 leaves unused side synchronization disabled
+# Failed test 1: "V173 leaves unused side synchronization disabled"
+#         have: O
+#         want: D
+ok 2 - embedding index check 2
+ok 3 - embedding index check 3
+ok 4 - embedding index check 4
+ok 5 - embedding index check 5
+ok 6 - embedding index check 6
+ok 7 - embedding index check 7
+ok 8 - embedding index check 8
+ok 9 - embedding index check 9
+ok 10 - embedding index check 10
+ok 11 - embedding index check 11
+ok 12 - embedding index check 12
+ok 13 - embedding index check 13
+ok 14 - embedding index check 14
+ok 15 - embedding index check 15
+ok 16 - embedding index check 16
+Failed 1/16 subtests 
+/tests/193_product_embedding_backfill.sql ............... 
+1..6
+ok 1 - embedding backfill 1
+ok 2 - embedding backfill 2
+ok 3 - embedding backfill 3
+ok 4 - embedding backfill 4
+ok 5 - embedding backfill 5
+ok 6 - embedding backfill 6
+ok
+/tests/48_order_detail_api.sql .......................... 
+1..217
+ok 1 - order detail check 1
+ok 2 - order detail check 2
+ok 3 - order detail check 3
+ok 4 - order detail check 4
+ok 5 - order detail check 5
+ok 6 - order detail check 6
+ok 7 - order detail check 7
+ok 8 - order detail check 8
+ok 9 - order detail check 9
+ok 10 - order detail check 10
+ok 11 - order detail check 11
+ok 12 - order detail check 12
+ok 13 - order detail check 13
+ok 14 - order detail check 14
+ok 15 - order detail check 15
+ok 16 - order detail check 16
+ok 17 - order detail check 17
+ok 18 - order detail check 18
+ok 19 - order detail check 19
+ok 20 - order detail check 20
+ok 21 - order detail check 21
+ok 22 - order detail check 22
+ok 23 - order detail check 23
+ok 24 - order detail check 24
+ok 25 - order detail check 25
+ok 26 - order detail check 26
+ok 27 - order detail check 27
+ok 28 - order detail check 28
+ok 29 - order detail check 29
+ok 30 - order detail check 30
+ok 31 - order detail check 31
+ok 32 - order detail check 32
+ok 33 - order detail check 33
+ok 34 - order detail check 34
+ok 35 - order detail check 35
+ok 36 - order detail check 36
+ok 37 - order detail check 37
+ok 38 - order detail check 38
+ok 39 - order detail check 39
+ok 40 - order detail check 40
+ok 41 - order detail check 41
+ok 42 - order detail check 42
+ok 43 - order detail check 43
+ok 44 - order detail check 44
+ok 45 - order detail check 45
+ok 46 - order detail check 46
+ok 47 - order detail check 47
+ok 48 - order detail check 48
+ok 49 - order detail check 49
+ok 50 - order detail check 50
+ok 51 - order detail check 51
+ok 52 - order detail check 52
+ok 53 - order detail check 53
+ok 54 - order detail check 54
+ok 55 - order detail check 55
+ok 56 - order detail check 56
+ok 57 - order detail check 57
+ok 58 - order detail check 58
+ok 59 - order detail check 59
+ok 60 - order detail check 60
+ok 61 - order detail check 61
+ok 62 - order detail check 62
+ok 63 - order detail check 63
+ok 64 - order detail check 64
+ok 65 - order detail check 65
+ok 66 - order detail check 66
+ok 67 - order detail check 67
+ok 68 - order detail check 68
+ok 69 - order detail check 69
+ok 70 - order detail check 70
+ok 71 - order detail check 71
+ok 72 - order detail check 72
+ok 73 - order detail check 73
+ok 74 - order detail check 74
+ok 75 - order detail check 75
+ok 76 - order detail check 76
+ok 77 - order detail check 77
+ok 78 - order detail check 78
+ok 79 - order detail check 79
+ok 80 - order detail check 80
+ok 81 - order detail check 81
+ok 82 - order detail check 82
+ok 83 - order detail check 83
+ok 84 - order detail check 84
+ok 85 - order detail check 85
+ok 86 - order detail check 86
+ok 87 - order detail check 87
+ok 88 - order detail check 88
+ok 89 - order detail check 89
+ok 90 - order detail check 90
+ok 91 - order detail check 91
+ok 92 - order detail check 92
+ok 93 - order detail check 93
+ok 94 - order detail check 94
+ok 95 - order detail check 95
+ok 96 - order detail check 96
+ok 97 - order detail check 97
+ok 98 - order detail check 98
+ok 99 - order detail check 99
+ok 100 - order detail check 100
+ok 101 - order detail check 101
+ok 102 - order detail check 102
+ok 103 - order detail check 103
+ok 104 - order detail check 104
+ok 105 - order detail check 105
+ok 106 - order detail check 106
+ok 107 - order detail check 107
+ok 108 - order detail check 108
+ok 109 - order detail check 109
+ok 110 - order detail check 110
+ok 111 - order detail check 111
+ok 112 - order detail check 112
+ok 113 - order detail check 113
+ok 114 - order detail check 114
+ok 115 - order detail check 115
+ok 116 - order detail check 116
+ok 117 - order detail check 117
+ok 118 - order detail check 118
+ok 119 - order detail check 119
+ok 120 - order detail check 120
+ok 121 - order detail check 121
+ok 122 - order detail check 122
+ok 123 - order detail check 123
+ok 124 - order detail check 124
+ok 125 - order detail check 125
+ok 126 - order detail check 126
+ok 127 - order detail check 127
+not ok 128 - order_document: a lines element carries exactly {line_id, sku, quantity, unit_price, discounts, tax_lines, text_version} (R6/R10, EX-2373)
+# Failed test 128: "order_document: a lines element carries exactly {line_id, sku, quantity, unit_price, discounts, tax_lines, text_version} (R6/R10, EX-2373)"
+#         have: {line_id,sku}
+#         want: {line_id,sku,quantity}
+ok 129 - order detail check 129
+ok 130 - order detail check 130
+ok 131 - order detail check 131
+ok 132 - order detail check 132
+ok 133 - order detail check 133
+ok 134 - order detail check 134
+ok 135 - order detail check 135
+ok 136 - order detail check 136
+ok 137 - order detail check 137
+ok 138 - order detail check 138
+ok 139 - order detail check 139
+ok 140 - order detail check 140
+ok 141 - order detail check 141
+ok 142 - order detail check 142
+ok 143 - order detail check 143
+ok 144 - order detail check 144
+ok 145 - order detail check 145
+ok 146 - order detail check 146
+ok 147 - order detail check 147
+ok 148 - order detail check 148
+ok 149 - order detail check 149
+ok 150 - order detail check 150
+ok 151 - order detail check 151
+ok 152 - order detail check 152
+ok 153 - order detail check 153
+ok 154 - order detail check 154
+ok 155 - order detail check 155
+ok 156 - order detail check 156
+ok 157 - order detail check 157
+ok 158 - order detail check 158
+ok 159 - order detail check 159
+ok 160 - order detail check 160
+ok 161 - order detail check 161
+ok 162 - order detail check 162
+ok 163 - order detail check 163
+ok 164 - order detail check 164
+ok 165 - order detail check 165
+ok 166 - order detail check 166
+ok 167 - order detail check 167
+ok 168 - order detail check 168
+ok 169 - order detail check 169
+ok 170 - order detail check 170
+ok 171 - order detail check 171
+ok 172 - order detail check 172
+ok 173 - order detail check 173
+ok 174 - order detail check 174
+ok 175 - order detail check 175
+ok 176 - order detail check 176
+ok 177 - order detail check 177
+ok 178 - order detail check 178
+ok 179 - order detail check 179
+ok 180 - order detail check 180
+ok 181 - order detail check 181
+ok 182 - order detail check 182
+ok 183 - order detail check 183
+ok 184 - order detail check 184
+ok 185 - order detail check 185
+ok 186 - order detail check 186
+ok 187 - order detail check 187
+ok 188 - order detail check 188
+ok 189 - order detail check 189
+ok 190 - order detail check 190
+ok 191 - order detail check 191
+ok 192 - order detail check 192
+ok 193 - order detail check 193
+ok 194 - order detail check 194
+ok 195 - order detail check 195
+ok 196 - order detail check 196
+ok 197 - order detail check 197
+ok 198 - order detail check 198
+ok 199 - order detail check 199
+ok 200 - order detail check 200
+ok 201 - order detail check 201
+ok 202 - order detail check 202
+ok 203 - order detail check 203
+ok 204 - order detail check 204
+ok 205 - order detail check 205
+ok 206 - order detail check 206
+ok 207 - order detail check 207
+ok 208 - order detail check 208
+ok 209 - order detail check 209
+ok 210 - order detail check 210
+ok 211 - order detail check 211
+ok 212 - order detail check 212
+ok 213 - order detail check 213
+ok 214 - order detail check 214
+ok 215 - order detail check 215
+ok 216 - order detail check 216
+ok 217 - parity: search_result_browse.brand_names = product_overview.brand_names on a product that has brands
+Failed 1/217 subtests 
+/tests/49_order_list_api.sql ............................ 
+1..14
+ok 1 - order list 1
+ok 2 - order list 2
+ok 3 - order list 3
+ok 4 - order list 4
+ok 5 - order list 5
+ok 6 - order list 6
+ok 7 - order list 7
+ok 8 - order list 8
+ok 9 - order list 9
+ok 10 - order list 10
+ok 11 - order list 11
+ok 12 - order list 12
+ok 13 - order list 13
+ok 14 - order list 14
+ok
+/tests/57_order_document_scoping.sql .................... 
+1..11
+ok 1 - fixture: 120 decoy lines on orders other than the one under test
+Dubious, test returned 3 (wstat 768, 0x300)
+Failed 10/11 subtests 
+/tests/91_line_text_extraction_version.sql .............. 
+1..8
+ok 1 - text extraction check 1
+ok 2 - text extraction check 2
+ok 3 - text extraction check 3
+ok 4 - text extraction check 4
+not ok 5 - V4139 allows any version from 2 up (NULL still passes), and is NOT VALID (no scan of the 36 GB table)
+# Failed test 5: "V4139 allows any version from 2 up (NULL still passes), and is NOT VALID (no scan of the 36 GB table)"
+#         have: VALID
+#         want: NOT VALID
+Dubious, test returned 3 (wstat 768, 0x300)
+Failed 4/8 subtests 
+/tests/92_line_text_backfill.sql ........................ 
+1..5
+ok 1 - text backfill 1
+ok 2 - text backfill 2
+ok 3 - text backfill 3
+ok 4 - text backfill 4
+ok 5 - text backfill 5
+ok
+
+Test Summary Report
+-------------------
+/tests/03_order_rpcs.sql                               (Wstat: 768 (exited 3) Tests: 13 Failed: 0)
+  Non-zero exit status: 3
+  Parse errors: Bad plan.  You planned 17 tests but ran 13.
+/tests/100_search_boolean_spike.sql                    (Wstat: 0 Tests: 25 Failed: 5)
+  Failed tests:  3-4, 7, 9-10
+  TODO passed:   none
+/tests/192_product_embedding_ann.sql                   (Wstat: 0 Tests: 16 Failed: 1)
+  Failed test:  1
+Files=19, Tests=480, 41 wallclock secs ( 0.12 usr  0.03 sys +  1.10 cusr  0.40 csys =  1.65 CPU)
+Result: FAIL
+api-db-1                   | Schema "public" is up to date. No migration necessary.
+Warning: command "bash ../../scripts/local/e2e-compose-test.sh --up api-db --run pgtap" exited with non-zero status code
+
+ NX   Running target test for project example-shop-api-db-e2e failed
+
+Failed tasks:
+
+- example-shop-api-db-e2e:test
+

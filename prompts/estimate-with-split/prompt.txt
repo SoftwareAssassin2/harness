@@ -1,0 +1,18 @@
+Estimate ticket {ticket}'s story points.
+
+1. Read the ticket from the harness's data: `jq '.tickets[] | select(.key == "{ticket}")' {project-folder}/backlog.json` (title, description, issue-type), and {ticket-folder}/questions-and-answers.json. Not a Story (a Bug or a Spike)? Write nothing and finish with points null and too-large false.
+2. Size it on the project's scale: `{harness-folder}/agent.sh project:story-point-scale {project}`. A guide:
+   - 1: a one-file change with its test
+   - 2: a few files in one module
+   - 3: several modules, or a new command
+   - 5: a change across several parts of the system (in the harness: an engine or flow change across control, the CLI and the TUI)
+   - bigger still, or much unknown: too large for one ticket
+3. Keep the ladder consistent: compare with the project's tickets already estimated (their "points" in {project-folder}/backlog.json and {project-folder}/sprints/).
+4. Bigger than the scale's top? Estimate the top and finish with too-large true: the next step proposes smaller tickets for the operator to accept, so don't ask how to split it. Else too-large false.
+5. Write it: `{harness-folder}/agent.sh ticket:set-points {project} {ticket} <points>` — the harness and the ticket system, overwriting any earlier estimate. Refused by the ticket system (the harness keeps it)? Put the error in step 6's estimate.md and start the summary with "NOT IN THE TICKET SYSTEM:".
+6. Write one line of reasoning to {ticket-folder}/estimate.md (through `{agent-sh} work:write {project} {ticket} - estimate.md`, the whole file on stdin).
+7. Ask with `{agent-sh} question:ask {project} {ticket} <--blocking|--non-blocking> "<question>" "<why it is asked>" "<recommended answer>"` (never by writing {ticket-folder}/questions-and-answers.json) only when the size hangs on something only the operator knows. --blocking when a wrong guess would cost rework, be irreversible, or is a product or business call only the operator can make: the ticket gets no agent until it is answered. Else --non-blocking: go on with your recommended answer, recorded as the assumption; an answer that differs comes back as a requirements change.
+
+Finish with JSON: {"points": <a value on the scale, or null for a bug or spike>, "too-large": <true when bigger than the scale's top, else false>, "summary": "<one line: why this many points>"}.
+
+Be extremely concise. Sacrifice grammar for the sake of concision.

@@ -1,0 +1,14 @@
+Check whether the agent harnesses are healthy, so failures caused by the tooling aren't blamed on the work.
+
+1. Read harness.json (in {harness-folder}/data) for the harnesses and models the factory uses.
+2. For each harness (claude, codex, gemini), check:
+   - The CLI is installed, and how its version compares with the latest release
+   - It is signed in, and the sign-in is accepted (not expired or refused)
+   - Each listed model is one the CLI and account can actually use
+   - Recent sessions for signs of trouble: rate limits, usage limits, auth errors, crashes, or hung turns
+3. Write the report to {ticket-folder}/harness.md (through `{agent-sh} work:write {project} <folder> - harness.md`, <folder> the last part of {ticket-folder}, the whole file on stdin): each problem with its evidence (the command you ran and what it printed) and the fix you'd recommend.
+
+Don't install, upgrade, sign in, or change any file — only report. If everything is healthy, say so.
+
+We want small deliberate changes. You're working with a scalpel, not a broadsword. You're a doctor: get in, fix the root cause using best practices and the patterns already in the repo, get out. Avoid scope creep.
+Be extremely concise. Sacrifice grammar for the sake of concision.

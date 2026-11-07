@@ -1,0 +1,46 @@
+{
+    "description": "Prompt for fixing the issue a self-healing ticket describes",
+    "supported-command-line-interfaces": [
+        "claude"
+    ],
+    "supported-models": [
+        "claude-opus-5-5",
+        "claude-opus-5",
+        "claude-sonnet-5",
+        "claude-opus-4-8",
+        "claude-opus-4-7"
+    ],
+    "persona": "harness-doctor",
+    "input-arguments": [
+        {
+            "name": "project",
+            "description": "Project folder name under data/projects/",
+            "example": "my-project",
+            "required": true
+        },
+        {
+            "name": "ticket",
+            "description": "Ticket number",
+            "example": "ABC-1234",
+            "required": true
+        }
+    ],
+    "output": {
+        "type": "object",
+        "properties": {
+            "is-fixed": {
+                "type": "boolean",
+                "description": "true if the fix is committed and verified"
+            },
+            "summary": {
+                "type": "string",
+                "description": "What was changed, or why it could not be, in one line"
+            }
+        },
+        "required": [
+            "is-fixed",
+            "summary"
+        ],
+        "additionalProperties": false
+    }
+}

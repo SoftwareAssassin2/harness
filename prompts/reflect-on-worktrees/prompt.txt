@@ -1,0 +1,14 @@
+List the worktrees under every project's local folders and flag the ones that need attention. The harness checks every project it runs: each folder under {harness-folder}/data/projects/ with a project.json.
+
+1. For each project, read its project.json for its repositories and local-environments.
+2. In each local clone run `git worktree list --porcelain` and, for each worktree, check:
+   - Its branch still has an open ticket in the active sprint; otherwise it is stale
+   - It has no uncommitted or untracked changes; otherwise it is dirty
+   - Its branch is not already merged into the default branch
+   - The folder exists and is not locked or prunable
+3. Write the report to {ticket-folder}/worktrees.md (through `{agent-sh} work:write {project} <folder> - worktrees.md`, <folder> the last part of {ticket-folder}, the whole file on stdin), one section per project: one line per worktree with path, branch, ticket, and stale/dirty/merged/prunable flags, then the fix you'd recommend for each flagged one.
+
+Don't prune, delete, commit or check out anything — only report. If every worktree is current and clean, say so.
+
+We want small deliberate changes. You're working with a scalpel, not a broadsword. You're a doctor: get in, fix the root cause using best practices and the patterns already in the repo, get out. Avoid scope creep.
+Be extremely concise. Sacrifice grammar for the sake of concision.

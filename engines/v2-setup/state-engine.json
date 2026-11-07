@@ -1,0 +1,125 @@
+{
+    "steps": [
+        {
+            "id": "check-setup-complete",
+            "name": "Check Setup Complete",
+            "description": "Is the variation's VM set up already (its setup-complete marker)? Then Setup is left at once, every other step skipped",
+            "is-planning-stage": true,
+            "action": {
+                "type": "none"
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "script-succeeds": "./agent.sh vm:setup-complete {project} {ticket} {variation}"
+                    },
+                    "move-to-state": "done"
+                },
+                {
+                    "condition": {
+                        "not": {
+                            "script-succeeds": "./agent.sh vm:setup-complete {project} {ticket} {variation}"
+                        }
+                    },
+                    "move-to-state": "create-vm"
+                }
+            ],
+            "sequence": 1
+        },
+        {
+            "id": "create-vm",
+            "name": "Create VM",
+            "description": "The variation's own VM, cloned from the project's golden image (or the one it has, started); idempotent. One that cannot fit within the project's VM disk limit (exit 3) ends Setup at Blocked for Human, its reason kept as the variation's ai-feedback",
+            "is-planning-stage": true,
+            "max-visits": 3,
+            "on-max-visits": "blocked",
+            "record-script-output": true,
+            "action": {
+                "type": "script",
+                "command": "./agent.sh vm:create {project} {ticket} {variation}"
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "exit-code": 0
+                    },
+                    "move-to-state": "mark-setup-complete"
+                },
+                {
+                    "condition": {
+                        "exit-code": 3
+                    },
+                    "move-to-state": "blocked-for-human"
+                },
+                {
+                    "condition": {
+                        "not": {
+                            "exit-code": 0
+                        }
+                    },
+                    "move-to-state": "create-vm"
+                }
+            ],
+            "sequence": 2
+        },
+        {
+            "id": "mark-setup-complete",
+            "name": "Mark Setup Complete",
+            "description": "Every setup step succeeded: the setup-complete marker written in the VM. A setup that stopped part way has none, and runs again",
+            "is-planning-stage": true,
+            "max-visits": 3,
+            "on-max-visits": "blocked",
+            "action": {
+                "type": "script",
+                "command": "./agent.sh vm:mark-setup-complete {project} {ticket} {variation}"
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "exit-code": 0
+                    },
+                    "move-to-state": "done"
+                },
+                {
+                    "condition": {
+                        "not": {
+                            "exit-code": 0
+                        }
+                    },
+                    "move-to-state": "mark-setup-complete"
+                }
+            ],
+            "sequence": 3
+        },
+        {
+            "id": "done",
+            "name": "Done",
+            "description": "The group is finished; its parent step moves on",
+            "is-done": true,
+            "action": {
+                "type": "none"
+            },
+            "sequence": 4
+        },
+        {
+            "id": "blocked",
+            "name": "Blocked",
+            "description": "A step failed or looped too many times; the parent step sends the ticket to Blocked, which returns it to the start of this group",
+            "is-done": true,
+            "action": {
+                "type": "none"
+            },
+            "sequence": 5
+        },
+        {
+            "id": "blocked-for-human",
+            "name": "Blocked for Human",
+            "description": "Create VM could not fit within the project's VM disk limit: only the operator can free space or raise it; the parent step sends the ticket to Blocked for Human",
+            "is-done": true,
+            "action": {
+                "type": "none"
+            },
+            "sequence": 6
+        }
+    ]
+}

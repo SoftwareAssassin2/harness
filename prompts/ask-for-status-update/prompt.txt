@@ -1,0 +1,10 @@
+It has been {minutes} minutes since your last update. You are expected to provide an update every 5 minutes. Quickly submit a status update, then continue with your work.
+
+Give a status update of 34 characters or fewer every 5 minutes with:
+{status-update-command}
+Longer updates are rejected.
+
+When you approve the final result, run:
+{approve-command}
+
+If you have not yet approved the final result, you should be working on your assignment directly — or indirectly, if you are paired and don't hold the pen: stay in touch with the pen-holder and collaborate to solve the problem properly.

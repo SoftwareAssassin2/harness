@@ -1,0 +1,81 @@
+{
+    "steps": [
+        {
+            "id": "merge-pull-request",
+            "sequence": 1,
+            "name": "Merge Pull Request",
+            "description": "Merge the ticket's own pull request in its turn — one ticket of the project at a time (the merge lock): its branch rebased onto the latest main and the full tests (./system.sh test) run first, in the background, asked again every minute; red goes back to Build with nothing merged — no team review",
+            "max-visits": 3,
+            "on-max-visits": "blocked",
+            "action": {
+                "type": "script",
+                "command": "./agent.sh merge-request:merge-in-turn {project} {ticket} {variation} ./system.sh test",
+                "mode": "timer",
+                "timer-minutes": 1
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "all": [
+                            {
+                                "exit-code": 0
+                            },
+                            {
+                                "not": {
+                                    "script-output": {
+                                        "waiting": true
+                                    }
+                                }
+                            }
+                        ]
+                    },
+                    "move-to-state": "done"
+                },
+                {
+                    "condition": {
+                        "exit-code": 2
+                    },
+                    "move-to-state": "rebuild"
+                },
+                {
+                    "condition": {
+                        "not": {
+                            "exit-code": 0
+                        }
+                    },
+                    "move-to-state": "blocked"
+                }
+            ]
+        },
+        {
+            "id": "done",
+            "name": "Done",
+            "description": "The group is finished; its parent step moves on",
+            "is-done": true,
+            "action": {
+                "type": "none"
+            },
+            "sequence": 2
+        },
+        {
+            "id": "blocked",
+            "name": "Blocked",
+            "description": "A step failed or looped too many times; the parent step sends the ticket to Blocked, which returns it to the start of this group",
+            "is-done": true,
+            "action": {
+                "type": "none"
+            },
+            "sequence": 3
+        },
+        {
+            "id": "rebuild",
+            "name": "Back to Build",
+            "description": "The merge gate was red — the branch does not rebase onto main, or the full tests fail on it — so nothing merged; the parent step sends the ticket back to Build's Generate Solution",
+            "is-done": true,
+            "action": {
+                "type": "none"
+            },
+            "sequence": 4
+        }
+    ]
+}

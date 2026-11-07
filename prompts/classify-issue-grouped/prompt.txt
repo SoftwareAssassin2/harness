@@ -1,0 +1,17 @@
+Classify the problem below, found in project {project} — a blocked ticket's, or a health check's: where its fix is made. Don't fix anything.
+
+{problem}
+
+1. Read the analysis above; check its root cause and evidence where you can (re-run one or two).
+2. Decide which it is, by where the cause is, not where it showed:
+   - "harness": the harness itself (control, its scripts, engines, prompts, its own data) — a fix ticket in the harness project's backlog.
+   - "project": the project's own code — a fix ticket in the project's own ticket system, but only for a failure on the latest master. The harness checks that next, against the project's master CI for the failing job Troubleshoot named: failing there, a bug is raised; passing there, nothing is raised and it is fixed here as our environment or access; not proven, nothing is raised and the operator is asked. On the harness project, the harness is the project: the same backlog.
+   - "environment": where the work runs — the ticket's VM or worktree, its dependencies, the project's containers, the operator's machine (credentials, a shared checkout) — repaired in place where that is allowed, else by the operator.
+3. The operator's rule: a project bug only for a failure on the latest master — never for a failure seen only in this VM or on a branch (our VM, emulation, timing, a cold cache, a missing credential or repository, a stale branch). Never raise one yourself, and never check master yourself: say "project" when the cause is in the project's code, and the harness's check against the latest master decides.
+4. A harness fix never changes a project's repositories; a project fix never changes the harness. Pick the one place the whole fix belongs.
+5. Earlier blocks, when listed: a fix made in one place that did not hold says the cause may lie in another — weigh it.
+
+Finish with JSON: {"issue": "harness|project|environment", "reasoning": "<why, from the evidence>", "human-action": "<what the operator must do should it not be repaired in place>"}; human-action for an environment issue only, left out otherwise.
+
+We want small deliberate changes. You're working with a scalpel, not a broadsword. You're a doctor: get in, fix the root cause using best practices and the patterns already in the repo, get out. Avoid scope creep.
+Be extremely concise. Sacrifice grammar for the sake of concision.

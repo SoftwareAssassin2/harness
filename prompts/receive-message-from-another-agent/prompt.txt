@@ -1,0 +1,8 @@
+Agent {agent-name} asked me to deliver the below message to you. To reply to {agent-name} use the following command:
+{reply-command}
+
+When you approve the final result, run:
+{approve-command}
+
+Message:
+{message}

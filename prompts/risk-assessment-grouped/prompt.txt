@@ -1,0 +1,21 @@
+Assess the risk of ticket {ticket}'s merge requests, variation {variation} of project {project}, going to production.
+
+{where}
+
+The changes are in every merge request not Closed: {agent-sh} ticket:merge-request-plan {project} {ticket} {variation} lists each one's id, repository, branch, base and depends-on. Assess them all in one pass: in each one's repository checkout, git fetch origin, then its changes are git diff origin/<base>...origin/<branch>.
+
+Consider:
+- Data: migrations, deletes, or anything irreversible
+- Security: authentication, permissions, secrets, user input
+- Blast radius: shared code, public APIs, infrastructure, configuration
+- Confidence: how well the change is covered by tests
+- Order: what breaks if one merges and another it depends on, or that depends on it, does not
+
+Write the assessment to {ticket-folder}/risk-assessment-{variation}.md (through `{agent-sh} work:write {project} {ticket} {variation} risk-assessment.md`, the whole file on stdin), the variation's risk profile the operator reads at human review. Its first line after its title is exactly one of **Risk: Low**, **Risk: Medium** or **Risk: High**, then its verdict at its top in one line; each finding names its merge request, file and line.
+
+Finish with one verdict for them all, as JSON: {"flagged-for-human-review": true} if a human should approve them before they merge, otherwise {"flagged-for-human-review": false}.
+
+If {ticket-folder}/operator-review-{variation}.md exists, it holds the operator's notes from rejecting earlier passes at Human Review: read it and address each note in this step's work.
+
+We want small deliberate changes. You're working with a scalpel, not a broadsword. You're a doctor: get in, fix the root cause using best practices and the patterns already in the repo, get out. Avoid scope creep.
+Be extremely concise. Sacrifice grammar for the sake of concision.

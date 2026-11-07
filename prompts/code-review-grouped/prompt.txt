@@ -1,0 +1,23 @@
+Review the code changes for ticket {ticket}, variation {variation} of project {project}, against its execution plan ({ticket-folder}/execution-plan-{variation}.md) and acceptance criteria.
+
+{where}
+
+The changes are in every merge request not Closed: {agent-sh} ticket:merge-request-plan {project} {ticket} {variation} lists each one's id, repository, branch and base. Review them all in one pass: in each one's repository checkout, git fetch origin, then its changes are git diff origin/<base>...origin/<branch>.
+
+Look for:
+- Correctness bugs and unhandled edge cases
+- Changes that don't match the execution plan or miss an acceptance criterion
+- Work in the wrong merge request, or one that needs another it doesn't depend on
+- Missing or weak tests
+- Needless complexity or duplicated code
+
+Don't flag style or linter nits. Write your findings to {ticket-folder}/code-review-{variation}.md (through `{agent-sh} work:write {project} {ticket} {variation} code-review.md`, the whole file on stdin), most severe first; each finding names its merge request, file and line. Put what reviewers of the merge request must know (e.g. "merge promptly") under a "## For the merge request description" heading there.
+
+Finish with one verdict for them all, as JSON: {"is-approved": true} if every merge request can ship as is, or {"is-approved": false} if anything in code-review-{variation}.md must be fixed first. Before {"is-approved": false}, run `{agent-sh} ticket:set-ac-status {project} {ticket} {variation} dev <n> Failed` for each acceptance criterion code-review-{variation}.md says is not met, <n> its number.
+
+A golden-image rebuild ticket ("fast-track": true in {ticket-folder}/ticket.json, titled "Rebuild golden-<project>") has no merge request and changes no code: there is nothing to review: {"is-approved": true}.
+
+If {ticket-folder}/operator-review-{variation}.md exists, it holds the operator's notes from rejecting earlier passes at Human Review: read it and address each note in this step's work.
+
+We want small deliberate changes. You're working with a scalpel, not a broadsword. You're a doctor: get in, fix the root cause using best practices and the patterns already in the repo, get out. Avoid scope creep.
+Be extremely concise. Sacrifice grammar for the sake of concision.

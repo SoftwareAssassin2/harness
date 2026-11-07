@@ -1,0 +1,58 @@
+{
+    "description": "Prompt for capturing screenshots of the changes working",
+    "supported-command-line-interfaces": [
+        "claude"
+    ],
+    "supported-models": [
+        "claude-opus-5-5",
+        "claude-opus-5",
+        "claude-sonnet-5",
+        "claude-opus-4-8",
+        "claude-opus-4-7"
+    ],
+    "persona": "tester",
+    "input-arguments": [
+        {
+            "name": "ticket",
+            "description": "Ticket number",
+            "example": "ABC-1234",
+            "required": true
+        }
+    ],
+    "output": {
+        "type": "object",
+        "properties": {
+            "screenshots": {
+                "type": "array",
+                "description": "One per acceptance criterion with a visible result",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "file": {
+                            "type": "string",
+                            "description": "The file name under the ticket folder's screenshots/"
+                        },
+                        "criteria-number": {
+                            "type": "integer",
+                            "description": "The acceptance criterion it shows"
+                        },
+                        "shows": {
+                            "type": "string",
+                            "description": "One line: what the screenshot shows"
+                        }
+                    },
+                    "required": [
+                        "file",
+                        "criteria-number",
+                        "shows"
+                    ],
+                    "additionalProperties": false
+                }
+            }
+        },
+        "required": [
+            "screenshots"
+        ],
+        "additionalProperties": false
+    }
+}

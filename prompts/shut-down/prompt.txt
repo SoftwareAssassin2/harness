@@ -1,0 +1,5 @@
+Work is being paused unexpectedly. Stop what you are doing now.
+
+1. Commit every change you have made, with a clear message.
+2. When you work a ticket, append to {ticket-folder}/change-log-{variation}.md (through `{agent-sh} work:append {project} {ticket} {variation} change-log.md`, the entry on stdin): what you did, what is left, and anything the next agent must know to pick up where you left off.
+3. Stop and end your turn. Do not start anything new.

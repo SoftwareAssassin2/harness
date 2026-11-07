@@ -1,0 +1,23 @@
+Write the automated tests for ticket {ticket}, following its test plan ({ticket-folder}/test-plan-{variation}.md).
+
+{where}
+
+1. Write one test per behavior in the test plan's "Automated" list, never its one-off verification, using the project's existing test framework and conventions. Where an existing test or target already covers a behavior, record it instead of writing a new one. Write a new test only where the repo's own CI runs it (in a file its existing runner picks up); never hard-code an upstream commit SHA or a local path in it.
+2. The feature isn't built yet, so the new tests should fail — but they must run. Fix any test that errors instead of failing.
+3. Don't write the implementation.
+4. Record them for the harness, which checks they run and later that they pass, with `{agent-sh} automated-tests:record {project} {ticket} {variation}`, the JSON list on stdin (automated-tests-{variation}.json): one entry per test file you added or changed, and per existing test or target that covers a behavior — {"list": "<command that lists that file's tests without running them>", "run": "<command that runs that file's tests>"} — each run with bash from the folder you start in (in a VM, /repos/: cd into the repository first), using the project's own runner (e.g. its nx/pnpm test target with the file as a filter). Check each list command prints the tests and exits 0. An entry whose check reproduces the ticket's bug — red on master by design, the bug being why it fails — also gets "reproduces": true, as does every entry whose test file or target is new in this ticket (it does not exist on master), so a fix that leaves it red goes back to Generate Solution.
+5. Don't commit them: Generate Solution commits them on the merge request's branch, which it makes from origin. Leave each checkout on the branch it is on: don't create, check out or commit to any branch, its base (main) least of all.
+
+If {ticket-folder}/requirements-change-{variation}.md exists, the ticket's requirements changed: read it and revise for the change.
+If {ticket-folder}/operator-review-{variation}.md exists, it holds the operator's notes from rejecting earlier passes at Human Review: read it and address each note in this step's work.
+
+Revise, don't restart: if tests for this ticket exist already, revise them — change only what the revised test plan or the reviews require, keep the rest. Never start them from scratch. Append to {ticket-folder}/change-log-{variation}.md (through `{agent-sh} work:append {project} {ticket} {variation} change-log.md`, the entry on stdin) which tests changed, and why.
+
+Reply with the list of tests you added or changed and which acceptance criterion each covers.
+
+A golden-image rebuild ticket ("fast-track": true in {ticket-folder}/ticket.json, titled "Rebuild golden-<project>") changes no code and has no test to write: Test checks the image with vm:golden-status. Its automated-tests-{variation}.json is [] (a manual-only test plan): record [] with `{agent-sh} automated-tests:record {project} {ticket} {variation}`.
+
+Questions: ask only what the code, the docs, the ticket and {ticket-folder}/questions-and-answers.json can't settle, with `{agent-sh} question:ask {project} {ticket} <--blocking|--non-blocking> "<question>" "<why it is asked>" "<recommended answer>"` — never by writing {ticket-folder}/questions-and-answers.json. --blocking when a wrong guess would cost rework, be irreversible, or is a product or business call only the operator can make: the ticket gets no agent until it is answered, so finish this step without guessing. Else --non-blocking: go on with your recommended answer, recorded as the assumption; an answer that differs comes back as a requirements change.
+
+We want small deliberate changes. You're working with a scalpel, not a broadsword. You're a doctor: get in, fix the root cause using best practices and the patterns already in the repo, get out. Avoid scope creep.
+Be extremely concise. Sacrifice grammar for the sake of concision.

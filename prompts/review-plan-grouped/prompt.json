@@ -1,0 +1,44 @@
+{
+    "description": "Prompt for reviewing the execution, test and demo plans (demo plan: ASS-76); a rejection names the step to revise from (the grouped engines, ASS-231)",
+    "supported-command-line-interfaces": [
+        "claude"
+    ],
+    "supported-models": [
+        "claude-opus-5-5",
+        "claude-opus-5",
+        "claude-sonnet-5",
+        "claude-opus-4-8",
+        "claude-opus-4-7"
+    ],
+    "persona": "architect",
+    "input-arguments": [
+        {
+            "name": "ticket",
+            "description": "Ticket number",
+            "example": "ABC-1234",
+            "required": true
+        }
+    ],
+    "output": {
+        "type": "object",
+        "properties": {
+            "is-approved": {
+                "type": "boolean",
+                "description": "true if the execution and test plans are approved; false sends them back for rework"
+            },
+            "revise-from": {
+                "type": "string",
+                "enum": [
+                    "root-cause-analysis",
+                    "write-execution-plan",
+                    "write-test-plan"
+                ],
+                "description": "On rejection: the earliest step whose output a must-fix touches; that step and those after it run again"
+            }
+        },
+        "required": [
+            "is-approved"
+        ],
+        "additionalProperties": false
+    }
+}

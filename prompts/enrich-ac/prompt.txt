@@ -1,0 +1,8 @@
+Extract the acceptance criteria for ticket {ticket} in project {project} into variation {variation}.
+
+1. Read the ticket's description and comments in the ticketing system. Where the ticket has no explicit criteria, derive them from the user story: 1–4 checkable outcomes, not tasks.
+2. Write them to {ticket-folder}/acceptance-criteria.json as a JSON array of objects numbered from 1: [{"criteria-number": 1, "description": "<one checkable outcome>"}, ...]
+3. Record them on the variation: {agent-sh} ticket:set-acceptance-criteria {project} {ticket} {variation} {ticket-folder}/acceptance-criteria.json
+
+We want small deliberate changes. You're working with a scalpel, not a broadsword. You're a doctor: get in, fix the root cause using best practices and the patterns already in the repo, get out. Avoid scope creep.
+Be extremely concise. Sacrifice grammar for the sake of concision.

@@ -1,0 +1,28 @@
+Write the test plan for ticket {ticket}.
+
+1. Read the ticket's acceptance criteria and {ticket-folder}/execution-plan-{variation}.md.
+2. Write {ticket-folder}/test-plan-{variation}.md (through `{agent-sh} work:write {project} {ticket} {variation} test-plan.md`, the whole file on stdin), listing for each acceptance criterion:
+   - "Automated (committed, run by the repo's CI)": the tests that will prove it, with the behavior each checks; where an existing CI test or target already covers a behavior, name it instead of planning a new test
+   - "One-off verification (run in Build/Test, not committed)": checks only this ticket needs (e.g. a grep, jq or diff against upstream)
+   - Any manual checks that can't be automated
+3. Include edge cases and error paths, not just the expected path.
+4. Record the demo plan: how the operator will see variation {variation}'s change working at human review, inside its VM (a desktop with a browser and a terminal; every repository checked out in /repos/), with `{agent-sh} ticket:set-demo-plan {project} {ticket} {variation}`, the JSON on stdin ({ticket-folder}/demo-plan-{variation}.json), one of:
+   - {"demo": true, "setup": ["<command>", ...], "ready-check": "<command>", "view": <view>, "look-at": ["<step>", ...]}
+     - "setup": bash commands run in order in /repos/ that bring the change up; start a server in the background
+     - "ready-check": a command that exits 0 once it is up, polled after setup
+     - "view": {"with": "browser", "address": "<url in the VM's browser>"}, {"with": "terminal", "commands": ["<command the operator runs>", ...]} or {"with": "other", "how": "<what to open>"}
+     - "look-at": a short script of what to do and see, covering the acceptance criteria
+   - {"demo": false, "why": "<why>"}: only when the operator would see nothing change
+   In its commands, refer to a moving upstream by branch name (e.g. `origin/master`) where the check tracks live upstream; pin a commit only for a deliberate "before" state.
+
+If {ticket-folder}/requirements-change-{variation}.md exists, the ticket's requirements changed: read it and revise for the change.
+If {ticket-folder}/operator-review-{variation}.md exists, it holds the operator's notes from rejecting earlier passes at Human Review: read it and address each note in this step's work.
+
+Revise, don't restart: if {ticket-folder}/test-plan-{variation}.md (or the demo plan) exists already, revise it in place. Keep what still holds; change only what the revised execution plan or the reviews require. Never start it from scratch. Write it every run, even when nothing needs changing: the step goes on only once the file is written. End it with a "## What changed" section, a dated entry each run: each change since the last version, and why, or, if nothing needed changing, what you re-checked it against: "<date>: re-checked against <what you checked>; no change".
+
+Don't write the tests yet. If {ticket-folder}/plan-review-{variation}.md exists, address every point in it.
+
+Questions: ask only what the code, the docs, the ticket and {ticket-folder}/questions-and-answers.json can't settle, with `{agent-sh} question:ask {project} {ticket} <--blocking|--non-blocking> "<question>" "<why it is asked>" "<recommended answer>"` — never by writing {ticket-folder}/questions-and-answers.json. --blocking when a wrong guess would cost rework, be irreversible, or is a product or business call only the operator can make: the ticket gets no agent until it is answered, so finish this step without guessing. Else --non-blocking: go on with your recommended answer, recorded as the assumption; an answer that differs comes back as a requirements change.
+
+We want small deliberate changes. You're working with a scalpel, not a broadsword. You're a doctor: get in, fix the root cause using best practices and the patterns already in the repo, get out. Avoid scope creep.
+Be extremely concise. Sacrifice grammar for the sake of concision.

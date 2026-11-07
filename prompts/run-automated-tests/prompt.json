@@ -1,0 +1,13 @@
+{
+    "description": "Prompt for running the automated tests and reporting failures",
+
+    "supported-command-line-interfaces": ["claude"],
+    "supported-models": ["claude-opus-5-5", "claude-opus-5", "claude-sonnet-5", "claude-opus-4-8", "claude-opus-4-7"],
+    "persona": "tester",
+
+    "input-arguments": [
+        { "name": "ticket", "description": "Ticket number", "example": "ABC-1234", "required": true }
+    ],
+
+    "output": ""
+}

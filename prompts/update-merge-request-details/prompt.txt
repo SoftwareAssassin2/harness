@@ -1,0 +1,13 @@
+Update the title and description of ticket {ticket}'s merge request.
+
+- Title: the ticket key and summary, e.g. "ABC-1234: Fix the search timeout".
+- Description:
+  - A link to the ticket on the first line
+  - What changed and why, in a few sentences
+  - How it was tested
+  - Anything reviewers should look at closely
+
+Base it on the ticket, its execution plan ({ticket-folder}/execution-plan-{variation}.md) and the actual diff — not on what was planned but not built.
+
+We want small deliberate changes. You're working with a scalpel, not a broadsword. You're a doctor: get in, fix the root cause using best practices and the patterns already in the repo, get out. Avoid scope creep.
+Be extremely concise. Sacrifice grammar for the sake of concision.

@@ -1,0 +1,139 @@
+{
+    "steps": [
+        {
+            "id": "update-documentation",
+            "sequence": 1,
+            "name": "Update Documentation",
+            "description": "Updating the documentation",
+            "max-visits": 3,
+            "on-max-visits": "blocked",
+            "action": {
+                "type": "prompt",
+                "prompt": "update-documentation-grouped",
+                "agent-count": 1,
+                "run-in-dev-container": false
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "turn-complete": true
+                    },
+                    "move-to-state": "update-merge-request-details"
+                }
+            ],
+            "run-location": "vm"
+        },
+        {
+            "id": "update-merge-request-details",
+            "sequence": 2,
+            "name": "Update Merge Request Details",
+            "description": "Updating the merge request title and description",
+            "max-visits": 3,
+            "on-max-visits": "blocked",
+            "action": {
+                "type": "prompt",
+                "prompt": "update-merge-request-details-grouped",
+                "agent-count": 1,
+                "run-in-dev-container": false
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "turn-complete": true
+                    },
+                    "move-to-state": "check-merge-request-details"
+                }
+            ],
+            "run-location": "vm"
+        },
+        {
+            "id": "check-merge-request-details",
+            "sequence": 3,
+            "name": "Check Merge Request Details",
+            "description": "Checking each merge request's title and description, and waiting for its pipeline's pre-stage jobs",
+            "max-visits": 3,
+            "on-max-visits": "blocked",
+            "action": {
+                "type": "script",
+                "command": "./agent.sh merge-request:check-details {project} {ticket} {variation}",
+                "mode": "timer",
+                "timer-minutes": 1
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "all": [
+                            {
+                                "exit-code": 0
+                            },
+                            {
+                                "script-output": {
+                                    "status": "passed"
+                                }
+                            }
+                        ]
+                    },
+                    "move-to-state": "add-screenshots-to-merge-request"
+                },
+                {
+                    "condition": {
+                        "all": [
+                            {
+                                "exit-code": 0
+                            },
+                            {
+                                "script-output": {
+                                    "status": "failed"
+                                }
+                            }
+                        ]
+                    },
+                    "move-to-state": "update-merge-request-details"
+                }
+            ]
+        },
+        {
+            "id": "add-screenshots-to-merge-request",
+            "sequence": 4,
+            "name": "Add Screenshots to Merge Request",
+            "description": "Adding screenshots to the merge request",
+            "max-visits": 3,
+            "on-max-visits": "blocked",
+            "action": {
+                "type": "prompt",
+                "prompt": "add-screenshots-to-merge-request-grouped",
+                "agent-count": 1,
+                "run-in-dev-container": false
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "turn-complete": true
+                    },
+                    "move-to-state": "done"
+                }
+            ],
+            "run-location": "vm"
+        },
+        {
+            "id": "done",
+            "name": "Done",
+            "description": "The group is finished; its parent step moves on",
+            "is-done": true,
+            "action": {
+                "type": "none"
+            },
+            "sequence": 5
+        },
+        {
+            "id": "blocked",
+            "name": "Blocked",
+            "description": "A step failed or looped too many times; the parent step sends the ticket to Blocked, which returns it to the start of this group",
+            "is-done": true,
+            "action": {
+                "type": "none"
+            },
+            "sequence": 6
+        }
+    ]
+}

@@ -1,0 +1,15 @@
+Review the root cause analysis for ticket {ticket} ({ticket-folder}/root-cause-analysis-{variation}.md).
+
+Check that:
+- The cause is backed by evidence (code, logs, a reproduction), not assumed
+- It explains every symptom described in the ticket
+- It identifies the underlying cause, not just where the symptom shows up
+
+If {ticket-folder}/operator-review-{variation}.md exists, it holds the operator's notes from rejecting earlier passes at Human Review: read it and address each note in this step's work.
+
+Write your findings to {ticket-folder}/root-cause-analysis-review-{variation}.md (through `{agent-sh} work:write {project} {ticket} {variation} root-cause-analysis-review.md`, the whole file on stdin).
+
+Finish with JSON: {"is-approved": true} if the analysis is sound, or {"is-approved": false} if it must be redone.
+
+We want small deliberate changes. You're working with a scalpel, not a broadsword. You're a doctor: get in, fix the root cause using best practices and the patterns already in the repo, get out. Avoid scope creep.
+Be extremely concise. Sacrifice grammar for the sake of concision.

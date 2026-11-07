@@ -1,0 +1,20 @@
+Take screenshots showing ticket {ticket}'s changes working, variation {variation} of project {project}.
+
+{where}
+
+1. With the app running locally, go to each screen the change affects.
+2. Capture one screenshot per acceptance criterion that has a visible result.
+3. Save each with the merge request whose changes it shows: {agent-sh} ticket:merge-request-plan {project} {ticket} {variation} lists every one, with its id and contents. Shoot each to a temp file, a PNG under 1 MB named after the criterion it shows (criterion-1.png, criterion-2.png, …), then save it, the PNG on stdin: `{agent-sh} work:add-screenshot {project} {ticket} {variation} <id> criterion-<n>.png < <file>` — one merge request's changes, in {ticket-folder}/screenshots/<id>/; `-` for <id> when it shows the ticket as a whole, or several merge requests together, in {ticket-folder}/screenshots/.
+
+The VM has no display. For a terminal app, produce its screen the way {ticket-folder}/demo-plan-{variation}.json does (never start its supervisor or main.js), wrap that output in a <pre> HTML page (dark background, monospace) and capture it with firefox-esr --headless --screenshot=<absolute png> --window-size=W,H file://<html>. If that's impossible, return an empty list with a note saying why.
+
+For a ticket with no visible UI, show what the Test step captured: don't re-run any check. For each criterion {ticket-folder}/test-results-{variation}.md cites a test-output-<n>-{variation}.txt for, render it with `{agent-sh} work:output-page {project} {ticket} {variation} test-output-<n>.txt > <html>` and capture that page as above; never edit, cut or add to it.
+
+Leave every repository on the branch it was on when you started, with no uncommitted changes; if you check out another commit to compare, switch back to the branch by name.
+
+If {ticket-folder}/operator-review-{variation}.md exists, it holds the operator's notes from rejecting earlier passes at Human Review: read it and address each note in this step's work.
+
+Finish with JSON: {"screenshots": [{"file": "<file name, with its <id>/ folder if it has one>", "criteria-number": <n>, "shows": "<one line>"}, ...]} — an empty list when nothing is visible, with "note": "<why, one line>" when nothing could be captured.
+
+We want small deliberate changes. You're working with a scalpel, not a broadsword. You're a doctor: get in, fix the root cause using best practices and the patterns already in the repo, get out. Avoid scope creep.
+Be extremely concise. Sacrifice grammar for the sake of concision.

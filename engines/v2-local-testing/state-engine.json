@@ -1,0 +1,112 @@
+{
+    "steps": [
+        {
+            "id": "await-golden-build",
+            "sequence": 1,
+            "name": "Await the Golden Build",
+            "description": "A golden rebuild ticket waits here until its detached image build settles, polled about every 10 seconds; any other ticket goes straight on to Test",
+            "action": {
+                "type": "script",
+                "command": "./agent.sh vm:golden-ready {project} {work-item}",
+                "mode": "timer",
+                "timer-minutes": 0.16
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "exit-code": 2
+                    },
+                    "move-to-state": "test"
+                },
+                {
+                    "condition": {
+                        "exit-code": 3
+                    },
+                    "move-to-state": "test"
+                },
+                {
+                    "condition": {
+                        "exit-code": 4
+                    },
+                    "move-to-state": "test"
+                }
+            ]
+        },
+        {
+            "id": "test",
+            "sequence": 2,
+            "name": "Test",
+            "description": "Testing the solution locally against the acceptance criteria",
+            "action": {
+                "type": "prompt",
+                "prompt": "test-grouped",
+                "agent-count": 1,
+                "run-in-dev-container": true
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "all": [
+                            {
+                                "turn-complete": true
+                            },
+                            {
+                                "structured-output": {
+                                    "is-approved": true
+                                }
+                            }
+                        ]
+                    },
+                    "move-to-state": "take-screenshots"
+                },
+                {
+                    "condition": {
+                        "all": [
+                            {
+                                "turn-complete": true
+                            },
+                            {
+                                "structured-output": {
+                                    "is-approved": false
+                                }
+                            }
+                        ]
+                    },
+                    "move-to-state": "done"
+                }
+            ],
+            "run-location": "vm"
+        },
+        {
+            "id": "take-screenshots",
+            "sequence": 3,
+            "name": "Take Screenshots",
+            "description": "Capturing screenshots of the changes working",
+            "action": {
+                "type": "prompt",
+                "prompt": "take-screenshots-grouped",
+                "agent-count": 1,
+                "run-in-dev-container": true
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "turn-complete": true
+                    },
+                    "move-to-state": "done"
+                }
+            ],
+            "run-location": "vm"
+        },
+        {
+            "id": "done",
+            "sequence": 4,
+            "name": "Done",
+            "description": "Local testing is completed; is-approved and summary carry the verdict to the parent step",
+            "is-done": true,
+            "action": {
+                "type": "none"
+            }
+        }
+    ]
+}

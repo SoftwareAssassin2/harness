@@ -1,0 +1,17 @@
+Explain ticket {ticket}, variation {variation} of project {project}, for the operator who reviews it next, before any of its merge requests leaves draft.
+
+{where}
+
+Read the ticket and its variation in {ticket-folder}/ticket.json, its execution plan ({ticket-folder}/execution-plan-{variation}.md) and its actual changes. The merge requests: {agent-sh} ticket:merge-request-plan {project} {ticket} {variation} lists each one's id, repository, branch, base, url and status; in each one's repository checkout, git fetch origin, then its changes are git diff origin/<base>...origin/<branch>.
+
+1. Write {ticket-folder}/explanation-{variation}.md (through `{agent-sh} work:write {project} {ticket} {variation} explanation.md`, the whole file on stdin), replacing what is there: what it changes and why, in plain language, for someone who knows the product but has not read the code — no jargon, no file-by-file tour. Then one line per merge request not Closed: its id, link and its part in the change. Explain what was built, not what was planned but not built. Write it every run, even when nothing has changed: the step goes on only once the file is written.
+2. If the variation in ticket.json has a "rejection-reason", the operator rejected an earlier pass at human review for it: under a "Rejected before" heading, quote the reason and say plainly how this pass answers it. Keep the reasons an earlier explanation-{variation}.md quoted there.
+3. For every one that is Open, put a "## Summary" section at the top of its description, replacing any Summary already there and keeping the rest as it is: two to four plain sentences on what the ticket changes and why, and this merge request's part in it.
+   - A Summary section runs from its "## Summary" heading to the next "## " heading: replace the whole of it, whatever it holds (an earlier step may have put an old description or ticket link line in it), and leave exactly one "## Summary", first.
+   - Read its description with `{agent-sh} merge-request:view {project} {ticket} {variation} <id>`; write it back with `{agent-sh} merge-request:update {project} {ticket} {variation} <id> -`, the whole description on stdin from a heredoc (<<'EOF'), its title left as it is.
+
+Leave every merge request a draft: never mark one ready, approve or merge it. Don't change any code.
+
+If {ticket-folder}/operator-review-{variation}.md exists, it holds the operator's notes from rejecting earlier passes at Human Review: read it and address each note in this step's work.
+
+Be extremely concise. Sacrifice grammar for the sake of concision.

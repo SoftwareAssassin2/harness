@@ -1,0 +1,58 @@
+{
+    "description": "Prompt for checking that a ticket's folder, branch, worktree, merge request and state history agree",
+    "supported-command-line-interfaces": [
+        "claude"
+    ],
+    "supported-models": [
+        "claude-opus-5-5",
+        "claude-opus-5",
+        "claude-sonnet-5",
+        "claude-opus-4-8",
+        "claude-opus-4-7"
+    ],
+    "persona": "developer",
+    "input-arguments": [
+        {
+            "name": "project",
+            "description": "Project folder name under data/projects/",
+            "example": "my-project",
+            "required": true
+        },
+        {
+            "name": "ticket",
+            "description": "Ticket number",
+            "example": "ABC-1234",
+            "required": true
+        },
+        {
+            "name": "ticket-project",
+            "description": "The project the ticket belongs to; the run itself is the harness project's",
+            "example": "my-project",
+            "required": true
+        },
+        {
+            "name": "ticket-project-folder",
+            "description": "That project's folder, by absolute path",
+            "example": "/path/to/harness/data/projects/my-project",
+            "required": true
+        }
+    ],
+    "output": {
+        "type": "object",
+        "properties": {
+            "is-healthy": {
+                "type": "boolean",
+                "description": "true if nothing about the ticket needs fixing"
+            },
+            "summary": {
+                "type": "string",
+                "description": "What is wrong, or that all is well, in one line"
+            }
+        },
+        "required": [
+            "is-healthy",
+            "summary"
+        ],
+        "additionalProperties": false
+    }
+}

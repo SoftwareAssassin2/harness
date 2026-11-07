@@ -1,0 +1,46 @@
+{
+    "description": "Prompt for finding a ticket that already covers a problem, in the ticketing system or the off-board folder",
+    "supported-command-line-interfaces": [
+        "claude"
+    ],
+    "supported-models": [
+        "claude-opus-5-5",
+        "claude-opus-5",
+        "claude-sonnet-5",
+        "claude-opus-4-8",
+        "claude-opus-4-7"
+    ],
+    "persona": "harness-doctor",
+    "input-arguments": [
+        {
+            "name": "project",
+            "description": "Project folder name under data/projects/",
+            "example": "my-project",
+            "required": true
+        },
+        {
+            "name": "problem",
+            "description": "The checked analysis of the problem: summary, root cause, where it is, evidence, what it blocks, whether it needs the operator",
+            "example": "Dev container needs rebuilding: node 24 image changed",
+            "required": true
+        }
+    ],
+    "output": {
+        "type": "object",
+        "properties": {
+            "exists": {
+                "type": "boolean",
+                "description": "true if a ticket about this problem already exists"
+            },
+            "key": {
+                "type": "string",
+                "description": "The existing ticket key; empty when none exists"
+            }
+        },
+        "required": [
+            "exists",
+            "key"
+        ],
+        "additionalProperties": false
+    }
+}

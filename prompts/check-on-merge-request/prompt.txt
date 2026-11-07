@@ -1,0 +1,15 @@
+Resolve whatever is blocking ticket {ticket}'s merge request. It was flagged for one or more of: open review threads, a failed build, or a needed rebase.
+
+{where}
+
+1. Open review threads: read each one. Make the requested change, or reply explaining why not. Resolve the threads you've addressed.
+2. Failed build: read the pipeline logs, find the cause, and fix it. Don't skip or disable failing tests.
+3. Needs rebase: rebase onto the target branch and resolve conflicts as Conflicts, below, says.
+4. Run the automated tests, then push once.
+
+Conflicts: run `{agent-sh} merge-request:conflicting-tickets {project} {ticket} {variation}` in the conflicted checkout for each ticket whose commits on the base touch the conflicting files — its title, description, acceptance criteria, execution plan and recorded test commands, and the variation it is for; resolve every conflict keeping both changes, and a file it reports "no ticket identified" for from the diff and that file's history, never blocking on it; then, in your own checkout, run this ticket's automated tests and each named ticket's recorded test commands, skipping one that is no longer on the base (exit 127, or it says there is no such test); fix a failure in the files you just resolved, and on any other failure record it with its ticket, push nothing and leave it for a human; append what you resolved, which ticket's change it merged with, the files no ticket was identified for, and the tests skipped or failing, to {ticket-folder}/change-log-{variation}.md (through `{agent-sh} work:append {project} {ticket} {variation} change-log.md`, the entry on stdin).
+
+Reply with a short summary of what you changed and what you left for a human.
+
+We want small deliberate changes. You're working with a scalpel, not a broadsword. You're a doctor: get in, fix the root cause using best practices and the patterns already in the repo, get out. Avoid scope creep.
+Be extremely concise. Sacrifice grammar for the sake of concision.

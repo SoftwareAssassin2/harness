@@ -1,0 +1,26 @@
+Update the title and description of every one of ticket {ticket}'s merge requests, variation {variation} of project {project}.
+
+{where}
+
+The merge requests: {agent-sh} ticket:merge-request-plan {project} {ticket} {variation} lists each one's id, repository, branch, base, url, depends-on and status. Update every one that is Open: read it with `{agent-sh} merge-request:view {project} {ticket} {variation} <id>`, and set its title and description with `{agent-sh} merge-request:update {project} {ticket} {variation} <id> - "<title>"`, the whole description on stdin from a heredoc (<<'EOF'). Its changes are git diff origin/<base>...origin/<branch> in its repository's checkout, after git fetch origin.
+
+- Title: {merge-request-title}; with more than one merge request, add what this one holds. merge-request:update keeps a draft a draft and, on GitLab, when the title changes, has GitLab start a new merge request pipeline, so its pre-stage jobs (e.g. mr-title) check the new title.
+- Description:
+  - If the description starts with a "## Summary" section (Explain the Change writes it), keep it as it is and put the rest below it; if it has none, don't add one:
+  - A link to the ticket first: its url in {ticket-folder}/ticket.json; its key alone when it has none
+  - What changed and why, in a few sentences: each one's own changes, not the others'
+  - Every commit on its branch (git log origin/<base>..origin/<branch>): each subject verbatim, its trailing (KEY) left off — the check after this step fails one not named
+  - Every revision in {ticket-folder}/change-log-{variation}.md (e.g. code-review rework): what it changed and why
+  - The notes {ticket-folder}/code-review-{variation}.md marks for the merge request description
+  - The merge requests it depends on and those that depend on it, linked, and the order they merge in
+  - How it was tested
+  - Anything reviewers should look at closely
+
+If {ticket-folder}/merge-request-details-check-{variation}.md is there, the last check of these titles and descriptions failed: fix everything it names.
+
+Base each on the ticket, its execution plan ({ticket-folder}/execution-plan-{variation}.md) and its actual diff — not on what was planned but not built.
+
+If {ticket-folder}/operator-review-{variation}.md exists, it holds the operator's notes from rejecting earlier passes at Human Review: read it and address each note in this step's work.
+
+We want small deliberate changes. You're working with a scalpel, not a broadsword. You're a doctor: get in, fix the root cause using best practices and the patterns already in the repo, get out. Avoid scope creep.
+Be extremely concise. Sacrifice grammar for the sake of concision.

@@ -1,0 +1,16 @@
+{
+    "description": "Template that tells an agent to commit, log and stop because work is being paused",
+    "supported-command-line-interfaces": [
+        "claude"
+    ],
+    "supported-models": [
+        "claude-opus-5-5",
+        "claude-opus-5",
+        "claude-sonnet-5",
+        "claude-opus-4-8",
+        "claude-opus-4-7"
+    ],
+    "persona": "developer",
+    "input-arguments": [],
+    "output": ""
+}

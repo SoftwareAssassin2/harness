@@ -1,0 +1,451 @@
+{
+    "steps": [
+        {
+            "id": "groom",
+            "sequence": 1,
+            "name": "Groom",
+            "description": "Read the ticket as though building it tomorrow; ask what is missing",
+            "action": {
+                "type": "prompt",
+                "prompt": "groom",
+                "agent-count": 1,
+                "run-in-dev-container": false
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "all": [
+                            {
+                                "turn-complete": true
+                            },
+                            {
+                                "structured-output": {
+                                    "is-ready": true
+                                }
+                            }
+                        ]
+                    },
+                    "move-to-state": "check-answers"
+                },
+                {
+                    "condition": {
+                        "turn-complete": true
+                    },
+                    "move-to-state": "awaiting-answers"
+                }
+            ]
+        },
+        {
+            "id": "awaiting-answers",
+            "sequence": 2,
+            "name": "Awaiting Answers",
+            "description": "Rests while a question on the ticket is Asked or Answer Rejected; groomed again once none is",
+            "action": {
+                "type": "human",
+                "instructions": "Answer the ticket's open questions on its screen."
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "open-questions": false
+                    },
+                    "move-to-state": "groom"
+                }
+            ]
+        },
+        {
+            "id": "check-answers",
+            "sequence": 3,
+            "name": "Check the Answers",
+            "description": "Every question on the ticket has an accepted answer",
+            "action": {
+                "type": "script",
+                "command": "./agent.sh ticket:questions-answered {project} {ticket}"
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "exit-code": 0
+                    },
+                    "move-to-state": "find-dependencies"
+                },
+                {
+                    "condition": {
+                        "not": {
+                            "exit-code": 0
+                        }
+                    },
+                    "move-to-state": "awaiting-answers"
+                }
+            ]
+        },
+        {
+            "id": "find-dependencies",
+            "sequence": 4,
+            "name": "Find Dependencies",
+            "description": "Record this ticket's dependencies and overlaps against every open backlog and sprint ticket of the project",
+            "action": {
+                "type": "prompt",
+                "prompt": "find-dependencies",
+                "agent-count": 1,
+                "run-in-dev-container": false
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "turn-complete": true
+                    },
+                    "move-to-state": "estimate"
+                }
+            ]
+        },
+        {
+            "id": "estimate",
+            "sequence": 5,
+            "name": "Estimate",
+            "description": "A story's story points, 1, 2, 3 or 5, written to its ticket; a bug or spike gets none; 8 or 13, above the scale, goes to Too Large for the operator",
+            "max-visits": 3,
+            "on-max-visits": "too-large",
+            "action": {
+                "type": "prompt",
+                "prompt": "estimate",
+                "agent-count": 1,
+                "run-in-dev-container": false
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "all": [
+                            {
+                                "turn-complete": true
+                            },
+                            {
+                                "structured-output": {
+                                    "points": 1
+                                }
+                            }
+                        ]
+                    },
+                    "move-to-state": "ready"
+                },
+                {
+                    "condition": {
+                        "all": [
+                            {
+                                "turn-complete": true
+                            },
+                            {
+                                "structured-output": {
+                                    "points": 2
+                                }
+                            }
+                        ]
+                    },
+                    "move-to-state": "ready"
+                },
+                {
+                    "condition": {
+                        "all": [
+                            {
+                                "turn-complete": true
+                            },
+                            {
+                                "structured-output": {
+                                    "points": 3
+                                }
+                            }
+                        ]
+                    },
+                    "move-to-state": "ready"
+                },
+                {
+                    "condition": {
+                        "all": [
+                            {
+                                "turn-complete": true
+                            },
+                            {
+                                "structured-output": {
+                                    "points": 5
+                                }
+                            }
+                        ]
+                    },
+                    "move-to-state": "ready"
+                },
+                {
+                    "condition": {
+                        "all": [
+                            {
+                                "turn-complete": true
+                            },
+                            {
+                                "structured-output": {
+                                    "points": null
+                                }
+                            }
+                        ]
+                    },
+                    "move-to-state": "ready"
+                },
+                {
+                    "condition": {
+                        "all": [
+                            {
+                                "turn-complete": true
+                            },
+                            {
+                                "structured-output": {
+                                    "points": 8
+                                }
+                            }
+                        ]
+                    },
+                    "move-to-state": "note-estimate-8"
+                },
+                {
+                    "condition": {
+                        "all": [
+                            {
+                                "turn-complete": true
+                            },
+                            {
+                                "structured-output": {
+                                    "points": 13
+                                }
+                            }
+                        ]
+                    },
+                    "move-to-state": "note-estimate-13"
+                },
+                {
+                    "condition": {
+                        "turn-complete": true
+                    },
+                    "move-to-state": "groom"
+                }
+            ]
+        },
+        {
+            "id": "note-estimate-8",
+            "sequence": 6,
+            "name": "Note the Estimate (8)",
+            "description": "Estimated 8, above the scale: noted on the ticket, which is left without points, for the operator at Too Large",
+            "action": {
+                "type": "script",
+                "command": "./agent.sh ticket:note-too-large {project} {ticket} 8"
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "exit-code": 0
+                    },
+                    "move-to-state": "too-large"
+                },
+                {
+                    "condition": {
+                        "not": {
+                            "exit-code": 0
+                        }
+                    },
+                    "move-to-state": "too-large"
+                }
+            ]
+        },
+        {
+            "id": "note-estimate-13",
+            "sequence": 7,
+            "name": "Note the Estimate (13)",
+            "description": "Estimated 13, above the scale: noted on the ticket, which is left without points, for the operator at Too Large",
+            "action": {
+                "type": "script",
+                "command": "./agent.sh ticket:note-too-large {project} {ticket} 13"
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "exit-code": 0
+                    },
+                    "move-to-state": "too-large"
+                },
+                {
+                    "condition": {
+                        "not": {
+                            "exit-code": 0
+                        }
+                    },
+                    "move-to-state": "too-large"
+                }
+            ]
+        },
+        {
+            "id": "too-large",
+            "sequence": 8,
+            "name": "Too Large",
+            "description": "Rests for the operator when the estimate is above the scale (8 or 13) or Estimate has run its max-visits: Accept to Ready with no points, Return with a note to Groom, Split to have smaller tickets proposed (ASS-265)",
+            "restarts-visit-count": true,
+            "action": {
+                "type": "human",
+                "instructions": "The ticket is too large for the scale: Accept it as it is, to Ready with no points, Return it to Groom with a note on how to cut it down, or Split it into smaller tickets, which an agent proposes for you to accept or reject."
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "human-review": "Accept"
+                    },
+                    "move-to-state": "ready"
+                },
+                {
+                    "condition": {
+                        "human-review": "Return"
+                    },
+                    "move-to-state": "groom",
+                    "asks-for-reason": true
+                },
+                {
+                    "condition": {
+                        "human-review": "Split"
+                    },
+                    "move-to-state": "split"
+                },
+                {
+                    "condition": {
+                        "all-questions-accepted": false
+                    },
+                    "move-to-state": "groom"
+                }
+            ]
+        },
+        {
+            "id": "split",
+            "sequence": 9,
+            "name": "Split",
+            "description": "The operator chose Split at Too Large (ASS-265): propose smaller tickets, 1 to 5 points each, that together cover every acceptance criterion, and the dependencies between them — ASS-252's split-ticket prompt",
+            "action": {
+                "type": "prompt",
+                "prompt": "split-ticket",
+                "agent-count": 1,
+                "run-in-dev-container": false
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "turn-complete": true
+                    },
+                    "move-to-state": "check-split-proposal"
+                }
+            ]
+        },
+        {
+            "id": "check-split-proposal",
+            "sequence": 10,
+            "name": "Check the Proposal",
+            "description": "Split's agent recorded a proposal this time (ticket:split-proposed): then the operator decides on it, else back to Too Large",
+            "action": {
+                "type": "script",
+                "command": "./agent.sh ticket:split-proposed {project} {ticket}"
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "exit-code": 0
+                    },
+                    "move-to-state": "awaiting-split-decision"
+                },
+                {
+                    "condition": {
+                        "not": {
+                            "exit-code": 0
+                        }
+                    },
+                    "move-to-state": "too-large"
+                }
+            ]
+        },
+        {
+            "id": "awaiting-split-decision",
+            "sequence": 11,
+            "name": "Awaiting Split Decision",
+            "description": "Rests for the operator: Accept creates the proposed tickets, Reject (with the reason) goes back to Too Large",
+            "shows": "split-proposal",
+            "action": {
+                "type": "human",
+                "instructions": "Read the proposed tickets on the ticket's screen: Accept creates them, Reject (with the reason) takes the ticket back to Too Large, to accept, return or split again."
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "human-review": "Accept"
+                    },
+                    "move-to-state": "create-split-tickets"
+                },
+                {
+                    "condition": {
+                        "human-review": "Reject"
+                    },
+                    "move-to-state": "too-large",
+                    "asks-for-reason": true
+                },
+                {
+                    "condition": {
+                        "open-questions": true
+                    },
+                    "move-to-state": "awaiting-answers"
+                }
+            ]
+        },
+        {
+            "id": "create-split-tickets",
+            "sequence": 12,
+            "name": "Create the Split Tickets",
+            "description": "The proposed tickets created with their dependencies, each starting refinement, the original marked split into them and out of the backlog; a failed apply goes back to Too Large",
+            "action": {
+                "type": "script",
+                "command": "./agent.sh ticket:apply-split {project} {ticket}"
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "exit-code": 0
+                    },
+                    "move-to-state": "superseded"
+                },
+                {
+                    "condition": {
+                        "not": {
+                            "exit-code": 0
+                        }
+                    },
+                    "move-to-state": "too-large"
+                }
+            ]
+        },
+        {
+            "id": "ready",
+            "sequence": 13,
+            "name": "Ready",
+            "description": "Groomed, every question accepted and estimated: ready for a sprint; a question not accepted sends it back to Groom",
+            "is-done": true,
+            "action": {
+                "type": "none"
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "all-questions-accepted": false
+                    },
+                    "move-to-state": "groom"
+                }
+            ]
+        },
+        {
+            "id": "superseded",
+            "sequence": 14,
+            "name": "Superseded",
+            "description": "Split into the tickets it names; Done, out of the backlog, never to join a sprint",
+            "action": {
+                "type": "none"
+            }
+        }
+    ]
+}

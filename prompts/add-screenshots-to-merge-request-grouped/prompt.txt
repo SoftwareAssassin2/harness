@@ -1,0 +1,18 @@
+Add screenshots of ticket {ticket}'s changes, variation {variation} of project {project}, to its merge requests.
+
+{where}
+
+The merge requests: {agent-sh} ticket:merge-request-plan {project} {ticket} {variation} lists each one's id, repository, url and status. For every one that is Open:
+
+1. Its screenshots are its own, in {ticket-folder}/screenshots/<id>/ (taken during local testing); when it has none, the ticket's own, in {ticket-folder}/screenshots/ (the images there, not in a subfolder).
+2. Upload each one: `{agent-sh} merge-request:upload-image {project} {ticket} {variation} <id> - <name>.png < <path>` prints the markdown to embed it (on GitHub, a link pinned to a commit on the branch screenshots/{ticket}-{variation}, which is never merged).
+3. Add or replace a "## Screenshots" section in its description: each image, one caption per image saying what it shows. Only when neither has any, a one-line note there that the change has no visible UI instead.
+   - Keep a "## Summary" section at the top as it is if there is one (never add one), and every other section as it is; the Screenshots section goes after them, in place of the old one if there is one.
+   - Read its description with `{agent-sh} merge-request:view {project} {ticket} {variation} <id>`; write it back with `{agent-sh} merge-request:update {project} {ticket} {variation} <id> -`, the whole description on stdin from a heredoc (<<'EOF'), its title left as it is.
+
+Don't change any code.
+
+If {ticket-folder}/operator-review-{variation}.md exists, it holds the operator's notes from rejecting earlier passes at Human Review: read it and address each note in this step's work.
+
+We want small deliberate changes. You're working with a scalpel, not a broadsword. You're a doctor: get in, fix the root cause using best practices and the patterns already in the repo, get out. Avoid scope creep.
+Be extremely concise. Sacrifice grammar for the sake of concision.

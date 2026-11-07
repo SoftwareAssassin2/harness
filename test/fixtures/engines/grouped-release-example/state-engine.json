@@ -1,0 +1,192 @@
+{
+    "steps": [
+        {
+            "id": "take-out-of-draft-mode",
+            "sequence": 1,
+            "name": "Take out of Draft Mode",
+            "description": "Finalizing the merge request",
+            "max-visits": 3,
+            "on-max-visits": "blocked",
+            "action": {
+                "type": "script",
+                "command": "./agent.sh code:take-out-of-draft-mode {project} {ticket} {variation}"
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "exit-code": 0
+                    },
+                    "move-to-state": "team-code-review"
+                },
+                {
+                    "condition": {
+                        "not": {
+                            "exit-code": 0
+                        }
+                    },
+                    "move-to-state": "take-out-of-draft-mode"
+                }
+            ]
+        },
+        {
+            "id": "team-code-review",
+            "sequence": 2,
+            "name": "Team Code Review",
+            "description": "Code is being reviewed; polled until every merge request is merged",
+            "max-visits": 10,
+            "on-max-visits": "blocked",
+            "action": {
+                "type": "script",
+                "command": "./agent.sh merge-request:check {project} {ticket} {variation}",
+                "mode": "timer",
+                "timer-minutes": 5
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "ticket-system-status": "In Testing"
+                    },
+                    "move-to-state": "done"
+                },
+                {
+                    "condition": {
+                        "ticket-system-status": "In Progress"
+                    },
+                    "move-to-state": "rebuild"
+                },
+                {
+                    "condition": {
+                        "all": [
+                            {
+                                "exit-code": 0
+                            },
+                            {
+                                "script-output": {
+                                    "needs-attention": true
+                                }
+                            }
+                        ]
+                    },
+                    "move-to-state": "address-merge-request-feedback"
+                },
+                {
+                    "condition": {
+                        "all": [
+                            {
+                                "exit-code": 0
+                            },
+                            {
+                                "script-output": {
+                                    "merged": true
+                                }
+                            }
+                        ]
+                    },
+                    "move-to-state": "done"
+                },
+                {
+                    "condition": {
+                        "all": [
+                            {
+                                "exit-code": 0
+                            },
+                            {
+                                "script-output": {
+                                    "needs-attention": false
+                                }
+                            },
+                            {
+                                "script-output": {
+                                    "auto-merge": false
+                                }
+                            }
+                        ]
+                    },
+                    "move-to-state": "ensure-auto-merge"
+                }
+            ]
+        },
+        {
+            "id": "address-merge-request-feedback",
+            "sequence": 3,
+            "name": "Address Merge Request Feedback",
+            "description": "Resolving open threads and build failures on the merge request",
+            "vm": "running",
+            "max-visits": 3,
+            "on-max-visits": "blocked",
+            "action": {
+                "type": "prompt",
+                "prompt": "check-on-merge-request-grouped",
+                "agent-count": 1,
+                "run-in-dev-container": true
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "turn-complete": true
+                    },
+                    "move-to-state": "team-code-review"
+                }
+            ],
+            "run-location": "vm"
+        },
+        {
+            "id": "ensure-auto-merge",
+            "sequence": 4,
+            "name": "Ensure Auto-Merge",
+            "description": "Setting the merge request to auto-merge once every flag is cleared",
+            "max-visits": 3,
+            "on-max-visits": "blocked",
+            "action": {
+                "type": "script",
+                "command": "./agent.sh merge-request:ensure-auto-merge {project} {ticket} {variation}"
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "exit-code": 0
+                    },
+                    "move-to-state": "team-code-review"
+                },
+                {
+                    "condition": {
+                        "not": {
+                            "exit-code": 0
+                        }
+                    },
+                    "move-to-state": "blocked"
+                }
+            ]
+        },
+        {
+            "id": "done",
+            "name": "Done",
+            "description": "The group is finished; its parent step moves on",
+            "is-done": true,
+            "action": {
+                "type": "none"
+            },
+            "sequence": 5
+        },
+        {
+            "id": "blocked",
+            "name": "Blocked",
+            "description": "A step failed or looped too many times; the parent step sends the ticket to Blocked, which returns it to the start of this group",
+            "is-done": true,
+            "action": {
+                "type": "none"
+            },
+            "sequence": 6
+        },
+        {
+            "id": "rebuild",
+            "name": "Back to Build",
+            "description": "Rejected; the parent step sends the ticket back into Build at Generate Solution",
+            "is-done": true,
+            "action": {
+                "type": "none"
+            },
+            "sequence": 7
+        }
+    ]
+}

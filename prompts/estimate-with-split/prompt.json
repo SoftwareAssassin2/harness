@@ -1,0 +1,57 @@
+{
+    "description": "Prompt for estimating a user story's story points while the harness's refinement refines it, saying when it is too large for one ticket and goes to Split (ASS-252)",
+    "supported-command-line-interfaces": [
+        "claude"
+    ],
+    "supported-models": [
+        "claude-opus-5-5",
+        "claude-opus-5",
+        "claude-sonnet-5",
+        "claude-opus-4-8",
+        "claude-opus-4-7"
+    ],
+    "persona": "developer",
+    "input-arguments": [
+        {
+            "name": "ticket",
+            "description": "Ticket number",
+            "example": "ABC-1234",
+            "required": true
+        }
+    ],
+    "output": {
+        "type": "object",
+        "properties": {
+            "points": {
+                "type": [
+                    "integer",
+                    "null"
+                ],
+                "enum": [
+                    1,
+                    2,
+                    3,
+                    5,
+                    8,
+                    13,
+                    null
+                ],
+                "description": "The story's points, on the project's scale (project:story-point-scale), as written to the ticket; null for a bug or a spike, which get none"
+            },
+            "too-large": {
+                "type": "boolean",
+                "description": "True when the story is bigger than the scale's top (5): too large for one ticket, so Split proposes smaller ones"
+            },
+            "summary": {
+                "type": "string",
+                "description": "One line: why this many points"
+            }
+        },
+        "required": [
+            "points",
+            "too-large",
+            "summary"
+        ],
+        "additionalProperties": false
+    }
+}

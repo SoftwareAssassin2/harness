@@ -1,0 +1,273 @@
+// Reading a state engine (engines/<name>/state-engine.json) for control: its
+// steps, whether a step's exit conditions hold
+// against the facts control has gathered, and where a ticket variation goes
+// next. Pure: plain data in, plain data out, nothing read or written.
+
+// Every step list an engine holds: `steps` and each top-level `*-steps` / `*-trigger`.
+const isStepList = (key, list) => (key === 'steps' || /-(steps|trigger)$/.test(key)) && Array.isArray(list);
+const allSteps = engine => Object.entries(engine ?? {}).flatMap(([key, list]) => isStepList(key, list) ? list : []);
+
+// markOff(name, steps, entries) — engine `name`'s steps with each one an entry
+// "<engine>/<step-id>" names switched off ("is-active": false; ASS-209: a
+// project's switched-off-steps), copied; the others as they are.
+export const markOff = (name, steps, entries) => steps.map(s => (entries.includes(`${name}/${s.id}`) ? { ...s, 'is-active': false } : s));
+
+// switchOff(engines, entries) — `engines` ({ [name]: its JSON }) with the steps
+// `entries` name switched off in every list (markOff); `engines` itself when none.
+export const switchOff = (engines, entries = []) => (!entries.length ? engines : Object.fromEntries(Object.entries(engines).map(([name, engine]) =>
+  [name, Object.fromEntries(Object.entries(engine).map(([key, list]) => [key, isStepList(key, list) ? markOff(name, list, entries) : list]))])));
+
+// stepOf(engine, id) — the step with that id in any of the engine's lists, or undefined.
+export const stepOf = (engine, id) => allSteps(engine).find(s => s.id === id);
+
+// engineSteps(engines, name) — `engines` maps engine names to their JSON; `name`
+// is "<engine>" for its `steps` or "<engine>/<key>" for one of its `*-steps` /
+// `*-trigger` lists. Returns the list as { steps }, an engine the functions
+// here take; undefined when there is no such list.
+export function engineSteps(engines, name) {
+  const [engine, key = 'steps'] = name.split('/');
+  const steps = engines?.[engine]?.[key];
+  return Array.isArray(steps) ? { steps } : undefined;
+}
+
+// evaluateCondition(condition, facts) — whether a condition holds. Facts:
+// agentNeedsWork, turnComplete, exitCode, ticketSystemStatus,
+// structuredOutput, scriptOutput, subEngineDone, subEngineState (the step its
+// done run rests at), variationCount, variation,
+// humanReview { state, decision }, selectedVariation { state }, stepId (the
+// step the condition belongs to), fileUpdated(file, since),
+// scriptSucceeds(command) and questions() (the ticket's questions, ASS-144)
+// answering for the ticket, and fastTracked (the ticket is, ASS-83). Throws on an unknown leaf.
+// A question is open — waiting on the operator — unless it is Answered,
+// Answer Accepted or Assumed (ASS-248: a non-blocking one closed on its
+// assumption): Asked, Answer Rejected, or a status none of the known ones
+// (ASS-170), so a malformed question holds its ticket rather than releasing it.
+// It blocks (ASS-248) unless question:ask flagged it blocking: false — one
+// asked before the flag counts as blocking; blocksTicket, open and blocking:
+// what holds a ticket for the operator.
+export const isOpenQuestion = q => !['Answered', 'Answer Accepted', 'Assumed'].includes(q.status);
+export const isBlockingQuestion = q => q.blocking !== false;
+export const blocksTicket = q => isOpenQuestion(q) && isBlockingQuestion(q);
+export function evaluateCondition(condition, facts) {
+  const [[key, value]] = Object.entries(condition);
+  const has = output => output != null && Object.entries(value).every(([k, v]) => output[k] === v);
+  const questions = () => facts.questions?.() ?? [];
+  switch (key) {
+    case 'all': return value.every(c => evaluateCondition(c, facts));
+    case 'not': return !evaluateCondition(value, facts);
+    case 'always': return value === true;
+    case 'agent-needs-work': return (facts.agentNeedsWork === true) === value;
+    case 'turn-complete': return (facts.turnComplete === true) === value;
+    case 'file-updated': return Boolean(facts.fileUpdated?.(value.file, value.since));
+    case 'structured-output': return has(facts.structuredOutput);
+    case 'script-output': return has(facts.scriptOutput);
+    case 'script-succeeds': return Boolean(facts.scriptSucceeds?.(value));
+    case 'exit-code': return facts.exitCode === value;
+    // null is an unknown status (ASS-282): none synced (null) or none on the facts (undefined) alike.
+    case 'ticket-system-status': return (facts.ticketSystemStatus ?? null) === value;
+    case 'human-review': return facts.humanReview?.state === facts.stepId && facts.humanReview.decision === value;
+    case 'variation-selected': return (facts.selectedVariation?.state === facts.stepId) === value;
+    case 'has-variations': return ((facts.variationCount ?? 0) > 1) === value;
+    // A fast-tracked ticket (ASS-151): a human step's exit on it passes the step with no human — the system taking care of itself.
+    case 'fast-tracked': return (facts.fastTracked === true) === value;
+    case 'is-done':
+    case 'workflow-ended': return (facts.subEngineDone === true) === value;
+    // Which done step it ended at (ASS-68): a group leaves its sub-engine for Blocked, or loops into another group.
+    case 'sub-engine-ended-at': return facts.subEngineDone === true && facts.subEngineState === value;
+    // The ticket's questions (ASS-144), the blocking ones alone (ASS-248: a non-blocking one never holds):
+    // one open (blocksTicket); every one Answer Accepted (none is all).
+    case 'open-questions': return questions().some(blocksTicket) === value;
+    case 'all-questions-accepted': return questions().filter(isBlockingQuestion).every(q => q.status === 'Answer Accepted') === value;
+    case 'structured-ticket-variation-array-check': return (facts.variation?.[value['member-name']] ?? []).length >= value['min-length'];
+    default: throw new Error(`unknown condition "${key}"`);
+  }
+}
+
+// firstExit(step, facts) — the first of the step's exit-events whose condition holds, or null.
+export const firstExit = (step, facts) => (step['exit-events'] ?? []).find(e => evaluateCondition(e.condition, { ...facts, stepId: step.id })) ?? null;
+
+// Where a variation at `stateId` goes back to on an exit that follows the
+// return-to-state, walking `stateChanges` back from the end (the TUI's rule):
+// the step it came from sends it to that step's
+// return-to-state when it has one; else, when that step follows the
+// return-to-state itself (as blocked and blocked-for-human do), the walk goes
+// on to the step before it; else it is that step. Null when history does not say.
+function returnTo(stateId, engine, stateChanges) {
+  for (let at = stateId, i = stateChanges.length; ;) {
+    i = stateChanges.findLastIndex((c, k) => k < i && c['to-state'] === at);
+    if (i < 0) return null;
+    at = stateChanges[i]['from-state'];
+    const step = stepOf(engine, at);
+    if (step?.['return-to-state']) return step['return-to-state'];
+    if (!step?.['follow-return-to-state']) return at;
+  }
+}
+
+// resolveTarget(exit, step, engine, stateChanges, facts) — the step id an exit
+// leads to: move-to-state-from-structured-output, the named field of
+// facts.structuredOutput, when it names a step of the engine — else (missing
+// or unknown) the exit's move-to-state, its fallback (ASS-231), or null —
+// move-to-state-from-human-review the same, from the human's choice
+// (facts.humanReview: a Human Review rejection's return-to, ASS-228);
+// move-to-state; else follow-return-to-state (or the older
+// follow-return-to), see returnTo. Null when it cannot be told.
+export function resolveTarget(exit, step, engine, stateChanges = [], facts = {}) {
+  const output = exit['move-to-state-from-structured-output'], choice = exit['move-to-state-from-human-review'];
+  const field = output ?? choice, named = field && (output ? facts.structuredOutput : facts.humanReview)?.[field];
+  if (field) return stepOf(engine, named) ? named : exit['move-to-state'] ?? null;
+  if (exit['move-to-state']) return exit['move-to-state'];
+  if (exit['follow-return-to-state'] || exit['follow-return-to']) return returnTo(step.id, engine, stateChanges);
+  return null;
+}
+
+// visitsInto(stateChanges, stepId, initialState) — how many times the
+// variation has been in the step at this level of its history, as the TUI
+// counts it: the changes into it, plus one when its history starts there (the
+// first change's from-state, or `initialState` when there is no change yet).
+// A change made within the step (sub-state-change: a move inside a group's
+// run) is no visit (ASS-130).
+export const visitsInto = (stateChanges = [], stepId, initialState) =>
+  stateChanges.filter(c => c['to-state'] === stepId && !c['sub-state-change']).length + ((stateChanges[0]?.['from-state'] ?? initialState) === stepId ? 1 : 0);
+
+// A human's resolution of a blocked human step (Blocked for Human, ASS-22): a
+// move out of it to anywhere but its own move-to-state exits (Have AI Try
+// Again's blocked) — the Resolved exit, or a human moving the ticket on.
+function isResolution(engine, from, to) {
+  if (!isBlockedState(engine, from) || !isHumanStep(engine, from)) return false;
+  return !(stepOf(engine, from)['exit-events'] ?? []).some(e => e['move-to-state'] === to);
+}
+
+// sinceResolution(engine, stateChanges) — the changes from the last
+// resolution of Blocked for Human, the last move out of a done step (a
+// ticket reopened from Done, ASS-130), or the last move out of a human step
+// with restarts-visit-count (ASS-264: the family's Too Large, whose operator
+// sends a ticket back to be groomed and estimated afresh), on (it included),
+// the history step visits are counted over; the whole history when there has
+// been none.
+export function sinceResolution(engine, stateChanges = []) {
+  const at = stateChanges.findLastIndex(c => isResolution(engine, c['from-state'], c['to-state']) || isDoneStep(engine, c['from-state']) || restartsVisits(engine, c['from-state']));
+  return at < 0 ? stateChanges : stateChanges.slice(at);
+}
+
+// nextState(step, engine, facts, stateChanges) — where the variation moves
+// from `step`: { to, exit, reason } — reason 'exit' for the first matching
+// exit's target, 'max-visits' when that target (or the one it redirects to)
+// has been visited `max-visits` times already and its `on-max-visits` is taken
+// instead, 'unresolved' with `to` null when the exit's target cannot be told.
+// Null when no exit matches, so a step without exits (done) rests. Visits
+// count since the last resolution of Blocked for Human (sinceResolution), and
+// from none on the move that is itself one; the return walk reads it all.
+export function nextState(step, engine, facts, stateChanges = []) {
+  const exit = firstExit(step, facts);
+  if (!exit) return null;
+  let to = resolveTarget(exit, step, engine, stateChanges, facts);
+  if (to == null) return { to: null, exit, reason: 'unresolved' };
+  const counted = isResolution(engine, step.id, to) ? [] : sinceResolution(engine, stateChanges);
+  let reason = 'exit';
+  for (const seen = new Set(); !seen.has(to); reason = 'max-visits') {
+    seen.add(to);
+    const target = stepOf(engine, to);
+    if (target?.['max-visits'] == null || !target['on-max-visits'] || visitsInto(counted, to) < target['max-visits']) break;
+    to = target['on-max-visits'];
+  }
+  return { to, exit, reason };
+}
+
+// restartsVisits(engine, stateId) — the step has restarts-visit-count: true (ASS-264; validate.js keeps it to human steps).
+const restartsVisits = (engine, stateId) => stepOf(engine, stateId)?.['restarts-visit-count'] === true;
+// isDoneStep(engine, stateId) — the step has is-done: true.
+export const isDoneStep = (engine, stateId) => stepOf(engine, stateId)?.['is-done'] === true;
+// pairedStatus(engine, stateId) — the step's paired-ticket-system-status, or undefined.
+export const pairedStatus = (engine, stateId) => stepOf(engine, stateId)?.['paired-ticket-system-status'];
+// isPlanning(engine, stateId) — the step has is-planning-stage: true.
+export const isPlanning = (engine, stateId) => stepOf(engine, stateId)?.['is-planning-stage'] === true;
+// isBlockedState(engine, stateId) — the step has is-blocked-state: true.
+export const isBlockedState = (engine, stateId) => stepOf(engine, stateId)?.['is-blocked-state'] === true;
+// isActive(step) — the step is switched on: its is-active is not false (ASS-192; absent is on).
+// A switched-off step is passed at once by its first exit's move-to-state (steps.js), never waited, dispatched or gated at.
+export const isActive = step => step?.['is-active'] !== false;
+// isHumanStep(engine, stateId) — the step's action is a human's.
+export const isHumanStep = (engine, stateId) => stepOf(engine, stateId)?.action?.type === 'human';
+// isManual(ticket) — the ticket is worked by hand (ASS-166: its
+// worked-manually, ticket:set-manual), so control leaves it alone: no move,
+// dispatch, slot, VM or run about it, no gap resolution, no pre-emption.
+// It is no pause — is-paused is set and cleared apart from it.
+export const isManual = ticket => ticket?.['worked-manually'] != null;
+// isHeld(ticket, variation) — control leaves the variation where it is: it
+// or its ticket is paused (is-paused), or the ticket is worked by hand (isManual).
+export const isHeld = (ticket, variation) => ticket?.['is-paused'] === true || variation?.['is-paused'] === true || isManual(ticket);
+
+// statusOf(engines, engineName, variation) — where a ticket variation stands
+// (ASS-67): `chain`, every level of its harness-status top first, each {
+// state-engine, state, step } — the top level's engine `engineName` (the
+// variation's own when not given), each sub-status's its own, `step` that
+// engine's step of that id (engineSteps; undefined when not known); `state`
+// and `step` the top level's, its high-level state; `detail` and
+// `detailStep` the deepest's, its detailed step. Without a harness-status,
+// chain [] and the rest undefined.
+export function statusOf(engines, engineName, variation) {
+  const chain = [];
+  for (let at = variation?.['harness-status']; at?.state != null; at = at['sub-status']) {
+    const name = (chain.length ? undefined : engineName) ?? at['state-engine'];
+    chain.push({ 'state-engine': name, state: at.state, step: name == null ? undefined : stepOf(engineSteps(engines, name), at.state) });
+  }
+  const top = chain[0], deep = chain.at(-1);
+  return { chain, state: top?.state, step: top?.step, detail: deep?.state, detailStep: deep?.step };
+}
+
+// inPlanning(status) — the status (statusOf) is in planning: the deepest
+// step of its chain that sets is-planning-stage says, falling back up; false
+// when none does.
+export const inPlanning = status => status.chain.findLast(l => l.step?.['is-planning-stage'] != null)?.step['is-planning-stage'] === true;
+
+// gateName(level) — how gate-when-leaving-state names a level of a status
+// chain: "<engine>/<step>", at every level.
+export const gateName = level => `${level['state-engine']}/${level.state}`;
+
+// changePath(change) — a state change and each sub-state-change beneath it, top first.
+export function changePath(change) {
+  const path = [];
+  for (let at = change; at; at = at['sub-state-change']) path.push(at);
+  return path;
+}
+
+// statusIn(engine, variation, engines) — the variation's status (statusOf)
+// with `engine` as its own top-level engine's, `engines` ({ [name]: its
+// JSON }) beneath it; none, its top level alone.
+export const statusIn = (engine, variation, engines = {}) => {
+  const name = variation['harness-status']?.['state-engine'] ?? '';
+  return statusOf({ ...engines, [name]: engine }, name, variation);
+};
+
+// statusExit(condition, status) — the condition reads the ticket system's
+// status alone — ticket-system-status leaves, under all / not (ASS-282:
+// grouped-qa's QA Testing on any status but Done and In Testing) — and holds for `status`.
+const readsStatusAlone = c => {
+  const [key, value] = Object.entries(c ?? {})[0] ?? [];
+  return key === 'ticket-system-status' || (key === 'not' && readsStatusAlone(value)) || (key === 'all' && Array.isArray(value) && value.length > 0 && value.every(readsStatusAlone));
+};
+const statusExit = (condition, status) => readsStatusAlone(condition) && evaluateCondition(condition, { ticketSystemStatus: status });
+
+// answersGap(engine, variation, status, engines) — the ticket system's
+// `status`, not its step's pairing, is the variation's own sub-engine run's
+// to answer (ASS-224): beneath the top level (statusIn) it is at a step with
+// an exit on that status (statusExit: a project Release's Team Code Review on In Testing
+// or In Progress, grouped-qa's QA Testing on On Hold), or at a done step, its parent step about to move by its
+// own exits. Then there is no gap to resolve: runSteps moves it, detectGaps
+// leaves it be.
+export const answersGap = (engine, variation, status, engines) => statusIn(engine, variation, engines).chain.slice(1)
+  .some(({ step }) => step?.['is-done'] === true || (step?.['exit-events'] ?? []).some(e => statusExit(e.condition, status)));
+
+// waitsOnHuman(engine, variation, engines) — the variation waits for a human:
+// at a human step, or at a step its gate-when-leaving-state lists (gateName)
+// once the latest change, into that step at its level, has work-is-done — at
+// the top level, and given the `engines` beneath it at every level of its
+// status (statusOf). A switched-off step (isActive) waits on no one.
+export function waitsOnHuman(engine, variation, engines) {
+  const { chain, step } = statusIn(engine, variation, engines);
+  if (!step) return false;
+  const last = variation['state-changes']?.at(-1), path = changePath(last);
+  const gates = variation['gate-when-leaving-state'] ?? [];
+  return chain.some((l, i) => isActive(l.step) && (l.step?.action?.type === 'human'
+    || (gates.includes(gateName(l)) && path[i]?.['to-state'] === l.state && last['work-is-done'] === true)));
+}

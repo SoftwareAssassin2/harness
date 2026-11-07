@@ -1,0 +1,19 @@
+Find the root cause of the problem described in ticket {ticket}.
+
+{where}
+
+1. Read the ticket and reproduce the problem if you can.
+2. Trace it through the code to the underlying cause. Back every claim with evidence: file and line, log output, or reproduction steps.
+3. Write {ticket-folder}/root-cause-analysis-{variation}.md (through `{agent-sh} work:write {project} {ticket} {variation} root-cause-analysis.md`, the whole file on stdin) with: the symptom, the root cause, the evidence, and the code a fix will need to touch.
+
+If {ticket-folder}/requirements-change-reason.md exists, start from it. If {ticket-folder}/requirements-change-{variation}.md exists, the ticket's requirements changed: read it and revise for the change.
+If {ticket-folder}/operator-review-{variation}.md exists, it holds the operator's notes from rejecting earlier passes at Human Review: read it and address each note in this step's work.
+
+Revise, don't restart: if {ticket-folder}/root-cause-analysis-{variation}.md exists already, revise it in place. Keep what still holds; change only what new evidence or the review's notes require. Never start it from scratch. Write it every run, even when nothing needs changing: the step goes on only once the file is written. End it with a "## What changed" section, a dated entry each run: each change since the last version, and why, or, if nothing needed changing, what you re-checked it against: "<date>: re-checked against <what you checked>; no change".
+
+Don't fix anything yet. If the ticket is a new feature rather than a bug, describe the current behavior and what has to change instead.
+
+Questions: ask only what the code, the docs, the ticket and {ticket-folder}/questions-and-answers.json can't settle, with `{agent-sh} question:ask {project} {ticket} <--blocking|--non-blocking> "<question>" "<why it is asked>" "<recommended answer>"` — never by writing {ticket-folder}/questions-and-answers.json. --blocking when a wrong guess would cost rework, be irreversible, or is a product or business call only the operator can make: the ticket gets no agent until it is answered, so finish this step without guessing. Else --non-blocking: go on with your recommended answer, recorded as the assumption; an answer that differs comes back as a requirements change.
+
+We want small deliberate changes. You're working with a scalpel, not a broadsword. You're a doctor: get in, fix the root cause using best practices and the patterns already in the repo, get out. Avoid scope creep.
+Be extremely concise. Sacrifice grammar for the sake of concision.

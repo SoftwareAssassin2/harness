@@ -1,0 +1,64 @@
+{
+    "description": "Prompt for repairing a blocked ticket's environment in place on the host, before its VM is set up (the grouped engines, ASS-97): only the ticket's own worktree and the project's containers, never the shared checkout or a credential; else what the operator must do",
+    "supported-command-line-interfaces": [
+        "claude"
+    ],
+    "supported-models": [
+        "claude-opus-5-5",
+        "claude-opus-5",
+        "claude-sonnet-5",
+        "claude-opus-4-8",
+        "claude-opus-4-7"
+    ],
+    "persona": "developer",
+    "input-arguments": [
+        {
+            "name": "project",
+            "description": "Project folder name under data/projects/",
+            "example": "my-project",
+            "required": true
+        },
+        {
+            "name": "ticket",
+            "description": "Ticket number",
+            "example": "ABC-1234",
+            "required": true
+        },
+        {
+            "name": "problem",
+            "description": "The checked analysis of the block: summary, root cause, evidence, its classification",
+            "example": "node_modules predates the lockfile",
+            "required": true
+        }
+    ],
+    "output": {
+        "type": "object",
+        "properties": {
+            "remediated": {
+                "type": "boolean",
+                "description": "true when repaired in place and the blocked step re-checked to pass"
+            },
+            "evidence": {
+                "type": "array",
+                "items": {
+                    "type": "string"
+                },
+                "description": "The commands run and what each showed"
+            },
+            "ai-feedback-short": {
+                "type": "string",
+                "description": "Repaired: what was done; else what the operator must do — one line, shown on the dashboard"
+            },
+            "ai-feedback-long": {
+                "type": "string",
+                "description": "What was found, and what was done or must be done"
+            }
+        },
+        "required": [
+            "remediated",
+            "evidence",
+            "ai-feedback-short",
+            "ai-feedback-long"
+        ]
+    }
+}

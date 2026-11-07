@@ -1,0 +1,23 @@
+{
+    "description": "Template that delivers a message from control to an agent",
+    "supported-command-line-interfaces": [
+        "claude"
+    ],
+    "supported-models": [
+        "claude-opus-5-5",
+        "claude-opus-5",
+        "claude-sonnet-5",
+        "claude-opus-4-8",
+        "claude-opus-4-7"
+    ],
+    "persona": "developer",
+    "input-arguments": [
+        {
+            "name": "message",
+            "description": "Control's message",
+            "example": "The sprint is paused; finish your current tool call and stop.",
+            "required": true
+        }
+    ],
+    "output": ""
+}

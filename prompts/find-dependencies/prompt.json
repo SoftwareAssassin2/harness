@@ -1,0 +1,35 @@
+{
+    "description": "Prompt for finding a ticket's dependencies and overlaps against the project's open backlog and sprint tickets while it is refined",
+    "supported-command-line-interfaces": [
+        "claude"
+    ],
+    "supported-models": [
+        "claude-opus-5-5",
+        "claude-opus-5",
+        "claude-sonnet-5",
+        "claude-opus-4-8",
+        "claude-opus-4-7"
+    ],
+    "persona": "developer",
+    "input-arguments": [
+        {
+            "name": "ticket",
+            "description": "Ticket number",
+            "example": "ABC-1234",
+            "required": true
+        }
+    ],
+    "output": {
+        "type": "object",
+        "properties": {
+            "summary": {
+                "type": "string",
+                "description": "One line: what dependencies and overlaps were recorded"
+            }
+        },
+        "required": [
+            "summary"
+        ],
+        "additionalProperties": false
+    }
+}

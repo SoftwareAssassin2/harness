@@ -1,0 +1,89 @@
+{
+    "agentic-command-line-interfaces": [
+        {
+            "name": "claude",
+            "models": [
+                "claude-opus-5-5",
+                "claude-opus-5",
+                "claude-sonnet-5",
+                "claude-opus-4-8",
+                "claude-opus-4-7"
+            ]
+        },
+        {
+            "name": "codex",
+            "models": [
+                "gpt-6-astra",
+                "gpt-6-sol",
+                "gpt-6-luna",
+                "gpt-5.6-sol",
+                "gpt-5.6-terra",
+                "gpt-5.6-luna",
+                "gpt-5.5"
+            ]
+        },
+        {
+            "name": "gemini",
+            "models": [
+                "gemini-3.1-pro-preview",
+                "gemini-3-pro-preview",
+                "gemini-3.8-flash",
+                "gemini-3.5-flash",
+                "gemini-3-flash-preview",
+                "gemini-3-flash",
+                "gemini-3.5-flash-lite",
+                "gemini-3.1-flash-lite",
+                "gemini-2.5-pro"
+            ]
+        }
+    ],
+    "max-agents": 100,
+    "max-tickets-in-progress": 50,
+    "max-tickets-in-planning": 50,
+    "agent-graceful-shut-down-delay-in-seconds": 120,
+    "download-updates-interval-in-minutes": 4,
+    "harness-project": "harness",
+    "max-tickets-in-grooming": 5,
+    "forwarder-port": 7787,
+    "vm-disk-limit-gb": 120,
+    "api-monthly-budget-usd": 50,
+    "max-spend-per-ticket-usd": 25,
+    "model-prices": {
+        "claude-opus-5-5": {
+            "input": 4,
+            "output": 20,
+            "cache-read": 0.2,
+            "cache-write": 5
+        },
+        "claude-opus-5": {
+            "input": 5,
+            "output": 25,
+            "cache-read": 0.5,
+            "cache-write": 6.25
+        },
+        "claude-sonnet-5": {
+            "input": 2,
+            "output": 10,
+            "cache-read": 0.2,
+            "cache-write": 2.5
+        },
+        "claude-opus-4-8": {
+            "input": 5,
+            "output": 25,
+            "cache-read": 0.5,
+            "cache-write": 6.25
+        },
+        "claude-opus-4-7": {
+            "input": 5,
+            "output": 25,
+            "cache-read": 0.5,
+            "cache-write": 6.25
+        },
+        "claude-haiku-5-5": {
+            "input": 0.1,
+            "output": 0.5,
+            "cache-read": 0.01,
+            "cache-write": 0.125
+        }
+    }
+}

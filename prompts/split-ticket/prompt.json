@@ -1,0 +1,35 @@
+{
+    "description": "Prompt for proposing how to split a ticket too large into smaller ones, 1 to 5 points each, while the harness's refinement refines it (ASS-252), or the family's at the operator's Split at Too Large (ASS-265)",
+    "supported-command-line-interfaces": [
+        "claude"
+    ],
+    "supported-models": [
+        "claude-opus-5-5",
+        "claude-opus-5",
+        "claude-sonnet-5",
+        "claude-opus-4-8",
+        "claude-opus-4-7"
+    ],
+    "persona": "developer",
+    "input-arguments": [
+        {
+            "name": "ticket",
+            "description": "Ticket number",
+            "example": "ABC-1234",
+            "required": true
+        }
+    ],
+    "output": {
+        "type": "object",
+        "properties": {
+            "summary": {
+                "type": "string",
+                "description": "One line: the tickets proposed, or why none was"
+            }
+        },
+        "required": [
+            "summary"
+        ],
+        "additionalProperties": false
+    }
+}

@@ -1,0 +1,53 @@
+{
+    "description": "Template wrapped around a pair agent's assignment on a step",
+    "supported-command-line-interfaces": [
+        "claude"
+    ],
+    "supported-models": [
+        "claude-opus-5-5",
+        "claude-opus-5",
+        "claude-sonnet-5",
+        "claude-opus-4-8",
+        "claude-opus-4-7"
+    ],
+    "persona": "developer",
+    "input-arguments": [
+        {
+            "name": "agent-names",
+            "description": "The other agents on the assignment",
+            "example": "Orange and Blue",
+            "required": true
+        },
+        {
+            "name": "pen-holder",
+            "description": "The agent holding the pen",
+            "example": "Orange",
+            "required": true
+        },
+        {
+            "name": "send-message-command",
+            "description": "Command the agent runs to message another agent",
+            "example": "./agent.sh agent-interaction:send-message Violet Orange <message>",
+            "required": true
+        },
+        {
+            "name": "approve-command",
+            "description": "Command the agent runs when it approves the final result",
+            "example": "./agent.sh assignments:approve Orange",
+            "required": true
+        },
+        {
+            "name": "status-update-command",
+            "description": "Command the agent runs to post a status update of 34 characters or fewer",
+            "example": "./agent.sh assignments:status-update Orange <update>",
+            "required": true
+        },
+        {
+            "name": "assignment",
+            "description": "The assignment prompt itself",
+            "example": "Review the code changes for ticket ABC-1234 ...",
+            "required": true
+        }
+    ],
+    "output": ""
+}

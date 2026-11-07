@@ -1,0 +1,80 @@
+{
+    "steps": [
+        {
+            "id": "test",
+            "sequence": 1,
+            "name": "Test",
+            "description": "Testing the solution locally against the acceptance criteria",
+            "action": {
+                "type": "prompt",
+                "prompt": "test-grouped",
+                "agent-count": 1,
+                "run-in-dev-container": true
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "all": [
+                            {
+                                "turn-complete": true
+                            },
+                            {
+                                "structured-output": {
+                                    "is-approved": true
+                                }
+                            }
+                        ]
+                    },
+                    "move-to-state": "take-screenshots"
+                },
+                {
+                    "condition": {
+                        "all": [
+                            {
+                                "turn-complete": true
+                            },
+                            {
+                                "structured-output": {
+                                    "is-approved": false
+                                }
+                            }
+                        ]
+                    },
+                    "move-to-state": "done"
+                }
+            ],
+            "run-location": "vm"
+        },
+        {
+            "id": "take-screenshots",
+            "sequence": 2,
+            "name": "Take Screenshots",
+            "description": "Capturing screenshots of the changes working",
+            "action": {
+                "type": "prompt",
+                "prompt": "take-screenshots-grouped",
+                "agent-count": 1,
+                "run-in-dev-container": true
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "turn-complete": true
+                    },
+                    "move-to-state": "done"
+                }
+            ],
+            "run-location": "vm"
+        },
+        {
+            "id": "done",
+            "sequence": 3,
+            "name": "Done",
+            "description": "Local testing is completed; is-approved and summary carry the verdict to the parent step",
+            "is-done": true,
+            "action": {
+                "type": "none"
+            }
+        }
+    ]
+}

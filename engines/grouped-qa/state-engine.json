@@ -1,0 +1,65 @@
+{
+    "steps": [
+        {
+            "id": "qa-testing",
+            "sequence": 1,
+            "name": "QA Testing",
+            "description": "Testing by QA: waits while the ticket system says In Testing (or nothing yet); Done ends the group at done, any other status QA sets (On Hold, sent back) at blocked",
+            "max-visits": 3,
+            "on-max-visits": "blocked",
+            "action": {
+                "type": "none"
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "ticket-system-status": "Done"
+                    },
+                    "move-to-state": "done"
+                },
+                {
+                    "condition": {
+                        "all": [
+                            {
+                                "not": {
+                                    "ticket-system-status": "Done"
+                                }
+                            },
+                            {
+                                "not": {
+                                    "ticket-system-status": "In Testing"
+                                }
+                            },
+                            {
+                                "not": {
+                                    "ticket-system-status": null
+                                }
+                            }
+                        ]
+                    },
+                    "move-to-state": "blocked"
+                }
+            ]
+        },
+        {
+            "id": "done",
+            "name": "Done",
+            "description": "The group is finished; its parent step moves on",
+            "is-done": true,
+            "action": {
+                "type": "none"
+            },
+            "sequence": 2
+        },
+        {
+            "id": "blocked",
+            "name": "Blocked",
+            "description": "A step failed or looped too many times; the parent step sends the ticket to Blocked, which returns it to the start of this group",
+            "is-done": true,
+            "action": {
+                "type": "none"
+            },
+            "sequence": 3
+        }
+    ]
+}

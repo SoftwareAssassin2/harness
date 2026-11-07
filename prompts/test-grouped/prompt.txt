@@ -1,0 +1,28 @@
+Test ticket {ticket}'s changes against the app running locally, for every acceptance criterion of variation {variation}.
+
+{where}
+
+1. Read {ticket-folder}/test-plan-{variation}.md: how each criterion is tested, automatically and by hand, and what a pass means. {ticket-folder}/demo-plan-{variation}.json, when there is one, shows how to bring the change up.
+2. Run the automated tests the change affects; a failure fails the criterion it covers. A failure master has too fails no criterion: the test plan names any it expects, and {ticket-folder}/automated-test-results-{variation}.md lists those the last automated test run found.
+3. Bring up the app the way the test plan and demo plan say, and check each acceptance criterion by hand, recording the evidence: what you did and what happened.
+   Save the raw output of the commands each criterion's evidence comes from, as they ran: `{ echo "$ <command>"; <command>; } 2>&1 | {agent-sh} work:write {project} {ticket} {variation} test-output-<n>.txt`, <n> the criterion's number, its every command in that one brace group.
+4. Write {ticket-folder}/test-results-{variation}.md (through `{agent-sh} work:write {project} {ticket} {variation} test-results.md`, the whole file on stdin): one line per acceptance criterion with its number, pass or fail, and the evidence; cite test-output-<n>-{variation}.txt when you saved one.
+5. For every acceptance criterion, record its result as test-results-{variation}.md gives it: `{agent-sh} ticket:set-ac-status {project} {ticket} {variation} testing <n> Passed` or `{agent-sh} ticket:set-ac-status {project} {ticket} {variation} testing <n> Failed`, <n> its number.
+
+Don't fix anything you find — report it.
+
+Leave every repository on the branch it was on when you started, with no uncommitted changes; if you check out another commit to compare, switch back to the branch by name.
+
+If {ticket-folder}/operator-review-{variation}.md exists, it holds the operator's notes from rejecting earlier passes at Human Review: read it and address each note in this step's work.
+
+Finish with JSON: {"is-approved": true, "summary": "<one line>"} when every criterion passed, or {"is-approved": false, "summary": "<what failed, one line>"} otherwise.
+
+A golden-image rebuild ticket ("fast-track": true in {ticket-folder}/ticket.json, titled "Rebuild golden-<project>") changes no code: test the image, not an app. Run {agent-sh} vm:golden-status <project>, <project> from its title, and read its "status":
+- "building": the engine waits for the build before this step, so it should have settled; don't wait — report the reading as it is: {"is-approved": false, "summary": "golden-<project> still building"}.
+- "current": the image is rebuilt from its inputs now. Judge each criterion from that and the build's log (its "log"), and write test-results-{variation}.md as above.
+- "failed": {"is-approved": false, "summary": "<why, from its run-log and log>"} — the build did not make the image current; Build starts it again.
+
+Questions: ask only what the code, the docs, the ticket and {ticket-folder}/questions-and-answers.json can't settle, with `{agent-sh} question:ask {project} {ticket} <--blocking|--non-blocking> "<question>" "<why it is asked>" "<recommended answer>"` — never by writing {ticket-folder}/questions-and-answers.json. --blocking when a wrong guess would cost rework, be irreversible, or is a product or business call only the operator can make: the ticket gets no agent until it is answered, so finish this step without guessing. Else --non-blocking: go on with your recommended answer, recorded as the assumption; an answer that differs comes back as a requirements change.
+
+We want small deliberate changes. You're working with a scalpel, not a broadsword. You're a doctor: get in, fix the root cause using best practices and the patterns already in the repo, get out. Avoid scope creep.
+Be extremely concise. Sacrifice grammar for the sake of concision.

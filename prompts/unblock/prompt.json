@@ -1,0 +1,46 @@
+{
+    "description": "Prompt for reading why a ticket is blocked and attempting the fix",
+    "supported-command-line-interfaces": [
+        "claude"
+    ],
+    "supported-models": [
+        "claude-opus-5-5",
+        "claude-opus-5",
+        "claude-sonnet-5",
+        "claude-opus-4-8",
+        "claude-opus-4-7"
+    ],
+    "persona": "developer",
+    "input-arguments": [
+        {
+            "name": "project",
+            "description": "Project folder name under data/projects/",
+            "example": "my-project",
+            "required": true
+        },
+        {
+            "name": "ticket",
+            "description": "Ticket number",
+            "example": "ABC-1234",
+            "required": true
+        }
+    ],
+    "output": {
+        "type": "object",
+        "properties": {
+            "is-unblocked": {
+                "type": "boolean",
+                "description": "true if the block is cleared and work can resume"
+            },
+            "summary": {
+                "type": "string",
+                "description": "What was wrong and what was done, in one line"
+            }
+        },
+        "required": [
+            "is-unblocked",
+            "summary"
+        ],
+        "additionalProperties": false
+    }
+}

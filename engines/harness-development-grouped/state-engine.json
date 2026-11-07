@@ -1,0 +1,675 @@
+{
+    "receive-dispatch-prompt": "receive-dispatch-grouped",
+    "receive-pair-dispatch-prompt": "receive-pair-dispatch-grouped",
+    "receive-message-prompt": "receive-message-from-another-agent",
+    "ask-for-status-update-prompt": "ask-for-status-update",
+    "ask-for-status-update-given-none-was-provided-for-seconds": 480,
+    "shut-down-prompt": "shut-down",
+    "check-health-interval-seconds": 1200,
+    "check-health-steps": [
+        {
+            "id": "check-health",
+            "sequence": 1,
+            "name": "Check Health",
+            "description": "Check on the health of the system",
+            "action": {
+                "type": "state-engine",
+                "engine": "check-health"
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "is-done": true
+                    }
+                }
+            ]
+        }
+    ],
+    "check-ticket-health-sample-every": 5,
+    "ready-tickets-join-sprint-at": "committed",
+    "check-ticket-health-steps": [
+        {
+            "id": "check-ticket-health",
+            "sequence": 1,
+            "name": "Check Ticket Health",
+            "description": "Check on the health of the ticketing system",
+            "action": {
+                "type": "state-engine",
+                "engine": "check-ticket-health-grouped"
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "is-done": true
+                    }
+                }
+            ]
+        }
+    ],
+    "check-memory-interval-seconds": 86400,
+    "check-memory-steps": [
+        {
+            "id": "check-memory",
+            "sequence": 1,
+            "name": "Check Memory",
+            "description": "Check the project's memory against the project as it stands now, removing what no longer holds",
+            "action": {
+                "type": "state-engine",
+                "engine": "check-memory"
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "is-done": true
+                    }
+                }
+            ]
+        }
+    ],
+    "check-variation-appeal-interval-seconds": 900,
+    "check-variation-appeal-steps": [
+        {
+            "id": "check-variation-appeal",
+            "sequence": 1,
+            "name": "Check Variation Appeal",
+            "description": "Check on the appeal and progress relative to the other variations for this ticket",
+            "action": {
+                "type": "state-engine",
+                "engine": "check-variation-appeal"
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "is-done": true
+                    }
+                }
+            ]
+        }
+    ],
+    "gap-resolution-steps": [
+        {
+            "id": "gap-resolution",
+            "sequence": 1,
+            "name": "Gap Resolution",
+            "description": "Investigate the gap between the ticketing system's status and our status",
+            "action": {
+                "type": "state-engine",
+                "engine": "investigate-gap"
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "is-done": true
+                    }
+                }
+            ]
+        }
+    ],
+    "steps": [
+        {
+            "id": "blocked-for-human",
+            "sequence": 0,
+            "area": "quarantine",
+            "name": "Blocked for Human",
+            "color": "#ff0000",
+            "description": "A step failed or looped too many times; needs a human",
+            "vm": "stopped",
+            "paired-ticket-system-status": "In Progress",
+            "follow-return-to-state": true,
+            "is-blocked-state": true,
+            "action": {
+                "type": "human",
+                "instructions": "Resolve the block so work can continue on this ticket."
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "human-review": "Resolved"
+                    },
+                    "follow-return-to-state": true
+                },
+                {
+                    "condition": {
+                        "human-review": "Have AI Try Again to Unblock this Ticket"
+                    },
+                    "move-to-state": "blocked"
+                }
+            ],
+            "warning-indicator": true
+        },
+        {
+            "id": "blocked",
+            "sequence": 0,
+            "area": "quarantine",
+            "name": "Blocked",
+            "color": "#ffd700",
+            "description": "A step failed again and again: AI troubleshoots it, classifies it and has it fixed — Blocked for Human after 3 failed fix attempts, or when no fix can be raised, waited on or made",
+            "vm": "stopped",
+            "paired-ticket-system-status": "In Progress",
+            "follow-return-to-state": true,
+            "append-output-to": "blocks",
+            "action": {
+                "type": "state-engine",
+                "engine": "grouped-blocked"
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "all": [
+                            {
+                                "is-done": true
+                            },
+                            {
+                                "sub-engine-ended-at": "blocked-for-human"
+                            }
+                        ]
+                    },
+                    "move-to-state": "blocked-for-human"
+                },
+                {
+                    "condition": {
+                        "all": [
+                            {
+                                "is-done": true
+                            },
+                            {
+                                "sub-engine-ended-at": "retry"
+                            }
+                        ]
+                    },
+                    "move-to-state": "blocked"
+                },
+                {
+                    "condition": {
+                        "is-done": true
+                    },
+                    "follow-return-to-state": true
+                }
+            ]
+        },
+        {
+            "id": "self-healing",
+            "sequence": 0,
+            "area": "quarantine",
+            "name": "Self Healing",
+            "color": "#00bfff",
+            "description": "A fix ticket self-healing raised: an agent fixes it, the harness restarts on the fix, the tickets it held resume",
+            "vm": "running",
+            "paired-ticket-system-status": "In Progress",
+            "return-to-state": "self-healing",
+            "action": {
+                "type": "state-engine",
+                "engine": "self-healing-fix"
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "all": [
+                            {
+                                "is-done": true
+                            },
+                            {
+                                "structured-output": {
+                                    "is-fixed": true
+                                }
+                            }
+                        ]
+                    },
+                    "move-to-state": "done"
+                },
+                {
+                    "condition": {
+                        "is-done": true
+                    },
+                    "move-to-state": "blocked-for-human"
+                }
+            ]
+        },
+        {
+            "id": "requirements-changed",
+            "sequence": 0,
+            "area": "quarantine",
+            "name": "Requirements Changed",
+            "color": "#ff8c00",
+            "description": "The operator took a new description (ticket:take-new): AI revises the acceptance criteria and judges the work against them — back to the step it was in when it passes every one, else into Plan at Root Cause Analysis (ASS-79)",
+            "vm": "running",
+            "follow-return-to-state": true,
+            "action": {
+                "type": "state-engine",
+                "engine": "grouped-requirements-changed"
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "all": [
+                            {
+                                "is-done": true
+                            },
+                            {
+                                "sub-engine-ended-at": "rca"
+                            }
+                        ]
+                    },
+                    "move-to-state": "plan",
+                    "start-sub-engine-at": "root-cause-analysis"
+                },
+                {
+                    "condition": {
+                        "all": [
+                            {
+                                "is-done": true
+                            },
+                            {
+                                "sub-engine-ended-at": "blocked"
+                            }
+                        ]
+                    },
+                    "move-to-state": "blocked"
+                },
+                {
+                    "condition": {
+                        "is-done": true
+                    },
+                    "follow-return-to-state": true
+                }
+            ]
+        },
+        {
+            "id": "backlog",
+            "sequence": 1,
+            "name": "Backlog",
+            "description": "Work that still has an old status but was just committed to",
+            "paired-ticket-system-status": "Backlog",
+            "is-planning-stage": true,
+            "action": {
+                "type": "none"
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "always": true
+                    },
+                    "move-to-state": "committed"
+                }
+            ]
+        },
+        {
+            "id": "committed",
+            "sequence": 2,
+            "name": "Committed",
+            "description": "Queue of work ready to be started",
+            "paired-ticket-system-status": "Committed",
+            "is-planning-stage": true,
+            "action": {
+                "type": "none"
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "agent-needs-work": true
+                    },
+                    "move-to-state": "setup"
+                }
+            ]
+        },
+        {
+            "id": "setup",
+            "name": "Setup",
+            "description": "The variation's VM, made and set up once",
+            "vm": "running",
+            "paired-ticket-system-status": "In Progress",
+            "max-visits": 3,
+            "on-max-visits": "blocked",
+            "return-to-state": "setup",
+            "is-planning-stage": true,
+            "action": {
+                "type": "state-engine",
+                "engine": "grouped-setup"
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "all": [
+                            {
+                                "is-done": true
+                            },
+                            {
+                                "sub-engine-ended-at": "blocked"
+                            }
+                        ]
+                    },
+                    "move-to-state": "blocked"
+                },
+                {
+                    "condition": {
+                        "all": [
+                            {
+                                "is-done": true
+                            },
+                            {
+                                "sub-engine-ended-at": "blocked-for-human"
+                            }
+                        ]
+                    },
+                    "move-to-state": "blocked-for-human"
+                },
+                {
+                    "condition": {
+                        "is-done": true
+                    },
+                    "move-to-state": "plan"
+                }
+            ],
+            "sequence": 3
+        },
+        {
+            "id": "plan",
+            "name": "Plan",
+            "description": "Acceptance criteria, root cause, execution and test plans, reviewed",
+            "vm": "running",
+            "paired-ticket-system-status": "In Progress",
+            "max-visits": 3,
+            "on-max-visits": "blocked",
+            "return-to-state": "plan",
+            "is-planning-stage": true,
+            "action": {
+                "type": "state-engine",
+                "engine": "grouped-plan"
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "all": [
+                            {
+                                "is-done": true
+                            },
+                            {
+                                "sub-engine-ended-at": "blocked"
+                            }
+                        ]
+                    },
+                    "move-to-state": "blocked"
+                },
+                {
+                    "condition": {
+                        "is-done": true
+                    },
+                    "move-to-state": "build"
+                }
+            ],
+            "sequence": 4,
+            "recheck-on-requirements-change": true
+        },
+        {
+            "id": "build",
+            "name": "Build",
+            "description": "The automated tests, the solution, its automated testing and code and security reviews",
+            "vm": "running",
+            "paired-ticket-system-status": "In Progress",
+            "max-visits": 5,
+            "on-max-visits": "blocked",
+            "return-to-state": "build",
+            "action": {
+                "type": "state-engine",
+                "engine": "grouped-build"
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "all": [
+                            {
+                                "is-done": true
+                            },
+                            {
+                                "sub-engine-ended-at": "blocked"
+                            }
+                        ]
+                    },
+                    "move-to-state": "blocked"
+                },
+                {
+                    "condition": {
+                        "is-done": true
+                    },
+                    "move-to-state": "test"
+                }
+            ],
+            "sequence": 5,
+            "recheck-on-requirements-change": true
+        },
+        {
+            "id": "test",
+            "name": "Test",
+            "description": "Local testing against the acceptance criteria, and the steps to test",
+            "vm": "running",
+            "paired-ticket-system-status": "In Progress",
+            "max-visits": 3,
+            "on-max-visits": "blocked",
+            "return-to-state": "test",
+            "record-output-as": "local-testing",
+            "action": {
+                "type": "state-engine",
+                "engine": "grouped-test"
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "all": [
+                            {
+                                "is-done": true
+                            },
+                            {
+                                "sub-engine-ended-at": "blocked"
+                            }
+                        ]
+                    },
+                    "move-to-state": "blocked"
+                },
+                {
+                    "condition": {
+                        "all": [
+                            {
+                                "is-done": true
+                            },
+                            {
+                                "sub-engine-ended-at": "rebuild"
+                            }
+                        ]
+                    },
+                    "move-to-state": "build",
+                    "start-sub-engine-at": "generate-solution"
+                },
+                {
+                    "condition": {
+                        "is-done": true
+                    },
+                    "move-to-state": "document"
+                }
+            ],
+            "sequence": 6,
+            "recheck-on-requirements-change": true
+        },
+        {
+            "id": "document",
+            "name": "Document",
+            "description": "The documentation, the merge request's details and screenshots. Until ASS-80/81 (Generate Solution creates the merge request) these engines create none: Create Merge Request is gone with Create Branch and Create Worktree",
+            "vm": "running",
+            "paired-ticket-system-status": "In Progress",
+            "max-visits": 3,
+            "on-max-visits": "blocked",
+            "return-to-state": "document",
+            "action": {
+                "type": "state-engine",
+                "engine": "grouped-document"
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "all": [
+                            {
+                                "is-done": true
+                            },
+                            {
+                                "sub-engine-ended-at": "blocked"
+                            }
+                        ]
+                    },
+                    "move-to-state": "blocked"
+                },
+                {
+                    "condition": {
+                        "is-done": true
+                    },
+                    "move-to-state": "review"
+                }
+            ],
+            "sequence": 7,
+            "recheck-on-requirements-change": true
+        },
+        {
+            "id": "review",
+            "name": "Review",
+            "description": "Risk assessment, human review, token expense, payment gate, variation selection",
+            "vm": "running",
+            "paired-ticket-system-status": "In Progress",
+            "max-visits": 3,
+            "on-max-visits": "blocked",
+            "return-to-state": "review",
+            "action": {
+                "type": "state-engine",
+                "engine": "grouped-review"
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "all": [
+                            {
+                                "is-done": true
+                            },
+                            {
+                                "sub-engine-ended-at": "blocked"
+                            }
+                        ]
+                    },
+                    "move-to-state": "blocked"
+                },
+                {
+                    "condition": {
+                        "all": [
+                            {
+                                "is-done": true
+                            },
+                            {
+                                "sub-engine-ended-at": "replan"
+                            }
+                        ]
+                    },
+                    "move-to-state": "plan",
+                    "start-sub-engine-at": "write-execution-plan"
+                },
+                {
+                    "condition": {
+                        "all": [
+                            {
+                                "is-done": true
+                            },
+                            {
+                                "sub-engine-ended-at": "write-test-plan"
+                            }
+                        ]
+                    },
+                    "move-to-state": "plan",
+                    "start-sub-engine-at": "write-test-plan"
+                },
+                {
+                    "condition": {
+                        "all": [
+                            {
+                                "is-done": true
+                            },
+                            {
+                                "sub-engine-ended-at": "generate-solution"
+                            }
+                        ]
+                    },
+                    "move-to-state": "build",
+                    "start-sub-engine-at": "generate-solution"
+                },
+                {
+                    "condition": {
+                        "is-done": true
+                    },
+                    "move-to-state": "release"
+                }
+            ],
+            "sequence": 8,
+            "recheck-on-requirements-change": true
+        },
+        {
+            "id": "release",
+            "name": "Release",
+            "description": "Merge the pull request, update the harness, restart it onto the change",
+            "paired-ticket-system-status": "In Progress",
+            "max-visits": 3,
+            "on-max-visits": "blocked",
+            "return-to-state": "release",
+            "action": {
+                "type": "state-engine",
+                "engine": "grouped-release-harness"
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "all": [
+                            {
+                                "is-done": true
+                            },
+                            {
+                                "sub-engine-ended-at": "blocked"
+                            }
+                        ]
+                    },
+                    "move-to-state": "blocked"
+                },
+                {
+                    "condition": {
+                        "is-done": true
+                    },
+                    "move-to-state": "done"
+                }
+            ],
+            "sequence": 9,
+            "recheck-on-requirements-change": true
+        },
+        {
+            "id": "done",
+            "sequence": 10,
+            "name": "Done",
+            "description": "Work is completed",
+            "is-done": true,
+            "paired-ticket-system-status": "Done",
+            "action": {
+                "type": "none"
+            }
+        }
+    ],
+    "backlog-refinement-steps": [
+        {
+            "id": "backlog-refinement",
+            "sequence": 1,
+            "name": "Backlog Refinement",
+            "description": "Groom a backlog ticket until it is ready to build",
+            "action": {
+                "type": "state-engine",
+                "engine": "harness-backlog-refinement"
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "is-done": true
+                    }
+                }
+            ]
+        }
+    ]
+}

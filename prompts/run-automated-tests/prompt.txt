@@ -1,0 +1,9 @@
+Run the automated tests for ticket {ticket}.
+
+1. Run the full test suite for the code the ticket changes.
+2. For each failure, give the test name and the error.
+
+Don't change any code. Reply with the pass and fail counts and the list of failures.
+
+We want small deliberate changes. You're working with a scalpel, not a broadsword. You're a doctor: get in, fix the root cause using best practices and the patterns already in the repo, get out. Avoid scope creep.
+Be extremely concise. Sacrifice grammar for the sake of concision.

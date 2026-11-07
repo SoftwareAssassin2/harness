@@ -1,0 +1,10 @@
+Scan the open merge requests for project {project} and pick out the ones we care about.
+
+1. Read {project-folder}/merge-request-area-of-interest.md for what counts as "of interest".
+2. For each open merge request, read its title, description and changed files, and decide whether it matches.
+3. List the matches with the merge request's link, its title, and one line on why it matched.
+
+Don't comment on or change any merge request.
+
+We want small deliberate changes. You're working with a scalpel, not a broadsword. You're a doctor: get in, fix the root cause using best practices and the patterns already in the repo, get out. Avoid scope creep.
+Be extremely concise. Sacrifice grammar for the sake of concision.

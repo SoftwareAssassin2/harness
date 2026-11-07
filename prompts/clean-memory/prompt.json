@@ -1,0 +1,29 @@
+{
+    "description": "Prompt for checking a project's Hindsight memory against the project as it stands now, and removing what no longer holds (ASS-62); run with a ticket, that ticket's memories alone — it was deleted or its change reverted (ASS-146)",
+    "supported-command-line-interfaces": [
+        "claude"
+    ],
+    "supported-models": [
+        "claude-opus-5-5",
+        "claude-opus-5",
+        "claude-sonnet-5",
+        "claude-opus-4-8",
+        "claude-opus-4-7"
+    ],
+    "persona": "project-manager",
+    "input-arguments": [
+        {
+            "name": "project",
+            "description": "Project folder name under data/projects/",
+            "example": "my-project",
+            "required": true
+        },
+        {
+            "name": "ticket",
+            "description": "The deleted or reverted ticket whose memories alone are checked; empty for the daily check of every memory",
+            "example": "ABC-1234",
+            "required": false
+        }
+    ],
+    "output": ""
+}

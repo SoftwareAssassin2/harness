@@ -1,0 +1,35 @@
+{
+    "description": "Template that asks an agent for an overdue status update",
+    "supported-command-line-interfaces": [
+        "claude"
+    ],
+    "supported-models": [
+        "claude-opus-5-5",
+        "claude-opus-5",
+        "claude-sonnet-5",
+        "claude-opus-4-8",
+        "claude-opus-4-7"
+    ],
+    "persona": "developer",
+    "input-arguments": [
+        {
+            "name": "minutes",
+            "description": "Minutes since the agent's last status update",
+            "example": "9",
+            "required": true
+        },
+        {
+            "name": "status-update-command",
+            "description": "Command the agent runs to post a status update of 34 characters or fewer",
+            "example": "./agent.sh assignments:status-update Orange <update>",
+            "required": true
+        },
+        {
+            "name": "approve-command",
+            "description": "Command the agent runs when it approves the final result",
+            "example": "./agent.sh assignments:approve Orange",
+            "required": true
+        }
+    ],
+    "output": ""
+}

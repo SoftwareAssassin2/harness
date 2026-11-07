@@ -1,0 +1,21 @@
+Check whether ticket {ticket}'s changes, variation {variation} of project {project}, will cause new or increased AI token spend once merged.
+
+{where}
+
+1. Read the ticket's execution plan ({ticket-folder}/execution-plan-{variation}.md) and the full diff of every merge request not Closed: {agent-sh} ticket:merge-request-plan {project} {ticket} {variation} lists each one's id, repository, branch and base; in each one's repository checkout, git fetch origin, then its changes are git diff origin/<base>...origin/<branch>. Check them all in one pass.
+2. Look for anything that calls a paid AI model, directly or indirectly:
+   - New or changed calls to an LLM or embedding API (Anthropic, OpenAI, Google, or a gateway in front of them)
+   - Changes to which model is used, the prompt size, the output limit, or how often a call runs (loops, retries, schedules, batch jobs)
+   - New agents, pipelines or background jobs that run prompts
+   - Removed caching, or anything else that makes existing calls more frequent or larger
+3. Write {ticket-folder}/token-expense-check-{variation}.md (through `{agent-sh} work:write {project} {ticket} {variation} token-expense-check.md`, the whole file on stdin):
+   - Whether the change spends tokens, and where: each finding names its merge request, file and line
+   - A rough estimate: which model, how many calls, and what drives the volume (per user action, per document, per day)
+   - Anything that caps the spend, or the absence of a cap
+
+Don't change any code. Token spend by the agents building this ticket doesn't count — only what the merged change itself will spend.
+
+Finish with one verdict for them all, as JSON: {"will-spend-tokens": true} if the change adds or increases AI token spend, otherwise {"will-spend-tokens": false}.
+
+We want small deliberate changes. You're working with a scalpel, not a broadsword. You're a doctor: get in, fix the root cause using best practices and the patterns already in the repo, get out. Avoid scope creep.
+Be extremely concise. Sacrifice grammar for the sake of concision.

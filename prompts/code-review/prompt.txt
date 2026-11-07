@@ -1,0 +1,14 @@
+Review the code changes for ticket {ticket} against its execution plan ({ticket-folder}/execution-plan-{variation}.md) and acceptance criteria.
+
+Look for:
+- Correctness bugs and unhandled edge cases
+- Changes that don't match the execution plan or miss an acceptance criterion
+- Missing or weak tests
+- Needless complexity or duplicated code
+
+Don't flag style or linter nits. Write your findings to {ticket-folder}/code-review-{variation}.md (through `{agent-sh} work:write {project} {ticket} {variation} code-review.md`, the whole file on stdin), most severe first, each with the file and line.
+
+Finish with JSON: {"is-approved": true} if the code can ship as is, or {"is-approved": false} if anything in code-review-{variation}.md must be fixed first.
+
+We want small deliberate changes. You're working with a scalpel, not a broadsword. You're a doctor: get in, fix the root cause using best practices and the patterns already in the repo, get out. Avoid scope creep.
+Be extremely concise. Sacrifice grammar for the sake of concision.

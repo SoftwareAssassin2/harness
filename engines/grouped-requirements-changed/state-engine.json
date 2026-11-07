@@ -1,0 +1,152 @@
+{
+    "steps": [
+        {
+            "id": "revise-acceptance-criteria",
+            "sequence": 1,
+            "name": "Revise Acceptance Criteria",
+            "description": "Revise the variation's acceptance criteria from the new description, keeping their numbers where they still apply, and write requirements-change.md (what changed, from -> to, from requirements-history.jsonl) (ASS-79 AC1)",
+            "max-visits": 3,
+            "on-max-visits": "blocked",
+            "action": {
+                "type": "prompt",
+                "prompt": "revise-acceptance-criteria",
+                "agent-count": 1,
+                "run-in-dev-container": false
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "all": [
+                            {
+                                "turn-complete": true
+                            },
+                            {
+                                "file-updated": {
+                                    "file": "requirements-change.md",
+                                    "since": "turn-start"
+                                }
+                            },
+                            {
+                                "structured-ticket-variation-array-check": {
+                                    "member-name": "acceptance-criteria",
+                                    "min-length": 1
+                                }
+                            }
+                        ]
+                    },
+                    "move-to-state": "judge"
+                },
+                {
+                    "condition": {
+                        "all": [
+                            {
+                                "turn-complete": true
+                            },
+                            {
+                                "not": {
+                                    "file-updated": {
+                                        "file": "requirements-change.md",
+                                        "since": "turn-start"
+                                    }
+                                }
+                            }
+                        ]
+                    },
+                    "move-to-state": "revise-acceptance-criteria"
+                },
+                {
+                    "condition": {
+                        "turn-complete": true
+                    },
+                    "move-to-state": "revise-acceptance-criteria"
+                }
+            ],
+            "run-location": "vm"
+        },
+        {
+            "id": "judge",
+            "sequence": 2,
+            "name": "Judge Against the Revised Criteria",
+            "description": "Judge whether the solution, as built or as being built — the plan when nothing is built yet — passes every revised criterion: a verdict per criterion, pass/fail and why (ASS-79 AC2)",
+            "max-visits": 3,
+            "on-max-visits": "blocked",
+            "action": {
+                "type": "prompt",
+                "prompt": "judge-requirements-change",
+                "agent-count": 1,
+                "run-in-dev-container": false
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "turn-complete": true
+                    },
+                    "move-to-state": "verdict"
+                }
+            ],
+            "run-location": "vm"
+        },
+        {
+            "id": "verdict",
+            "sequence": 3,
+            "name": "Verdict",
+            "description": "Every revised criterion passes: back to the step the variation was in; any fails: requirements-change-reason.md written, then Root Cause Analysis (ASS-79 AC3)",
+            "action": {
+                "type": "script",
+                "command": "./agent.sh ticket:requirements-change-verdict {project} {work-item} {variation} {run}"
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "exit-code": 0
+                    },
+                    "move-to-state": "done"
+                },
+                {
+                    "condition": {
+                        "exit-code": 3
+                    },
+                    "move-to-state": "rca"
+                },
+                {
+                    "condition": {
+                        "not": {
+                            "exit-code": 0
+                        }
+                    },
+                    "move-to-state": "blocked"
+                }
+            ]
+        },
+        {
+            "id": "done",
+            "sequence": 4,
+            "name": "Done",
+            "description": "The work still meets the requirements: the variation goes back to the step it was in",
+            "is-done": true,
+            "action": {
+                "type": "none"
+            }
+        },
+        {
+            "id": "rca",
+            "sequence": 5,
+            "name": "Root Cause Analysis",
+            "description": "The work no longer meets the requirements: the variation goes into Plan at Root Cause Analysis",
+            "is-done": true,
+            "action": {
+                "type": "none"
+            }
+        },
+        {
+            "id": "blocked",
+            "sequence": 6,
+            "name": "Blocked",
+            "description": "A step failed or looped past its max-visits",
+            "is-done": true,
+            "action": {
+                "type": "none"
+            }
+        }
+    ]
+}

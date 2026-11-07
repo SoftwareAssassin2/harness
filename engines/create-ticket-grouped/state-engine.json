@@ -1,0 +1,22 @@
+{
+    "steps": [
+
+        { "id": "check-existing", "sequence": 1, "name": "Check Existing", "description": "Searching the ticketing system and the off-board folder for a ticket about the problem",
+            "action": { "type": "prompt", "prompt": "find-existing-ticket", "agent-count": 1, "run-in-dev-container": false },
+            "exit-events": [
+                { "condition": { "all": [ { "turn-complete": true }, { "structured-output": { "exists": true } } ] }, "move-to-state": "done" },
+                { "condition": { "all": [ { "turn-complete": true }, { "structured-output": { "exists": false } } ] }, "move-to-state": "write-ticket" }
+            ]
+        },
+        { "id": "write-ticket", "sequence": 2, "name": "Write Ticket", "description": "Creating the ticket from the template",
+            "action": { "type": "prompt", "prompt": "create-ticket-grouped", "agent-count": 1, "run-in-dev-container": false },
+            "exit-events": [
+                { "condition": { "turn-complete": true }, "move-to-state": "done" }
+            ]
+        },
+
+        { "id": "done", "sequence": 3, "name": "Done", "description": "A ticket exists for the problem", "is-done": true,
+            "action": { "type": "none" }
+        }
+    ]
+}

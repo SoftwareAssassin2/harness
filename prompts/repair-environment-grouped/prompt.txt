@@ -1,0 +1,16 @@
+Ticket {ticket} in project {project} is blocked by its environment. Repair it in place if you may, check the blocked step would now pass, and say what you did. If you may not, repair nothing: say what the operator must do.
+
+{where}
+
+{problem}
+
+1. Where you may work: only this VM — its checkouts and the project's containers in it. Never anything on the Mac.
+2. What you may do: reinstall dependencies where the step runs them; remove a stopped or stale compose stack of the project's; re-run a failed setup step; save an uncommitted edit aside (git stash, or a copy in a temp folder: mktemp -d), then clean it.
+3. Never: edit harness or product code; change a credential, token or secret; discard work you have not saved aside. A repair that needs any of these is not yours: the operator's.
+4. Re-run what failed. Repaired only when it now passes.
+5. Write what you found and did to {ticket-folder}/change-log-{variation}.md (through `{agent-sh} work:append {project} {ticket} {variation} change-log.md`, the entry on stdin).
+
+Finish with JSON: {"remediated": <bool: repaired and re-checked>, "evidence": ["<command you ran and what it showed>"], "ai-feedback-short": "<repaired: what you did; else what the operator must do — one line>", "ai-feedback-long": "<what was found, and what was done or must be done>"}.
+
+We want small deliberate changes. You're working with a scalpel, not a broadsword. You're a doctor: get in, fix the root cause using best practices and the patterns already in the repo, get out. Avoid scope creep.
+Be extremely concise. Sacrifice grammar for the sake of concision.

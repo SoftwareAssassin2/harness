@@ -1,0 +1,15 @@
+Check that every project's own records match reality, as far as you can without changing anything. The harness checks every project it runs: each folder under {harness-folder}/data/projects/ with a project.json.
+
+1. For each project, read its project.json and the active sprint under its sprints/.
+2. Compare against what you can observe:
+   - Each repository URL and local clone exists and points at the same remote
+   - Each work source and ticketing-system setting resolves (board URL, project key, credentials present)
+   - Each sprint ticket exists in the ticketing system and its status there matches the step's paired-ticket-system-status
+   - Each ticket's branch, worktree and merge request, where the step says they should exist, exist
+   - Any value still TODO or null that control needs
+3. Write the report to {ticket-folder}/project.md (through `{agent-sh} work:write {project} <folder> - project.md`, <folder> the last part of {ticket-folder}, the whole file on stdin), one section per project: each mismatch with the file, the value, what you observed, and the fix you'd recommend.
+
+Don't change any file or any ticket — only report. If everything matches, say so.
+
+We want small deliberate changes. You're working with a scalpel, not a broadsword. You're a doctor: get in, fix the root cause using best practices and the patterns already in the repo, get out. Avoid scope creep.
+Be extremely concise. Sacrifice grammar for the sake of concision.

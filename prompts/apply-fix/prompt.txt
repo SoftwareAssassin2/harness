@@ -1,0 +1,12 @@
+Fix the issue described in ticket {ticket} for project {project}. Agent work that depends on the fix is paused; get it done and get out.
+
+1. Read the ticket and its acceptance criteria in {ticket-folder}/ticket.json, and the reports and analysis beside it.
+2. First check whether it is still broken: the operator, or another fix, may have fixed it already. If it is fixed, verify it (step 3), change nothing, and finish with is-fixed true. Otherwise fix the root cause only, in the repo or environment the ticket names, using the patterns already there. Rebuild or migrate the shared resource if that is the fix.
+   Never touch the operator's own uncommitted work (no stash, commit, discard, reset or branch switch on changes you didn't make) and never handle a credential (token, key, password, login, re-authentication). If the fix needs either, stop: change nothing, and finish with is-fixed false and a summary of what the operator must do.
+3. Verify: run the tests or the check that proves the problem is gone.
+4. Commit with a clear message that names the ticket. Append what you did, and anything left, to {ticket-folder}/change-log-{variation}.md (through `{agent-sh} work:append {project} {ticket} {variation} change-log.md`, the entry on stdin). The harness restarts itself on your fix and moves the ticket on; don't change its status.
+
+Finish with JSON: {"is-fixed": <bool>, "summary": "<one line>"}.
+
+We want small deliberate changes. You're working with a scalpel, not a broadsword. You're a doctor: get in, fix the root cause using best practices and the patterns already in the repo, get out. Avoid scope creep.
+Be extremely concise. Sacrifice grammar for the sake of concision.

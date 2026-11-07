@@ -1,0 +1,12 @@
+Take screenshots showing ticket {ticket}'s changes working.
+
+{where}
+
+1. With the app running locally, go to each screen the change affects.
+2. Capture one screenshot per acceptance criterion that has a visible result.
+3. Save them in {ticket-folder}/screenshots/, named after the criterion they show (criterion-1.png, criterion-2.png, …).
+
+Finish with JSON: {"screenshots": [{"file": "<file name>", "criteria-number": <n>, "shows": "<one line>"}, ...]} — an empty list when nothing is visible.
+
+We want small deliberate changes. You're working with a scalpel, not a broadsword. You're a doctor: get in, fix the root cause using best practices and the patterns already in the repo, get out. Avoid scope creep.
+Be extremely concise. Sacrifice grammar for the sake of concision.

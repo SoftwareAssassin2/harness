@@ -1,0 +1,10 @@
+Write the steps a tester follows to verify ticket {ticket} in project {project}. The reader is a human tester on a normal dev checkout or CI, not in your VM: VM paths, shims and workarounds stay in test-results, never in steps-to-test.
+
+1. Read {ticket-folder}/test-plan-{variation}.md and {ticket-folder}/test-results-{variation}.md, plus the acceptance criteria.
+2. Write {ticket-folder}/steps-to-test-{variation}.md (through `{agent-sh} work:write {project} {ticket} {variation} steps-to-test.md`, the whole file on stdin): preconditions, then one numbered list per acceptance criterion with the action and the expected result, then anything the tester should not see.
+3. Post it on the ticket, the file on stdin: `{agent-sh} ticket:post-comment {project} {ticket} - < {ticket-folder}/steps-to-test-{variation}.md`
+
+If {ticket-folder}/operator-review-{variation}.md exists, it holds the operator's notes from rejecting earlier passes at Human Review: read it and address each note in this step's work.
+
+We want small deliberate changes. You're working with a scalpel, not a broadsword. You're a doctor: get in, fix the root cause using best practices and the patterns already in the repo, get out. Avoid scope creep.
+Be extremely concise. Sacrifice grammar for the sake of concision.

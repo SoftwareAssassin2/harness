@@ -1,0 +1,107 @@
+{
+    "description": "Prompt for finding a problem's root cause \u2014 reproduced, traced back, attributed to the harness, the project or the operator, with evidence \u2014 and what it means for the sprint",
+    "supported-command-line-interfaces": [
+        "claude"
+    ],
+    "supported-models": [
+        "claude-opus-5-5",
+        "claude-opus-5",
+        "claude-sonnet-5",
+        "claude-opus-4-8",
+        "claude-opus-4-7"
+    ],
+    "persona": "harness-doctor",
+    "input-arguments": [
+        {
+            "name": "project",
+            "description": "Project folder name under data/projects/",
+            "example": "my-project",
+            "required": true
+        },
+        {
+            "name": "ticket",
+            "description": "Ticket the finding came from, when it came from one",
+            "example": "ABC-1234",
+            "required": false
+        }
+    ],
+    "output": {
+        "type": "object",
+        "properties": {
+            "needs-fix": {
+                "type": "boolean",
+                "description": "true if there is a real problem to fix"
+            },
+            "summary": {
+                "type": "string",
+                "maxLength": 120,
+                "description": "The problem in one line, 120 characters or fewer"
+            },
+            "root-cause": {
+                "type": "string",
+                "description": "The root cause, and the chain from it to the symptoms"
+            },
+            "cause-in": {
+                "type": "string",
+                "enum": [
+                    "harness",
+                    "project",
+                    "operator"
+                ],
+                "description": "Where the cause is, not where it showed: the harness (off-board ticket), the project (ticketing-system ticket), or the operator's own machine (off-board ticket)"
+            },
+            "evidence": {
+                "type": "array",
+                "items": {
+                    "type": "string"
+                },
+                "description": "What proves each claim: a command and its first error line, file:line, a log line; unchecked claims marked unverified"
+            },
+            "blocks-tickets": {
+                "type": "array",
+                "items": {
+                    "type": "string"
+                },
+                "description": "Keys of the tickets whose own history, change-log or files show this failure"
+            },
+            "must-interrupt-work": {
+                "type": "boolean",
+                "description": "true if fixing it means pausing agent work on a shared resource"
+            },
+            "can-continue-without-fix": {
+                "type": "boolean",
+                "description": "true if the highest-priority workable ticket can still progress without the fix"
+            },
+            "needs-human": {
+                "type": "boolean",
+                "description": "true if the fix needs the operator's own uncommitted work (stash, commit, discard, reset, branch switch on their changes) or a credential (token, key, password, login, re-authentication)"
+            },
+            "human-action": {
+                "type": "string",
+                "maxLength": 120,
+                "description": "What the operator must do, in one line; empty when needs-human is false"
+            },
+            "pause-tickets": {
+                "type": "array",
+                "items": {
+                    "type": "string"
+                },
+                "description": "Keys of only the tickets that must pause so the fix can be built, tested and deployed; empty when needs-human is true"
+            }
+        },
+        "required": [
+            "needs-fix",
+            "summary",
+            "root-cause",
+            "cause-in",
+            "evidence",
+            "blocks-tickets",
+            "must-interrupt-work",
+            "can-continue-without-fix",
+            "needs-human",
+            "human-action",
+            "pause-tickets"
+        ],
+        "additionalProperties": false
+    }
+}

@@ -1,0 +1,496 @@
+# The grouped development engines (ASS-68)
+
+`harness-development-grouped` is the current `harness-development` regrouped
+into a few high-level states; a project's own grouped engine, kept with its own
+flat engine in `data/projects/<project>/engines/` (ASS-276), regroups that flat
+engine the same way. Each high-level state is a `state-engine` step whose sub-engine holds the
+detailed steps, mirrored from the current engines (same names, actions,
+max-visits and exit conditions). The current engines are unchanged: they are the
+rollback.
+
+| High-level state | Sub-engine | Steps |
+|---|---|---|
+| Backlog, Committed | (plain steps) | |
+| Setup | `grouped-setup` | Check Setup Complete, Create VM, Mark Setup Complete |
+| Plan | `grouped-plan` | Extract Acceptance Criteria, Root Cause Analysis, Review Root Cause Analysis, Write Execution Plan, Write Test Plan, Enrich Automated Test Data, Review Plan |
+| Build | `grouped-build` | Refresh the Reference Repositories, Generate Automated Tests, Generate Solution, Refresh the Reference Repositories Before Testing, Automated Testing, CI Checks, Code Review, Security Review |
+| Test | `grouped-test` | Local Testing (`grouped-local-testing`), Steps to Test (`grouped-steps-to-test`) |
+| Document | `grouped-document` | Update Documentation, Update Merge Request Details, Check Merge Request Details, Add Screenshots to Merge Request |
+| Review | `grouped-review` | Explain the Change, Risk Assessment, Human Review, AI Token Expense Check, Payment Gate, Variation Selection |
+| Release (harness) | `grouped-release-harness` | Merge Pull Request, Update the Harness, Request a Restart, Await the Restart |
+| Release (a project's own) | its own release engine | e.g. Take out of Draft Mode, Team Code Review, Address Merge Request Feedback, Ensure Auto-Merge |
+| QA (a project's own) | `grouped-qa` | QA Testing |
+| Done | (plain step) | |
+
+Check Merge Request Details (ASS-219; grouped/v2 only, `merge-request:check-details`,
+on the host, every minute) checks each Open merge request's title against the
+project's format — project.json's `"merge-request-title"`: `"key-summary"`
+(`KEY: summary`, the default) or `"conventional"` (`type(scope): subject (KEY)`,
+what a CI mr-title job may require) — and that its description
+names every commit subject on its branch, and waits for its head pipeline's
+`.pre` jobs (none, or GitHub: no wait). A failure goes back to Update Merge
+Request Details with `merge-request-details-check-<variation>.md`, a failed
+job's log in it. The same format fills the prompt's `{merge-request-title}`.
+
+The Refresh steps (ASS-218; grouped/v2 Build only, `vm:refresh-repositories`,
+on the host) open Build and come before every Automated Testing. Each of
+the VM's repositories that none of the variation's merge requests is in is
+fetched and checked out on origin's default branch — a dirty one, one with
+commits origin's lacks, or one that cannot be fetched left as it is, a line
+saying so — so code compared with another repository's master (a parity
+check, say) is compared with CI's. The ticket's own repositories are untouched.
+Only a VM not running fails it: Blocked. Test's Rebuild enters Build at
+Generate Solution, past the first refresh; the second still runs.
+
+CI Checks (ASS-249; grouped Build only — v2-build and the flat engines have
+none — `ci-checks:verify`, in the VM, max-visits 3) runs, between Automated
+Testing and Code Review, the merge-request CI checks the project declares for
+each repository with a merge request not Closed: the gates its CI would fail
+(a leaked secret, an unpinned image, a policy violation), caught before the
+merge request reaches the forge. They are declared in `ci-checks.json` in the
+project's golden-image folder, beside `tests.json`:
+
+```json
+{ "repositories": {
+    "example-project": [
+      { "name": "secret-scan-mr", "command": "scripts/ci/secret-scan.sh", "baseline": false },
+      { "name": "kubernetes-policy", "command": "clusters/lint.sh", "changes": ["clusters/**", "*.yaml"] } ] } }
+```
+
+`name` is the CI job the check mirrors; `command` runs with bash in
+`/repos/<basename>`, `CI_CHECK_BASE` exported (the merge base of the checkout
+and `origin/<base>`); `changes` (optional) runs it only when the merge
+request's diff touches one of the globs (`**` any folders, `*` and `?` within
+one, `{a,b}` either, as CI's `rules:changes`); `baseline: false` (optional)
+marks a check over the merge request's own commits, which has no master run to
+compare with. A check that fails is run on `origin/<base>` too, as Automated
+Testing's tests are (ASS-99), and failing as it does on master passes. Exit 0
+(every run check passed, or failed only as on master) goes to Code Review, 3
+(a check could not run, no VM, or the file malformed) to Blocked, any other (a
+new failure) back to Generate Solution. `ci-checks-results-<variation>.md` in
+the ticket's folder holds each check's job, command, exit code and output, for
+Generate Solution and Security Review. A project without the file, or a ticket
+whose repositories declare none, passes with nothing run.
+
+`ci-checks.json` is not an input of the golden image: changing it rebuilds
+nothing.
+
+Blocked, Blocked for Human and Self Healing stay top-level. Blocked runs
+`grouped-blocked` (ASS-107, ASS-97), its own engine; the current engines'
+`blocked` stays as it was, their reference. It counts the fix attempts made
+in this stay (3 failed: Blocked for Human; the count starts again each time
+the ticket enters Blocked anew), troubleshoots — in the variation's VM, on
+the host while it has none set up yet, as when Setup is what failed —
+learning from the ticket's earlier blocks (every Blocked run is kept in its
+`blocks`, append-output-to, and given to the prompts as {problem}), then
+classifies: a harness issue's fix ticket to the harness project's backlog, a
+project issue's to the ticket's own project's ticket system, both waited on
+alike; a fix that lands ends the stay, the step it returns to its proof; an
+environment issue repaired in place, else Blocked for Human. It never
+resumes as if fixed when no fix can be raised or waited on. A repository the
+project lacks, which the ticket's work needs, is an environment issue
+(ASS-121): Troubleshoot names its forge url (missing-repository), and Repair
+Environment's first step, Add the Missing Repository
+(project:add-repository, on the host), adds it to project.json once glab or
+gh shows the harness can access it, downloads it into the VM (vm:create
+clones what the golden image predates), and the ticket retries; one it cannot
+access is not added: Blocked for Human, naming it and why. One another
+project lists is refused by the command itself, nothing changed (ASS-160):
+Blocked for Human, saying the ticket needs that project's access — it
+belongs in that project or must be done on the Mac. Nothing else ever
+adds a repository, and none is ever removed.
+
+A project issue raises a bug only for a failure on the latest master
+(ASS-163, the operator's decision box). Troubleshoot names the failing check
+(repository, CI job, assertion); Check on the Latest Master
+(project:check-on-master, on the host, read-only glab/gh) reads that job on
+the newest finished master pipeline that ran it. Failed there: the bug is
+raised in the project's ticket system with that evidence and waited on, as
+before. Passed: nothing raised; Plan the Obstacle Fix
+(ticket:plan-obstacle-fix) appends the fix of what stands in the way to the
+variation's execution-plan-<variation>.md, no scope added, and Repair Environment's steps
+make it (else the operator's step, Blocked for Human); the ticket resumes.
+No master evidence (no such job, forge unreachable, nothing named) is not
+proven: no bug, Blocked for Human asking the operator. On the harness
+project nothing is checked: its project issues are its own backlog.
+
+Requirements Changed (ASS-79) is a top-level detour like Blocked, in these
+engines and `harness-development-v2`: `requirements-changed` runs
+`grouped-requirements-changed`. The operator's Take new (`ticket:take-new`,
+ASS-78) sends each live variation at a step flagged
+`recheck-on-requirements-change` (Plan and every group after it) there
+(`ticket:requirements-changed`). Revise Acceptance Criteria (in the VM)
+writes `{ticket-folder}/requirements-change-<variation>.md` (`work:write`) — what changed, from → to,
+from the last description line of `requirements-history.jsonl` — and
+revises the variation's criteria, keeping their numbers where they still
+apply. Judge (in the VM) gives a verdict per criterion on the built work
+(every merge request not Closed whose branch is pushed), else on the plan.
+Verdict (`ticket:requirements-change-verdict`, on the host) decides from
+them: every criterion passing, the variation goes back to the start of the
+group it was in (`follow-return-to-state`); any failing or unjudged, the
+failing ones are written to `{ticket-folder}/requirements-change-reason.md`
+and it goes into Plan at Root Cause Analysis, which starts from that file.
+Every revising `-grouped` prompt reads `requirements-change-<variation>.md` when it
+exists. Blocked during the detour hands the variation back to its group,
+not to the detour. It sets no ticket-system pairing: the ticket keeps the
+status it had.
+
+The ticket health check `harness-development-grouped` samples with is
+`check-ticket-health-grouped` (ASS-124; the current engines keep
+`check-ticket-health`). A harness or project issue it finds raises its fix
+ticket; an environment issue raises none: ticket:repair-environment hands
+the sampled ticket to its own Blocked at Blocked's repair step, what the
+check found its run's {problem} — resumed once repaired, else Blocked for
+Human. A ticket whose engine's Blocked makes no repair goes straight to
+Blocked for Human, saying what was found and what to do.
+
+## How it reads
+
+- **Pairing.** Only the top-level steps carry `paired-ticket-system-status`
+  (ASS-67). Every group pairs `In Progress`, except a project's own Release
+  (`In Review`) and QA (`In Testing`). A ticket-system status that differs
+  from the pairing is a gap for gap resolution, unless the group's own run
+  answers it (ASS-224): its step has an exit on that status (Team Code
+  Review's In Testing or In Progress), or the run is done. Then the group
+  step moves by its own exits, with no agent.
+- **run-location.** Missing means host. The steps that review code or need to
+  know the code or product run in the VM (`run-location: vm`): all of Plan and
+  Build but its Refresh steps, the steps inside Local Testing's and Steps to Test's sub-engines, all of
+  Document, Explain the Change, Risk Assessment, the AI Token Expense Check, a project Release's Address Merge
+  Request Feedback, and Blocked's troubleshooting and repair. A `state-engine` step always
+  runs on the host.
+- **run-in-repository** (ASS-119, prompt steps only). Missing means the folder
+  holding every repository (`/repos/` in the VM). `"<repo>"` — a repository the
+  project declares, named by its url's last segment (`validate.js` refuses any
+  other) — starts the agent in `/repos/<repo>/`, told that repository alone (on
+  the host: its checkout, named in `{where}`). `"each"` runs the step once per
+  repository the ticket's planned merge requests touch
+  (`ticket:merge-request-plan`), one after another in one agent slot: a run
+  that takes the step's first exit (its pass) hands on to the next repository;
+  the last run's exit, or any other run's other exit, moves the ticket. A ticket
+  touching none passes the step over by its first exit. No step sets it yet.
+- **Leaving a group.** A sub-engine ends at one of its done steps: `done`, or
+  `blocked`, `rebuild` or `replan`. The group step's exits read which one with
+  `sub-engine-ended-at`:
+  - `blocked`: a step failed or looped past its max-visits. The ticket goes to
+    Blocked, which returns it to the start of the group (each group's
+    `return-to-state` is itself).
+  - `rebuild`: Local Testing rejected, or a project Release's Team Code Review sent the
+    ticket back In Progress. The ticket goes into Build at Generate Solution
+    (`start-sub-engine-at`, ASS-66).
+  - `replan`: Human Review or the Payment Gate rejected it. The ticket goes into
+    Plan at Write Execution Plan.
+
+  Loops that stay inside a group, such as a code review sending the work back to
+  Generate Solution, are the sub-engine's own. A step's visits count within its run and start again at
+  zero each time the group is entered. The group step's `max-visits` caps how
+  often the group is entered (Build 5, the rest 3).
+- **Setup.** Check Setup Complete asks `vm:setup-complete` whether the
+  variation's VM holds the setup-complete marker (`/repos/.setup-complete`).
+  If it does, Setup ends at once. If not, Create VM (`vm:create`, which is
+  idempotent) runs, then Mark Setup Complete (`vm:mark-setup-complete`) writes
+  the marker. A setup that stopped part way has no marker, so it runs again
+  from the start.
+- **Prompts.** Seven steps revise their existing output and say what changed
+  and why (AC5): Root Cause Analysis, Write Execution Plan, Write Test Plan,
+  Enrich Automated Test Data, Generate Automated Tests, Generate Solution and
+  Update Documentation. Write Execution Plan also does its research before it
+  writes the plan, and the plan holds no spikes (AC4). These steps use copies of
+  their prompts, `prompts/<name>-grouped/`, so the current engines' prompts are
+  unchanged.
+- **Writes (ASS-182).** Agents change the harness's data only through
+  agent.sh, which validates and locks every write. In the VM, `/mnt/ticket`
+  (the ticket's folder) is mounted read-only, with no scratch mount: every
+  write goes through the VM's agent.sh, the content on stdin — reports with
+  `work:write` / `work:append` (`<name>-<variation>.<ext>`), the merge request
+  plan with `ticket:set-merge-request-plan … -`, the criteria with
+  `ticket:set-acceptance-criteria … -` (Extract Acceptance Criteria runs
+  `enrich-ac-grouped`), a ticket comment with `ticket:post-comment … -`
+  (Write Steps to Test runs `write-steps-to-test-grouped`), screenshots with
+  `work:add-screenshot`. A confined host agent writes only temp. validate.js
+  (`promptWriteErrors`) fails any prompt or persona telling an agent to write
+  a file under `{ticket-folder}`, `{project-folder}` or `data/` without an
+  `{agent-sh}` command.
+
+## VMs by state, and the disk limit (ASS-75)
+
+- **Running and stopping.** A step's `vm` says whether the variation's VM runs
+  there (`running`) or is kept, stopped (`stopped`); the deepest level of the
+  variation's status that sets it decides. Running: Setup through Review, Self
+  Healing, and beneath, Blocked's Find Where, Troubleshoot, Classify and Repair and a project
+  Release's Address Merge Request Feedback (they run in it). Stopped and kept:
+  Blocked (once it waits on its fix) and Blocked for Human. Anywhere else
+  (Backlog, Committed, Release, QA, Done) it is not needed: stopped. A paused
+  variation or ticket (`is-paused`) and a set-aside one (lost Variation
+  Selection) have theirs stopped too. Control matches the VMs to this once per
+  loop (`src/control/vm-lifecycle.js`), so a move by hand in the TUI is
+  followed; `move_to` and the TUI do nothing of their own.
+- **The inventory.** `data/projects/<p>/vms.json` (untracked) holds each VM of the
+  project: ticket, variation, state, disk bytes, last accessed (started or
+  stopped). `vm:inventory <p>` reconciles it with `limactl list` and the sprint
+  and prints it against the limit.
+- **The limit.** `vm-disk-limit-gb` in harness.json is every project's default
+  and ceiling; a project's own in project.json may only be lower (a higher one
+  is held to the ceiling, with a warning). Only each VM's own disk counts, at
+  its APFS private size; a new VM is charged the golden image's allocated size.
+- **Deleting.** Before cloning, Create VM deletes the least recently accessed
+  stopped VMs whose variation is not in flight — gone from the sprint, set
+  aside, or at a step that sets no `vm` — until the new one fits. If it cannot
+  fit without deleting one that runs or is in flight, it deletes nothing and
+  exits 3: Setup sends the ticket to Blocked for Human, the reason (project,
+  limit, use, need) as the variation's ai-feedback. A deleted VM that is
+  needed again is recreated from the golden image (`vm:create`, by Setup or by
+  control), and the variation's `vm.recreated-at` says so: work that lived
+  only on the old disk is lost.
+
+## Merge requests
+
+Create Branch, Create Worktree and Create Merge Request are gone from these
+engines. Write Execution Plan plans the merge requests (ASS-80): it reads the
+variation's (`ticket:merge-request-plan`) and records the whole plan
+(`ticket:set-merge-request-plan`), each merge request `{ id, repository,
+branch, contents, depends-on, status, key, url, build-status }`. The plan gives
+the id (stable, never reused), the repository (one of the project's), the
+contents and depends-on; the harness names the branch, `change/<KEY>-<id>`
+(`change/<KEY>.<variation>-<id>` for a variation other than A). A replan
+matched by id keeps a created one's key, url, build status and status, and
+never drops one. A new one is `Not Created`; its status goes on to `Open`,
+then `Merged` or `Closed`.
+
+Generate Solution creates them (ASS-81), one at a time in depends-on order.
+For each, it has control read them all (`merge-request:check`), builds the
+branch in the VM on its `base`, pushes it, and calls `merge-request:create
+{project} {ticket} {variation} <id>` through the forwarder. A rebase onto a
+moved `base` that conflicts is resolved with the other ticket's intent in hand
+(`merge-request:conflicting-tickets`). On the Mac that
+opens the draft through the forge's API, with no checkout (`glab api
+--hostname`, `gh --repo`), reuses one already open from the branch, and
+records key, url and `Open` by id. Control decides the rest, deterministically
+(`refresh_merge_requests`, `src/agent-cli/merge-requests.bash`), every time a
+merge-request command runs:
+
+- each created one's status is what the forge says: `Open`, `Merged` or
+  `Closed`;
+- a planned one's `base` is the branch of the last of its depends-on still
+  unmerged in the same repository, else the repository's default branch. An
+  open one whose target differs is retargeted, so a dependent whose
+  dependency merged is based on master;
+- a branch with no changes against its base is marked `Closed`, not opened;
+- rows are never dropped, and each change is a line in execution-plan-<variation>.md
+  (`- <time> control, variation <V>: …`) saying why.
+
+The steps after it cover every merge request, through `-grouped` copies of
+their prompts: Code Review, Security Review, Risk Assessment and the AI Token
+Expense Check review every one not Closed (`git diff
+origin/<base>...origin/<branch>`) in one pass, with one verdict and findings
+named per merge request. Take Screenshots saves one merge request's
+screenshots in `{ticket-folder}/screenshots/<id>/` and the ticket's in
+`screenshots/`, each through `work:add-screenshot`, the PNG on stdin. A ticket with no
+visible UI is shot from the raw output Test saved (`test-output-<n>-<V>.txt`),
+rendered as it is by `work:output-page`, never re-run or composed (ASS-230). Add Screenshots gives each Open one its own, else the
+ticket's, and the 'no visible UI' note only when there are none at all.
+Update Merge Request Details and Address Merge Request Feedback work on each
+Open one.
+
+Release takes the whole variation. Harness's Merge Pull Request
+(`merge-request:merge`) merges the Open ones in depends-on order, retargeting
+each dependent to master once its dependency has merged; the first that
+cannot merge stops it non-zero (Blocked), those merged stay Merged, and a
+re-run resumes. A project Release's Take out of Draft Mode readies every Open one,
+Team Code Review's `merge-request:check` reports over them all (auto-merge
+and merged only when every one is), and Ensure Auto-Merge sets auto-merge in
+depends-on order, a dependent only once its dependencies have merged (until
+then Team Code Review runs it again), with the same stop and resume. Once
+every one not Closed is Merged, Team Code Review ends Release (ASS-224) and
+QA sets the ticket system to In Testing.
+
+The current engines' commands are the same ones: a merge request recorded
+from a worktree (no `repository`) is on the workspace's origin, read with
+`glab mr` as before.
+
+Not yet proven against the live forges: every forge call is tested against a
+fake glab and gh. Automated Testing and Local Testing run in each repository's
+checkout as Generate Solution left it, the last branch it built there: two
+merge requests in one repository with no depends-on between them are not
+both tested.
+
+## Human Review (ASS-118)
+
+Every variation stops at Human Review, however low its risk: the current
+engines' shortcut past it (Risk Assessment's flagged-for-human-review: false)
+is gone here, so no merge request leaves draft and nothing merges — both only
+in Release, entered only from Review's done — until the operator approves.
+Before it, Explain the Change (`prompts/explain-the-change`, in the VM)
+writes `explanation-<variation>.md` in the ticket's folder — what the
+variation changes and why, in plain language, a line per merge request —
+and puts a short `## Summary` at the top of each Open merge request's
+description (merge-request:view/update on the host, ASS-238, replacing the last one), every one left a draft; it
+goes on only once the file is written (`file-updated` fills `{variation}`).
+Risk Assessment writes the variation's own `risk-assessment-<variation>.md`.
+
+On the ticket screen at Human Review the details column (C2) opens with the
+review (`src/tui/review.js`): the explanation, the risk profile, every
+merge request created, linked, with its screenshots (`screenshots/<id>/`,
+then the ticket's own `screenshots/`), each linked to its file, the tests
+failing on master too (ASS-99's `automated-test-results-<variation>.md`), and
+the demo — Demo in the human actions (ASS-76), or that there is none and
+why. Rejected asks for the reason, then the step to go back to (ASS-228):
+Write Execution Plan (the default), Write Test Plan or Generate Solution
+(`ticket:human-review … <reason> <return-to>`). The reason is kept as the
+variation's `rejection-reason` and appended, a dated section naming the
+step, to `operator-review-<variation>.md` in the ticket's folder — the
+operator's alone: work:write and work:append refuse it. Human Review's
+Rejected exit moves by the choice's `return-to`
+(`move-to-state-from-human-review`, `replan` the fallback) to the done step
+of that name; the top-level Review step re-enters Plan or Build there. The
+move is recorded with cause `operator-reject` and the reason, and logged.
+Every grouped prompt from Root Cause Analysis on (a grouped copy of Review
+Root Cause Analysis among them) reads the operator-review file and
+addresses each note; the next pass's explanation quotes the reason and
+says how that pass answers it.
+
+## Switching a project, and rolling back
+
+Each project switches on its own:
+
+```bash
+./agent.sh project:set-execution-engine harness harness-development-grouped     # switch
+./agent.sh project:set-execution-engine harness harness-development             # roll back
+./agent.sh project:set-execution-engine example-project example-development-grouped   # a project's own
+./agent.sh project:set-execution-engine example-project example-development
+```
+
+The command sets `execution-state-engine` in `data/projects/<project>/project.json`.
+It also points every sprint variation's `harness-status` at the new engine,
+together with its `gate-when-leaving-state` entries, because the ticket-system
+sync reads the variation's own engine. Editing `project.json` by hand leaves
+those pointing at the old engine.
+
+Before switching:
+
+- Stop control, or pause the project, so that no run is under way.
+- Every sprint variation must be at Backlog, Committed or Done. Those steps
+  are in both engines, and neither hands the ticket back anywhere. The command
+  refuses, and writes nothing, while any variation is somewhere else. That
+  includes a step the new engine lacks (for example, the middle of Build) and
+  Blocked or Blocked for Human, which return the ticket to a step of the old
+  engine. Let those tickets finish, or move them first with
+  `ticket:change-state`.
+
+A project's own grouped engine shares every group's prompts with harness
+except its Release and QA. The prompt fixes from the harness's live v2 runs
+(2026-10-24/25: ASS-111–117, ASS-136, ASS-139) are in them, but they were
+proven against the harness's own stack only. So before real tickets go
+through after switching another project, run one small test ticket
+gated on leaving each step, as ASS-125 was for harness ("A test run" below).
+
+## The restructure: harness-development-v2 (ASS-110)
+
+`harness-development-grouped` moved every step in at once and no ticket has
+run through it. The restructure starts again from a flow that works and adds
+the steps back one at a time. `harness-development-v2` is the harness's
+high-level groups only, each a stub sub-engine of its own, so a project's
+own grouped engine (which shares the `grouped-*` sub-engines) is untouched; the grouped engines
+stay the reference to copy from.
+
+| Group | Sub-engine |
+|---|---|
+| Setup, Plan, Build, Test, Document, Review, Release | `v2-setup`, `v2-plan`, `v2-build`, `v2-test`, `v2-document`, `v2-review`, `v2-release` |
+
+- **A stub.** Its first step, Pass Through (`pass-through`), is `action: none`
+  with an `always` exit to `done`: the run goes straight to done and the group
+  step moves on. A run must not start on `done`, or its parent waits forever
+  (`transient-state-engine/create.sh`, `steps.js`). Each stub also has the
+  `blocked` done step its group step's exit reads.
+- **The rest is the grouped engine's.** The exception states (Blocked running
+  `grouped-blocked`, Blocked for Human, Self Healing), Backlog, Committed,
+  Done and the engine-wide settings are `harness-development-grouped`'s, as
+  are each group step's pairing, `vm`, `max-visits` and `return-to-state`.
+  Each group step reads two ends: `blocked` (to Blocked) and `done` (to the
+  next group). The exits a stub cannot reach — Setup's `blocked-for-human`,
+  Test's `rebuild`, Review's `replan` — and Test's `record-output-as` come
+  back with the steps that need them.
+- **Adding a step.** Copy it from the `grouped-*` sub-engine into its `v2-*`
+  stub, in place of Pass Through (the group's first step from then on), with
+  what it needs (prompt, exits, the group step's exits), then do a test run.
+  Until the group's last step is in, Pass Through stays after the added ones,
+  standing in for the rest: an exit to a step not yet added goes to it.
+  When the last step is in, Pass Through goes: the `v2-*` engine is then its
+  `grouped-*` one exactly. Setup is filled (ASS-111): Check Setup Complete,
+  Create VM, Mark Setup Complete; Create VM brought Blocked for Human
+  (v2-setup's and the Setup step's exit).
+  Plan is filled (ASS-112, two steps per test run): Extract Acceptance
+  Criteria, Root Cause Analysis, Review Root Cause Analysis, Write Execution
+  Plan, Write Test Plan, Enrich Automated Test Data, Review Plan.
+  Build is filled (ASS-113, a pair per test run): Generate Automated Tests,
+  Generate Solution, Automated Testing, Code Review, Security Review; ASS-218
+  added the two Refresh steps to both.
+  Test is filled (ASS-114, a sub-flow per test run): Local Testing, Steps
+  to Test. A sub-engine step's sub-engine is copied too, as `v2-<name>`
+  (`v2-local-testing`, grouped-local-testing's but for Test's prompt,
+  `test-grouped`, and its first step, Await the Golden Build — ASS-157: a
+  golden rebuild ticket waits there for its detached image build,
+  `vm:golden-ready` polled about every 10 seconds, any other ticket going
+  straight through; `v2-steps-to-test`, grouped-steps-to-test exactly), so
+  v2-test is grouped-test but for those names; Local Testing brought Test's
+  `rebuild` (back into Build at Generate Solution) and `record-output-as`.
+  Document is filled (ASS-115, a pair per test run): Update Documentation,
+  Update Merge Request Details, Add Screenshots to Merge Request (on GitHub,
+  which has no image upload, the screenshots go to an orphan branch
+  `screenshots/<ticket>-<variation>`, linked pinned to its commit).
+  Review is filled (ASS-116, a pair per test run): Explain the Change, Risk
+  Assessment, Human Review, the AI Token Expense Check, the Payment Gate
+  (only when it says tokens will be spent), Variation Selection (passes on
+  its own for a ticket with one variation); Rejected at the Payment Gate
+  ends it at `replan`, back into Plan at Write Execution Plan, whose prompt
+  answers the rejection-reason; Rejected at Human Review at the step the
+  operator names (ASS-228, above).
+  Release is filled (ASS-117, a pair per test run): Merge Pull Request,
+  Update the Harness, Request a Restart, Await the Restart. A script step
+  held at a gate on leaving it is not run again by a restarted control, so
+  gating Request a Restart restarts control once, not over and over.
+- **The merge queue (ASS-197), v2's own.** v2-release's Merge Pull Request
+  is no longer grouped-release-harness's: it runs
+  `merge-request:merge-in-turn … npm test` on a one-minute timer. One ticket
+  of a project merges at a time — its gate holds a flock on
+  `data/projects/<p>/merge.lock`, which the kernel drops when the gate ends
+  however it ends, so a crashed holder never jams the queue;
+  `merge-lock.json` beside it names the holder. A ticket behind it waits at
+  the step (exit 0, `waiting`), its ai-feedback saying "waiting to merge
+  behind <key>". Holding the lock, the gate runs in the background (the
+  tests take minutes; control's tick is not held): the branch rebased onto
+  the latest main in a scratch worktree, the full tests run there; green —
+  the rebased branch pushed and merged, so what merges is what was tested;
+  red (a conflict, a failing test) — nothing pushed or merged, why in
+  execution-plan-<variation>.md, exit 2 to the new `rebuild` end, which Release sends
+  into Build at Generate Solution. The grouped engines keep the plain merge.
+
+### Switching
+
+```bash
+./agent.sh project:set-execution-engine harness harness-development-v2   # switch
+./agent.sh project:set-execution-engine harness harness-development      # back
+```
+
+As in "Switching a project, and rolling back" above: control stopped or the
+project paused, and every sprint variation at Backlog, Committed or Done, or
+the command refuses.
+
+### A test run
+
+What follows each step added, before the next one is added:
+
+1. A real, trivial harness ticket — one whose change is small and safe to
+   merge — joins the sprint at Committed on `harness-development-v2`
+   (`ticket:join-sprint harness <KEY> committed`).
+2. A human gate on leaving the newly added step:
+   `./agent.sh ticket:set-gate-when-leaving-state harness <KEY> A v2-<group>/<step>`.
+3. Control runs it. At the gate the ticket waits with the step's work done;
+   the operator checks that work — its output, the files, the ticket's
+   folder — and approves the move on in the TUI's ticket screen. Wrong work
+   means the step is fixed and the test run done again.
+4. The ticket goes on to Done, every group visited in order, as its
+   variation's `state-changes` (its history) show.
+
+A test run passes when the operator has checked the new step's work and the
+ticket reached Done. Only then is the next step added.

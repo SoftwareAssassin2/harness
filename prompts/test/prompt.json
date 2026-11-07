@@ -1,0 +1,46 @@
+{
+    "description": "Prompt for testing the changes against the acceptance criteria locally",
+    "supported-command-line-interfaces": [
+        "claude"
+    ],
+    "supported-models": [
+        "claude-opus-5-5",
+        "claude-opus-5",
+        "claude-sonnet-5",
+        "claude-opus-4-8",
+        "claude-opus-4-7"
+    ],
+    "persona": "tester",
+    "input-arguments": [
+        {
+            "name": "ticket",
+            "description": "Ticket number",
+            "example": "ABC-1234",
+            "required": true
+        },
+        {
+            "name": "variation",
+            "description": "The ticket variation",
+            "example": "A",
+            "required": true
+        }
+    ],
+    "output": {
+        "type": "object",
+        "properties": {
+            "is-approved": {
+                "type": "boolean",
+                "description": "true when every acceptance criterion passed; false sends the ticket back to build"
+            },
+            "summary": {
+                "type": "string",
+                "description": "One line: what passed, or what failed"
+            }
+        },
+        "required": [
+            "is-approved",
+            "summary"
+        ],
+        "additionalProperties": false
+    }
+}

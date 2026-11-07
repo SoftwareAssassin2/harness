@@ -1,0 +1,140 @@
+{
+    "steps": [
+        {
+            "id": "troubleshoot",
+            "sequence": 1,
+            "name": "Troubleshoot",
+            "description": "Find why the ticket is blocked, and where its fix belongs",
+            "paired-ticket-system-status": "On Hold",
+            "action": {
+                "type": "prompt",
+                "prompt": "troubleshoot-block",
+                "agent-count": 1,
+                "run-in-dev-container": false
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "all": [
+                            {
+                                "turn-complete": true
+                            },
+                            {
+                                "structured-output": {
+                                    "needs-fix": false
+                                }
+                            }
+                        ]
+                    },
+                    "move-to-state": "done"
+                },
+                {
+                    "condition": {
+                        "turn-complete": true
+                    },
+                    "move-to-state": "create-fix-ticket"
+                }
+            ]
+        },
+        {
+            "id": "create-fix-ticket",
+            "sequence": 2,
+            "name": "Create the Fix Ticket",
+            "description": "A ticket for the fix: the product's board for a bug in its code, the harness's for anything else",
+            "paired-ticket-system-status": "On Hold",
+            "action": {
+                "type": "state-engine",
+                "engine": "create-ticket"
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "all": [
+                            {
+                                "is-done": true
+                            },
+                            {
+                                "structured-output": {
+                                    "key": ""
+                                }
+                            }
+                        ]
+                    },
+                    "move-to-state": "done"
+                },
+                {
+                    "condition": {
+                        "is-done": true
+                    },
+                    "move-to-state": "wait-on"
+                }
+            ]
+        },
+        {
+            "id": "wait-on",
+            "sequence": 3,
+            "name": "Wait on the Fix",
+            "description": "Record the fix ticket the blocked ticket waits on",
+            "paired-ticket-system-status": "On Hold",
+            "action": {
+                "type": "script",
+                "command": "./agent.sh ticket:wait-on {project} {work-item} {variation} {ticket}"
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "exit-code": 0
+                    },
+                    "move-to-state": "await-fix"
+                },
+                {
+                    "condition": {
+                        "not": {
+                            "exit-code": 0
+                        }
+                    },
+                    "move-to-state": "done"
+                }
+            ]
+        },
+        {
+            "id": "await-fix",
+            "sequence": 4,
+            "name": "Await the Fix",
+            "description": "Wait until the fix ticket is Done and merged; one closed unmerged is a failed attempt",
+            "paired-ticket-system-status": "On Hold",
+            "record-script-output": true,
+            "action": {
+                "type": "script",
+                "command": "./agent.sh ticket:fix-landed {project} {work-item} {variation}",
+                "mode": "timer",
+                "timer-minutes": 5
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "exit-code": 0
+                    },
+                    "move-to-state": "done"
+                },
+                {
+                    "condition": {
+                        "exit-code": 3
+                    },
+                    "move-to-state": "done"
+                }
+            ]
+        },
+        {
+            "id": "done",
+            "sequence": 5,
+            "name": "Done",
+            "description": "The fix landed (the parent follows return-to-state) or failed (the parent goes round Blocked again)",
+            "is-done": true,
+            "paired-ticket-system-status": "On Hold",
+            "action": {
+                "type": "none"
+            }
+        }
+    ]
+}

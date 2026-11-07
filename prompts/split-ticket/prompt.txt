@@ -1,0 +1,17 @@
+Ticket {ticket} is too large for one ticket. Propose how to split it into smaller ones; the operator accepts, rejects or keeps it whole.
+
+1. Read it: `{harness-folder}/off-board.sh ticket:get {project} {ticket}` (title, description, numbered acceptance criteria, depends-on, priority), `jq '.tickets[] | select(.key == "{ticket}")' {project-folder}/backlog.json` and {ticket-folder}/questions-and-answers.json, {ticket-folder}/estimate.md.
+2. Proposed before? {ticket-folder}/split-proposal.json is the last proposal; the variation's "human-review" (decision Reject, at awaiting-split-decision) and "rejection-reason" in backlog.json say why the operator rejected it. Answer that reason in this proposal. A key on its tickets, or its "already-created", is a ticket an earlier Accept already made: keep its exact title to build on it (rewritten to yours); one you leave out stays as it is, and the operator is shown it.
+3. Read the code it touches, in {project-code-folder} (a harness ticket's: {harness-folder}), enough to size the pieces, and `{harness-folder}/off-board.sh ticket:list {project}` for the project's other tickets (skip Done ones).
+4. Split it into at least two tickets that each plan, review and build on their own:
+   - each 1, 2, 3 or 5 points, on the ladder Estimate uses (1: one file and its test; 2: a few files in one module; 3: several modules or a new command; 5: across several parts of the system (in the harness: control, the CLI and the TUI));
+   - each with a title (one line), a user story ("As the operator, I want … so that …"), context (why, what it builds on, what it leaves to the others) and acceptance criteria (one line each, testable);
+   - covers: the original's acceptance-criteria numbers each carries; together they cover every one, none dropped;
+   - depends-on: the pieces it needs built first, by place in your list (1 is the first), or keys of other open tickets of the project. A piece that waits on no other piece also takes what the original waited on. No cycles.
+5. Record it, the whole proposal, in one call: `{agent-sh} ticket:propose-split {project} {ticket} -` with on stdin {"summary": "<why split this way>", "tickets": [{"title": "…", "type": "Story", "points": 3, "user-story": "…", "context": "…", "acceptance-criteria": ["…"], "covers": [1, 2], "depends-on": []}, …]}. It checks the rules above and says what is wrong: fix it and call again. It replaces any earlier proposal.
+6. Never create, change or mark tickets yourself: the operator's Accept creates them.
+7. Ask with `{agent-sh} question:ask {project} {ticket} <--blocking|--non-blocking> "<question>" "<why it is asked>" "<recommended answer>"` only when the split hangs on something only the operator knows. --blocking when a wrong guess would cost rework, be irreversible, or is a product or business call only the operator can make: the ticket gets no agent until it is answered. Else --non-blocking: go on with your recommended answer, recorded as the assumption; an answer that differs comes back as a requirements change.
+
+Finish with JSON: {"summary": "<one line: the tickets proposed, or why none was>"}.
+
+Be extremely concise. Sacrifice grammar for the sake of concision.

@@ -1,0 +1,39 @@
+{
+    "description": "Prompt for grooming the requirements until the ticket is ready to build",
+    "supported-command-line-interfaces": [
+        "claude"
+    ],
+    "supported-models": [
+        "claude-opus-5-5",
+        "claude-opus-5",
+        "claude-sonnet-5",
+        "claude-opus-4-8",
+        "claude-opus-4-7"
+    ],
+    "persona": "business-analyst",
+    "input-arguments": [
+        {
+            "name": "ticket",
+            "description": "Ticket number",
+            "example": "ABC-1234",
+            "required": true
+        }
+    ],
+    "output": {
+        "type": "object",
+        "properties": {
+            "is-ready": {
+                "type": "boolean",
+                "description": "true only when nothing blocking is left to ask: every blocking question Answer Accepted and folded in (a non-blocking one never holds it)"
+            },
+            "summary": {
+                "type": "string",
+                "description": "One line: what is still open, or that it is ready"
+            }
+        },
+        "required": [
+            "is-ready",
+            "summary"
+        ]
+    }
+}

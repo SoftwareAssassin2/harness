@@ -1,0 +1,11 @@
+{
+    "description": "Prompt for diagnosing problems with the agent harnesses (CLIs, models, auth)",
+
+    "supported-command-line-interfaces": ["claude"],
+    "supported-models": ["claude-opus-5-5", "claude-opus-5", "claude-sonnet-5", "claude-opus-4-8", "claude-opus-4-7"],
+    "persona": "developer",
+
+    "input-arguments": [],
+
+    "output": ""
+}

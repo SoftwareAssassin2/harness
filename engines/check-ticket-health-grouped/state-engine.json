@@ -1,0 +1,37 @@
+{
+    "steps": [
+
+        { "id": "inspect-ticket", "sequence": 1, "name": "Inspect Ticket", "description": "Checking the ticket's folder, branch, worktree, merge request and state history",
+            "action": { "type": "prompt", "prompt": "check-ticket-health-grouped", "agent-count": 1, "run-in-dev-container": false },
+            "exit-events": [
+                { "condition": { "all": [ { "turn-complete": true }, { "structured-output": { "is-healthy": true } } ] }, "move-to-state": "done" },
+                { "condition": { "all": [ { "turn-complete": true }, { "structured-output": { "is-healthy": false } } ] }, "move-to-state": "classify" }
+            ]
+        },
+        { "id": "classify", "sequence": 2, "name": "Classify", "description": "A harness, project or environment issue, with its reasoning, as Blocked classifies (ASS-107 AC4): a harness or project issue's ticket raised where facts.js fixTicketIn says; an environment issue repaired as Blocked repairs one (ASS-124)",
+            "action": { "type": "prompt", "prompt": "classify-issue", "agent-count": 1, "run-in-dev-container": false },
+            "exit-events": [
+                { "condition": { "all": [ { "turn-complete": true }, { "structured-output": { "issue": "harness" } } ] }, "move-to-state": "create-ticket" },
+                { "condition": { "all": [ { "turn-complete": true }, { "structured-output": { "issue": "project" } } ] }, "move-to-state": "create-ticket" },
+                { "condition": { "all": [ { "turn-complete": true }, { "structured-output": { "issue": "environment" } } ] }, "move-to-state": "repair-environment" }
+            ]
+        },
+        { "id": "repair-environment", "sequence": 3, "name": "Repair the Environment", "description": "No fix ticket (ASS-124): the sampled ticket goes to its own Blocked at Blocked's repair step, which repairs it in its VM or worktree as for any block — resumed when repaired, else Blocked for Human with what was found and what to do; where its engine has no such repair, straight to Blocked for Human, saying so. While an agent works on the ticket (exit 2) it waits, tried again each minute; a failure (exit 1) is logged and the check done",
+            "action": { "type": "script", "command": "./agent.sh ticket:repair-environment {run}", "mode": "timer", "timer-minutes": 1 },
+            "exit-events": [
+                { "condition": { "exit-code": 0 }, "move-to-state": "done" },
+                { "condition": { "exit-code": 1 }, "move-to-state": "done" }
+            ]
+        },
+        { "id": "create-ticket", "sequence": 4, "name": "Create Ticket", "description": "Raising a ticket for the problem found, where Classify said (facts.js fixTicketIn)",
+            "action": { "type": "state-engine", "engine": "create-ticket-grouped" },
+            "exit-events": [
+                { "condition": { "is-done": true }, "move-to-state": "done" }
+            ]
+        },
+
+        { "id": "done", "sequence": 5, "name": "Done", "description": "Ticket health check is completed", "is-done": true,
+            "action": { "type": "none" }
+        }
+    ]
+}

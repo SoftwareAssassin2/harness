@@ -1,0 +1,12 @@
+Before a ticket is created for the problem below, check whether one already exists.
+
+{problem}
+
+1. Where to look: the project "Raise the fix ticket in" names above, when it does; else project {project}. Its ticketing system, when its work source in {harness-folder}/data/projects/<it>/project.json is jira: acli jira workitem search --jql "project = <key> AND statusCategory != Done AND text ~ \"<key words>\"". Try two or three phrasings.
+2. Search the off-board tickets — {harness-folder}/off-board.sh ticket:list <it> — for one about the same problem.
+3. A match is a ticket about the same root cause, not merely the same area or the same symptom. Check its text against the root cause and evidence above.
+
+Finish with JSON: {"exists": <bool>, "key": "<ticket key, or empty>"}.
+
+We want small deliberate changes. You're working with a scalpel, not a broadsword. You're a doctor: get in, fix the root cause using best practices and the patterns already in the repo, get out. Avoid scope creep.
+Be extremely concise. Sacrifice grammar for the sake of concision.

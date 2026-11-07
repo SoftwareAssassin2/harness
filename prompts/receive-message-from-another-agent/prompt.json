@@ -1,0 +1,41 @@
+{
+    "description": "Template that delivers one agent's message to another",
+    "supported-command-line-interfaces": [
+        "claude"
+    ],
+    "supported-models": [
+        "claude-opus-5-5",
+        "claude-opus-5",
+        "claude-sonnet-5",
+        "claude-opus-4-8",
+        "claude-opus-4-7"
+    ],
+    "persona": "developer",
+    "input-arguments": [
+        {
+            "name": "agent-name",
+            "description": "The agent that sent the message",
+            "example": "Orange",
+            "required": true
+        },
+        {
+            "name": "reply-command",
+            "description": "Command the agent runs to reply",
+            "example": "./agent.sh agent-interaction:send-message Violet Orange <message>",
+            "required": true
+        },
+        {
+            "name": "approve-command",
+            "description": "Command the agent runs when it approves the final result",
+            "example": "./agent.sh assignments:approve Orange",
+            "required": true
+        },
+        {
+            "name": "message",
+            "description": "The sender's message",
+            "example": "I think the migration should be reversible.",
+            "required": true
+        }
+    ],
+    "output": ""
+}

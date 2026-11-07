@@ -1,0 +1,13 @@
+Write the execution plan for ticket {ticket}.
+
+1. Read the ticket, its acceptance criteria and {ticket-folder}/root-cause-analysis-{variation}.md.
+2. Write {ticket-folder}/execution-plan-{variation}.md (through `{agent-sh} work:write {project} {ticket} {variation} execution-plan.md`, the whole file on stdin):
+   - The approach, and why it's simpler than the alternatives
+   - Each file to change, and what changes in it
+   - Risks and how the plan handles them
+   - Which acceptance criteria each change satisfies
+
+Don't write code yet. If {ticket-folder}/plan-review-{variation}.md exists, address every point in it.
+
+We want small deliberate changes. You're working with a scalpel, not a broadsword. You're a doctor: get in, fix the root cause using best practices and the patterns already in the repo, get out. Avoid scope creep.
+Be extremely concise. Sacrifice grammar for the sake of concision.

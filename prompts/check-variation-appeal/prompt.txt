@@ -1,0 +1,10 @@
+Ticket {ticket} in project {project} is being built more than one way. Compare the variations and say whether any should be paused or stopped.
+
+1. Read the ticket's variations in the active sprint and each variation's folder, branch, worktree and merge request.
+2. For each variation compare: current step and how far it is from done, visits spent, test results, code review findings, token cost, and how well the acceptance criteria are met.
+3. Recommend "continue" unless one variation is clearly behind and unlikely to catch up (pause-variation) or has failed, duplicated another, or lost its reason to exist (stop-variation).
+
+Don't change anything — control acts on your recommendation. Finish with JSON: {"recommendation": "continue" | "pause-variation" | "stop-variation", "variation": "<variation, or empty>", "reason": "<one line>"}.
+
+We want small deliberate changes. You're working with a scalpel, not a broadsword. You're a doctor: get in, fix the root cause using best practices and the patterns already in the repo, get out. Avoid scope creep.
+Be extremely concise. Sacrifice grammar for the sake of concision.

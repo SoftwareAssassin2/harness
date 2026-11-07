@@ -1,0 +1,11 @@
+Ticket {ticket} in project {project} is blocked. Find out why and try to clear it.
+
+1. Read the variation's state-changes in the active sprint: the step it came from (return-to-state), how many times it was visited, and the reason recorded. Read the files that step produced in {ticket-folder}/ for the failure itself (test output, review findings, change-log-{variation}.md).
+2. Work out the root cause: a failing test, a loop between two reviewers, a missing file, a broken environment, a wrong assumption in the plan.
+3. Fix it in the ticket's worktree where you can, following the patterns already in the repo; commit with a clear message. Append what you found and did to {ticket-folder}/change-log-{variation}.md (through `{agent-sh} work:append {project} {ticket} {variation} change-log.md`, the entry on stdin).
+4. If the fix needs a human (credentials, a product decision, a shared resource) say exactly what they must do.
+
+Finish with JSON: {"is-unblocked": <bool>, "summary": "<one line>"}.
+
+We want small deliberate changes. You're working with a scalpel, not a broadsword. You're a doctor: get in, fix the root cause using best practices and the patterns already in the repo, get out. Avoid scope creep.
+Be extremely concise. Sacrifice grammar for the sake of concision.

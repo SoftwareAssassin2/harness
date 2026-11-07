@@ -1,0 +1,56 @@
+{
+    "description": "Prompt for comparing a ticket's variations on progress and quality",
+    "supported-command-line-interfaces": [
+        "claude"
+    ],
+    "supported-models": [
+        "claude-opus-5-5",
+        "claude-opus-5",
+        "claude-sonnet-5",
+        "claude-opus-4-8",
+        "claude-opus-4-7"
+    ],
+    "persona": "developer",
+    "input-arguments": [
+        {
+            "name": "project",
+            "description": "Project folder name under data/projects/",
+            "example": "my-project",
+            "required": true
+        },
+        {
+            "name": "ticket",
+            "description": "Ticket number",
+            "example": "ABC-1234",
+            "required": true
+        }
+    ],
+    "output": {
+        "type": "object",
+        "properties": {
+            "recommendation": {
+                "type": "string",
+                "enum": [
+                    "continue",
+                    "pause-variation",
+                    "stop-variation"
+                ],
+                "description": "continue every variation, or pause or stop the named one"
+            },
+            "variation": {
+                "type": "string",
+                "description": "The variation the recommendation is about; empty when continuing"
+            },
+            "reason": {
+                "type": "string",
+                "description": "Why, in one line"
+            }
+        },
+        "required": [
+            "recommendation",
+            "variation",
+            "reason"
+        ],
+        "additionalProperties": false
+    }
+}

@@ -1,0 +1,15 @@
+{
+    "description": "Prompt for building the solution the execution plan describes",
+
+    "supported-command-line-interfaces": ["claude"],
+    "supported-models": ["claude-opus-5-5", "claude-opus-5", "claude-sonnet-5", "claude-opus-4-8", "claude-opus-4-7"],
+    "persona": "developer",
+
+    "input-arguments": [
+        { "name": "project", "description": "Project folder name under data/projects/", "example": "my-project", "required": true },
+        { "name": "ticket", "description": "Ticket number", "example": "ABC-1234", "required": true },
+        { "name": "variation", "description": "The ticket variation", "example": "A", "required": true }
+    ],
+
+    "output": ""
+}

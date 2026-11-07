@@ -1,0 +1,35 @@
+Write the execution plan for ticket {ticket}, variation {variation} of project {project}.
+
+{where}
+
+1. Read the ticket, its acceptance criteria and {ticket-folder}/root-cause-analysis-{variation}.md. Read the merge requests recorded so far: {agent-sh} ticket:merge-request-plan {project} {ticket} {variation}
+2. Research first, before writing any of the plan: answer every open question now — read the code, run commands, check the docs and the libraries. If what you learn changes the approach, plan the new approach, not the old one.
+3. Write {ticket-folder}/execution-plan-{variation}.md (through `{agent-sh} work:write {project} {ticket} {variation} execution-plan.md`, the whole file on stdin):
+   - The approach, and why it's simpler than the alternatives
+   - Each file to change, and what changes in it
+   - Risks and how the plan handles them
+   - Which acceptance criteria each change satisfies
+   - The merge requests: how many, which repository each is for, what each contains, and which it depends on
+4. Plan the merge requests. Each is for one repository above; split the work only where repositories or a real dependency need it, else one. The plan is an array of { "id", "repository", "contents", "depends-on" }, the whole plan:
+   - "id": a whole number from 1. Keep the id of every merge request already recorded; give a new one the next id never used on this ticket. Never reuse an id, even one dropped.
+   - "repository": the repository's url, exactly as listed above.
+   - "contents": what it contains.
+   - "depends-on": the ids it must wait for, else [].
+   The harness names each branch; don't. A merge request already Open, Merged or Closed keeps its key, link and status: don't move its work to another repository. To drop one that is not yet created, leave it out and say why in execution-plan-{variation}.md.
+   Record it: `{agent-sh} ticket:set-merge-request-plan {project} {ticket} {variation} -`, the JSON on stdin.
+
+The plan holds no spikes, investigations or research steps: every step in it is a change to make. Research belongs in step 2, done before the plan is written.
+
+If {ticket-folder}/requirements-change-{variation}.md exists, the ticket's requirements changed: read it and revise for the change.
+If {ticket-folder}/operator-review-{variation}.md exists, it holds the operator's notes from rejecting earlier passes at Human Review: read it and address each note in this step's work.
+
+Revise, don't restart: if {ticket-folder}/execution-plan-{variation}.md exists already, revise it in place. Keep what still holds; change only what the reviews, the test results or your research require. Never start it from scratch. Write it every run, even when nothing needs changing: the step goes on only once the file is written. End it with a "## What changed" section, a dated entry each run: each change since the last version, and why, or, if nothing needed changing, what you re-checked it against: "<date>: re-checked against <what you checked>; no change".
+
+Don't write code yet. If {ticket-folder}/plan-review-{variation}.md exists, address every point in it. If the variation in ticket.json has a "rejection-reason", the operator rejected an earlier pass at Human Review for it: revise the plan to answer it, and say how under "## What changed". Already answered there, keep the answer.
+
+A golden-image rebuild ticket ("fast-track": true in {ticket-folder}/ticket.json, titled "Rebuild golden-<project>") changes no code: its plan is the rebuild — Build starts it (vm:build-golden-start <project>), Test checks it (vm:golden-status <project>) — and it has no merge request: its merge-requests.json is [], recorded the same way.
+
+Questions: ask only what the code, the docs, the ticket and {ticket-folder}/questions-and-answers.json can't settle, with `{agent-sh} question:ask {project} {ticket} <--blocking|--non-blocking> "<question>" "<why it is asked>" "<recommended answer>"` — never by writing {ticket-folder}/questions-and-answers.json. --blocking when a wrong guess would cost rework, be irreversible, or is a product or business call only the operator can make: the ticket gets no agent until it is answered, so finish this step without guessing. Else --non-blocking: go on with your recommended answer, recorded as the assumption; an answer that differs comes back as a requirements change.
+
+We want small deliberate changes. You're working with a scalpel, not a broadsword. You're a doctor: get in, fix the root cause using best practices and the patterns already in the repo, get out. Avoid scope creep.
+Be extremely concise. Sacrifice grammar for the sake of concision.

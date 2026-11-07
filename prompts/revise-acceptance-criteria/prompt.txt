@@ -1,0 +1,10 @@
+Ticket {ticket}'s requirements changed: the operator took a new description, or answered a question unlike the assumption the work went on. Revise variation {variation}'s acceptance criteria to match it.
+
+1. Read the last "description" line of {ticket-folder}/requirements-history.jsonl (JSON: at, field, from, to): "from" is the old description, "to" the new one. When the file's last line is a "question" one instead (JSON: at, field, question, from, to), the change is that: "from" is the assumption the work went on, "to" the operator's answer to "question"; the description stands.
+2. Write {ticket-folder}/requirements-change-{variation}.md (through `{agent-sh} work:write {project} {ticket} {variation} requirements-change.md`, the whole file on stdin): what changed, as "from → to" points, then the new description in full (for a "question" line, the question and its answer). Write it every run, even when nothing has changed: the step goes on only once the file is written.
+3. Read the current criteria: the variation's acceptance-criteria in {ticket-folder}/ticket.json. Revise them to the new description: keep a criterion's criteria-number when it still applies (reworded if needed), drop one that no longer applies, give a new one the next unused number. Never renumber the rest.
+4. Record them on the variation, [{"criteria-number": 1, "description": "<one checkable outcome>"}, ...] on stdin: `{agent-sh} ticket:set-acceptance-criteria {project} {ticket} {variation} -`
+
+Don't judge or change the work: the next step does.
+
+Be extremely concise. Sacrifice grammar for the sake of concision.

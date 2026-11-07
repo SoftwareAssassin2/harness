@@ -1,0 +1,268 @@
+{
+    "steps": [
+        {
+            "id": "explain-the-change",
+            "sequence": 1,
+            "name": "Explain the Change",
+            "description": "Explaining in plain words what the variation changes and why, for the human review and each merge request's Summary",
+            "max-visits": 3,
+            "on-max-visits": "blocked",
+            "action": {
+                "type": "prompt",
+                "prompt": "explain-the-change",
+                "agent-count": 1,
+                "run-in-dev-container": false
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "all": [
+                            {
+                                "turn-complete": true
+                            },
+                            {
+                                "file-updated": {
+                                    "file": "explanation-{variation}.md",
+                                    "since": "turn-start"
+                                }
+                            }
+                        ]
+                    },
+                    "move-to-state": "risk-assessment"
+                },
+                {
+                    "condition": {
+                        "all": [
+                            {
+                                "turn-complete": true
+                            },
+                            {
+                                "not": {
+                                    "file-updated": {
+                                        "file": "explanation-{variation}.md",
+                                        "since": "turn-start"
+                                    }
+                                }
+                            }
+                        ]
+                    },
+                    "move-to-state": "explain-the-change"
+                }
+            ],
+            "run-location": "vm"
+        },
+        {
+            "id": "risk-assessment",
+            "sequence": 2,
+            "name": "Risk Assessment",
+            "description": "Assessing potential risks associated with the merge request",
+            "max-visits": 3,
+            "on-max-visits": "blocked",
+            "action": {
+                "type": "prompt",
+                "prompt": "risk-assessment-grouped",
+                "agent-count": 1,
+                "run-in-dev-container": false
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "turn-complete": true
+                    },
+                    "move-to-state": "human-review"
+                }
+            ],
+            "run-location": "vm"
+        },
+        {
+            "id": "human-review",
+            "sequence": 3,
+            "name": "Human Review",
+            "description": "The operator reviews the variation before any of its merge requests leaves draft or merges",
+            "is-active": false,
+            "max-visits": 3,
+            "on-max-visits": "blocked",
+            "action": {
+                "type": "human",
+                "instructions": "Review the variation: its explanation, risk profile, merge requests with their screenshots, the test failures master has too, and its demo. Approve it to go on (its merge requests leave draft or merge only after this), or reject it with the reason and the step it goes back to — Write Execution Plan (the default), Write Test Plan or Generate Solution: your reason is added to the variation's operator-review file, which every step from there on reads, and the next pass explains it anew with your reason."
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "human-review": "Approved"
+                    },
+                    "move-to-state": "token-expense-check"
+                },
+                {
+                    "condition": {
+                        "human-review": "Rejected"
+                    },
+                    "move-to-state-from-human-review": "return-to",
+                    "move-to-state": "replan"
+                },
+                {
+                    "condition": {
+                        "fast-tracked": true
+                    },
+                    "move-to-state": "token-expense-check"
+                }
+            ]
+        },
+        {
+            "id": "token-expense-check",
+            "sequence": 4,
+            "name": "AI Token Expense Check",
+            "description": "Check if this is something that will incur AI token expenses",
+            "max-visits": 3,
+            "on-max-visits": "blocked",
+            "action": {
+                "type": "prompt",
+                "prompt": "check-if-ticket-will-spend-tokens-grouped",
+                "agent-count": 1,
+                "run-in-dev-container": false
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "all": [
+                            {
+                                "turn-complete": true
+                            },
+                            {
+                                "structured-output": {
+                                    "will-spend-tokens": true
+                                }
+                            }
+                        ]
+                    },
+                    "move-to-state": "payment-gate"
+                },
+                {
+                    "condition": {
+                        "all": [
+                            {
+                                "turn-complete": true
+                            },
+                            {
+                                "structured-output": {
+                                    "will-spend-tokens": false
+                                }
+                            }
+                        ]
+                    },
+                    "move-to-state": "variation-selection"
+                }
+            ],
+            "run-location": "vm"
+        },
+        {
+            "id": "payment-gate",
+            "is-active": false,
+            "sequence": 5,
+            "name": "Payment Gate",
+            "description": "Gate for human approval to incur AI token expenses",
+            "max-visits": 3,
+            "on-max-visits": "blocked",
+            "action": {
+                "type": "human",
+                "instructions": "Please review the AI token expense and approve or reject it accordingly."
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "human-review": "Approved"
+                    },
+                    "move-to-state": "variation-selection"
+                },
+                {
+                    "condition": {
+                        "human-review": "Rejected"
+                    },
+                    "move-to-state": "replan"
+                },
+                {
+                    "condition": {
+                        "fast-tracked": true
+                    },
+                    "move-to-state": "variation-selection"
+                }
+            ]
+        },
+        {
+            "id": "variation-selection",
+            "sequence": 6,
+            "name": "Variation Selection",
+            "description": "Selecting the appropriate variation for the merge request",
+            "max-visits": 3,
+            "on-max-visits": "blocked",
+            "action": {
+                "type": "human",
+                "instructions": "This ticket was built more than one way. Compare the variations and choose the one to go with; the others are set aside."
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "variation-selected": true
+                    },
+                    "move-to-state": "done"
+                },
+                {
+                    "condition": {
+                        "has-variations": false
+                    },
+                    "move-to-state": "done"
+                }
+            ]
+        },
+        {
+            "id": "done",
+            "name": "Done",
+            "description": "The group is finished; its parent step moves on",
+            "is-done": true,
+            "action": {
+                "type": "none"
+            },
+            "sequence": 7
+        },
+        {
+            "id": "blocked",
+            "name": "Blocked",
+            "description": "A step failed or looped too many times; the parent step sends the ticket to Blocked, which returns it to the start of this group",
+            "is-done": true,
+            "action": {
+                "type": "none"
+            },
+            "sequence": 8
+        },
+        {
+            "id": "replan",
+            "name": "Back to Plan",
+            "description": "Rejected by a human (at Human Review, back to Write Execution Plan, its default); the parent step sends the ticket back into Plan at Write Execution Plan",
+            "is-done": true,
+            "action": {
+                "type": "none"
+            },
+            "sequence": 9
+        },
+        {
+            "id": "write-test-plan",
+            "name": "Back to Write Test Plan",
+            "description": "Rejected at Human Review back to Write Test Plan (ASS-228); the parent step sends the ticket back into Plan at Write Test Plan",
+            "is-done": true,
+            "action": {
+                "type": "none"
+            },
+            "sequence": 10
+        },
+        {
+            "id": "generate-solution",
+            "name": "Back to Generate Solution",
+            "description": "Rejected at Human Review back to Generate Solution (ASS-228); the parent step sends the ticket back into Build at Generate Solution",
+            "is-done": true,
+            "action": {
+                "type": "none"
+            },
+            "sequence": 11
+        }
+    ]
+}

@@ -1,0 +1,17 @@
+Groom ticket {ticket} until it is ready to build.
+
+1. Read the ticket's requirements and acceptance criteria as though you had to build it tomorrow.
+   If the variation in {ticket-folder}/ticket.json has a "rejection-reason", it is why the operator last rejected the ticket as groomed: make sure it is settled.
+2. List every question that would block or change the build: missing details, ambiguous wording, unstated edge cases, conflicting requirements.
+3. Ask each question with `{agent-sh} question:ask {project} {ticket} <--blocking|--non-blocking> "<question>" "<why it is asked>" "<recommended answer>"` — never by writing {ticket-folder}/questions-and-answers.json — and post them as a comment on the ticket. --blocking when a wrong guess would cost rework, be irreversible, or is a product or business call only the operator can make: the ticket gets no agent until it is answered. Else --non-blocking: go on with your recommended answer, recorded as the assumption; an answer that differs comes back as a requirements change.
+4. Judge each "Answered" question in {ticket-folder}/questions-and-answers.json (its index is its place in "list", from 0):
+   - It settles the question: `{agent-sh} question:accept {project} {ticket} <index>`, and fold the answer in: an off-board ticket, `{agent-sh} ticket:set-requirements {project} {ticket}` (the sections after the title on stdin, no `## Acceptance criteria`) and `{agent-sh} ticket:set-acceptance-criteria {project} {ticket} -` (the whole [{criteria-number, description}] list on stdin); a Jira one, post the settled answers as a comment with `{agent-sh} ticket:post-comment {project} {ticket} <file>`.
+   - It does not: `{agent-sh} question:reject {project} {ticket} <index> "<why, and what answer would settle it>"`. It goes back to the operator to answer again.
+   Judge only "Answered" questions, never change an answer, and never edit the file's statuses by hand.
+
+Don't invent answers. If nothing is left unanswered, say the ticket is ready.
+
+Finish with JSON: {"is-ready": <bool — true only when every blocking question is "Answer Accepted" and no blocking one is newly asked; a non-blocking one never holds it>, "summary": "<one line>"}.
+
+We want small deliberate changes. You're working with a scalpel, not a broadsword. You're a doctor: get in, fix the root cause using best practices and the patterns already in the repo, get out. Avoid scope creep.
+Be extremely concise. Sacrifice grammar for the sake of concision.

@@ -1,0 +1,12 @@
+Find the root cause of the problem described in ticket {ticket}.
+
+{where}
+
+1. Read the ticket and reproduce the problem if you can.
+2. Trace it through the code to the underlying cause. Back every claim with evidence: file and line, log output, or reproduction steps.
+3. Write {ticket-folder}/root-cause-analysis-{variation}.md (through `{agent-sh} work:write {project} {ticket} {variation} root-cause-analysis.md`, the whole file on stdin) with: the symptom, the root cause, the evidence, and the code a fix will need to touch.
+
+Don't fix anything yet. If the ticket is a new feature rather than a bug, describe the current behavior and what has to change instead.
+
+We want small deliberate changes. You're working with a scalpel, not a broadsword. You're a doctor: get in, fix the root cause using best practices and the patterns already in the repo, get out. Avoid scope creep.
+Be extremely concise. Sacrifice grammar for the sake of concision.

@@ -1,0 +1,50 @@
+{
+    "description": "Briefing for a ticket's chat on its screen (ASS-35): a consultant who knows the whole ticket and writes only when the operator asks, for its whole life",
+    "supported-command-line-interfaces": [
+        "claude"
+    ],
+    "input-arguments": [
+        {
+            "name": "project",
+            "description": "The project's folder under data/projects/",
+            "example": "my-project",
+            "required": true
+        },
+        {
+            "name": "ticket",
+            "description": "Ticket number",
+            "example": "ABC-1234",
+            "required": true
+        },
+        {
+            "name": "project-folder",
+            "description": "The project's folder, absolute",
+            "required": true
+        },
+        {
+            "name": "ticket-folder",
+            "description": "data/projects/<project>/work/<ticket>, absolute",
+            "required": true
+        },
+        {
+            "name": "ticket-file",
+            "description": "The sprint.json or backlog.json the ticket is in, absolute",
+            "required": true
+        },
+        {
+            "name": "backlog-file",
+            "description": "The project's backlog.json, absolute",
+            "required": true
+        },
+        {
+            "name": "agent-sh",
+            "description": "agent.sh, absolute",
+            "required": true
+        },
+        {
+            "name": "worktree",
+            "description": "Each variation's worktree folder, or none yet",
+            "required": true
+        }
+    ]
+}

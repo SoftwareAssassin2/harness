@@ -1,0 +1,98 @@
+{
+    "steps": [
+        {
+            "id": "local-testing",
+            "sequence": 1,
+            "name": "Local Testing",
+            "description": "Testing locally",
+            "max-visits": 3,
+            "on-max-visits": "blocked",
+            "action": {
+                "type": "state-engine",
+                "engine": "v2-local-testing"
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "all": [
+                            {
+                                "is-done": true
+                            },
+                            {
+                                "structured-output": {
+                                    "is-approved": true
+                                }
+                            }
+                        ]
+                    },
+                    "move-to-state": "steps-to-test"
+                },
+                {
+                    "condition": {
+                        "all": [
+                            {
+                                "is-done": true
+                            },
+                            {
+                                "structured-output": {
+                                    "is-approved": false
+                                }
+                            }
+                        ]
+                    },
+                    "move-to-state": "rebuild"
+                }
+            ]
+        },
+        {
+            "id": "steps-to-test",
+            "sequence": 2,
+            "name": "Steps to Test",
+            "description": "Document the steps to test on the Jira ticket",
+            "max-visits": 3,
+            "on-max-visits": "blocked",
+            "action": {
+                "type": "state-engine",
+                "engine": "v2-steps-to-test"
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "is-done": true
+                    },
+                    "move-to-state": "done"
+                }
+            ]
+        },
+        {
+            "id": "done",
+            "name": "Done",
+            "description": "The group is finished; its parent step moves on",
+            "is-done": true,
+            "action": {
+                "type": "none"
+            },
+            "sequence": 3
+        },
+        {
+            "id": "blocked",
+            "name": "Blocked",
+            "description": "A step failed or looped too many times; the parent step sends the ticket to Blocked, which returns it to the start of this group",
+            "is-done": true,
+            "action": {
+                "type": "none"
+            },
+            "sequence": 4
+        },
+        {
+            "id": "rebuild",
+            "name": "Back to Build",
+            "description": "Rejected; the parent step sends the ticket back into Build at Generate Solution",
+            "is-done": true,
+            "action": {
+                "type": "none"
+            },
+            "sequence": 5
+        }
+    ]
+}

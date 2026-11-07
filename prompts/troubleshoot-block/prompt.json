@@ -1,0 +1,69 @@
+{
+    "description": "Prompt for troubleshooting a blocked ticket: the root cause, and where its fix belongs (the product's board, or the harness's)",
+    "supported-command-line-interfaces": [
+        "claude"
+    ],
+    "supported-models": [
+        "claude-opus-5-5",
+        "claude-opus-5",
+        "claude-sonnet-5",
+        "claude-opus-4-8",
+        "claude-opus-4-7"
+    ],
+    "persona": "developer",
+    "input-arguments": [
+        {
+            "name": "project",
+            "description": "Project folder name under data/projects/",
+            "example": "my-project",
+            "required": true
+        },
+        {
+            "name": "ticket",
+            "description": "Ticket number",
+            "example": "ABC-1234",
+            "required": true
+        }
+    ],
+    "output": {
+        "type": "object",
+        "properties": {
+            "needs-fix": {
+                "type": "boolean",
+                "description": "true if there is a real problem to fix"
+            },
+            "summary": {
+                "type": "string",
+                "maxLength": 120,
+                "description": "The problem in one line, 120 characters or fewer"
+            },
+            "root-cause": {
+                "type": "string",
+                "description": "The root cause, and the chain from it to the symptoms"
+            },
+            "cause-in": {
+                "type": "string",
+                "enum": [
+                    "harness",
+                    "project",
+                    "operator"
+                ],
+                "description": "Where the cause is: project (a bug in the product's own code: its ticketing system), harness (the harness: its board), operator (the product's environment or the operator's machine: the harness's board)"
+            },
+            "evidence": {
+                "type": "array",
+                "items": {
+                    "type": "string"
+                },
+                "description": "What proves each claim: a command and its first error line, file:line, a log line; unchecked claims marked unverified"
+            }
+        },
+        "required": [
+            "needs-fix",
+            "summary",
+            "root-cause",
+            "cause-in",
+            "evidence"
+        ]
+    }
+}

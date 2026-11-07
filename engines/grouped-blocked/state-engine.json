@@ -1,0 +1,502 @@
+{
+    "steps": [
+        {
+            "id": "count-attempts",
+            "sequence": 1,
+            "name": "Count the Fix Attempts",
+            "description": "The fix attempts made in this stay in Blocked (ticket:fix-attempts; it starts again each time the ticket enters Blocked anew): at 3 failed, Blocked for Human (ASS-107 AC6). Its VM kept running (ASS-240): without, the top engine's Blocked would stop it, for find-where to start it again",
+            "vm": "running",
+            "record-script-output": true,
+            "action": {
+                "type": "script",
+                "command": "./agent.sh ticket:fix-attempts {project} {work-item} {variation}"
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "exit-code": 0
+                    },
+                    "move-to-state": "find-where"
+                },
+                {
+                    "condition": {
+                        "exit-code": 3
+                    },
+                    "move-to-state": "blocked-for-human"
+                },
+                {
+                    "condition": {
+                        "not": {
+                            "exit-code": 0
+                        }
+                    },
+                    "move-to-state": "find-where"
+                }
+            ]
+        },
+        {
+            "id": "find-where",
+            "sequence": 2,
+            "name": "Find Where to Troubleshoot",
+            "description": "In the variation's VM once it is set up; on the host before (its Setup is what failed)",
+            "vm": "running",
+            "action": {
+                "type": "none"
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "script-succeeds": "./agent.sh vm:setup-complete {project} {ticket} {variation}"
+                    },
+                    "move-to-state": "troubleshoot"
+                },
+                {
+                    "condition": {
+                        "not": {
+                            "script-succeeds": "./agent.sh vm:setup-complete {project} {ticket} {variation}"
+                        }
+                    },
+                    "move-to-state": "troubleshoot-on-host"
+                }
+            ]
+        },
+        {
+            "id": "troubleshoot",
+            "sequence": 3,
+            "name": "Troubleshoot",
+            "description": "Find why the ticket is blocked, learning from its earlier blocks (the runs kept in its blocks)",
+            "vm": "running",
+            "action": {
+                "type": "prompt",
+                "prompt": "troubleshoot-block-grouped",
+                "agent-count": 1,
+                "run-in-dev-container": false
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "all": [
+                            {
+                                "turn-complete": true
+                            },
+                            {
+                                "structured-output": {
+                                    "needs-fix": false
+                                }
+                            }
+                        ]
+                    },
+                    "move-to-state": "done"
+                },
+                {
+                    "condition": {
+                        "turn-complete": true
+                    },
+                    "move-to-state": "classify"
+                }
+            ],
+            "run-location": "vm"
+        },
+        {
+            "id": "troubleshoot-on-host",
+            "sequence": 4,
+            "name": "Troubleshoot on the Host",
+            "description": "Find why the ticket is blocked, learning from its earlier blocks (the runs kept in its blocks)",
+            "action": {
+                "type": "prompt",
+                "prompt": "troubleshoot-block-on-host-grouped",
+                "agent-count": 1,
+                "run-in-dev-container": false
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "all": [
+                            {
+                                "turn-complete": true
+                            },
+                            {
+                                "structured-output": {
+                                    "needs-fix": false
+                                }
+                            }
+                        ]
+                    },
+                    "move-to-state": "done"
+                },
+                {
+                    "condition": {
+                        "turn-complete": true
+                    },
+                    "move-to-state": "classify"
+                }
+            ]
+        },
+        {
+            "id": "classify",
+            "sequence": 5,
+            "name": "Classify",
+            "description": "A harness issue (a fix ticket in the harness project's backlog), a project issue (its cause in the project's own code: checked against the latest master before anything is raised, ASS-163) or an environment issue (repaired in place: a repository the project lacks, that Troubleshoot named, is one), with its reasoning",
+            "vm": "running",
+            "action": {
+                "type": "prompt",
+                "prompt": "classify-issue-grouped",
+                "agent-count": 1,
+                "run-in-dev-container": false
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "all": [
+                            {
+                                "turn-complete": true
+                            },
+                            {
+                                "structured-output": {
+                                    "issue": "harness"
+                                }
+                            }
+                        ]
+                    },
+                    "move-to-state": "create-fix-ticket"
+                },
+                {
+                    "condition": {
+                        "all": [
+                            {
+                                "turn-complete": true
+                            },
+                            {
+                                "structured-output": {
+                                    "issue": "project"
+                                }
+                            }
+                        ]
+                    },
+                    "move-to-state": "check-on-master"
+                },
+                {
+                    "condition": {
+                        "all": [
+                            {
+                                "turn-complete": true
+                            },
+                            {
+                                "structured-output": {
+                                    "issue": "environment"
+                                }
+                            }
+                        ]
+                    },
+                    "move-to-state": "add-repository"
+                }
+            ]
+        },
+        {
+            "id": "check-on-master",
+            "sequence": 6,
+            "name": "Check on the Latest Master",
+            "description": "The operator's decision box (ASS-163): is the failure a problem on the latest master? The project's master CI for the job Troubleshoot named, asked read-only on the host (project:check-on-master: glab, gh). Failed there (exit 0): a blocking bug in the project's ticket system, with that evidence, waited on. Passed (exit 3): our environment or access — nothing raised, the plan grows by the obstacle's fix. No master evidence (exit 4: no such job, forge unreachable, nothing named) is not proven: no bug, Blocked for Human asking the operator; Have AI Try Again repeats the check. On the harness project (exit 2) not checked: raised as before",
+            "vm": "running",
+            "record-script-output": true,
+            "action": {
+                "type": "script",
+                "command": "./agent.sh project:check-on-master {project} {failing-repository} {failing-job}"
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "exit-code": 0
+                    },
+                    "move-to-state": "create-fix-ticket"
+                },
+                {
+                    "condition": {
+                        "exit-code": 2
+                    },
+                    "move-to-state": "create-fix-ticket"
+                },
+                {
+                    "condition": {
+                        "exit-code": 3
+                    },
+                    "move-to-state": "plan-obstacle-fix"
+                },
+                {
+                    "condition": {
+                        "not": {
+                            "exit-code": 0
+                        }
+                    },
+                    "move-to-state": "blocked-for-human"
+                }
+            ]
+        },
+        {
+            "id": "plan-obstacle-fix",
+            "sequence": 7,
+            "name": "Plan the Obstacle Fix",
+            "description": "Not on the latest master (ASS-163 AC3): nothing raised in the project; the ticket's plan grows by fixing what stands in the way (ticket:plan-obstacle-fix appends it to execution-plan.md, no scope added), then Repair Environment's steps make that fix — a missing repository added, the environment repaired, else the operator's exact step through Blocked for Human — and the ticket resumes its own work",
+            "vm": "running",
+            "record-script-output": true,
+            "action": {
+                "type": "script",
+                "command": "./agent.sh ticket:plan-obstacle-fix {project} {work-item} {variation} {run}"
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "exit-code": 0
+                    },
+                    "move-to-state": "add-repository"
+                },
+                {
+                    "condition": {
+                        "not": {
+                            "exit-code": 0
+                        }
+                    },
+                    "move-to-state": "blocked-for-human"
+                }
+            ]
+        },
+        {
+            "id": "add-repository",
+            "sequence": 8,
+            "name": "Add the Missing Repository",
+            "description": "Repair Environment's first step (ASS-121), on the host: a repository the project lacks that Troubleshoot named (missing-repository) is added to project.json once the harness can access it (glab, gh: read-only) and downloaded into the VM, and the ticket retries; one it cannot access is not added: Blocked for Human, naming it and why. One another project lists is refused, nothing changed (exit 4, ASS-160): Blocked for Human, saying the ticket needs that project's access (it belongs there, or must be done on the Mac). None named, or one already listed (exit 2): nothing added, the environment repaired in place as for any other cause",
+            "vm": "running",
+            "record-script-output": true,
+            "action": {
+                "type": "script",
+                "command": "./agent.sh project:add-repository {project} {work-item} {variation} {missing-repository}"
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "exit-code": 0
+                    },
+                    "move-to-state": "done"
+                },
+                {
+                    "condition": {
+                        "all": [
+                            {
+                                "exit-code": 2
+                            },
+                            {
+                                "script-succeeds": "./agent.sh vm:setup-complete {project} {ticket} {variation}"
+                            }
+                        ]
+                    },
+                    "move-to-state": "repair-environment"
+                },
+                {
+                    "condition": {
+                        "all": [
+                            {
+                                "exit-code": 2
+                            },
+                            {
+                                "not": {
+                                    "script-succeeds": "./agent.sh vm:setup-complete {project} {ticket} {variation}"
+                                }
+                            }
+                        ]
+                    },
+                    "move-to-state": "repair-environment-on-host"
+                },
+                {
+                    "condition": {
+                        "not": {
+                            "exit-code": 0
+                        }
+                    },
+                    "move-to-state": "blocked-for-human"
+                }
+            ]
+        },
+        {
+            "id": "repair-environment",
+            "sequence": 9,
+            "name": "Repair the Environment",
+            "description": "In the variation's VM and the project's containers there, never a credential: repaired and re-checked, the ticket resumes; else Blocked for Human with what was found and what to do (ASS-97)",
+            "vm": "running",
+            "action": {
+                "type": "prompt",
+                "prompt": "repair-environment-grouped",
+                "agent-count": 1,
+                "run-in-dev-container": false
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "all": [
+                            {
+                                "turn-complete": true
+                            },
+                            {
+                                "structured-output": {
+                                    "remediated": true
+                                }
+                            }
+                        ]
+                    },
+                    "move-to-state": "done"
+                },
+                {
+                    "condition": {
+                        "turn-complete": true
+                    },
+                    "move-to-state": "blocked-for-human"
+                }
+            ],
+            "run-location": "vm"
+        },
+        {
+            "id": "repair-environment-on-host",
+            "sequence": 10,
+            "name": "Repair the Environment on the Host",
+            "description": "The variation has no VM yet: only its own worktree, never the Mac's shared checkout or a credential; else Blocked for Human with what was found and what to do (ASS-97)",
+            "action": {
+                "type": "prompt",
+                "prompt": "repair-environment-on-host-grouped",
+                "agent-count": 1,
+                "run-in-dev-container": false,
+                "works-on-code": true
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "all": [
+                            {
+                                "turn-complete": true
+                            },
+                            {
+                                "structured-output": {
+                                    "remediated": true
+                                }
+                            }
+                        ]
+                    },
+                    "move-to-state": "done"
+                },
+                {
+                    "condition": {
+                        "turn-complete": true
+                    },
+                    "move-to-state": "blocked-for-human"
+                }
+            ]
+        },
+        {
+            "id": "create-fix-ticket",
+            "sequence": 11,
+            "name": "Create the Fix Ticket",
+            "description": "Where Classify said: the harness project's backlog, or the ticket's own project's ticket system (facts.js fixTicketIn)",
+            "action": {
+                "type": "state-engine",
+                "engine": "create-ticket-grouped"
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "is-done": true
+                    },
+                    "move-to-state": "wait-on"
+                }
+            ]
+        },
+        {
+            "id": "wait-on",
+            "sequence": 12,
+            "name": "Wait on the Fix",
+            "description": "Record the fix ticket the blocked ticket waits on; none raised, or one no project claims, is Blocked for Human (AC7)",
+            "record-script-output": true,
+            "action": {
+                "type": "script",
+                "command": "./agent.sh ticket:wait-on {project} {work-item} {variation} {ticket}"
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "exit-code": 0
+                    },
+                    "move-to-state": "await-fix"
+                },
+                {
+                    "condition": {
+                        "not": {
+                            "exit-code": 0
+                        }
+                    },
+                    "move-to-state": "blocked-for-human"
+                }
+            ]
+        },
+        {
+            "id": "await-fix",
+            "sequence": 13,
+            "name": "Await the Fix",
+            "description": "Wait until the fix ticket is Done and merged, polling while it is not (exit 1, its waiting-exit-code: no failure, ASS-253); one closed unmerged is a failed attempt: Blocked again, afresh; nothing to wait on is Blocked for Human (AC7)",
+            "record-script-output": true,
+            "action": {
+                "type": "script",
+                "command": "./agent.sh ticket:fix-landed {project} {work-item} {variation}",
+                "mode": "timer",
+                "timer-minutes": 5,
+                "waiting-exit-code": 1
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "exit-code": 0
+                    },
+                    "move-to-state": "done"
+                },
+                {
+                    "condition": {
+                        "exit-code": 3
+                    },
+                    "move-to-state": "retry"
+                },
+                {
+                    "condition": {
+                        "exit-code": 4
+                    },
+                    "move-to-state": "blocked-for-human"
+                }
+            ]
+        },
+        {
+            "id": "done",
+            "sequence": 14,
+            "name": "Done",
+            "description": "Fixed, repaired, or nothing wrong any more: the parent follows return-to-state",
+            "is-done": true,
+            "action": {
+                "type": "none"
+            }
+        },
+        {
+            "id": "retry",
+            "sequence": 15,
+            "name": "Retry",
+            "description": "The fix ticket was closed unmerged, a failed attempt: the parent goes round Blocked again, its attempts counted afresh",
+            "is-done": true,
+            "action": {
+                "type": "none"
+            }
+        },
+        {
+            "id": "blocked-for-human",
+            "sequence": 16,
+            "name": "Blocked for Human",
+            "description": "No fix could be raised, waited on or made, or 3 fix attempts failed: the parent goes to Blocked for Human, the run's ai-feedback saying why",
+            "is-done": true,
+            "action": {
+                "type": "none"
+            }
+        }
+    ]
+}

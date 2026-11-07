@@ -1,0 +1,81 @@
+{
+    "description": "Prompt for troubleshooting a blocked ticket from inside the ticket variation's VM (the grouped engines, ASS-68): the root cause, learning from its earlier blocks, for the Classify step after it to route (ASS-107)",
+    "supported-command-line-interfaces": [
+        "claude"
+    ],
+    "supported-models": [
+        "claude-opus-5-5",
+        "claude-opus-5",
+        "claude-sonnet-5",
+        "claude-opus-4-8",
+        "claude-opus-4-7"
+    ],
+    "persona": "developer",
+    "input-arguments": [
+        {
+            "name": "project",
+            "description": "Project folder name under data/projects/",
+            "example": "my-project",
+            "required": true
+        },
+        {
+            "name": "ticket",
+            "description": "Ticket number",
+            "example": "ABC-1234",
+            "required": true
+        },
+        {
+            "name": "problem",
+            "description": "The ticket's earlier blocks: each stay, what was found and tried, how it ended (- when none)",
+            "example": "Entered Blocked 2 times: 2 at build/automated-testing",
+            "required": true
+        }
+    ],
+    "output": {
+        "type": "object",
+        "properties": {
+            "needs-fix": {
+                "type": "boolean",
+                "description": "true if there is a real problem to fix"
+            },
+            "summary": {
+                "type": "string",
+                "maxLength": 120,
+                "description": "The problem in one line, 120 characters or fewer"
+            },
+            "root-cause": {
+                "type": "string",
+                "description": "The root cause, and the chain from it to the symptoms"
+            },
+            "evidence": {
+                "type": "array",
+                "items": {
+                    "type": "string"
+                },
+                "description": "What proves each claim: a command and its first error line, file:line, a log line; unchecked claims marked unverified"
+            },
+            "missing-repository": {
+                "type": "string",
+                "description": "Only when the cause is a repository the project does not list, which the work needs: its forge url (https://github.com/<owner>/<repo> or https://gitlab.com/<group>/<repo>); left out otherwise (ASS-121)"
+            },
+            "failing-repository": {
+                "type": "string",
+                "description": "Only when the cause is in the product's own code: the forge url of the repository whose check fails (ASS-163); left out otherwise"
+            },
+            "failing-job": {
+                "type": "string",
+                "description": "Only then: the CI job that runs the failing check, as the project's CI names it (.gitlab-ci.yml, .github/workflows), for the harness to check on the latest master"
+            },
+            "failing-assertion": {
+                "type": "string",
+                "description": "Only then: the failing test or assertion, or the command and its exit"
+            }
+        },
+        "required": [
+            "needs-fix",
+            "summary",
+            "root-cause",
+            "evidence"
+        ]
+    }
+}

@@ -1,0 +1,35 @@
+{
+    "description": "Prompt for reviewing the solution's code",
+    "supported-command-line-interfaces": [
+        "claude"
+    ],
+    "supported-models": [
+        "claude-opus-5-5",
+        "claude-opus-5",
+        "claude-sonnet-5",
+        "claude-opus-4-8",
+        "claude-opus-4-7"
+    ],
+    "persona": "developer",
+    "input-arguments": [
+        {
+            "name": "ticket",
+            "description": "Ticket number",
+            "example": "ABC-1234",
+            "required": true
+        }
+    ],
+    "output": {
+        "type": "object",
+        "properties": {
+            "is-approved": {
+                "type": "boolean",
+                "description": "true if the code is approved; false sends it back for rework"
+            }
+        },
+        "required": [
+            "is-approved"
+        ],
+        "additionalProperties": false
+    }
+}

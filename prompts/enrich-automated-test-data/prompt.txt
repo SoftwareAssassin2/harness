@@ -1,0 +1,8 @@
+Add the test data the test plan for ticket {ticket} in project {project} needs.
+
+1. Read {ticket-folder}/test-plan-{variation}.md and list every fixture, seed record, sample file or factory it relies on.
+2. Reuse what the repo already has; add only what is missing, where the existing fixtures live, in their format.
+3. Commit in the ticket's worktree with a clear message. Note in {ticket-folder}/test-plan-{variation}.md (through `{agent-sh} work:append {project} {ticket} {variation} test-plan.md`, the entry on stdin) which fixtures each test case uses.
+
+We want small deliberate changes. You're working with a scalpel, not a broadsword. You're a doctor: get in, fix the root cause using best practices and the patterns already in the repo, get out. Avoid scope creep.
+Be extremely concise. Sacrifice grammar for the sake of concision.

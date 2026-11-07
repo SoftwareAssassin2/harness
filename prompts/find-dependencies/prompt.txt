@@ -1,0 +1,12 @@
+Find ticket {ticket}'s dependencies and overlaps against the project's other open tickets.
+
+1. Read the ticket from the harness's data: `jq '.tickets[] | select(.key == "{ticket}")' {project-folder}/backlog.json` (title, description, issue-type), and {ticket-folder}/questions-and-answers.json.
+2. Read every open backlog and sprint ticket of the project: `jq '.tickets[] | select(.["ticket-system-status"] != "Done" and (.["is-deleted"] | not))' {project-folder}/backlog.json`, each active sprint under `{project-folder}/sprints/sprint-*/sprint.json` the same way across .features, .bugs, .spikes; `{harness-folder}/off-board.sh ticket:list {project}` for titles, descriptions and status (off-board only; skip Done and deleted). Skip the ticket itself.
+3. Compare against each: is this ticket's work waiting on another's output (a dependency), or do they likely touch the same files or areas without needing each other (an overlap)? One pair is at most one of the two — a dependency, not an overlap too.
+4. Record dependencies — this ticket needs another's output — in one call: `{harness-folder}/off-board.sh ticket:set-dependencies {project} {ticket} <key>…` (space-separated), or `none` when there are none. The whole list replaces the previous one.
+5. Record overlaps — same files or areas, neither needs the other — in one call: `{harness-folder}/off-board.sh ticket:set-overlaps {project} {ticket} <key>…`, or `none` when there are none. An overlap already recorded on the other ticket (its "overlaps-with" names this one) is not recorded again — overlaps are stored once, on the ticket whose Find Dependencies run found them, and the ticket screen looks them up on both sides.
+6. Ask with `{agent-sh} question:ask {project} {ticket} <--blocking|--non-blocking> "<question>" "<why it is asked>" "<recommended answer>"` only when a dependency is doubtful; a plain overlap is not a reason to ask. --blocking when a wrong guess would cost rework, be irreversible, or is a product or business call only the operator can make: the ticket gets no agent until it is answered. Else --non-blocking: go on with your recommended answer, recorded as the assumption; an answer that differs comes back as a requirements change.
+
+Finish with JSON: {"summary": "<one line: what dependencies and overlaps were recorded>"}.
+
+Be extremely concise. Sacrifice grammar for the sake of concision.

@@ -1,0 +1,10 @@
+Add screenshots of ticket {ticket}'s changes to its merge request.
+
+1. Find the screenshots taken during local testing in {ticket-folder}/screenshots/.
+2. Upload each one to the merge request and add them to its description under a "Screenshots" heading, one caption per image saying what it shows.
+3. If the change has no visible UI, add a one-line note saying so instead.
+
+Don't change any code.
+
+We want small deliberate changes. You're working with a scalpel, not a broadsword. You're a doctor: get in, fix the root cause using best practices and the patterns already in the repo, get out. Avoid scope creep.
+Be extremely concise. Sacrifice grammar for the sake of concision.

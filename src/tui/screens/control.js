@@ -1,0 +1,35 @@
+// The control screen (c): control's output and its log file (ASS-201: moved from app.js).
+import { pathToFileURL } from 'node:url';
+import { pad, link } from '../text.js';
+import { below, headerLines, platform } from './frame.js';
+import { ellipsis, red } from './shared.js';
+
+export function view(state, size) {
+  // Control's output in a box filling the space between the header and the
+  // platform boxes, its log file beneath: lines top down as a terminal shows
+  // them, the newest that fit once it is full, each with its UTC time and
+  // cut to the box; stderr in red. Beside it, to the right, the project's
+  // transient state engines, a box each (see engineBoxes).
+  const { columns } = size;
+  const room = size.rows - headerLines(state, columns, 0).length - below(state) - platform(state, columns, 0).length;
+  const height = Math.max(1, room - 3);   // less the borders and the log line
+  const width = columns;
+  const inner = width - 4;                // "│ " … " │"
+  const id = state.projects[state.project]?.id;
+  const log = state.controlLog.filter(l => l.project == null || l.project === id);   // this project's control, and what is everyone's
+  const shown = log.length
+    ? log.slice(-height).map(({ text, stream, at }) => {
+      const body = ellipsis(text, inner - 10);
+      return `${at.toISOString().slice(11, 19)}  ${stream === 'stderr' ? red(body) : body}`;
+    })
+    : ['control has not printed anything yet'];
+  const control = [
+    `┌─ control ${'─'.repeat(Math.max(0, width - 12))}┐`,
+    ...Array.from({ length: height }, (_, i) => `│ ${pad(shown[i] ?? '', inner)} │`),
+    `└${'─'.repeat(Math.max(0, width - 2))}┘`,
+  ];
+  return [
+    ...control,
+    ...((file => (file ? [`log: ${link(file, pathToFileURL(file).href)}`] : []))(state.controlLogFiles?.[id] ?? state.controlLogFile)),
+  ];
+}

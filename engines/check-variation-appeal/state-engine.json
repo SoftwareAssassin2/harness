@@ -1,0 +1,15 @@
+{
+    "steps": [
+
+        { "id": "assess-appeal", "sequence": 1, "name": "Assess Appeal", "description": "Comparing the ticket's variations on progress and quality",
+            "action": { "type": "prompt", "prompt": "check-variation-appeal", "agent-count": 1, "run-in-dev-container": false },
+            "exit-events": [
+                { "condition": { "turn-complete": true }, "move-to-state": "done" }
+            ]
+        },
+
+        { "id": "done", "sequence": 2, "name": "Done", "description": "Appeal assessment is recorded; control acts on it", "is-done": true,
+            "action": { "type": "none" }
+        }
+    ]
+}

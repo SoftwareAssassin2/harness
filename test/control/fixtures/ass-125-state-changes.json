@@ -1,0 +1,586 @@
+[
+  {
+    "state-engine": "harness-development-v2",
+    "from-state": "backlog",
+    "to-state": "committed",
+    "timestamp": "2026-10-24T19:02:24Z",
+    "agent-dispatch-log": [],
+    "work-is-done": true
+  },
+  {
+    "state-engine": "harness-development-v2",
+    "from-state": "committed",
+    "to-state": "setup",
+    "timestamp": "2026-10-24T19:21:46Z",
+    "agent-dispatch-log": [],
+    "work-is-done": true
+  },
+  {
+    "state-engine": "harness-development-v2",
+    "from-state": "setup",
+    "to-state": "setup",
+    "sub-state-change": {
+      "state-engine": "v2-setup",
+      "from-state": null,
+      "to-state": "pass-through"
+    },
+    "timestamp": "2026-10-24T19:21:47Z",
+    "agent-dispatch-log": [],
+    "work-is-done": true
+  },
+  {
+    "state-engine": "harness-development-v2",
+    "from-state": "setup",
+    "to-state": "setup",
+    "sub-state-change": {
+      "state-engine": "v2-setup",
+      "from-state": "pass-through",
+      "to-state": "done"
+    },
+    "timestamp": "2026-10-24T19:21:51Z",
+    "agent-dispatch-log": [],
+    "work-is-done": true
+  },
+  {
+    "state-engine": "harness-development-v2",
+    "from-state": "setup",
+    "to-state": "plan",
+    "timestamp": "2026-10-24T19:21:53Z",
+    "agent-dispatch-log": [],
+    "work-is-done": true
+  },
+  {
+    "state-engine": "harness-development-v2",
+    "from-state": "plan",
+    "to-state": "plan",
+    "sub-state-change": {
+      "state-engine": "v2-plan",
+      "from-state": null,
+      "to-state": "pass-through"
+    },
+    "timestamp": "2026-10-24T19:21:54Z",
+    "agent-dispatch-log": [],
+    "work-is-done": true
+  },
+  {
+    "state-engine": "harness-development-v2",
+    "from-state": "plan",
+    "to-state": "plan",
+    "sub-state-change": {
+      "state-engine": "v2-plan",
+      "from-state": "pass-through",
+      "to-state": "done"
+    },
+    "timestamp": "2026-10-24T19:21:57Z",
+    "agent-dispatch-log": [],
+    "work-is-done": true
+  },
+  {
+    "state-engine": "harness-development-v2",
+    "from-state": "plan",
+    "to-state": "build",
+    "timestamp": "2026-10-24T19:21:59Z",
+    "agent-dispatch-log": [],
+    "work-is-done": true
+  },
+  {
+    "state-engine": "harness-development-v2",
+    "from-state": "build",
+    "to-state": "build",
+    "sub-state-change": {
+      "state-engine": "v2-build",
+      "from-state": null,
+      "to-state": "pass-through"
+    },
+    "timestamp": "2026-10-24T19:22:00Z",
+    "agent-dispatch-log": [],
+    "work-is-done": true
+  },
+  {
+    "state-engine": "harness-development-v2",
+    "from-state": "build",
+    "to-state": "build",
+    "sub-state-change": {
+      "state-engine": "v2-build",
+      "from-state": "pass-through",
+      "to-state": "done"
+    },
+    "timestamp": "2026-10-24T19:22:03Z",
+    "agent-dispatch-log": [],
+    "work-is-done": true
+  },
+  {
+    "state-engine": "harness-development-v2",
+    "from-state": "build",
+    "to-state": "test",
+    "timestamp": "2026-10-24T19:22:06Z",
+    "agent-dispatch-log": [],
+    "work-is-done": true
+  },
+  {
+    "state-engine": "harness-development-v2",
+    "from-state": "test",
+    "to-state": "test",
+    "sub-state-change": {
+      "state-engine": "v2-test",
+      "from-state": null,
+      "to-state": "pass-through"
+    },
+    "timestamp": "2026-10-24T19:22:07Z",
+    "agent-dispatch-log": [],
+    "work-is-done": true
+  },
+  {
+    "state-engine": "harness-development-v2",
+    "from-state": "test",
+    "to-state": "test",
+    "sub-state-change": {
+      "state-engine": "v2-test",
+      "from-state": "pass-through",
+      "to-state": "done"
+    },
+    "timestamp": "2026-10-24T19:22:10Z",
+    "agent-dispatch-log": [],
+    "work-is-done": true
+  },
+  {
+    "state-engine": "harness-development-v2",
+    "from-state": "test",
+    "to-state": "document",
+    "timestamp": "2026-10-24T19:22:12Z",
+    "agent-dispatch-log": [],
+    "work-is-done": true
+  },
+  {
+    "state-engine": "harness-development-v2",
+    "from-state": "document",
+    "to-state": "document",
+    "sub-state-change": {
+      "state-engine": "v2-document",
+      "from-state": null,
+      "to-state": "pass-through"
+    },
+    "timestamp": "2026-10-24T19:22:13Z",
+    "agent-dispatch-log": [],
+    "work-is-done": true
+  },
+  {
+    "state-engine": "harness-development-v2",
+    "from-state": "document",
+    "to-state": "document",
+    "sub-state-change": {
+      "state-engine": "v2-document",
+      "from-state": "pass-through",
+      "to-state": "done"
+    },
+    "timestamp": "2026-10-24T19:22:16Z",
+    "agent-dispatch-log": [
+      {
+        "dispatched-to": "Tetsuo-Shima",
+        "timestamp": "2026-10-24T19:22:26Z",
+        "completed-timestamp": "2026-10-24T19:27:04Z",
+        "cost-usd": 1.695457,
+        "tokens": {
+          "input": 48,
+          "output": 17743,
+          "cache-read": 1140144,
+          "cache-write": 68157
+        }
+      }
+    ],
+    "work-is-done": true
+  },
+  {
+    "state-engine": "harness-development-v2",
+    "from-state": "document",
+    "to-state": "review",
+    "timestamp": "2026-10-24T19:26:54Z",
+    "agent-dispatch-log": [],
+    "work-is-done": true
+  },
+  {
+    "state-engine": "harness-development-v2",
+    "from-state": "review",
+    "to-state": "review",
+    "sub-state-change": {
+      "state-engine": "v2-review",
+      "from-state": null,
+      "to-state": "pass-through"
+    },
+    "timestamp": "2026-10-24T19:26:54Z",
+    "agent-dispatch-log": [],
+    "work-is-done": true
+  },
+  {
+    "state-engine": "harness-development-v2",
+    "from-state": "review",
+    "to-state": "review",
+    "sub-state-change": {
+      "state-engine": "v2-review",
+      "from-state": "pass-through",
+      "to-state": "done"
+    },
+    "timestamp": "2026-10-24T19:26:57Z",
+    "agent-dispatch-log": [],
+    "work-is-done": true
+  },
+  {
+    "state-engine": "harness-development-v2",
+    "from-state": "review",
+    "to-state": "release",
+    "timestamp": "2026-10-24T19:26:59Z",
+    "agent-dispatch-log": [],
+    "work-is-done": true
+  },
+  {
+    "state-engine": "harness-development-v2",
+    "from-state": "release",
+    "to-state": "release",
+    "sub-state-change": {
+      "state-engine": "v2-release",
+      "from-state": null,
+      "to-state": "pass-through"
+    },
+    "timestamp": "2026-10-24T19:26:59Z",
+    "agent-dispatch-log": [],
+    "work-is-done": true
+  },
+  {
+    "state-engine": "harness-development-v2",
+    "from-state": "release",
+    "to-state": "release",
+    "sub-state-change": {
+      "state-engine": "v2-release",
+      "from-state": "pass-through",
+      "to-state": "done"
+    },
+    "timestamp": "2026-10-24T19:27:02Z",
+    "agent-dispatch-log": [],
+    "work-is-done": true
+  },
+  {
+    "state-engine": "harness-development-v2",
+    "from-state": "release",
+    "to-state": "done",
+    "timestamp": "2026-10-24T19:27:05Z",
+    "agent-dispatch-log": [
+      {
+        "dispatched-to": "Walter-Skinner",
+        "timestamp": "2026-10-24T19:27:08Z",
+        "completed-timestamp": "2026-10-24T19:29:15Z",
+        "cost-usd": 1.065673,
+        "tokens": {
+          "input": 32,
+          "output": 8996,
+          "cache-read": 724507,
+          "cache-write": 47836
+        }
+      }
+    ],
+    "work-is-done": true
+  },
+  {
+    "state-engine": "harness-development-v2",
+    "from-state": "done",
+    "to-state": "committed",
+    "timestamp": "2026-10-24T20:46:03Z",
+    "agent-dispatch-log": [],
+    "work-is-done": true
+  },
+  {
+    "state-engine": "harness-development-v2",
+    "from-state": "committed",
+    "to-state": "setup",
+    "timestamp": "2026-10-24T20:46:59Z",
+    "agent-dispatch-log": [],
+    "work-is-done": true
+  },
+  {
+    "state-engine": "harness-development-v2",
+    "from-state": "setup",
+    "to-state": "setup",
+    "sub-state-change": {
+      "state-engine": "v2-setup",
+      "from-state": null,
+      "to-state": "pass-through"
+    },
+    "timestamp": "2026-10-24T20:47:00Z",
+    "agent-dispatch-log": [],
+    "work-is-done": true
+  },
+  {
+    "state-engine": "harness-development-v2",
+    "from-state": "setup",
+    "to-state": "setup",
+    "sub-state-change": {
+      "state-engine": "v2-setup",
+      "from-state": "pass-through",
+      "to-state": "done"
+    },
+    "timestamp": "2026-10-24T20:47:03Z",
+    "agent-dispatch-log": [],
+    "work-is-done": true
+  },
+  {
+    "state-engine": "harness-development-v2",
+    "from-state": "setup",
+    "to-state": "plan",
+    "timestamp": "2026-10-24T20:47:05Z",
+    "agent-dispatch-log": [],
+    "work-is-done": true
+  },
+  {
+    "state-engine": "harness-development-v2",
+    "from-state": "plan",
+    "to-state": "plan",
+    "sub-state-change": {
+      "state-engine": "v2-plan",
+      "from-state": null,
+      "to-state": "pass-through"
+    },
+    "timestamp": "2026-10-24T20:47:06Z",
+    "agent-dispatch-log": [],
+    "work-is-done": true
+  },
+  {
+    "state-engine": "harness-development-v2",
+    "from-state": "plan",
+    "to-state": "plan",
+    "sub-state-change": {
+      "state-engine": "v2-plan",
+      "from-state": "pass-through",
+      "to-state": "done"
+    },
+    "timestamp": "2026-10-24T20:47:09Z",
+    "agent-dispatch-log": [],
+    "work-is-done": true
+  },
+  {
+    "state-engine": "harness-development-v2",
+    "from-state": "plan",
+    "to-state": "build",
+    "timestamp": "2026-10-24T20:47:11Z",
+    "agent-dispatch-log": [],
+    "work-is-done": true
+  },
+  {
+    "state-engine": "harness-development-v2",
+    "from-state": "build",
+    "to-state": "build",
+    "sub-state-change": {
+      "state-engine": "v2-build",
+      "from-state": null,
+      "to-state": "pass-through"
+    },
+    "timestamp": "2026-10-24T20:47:11Z",
+    "agent-dispatch-log": [],
+    "work-is-done": true
+  },
+  {
+    "state-engine": "harness-development-v2",
+    "from-state": "build",
+    "to-state": "build",
+    "sub-state-change": {
+      "state-engine": "v2-build",
+      "from-state": "pass-through",
+      "to-state": "done"
+    },
+    "timestamp": "2026-10-24T20:47:14Z",
+    "agent-dispatch-log": [],
+    "work-is-done": true
+  },
+  {
+    "state-engine": "harness-development-v2",
+    "from-state": "build",
+    "to-state": "test",
+    "timestamp": "2026-10-24T20:47:17Z",
+    "agent-dispatch-log": [],
+    "work-is-done": true
+  },
+  {
+    "state-engine": "harness-development-v2",
+    "from-state": "test",
+    "to-state": "test",
+    "sub-state-change": {
+      "state-engine": "v2-test",
+      "from-state": null,
+      "to-state": "pass-through"
+    },
+    "timestamp": "2026-10-24T20:47:17Z",
+    "agent-dispatch-log": [],
+    "work-is-done": true
+  },
+  {
+    "state-engine": "harness-development-v2",
+    "from-state": "test",
+    "to-state": "test",
+    "sub-state-change": {
+      "state-engine": "v2-test",
+      "from-state": "pass-through",
+      "to-state": "done"
+    },
+    "timestamp": "2026-10-24T20:47:20Z",
+    "agent-dispatch-log": [],
+    "work-is-done": true
+  },
+  {
+    "state-engine": "harness-development-v2",
+    "from-state": "test",
+    "to-state": "document",
+    "timestamp": "2026-10-24T20:47:22Z",
+    "agent-dispatch-log": [],
+    "work-is-done": true
+  },
+  {
+    "state-engine": "harness-development-v2",
+    "from-state": "document",
+    "to-state": "document",
+    "sub-state-change": {
+      "state-engine": "v2-document",
+      "from-state": null,
+      "to-state": "pass-through"
+    },
+    "timestamp": "2026-10-24T20:47:22Z",
+    "agent-dispatch-log": [],
+    "work-is-done": true
+  },
+  {
+    "state-engine": "harness-development-v2",
+    "from-state": "document",
+    "to-state": "document",
+    "sub-state-change": {
+      "state-engine": "v2-document",
+      "from-state": "pass-through",
+      "to-state": "done"
+    },
+    "timestamp": "2026-10-24T20:47:25Z",
+    "agent-dispatch-log": [],
+    "work-is-done": true
+  },
+  {
+    "state-engine": "harness-development-v2",
+    "from-state": "document",
+    "to-state": "review",
+    "timestamp": "2026-10-24T20:47:27Z",
+    "agent-dispatch-log": [],
+    "work-is-done": true
+  },
+  {
+    "state-engine": "harness-development-v2",
+    "from-state": "review",
+    "to-state": "review",
+    "sub-state-change": {
+      "state-engine": "v2-review",
+      "from-state": null,
+      "to-state": "pass-through"
+    },
+    "timestamp": "2026-10-24T20:47:28Z",
+    "agent-dispatch-log": [],
+    "work-is-done": true
+  },
+  {
+    "state-engine": "harness-development-v2",
+    "from-state": "review",
+    "to-state": "review",
+    "sub-state-change": {
+      "state-engine": "v2-review",
+      "from-state": "pass-through",
+      "to-state": "done"
+    },
+    "timestamp": "2026-10-24T20:47:31Z",
+    "agent-dispatch-log": [],
+    "work-is-done": true
+  },
+  {
+    "state-engine": "harness-development-v2",
+    "from-state": "review",
+    "to-state": "release",
+    "timestamp": "2026-10-24T20:47:33Z",
+    "agent-dispatch-log": [],
+    "work-is-done": true
+  },
+  {
+    "state-engine": "harness-development-v2",
+    "from-state": "release",
+    "to-state": "release",
+    "sub-state-change": {
+      "state-engine": "v2-release",
+      "from-state": null,
+      "to-state": "pass-through"
+    },
+    "timestamp": "2026-10-24T20:47:33Z",
+    "agent-dispatch-log": [],
+    "work-is-done": true
+  },
+  {
+    "state-engine": "harness-development-v2",
+    "from-state": "release",
+    "to-state": "release",
+    "sub-state-change": {
+      "state-engine": "v2-release",
+      "from-state": "pass-through",
+      "to-state": "done"
+    },
+    "timestamp": "2026-10-24T20:47:36Z",
+    "agent-dispatch-log": [],
+    "work-is-done": true
+  },
+  {
+    "state-engine": "harness-development-v2",
+    "from-state": "release",
+    "to-state": "done",
+    "timestamp": "2026-10-24T20:47:39Z",
+    "agent-dispatch-log": [],
+    "work-is-done": true
+  },
+  {
+    "state-engine": "harness-development-v2",
+    "from-state": "done",
+    "to-state": "committed",
+    "timestamp": "2026-10-24T20:56:01Z",
+    "agent-dispatch-log": [],
+    "work-is-done": true
+  },
+  {
+    "state-engine": "harness-development-v2",
+    "from-state": "committed",
+    "to-state": "setup",
+    "timestamp": "2026-10-24T20:56:02Z",
+    "agent-dispatch-log": [],
+    "work-is-done": true
+  },
+  {
+    "state-engine": "harness-development-v2",
+    "from-state": "setup",
+    "to-state": "setup",
+    "sub-state-change": {
+      "state-engine": "v2-setup",
+      "from-state": null,
+      "to-state": "check-setup-complete"
+    },
+    "timestamp": "2026-10-24T20:56:03Z",
+    "agent-dispatch-log": [],
+    "work-is-done": true
+  },
+  {
+    "state-engine": "harness-development-v2",
+    "from-state": "setup",
+    "to-state": "setup",
+    "sub-state-change": {
+      "state-engine": "v2-setup",
+      "from-state": "check-setup-complete",
+      "to-state": "pass-through"
+    },
+    "timestamp": "2026-10-24T21:05:41Z",
+    "agent-dispatch-log": [],
+    "work-is-done": true
+  },
+  {
+    "state-engine": "harness-development-v2",
+    "from-state": "setup",
+    "to-state": "blocked-for-human",
+    "timestamp": "2026-10-24T21:05:48Z",
+    "agent-dispatch-log": [],
+    "work-is-done": false
+  }
+]

@@ -1,0 +1,15 @@
+Review the code changes for ticket {ticket} for security problems.
+
+Look for:
+- Injection (SQL, shell, template) and unvalidated input
+- Broken authentication or missing permission checks
+- Secrets or credentials in code, config or logs
+- Sensitive data exposed in responses, logs or errors
+- New dependencies with known vulnerabilities
+
+Write your findings to {ticket-folder}/security-review-{variation}.md (through `{agent-sh} work:write {project} {ticket} {variation} security-review.md`, the whole file on stdin), most severe first, each with the file and line.
+
+Finish with JSON: {"is-approved": true} if nothing must be fixed first, or {"is-approved": false} if security-review-{variation}.md lists something that must.
+
+We want small deliberate changes. You're working with a scalpel, not a broadsword. You're a doctor: get in, fix the root cause using best practices and the patterns already in the repo, get out. Avoid scope creep.
+Be extremely concise. Sacrifice grammar for the sake of concision.

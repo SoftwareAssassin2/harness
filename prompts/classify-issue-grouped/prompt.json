@@ -1,0 +1,54 @@
+{
+    "description": "Prompt for classifying a block as a harness, project or environment issue, with its reasoning, for the grouped engines' Blocked (ASS-107; ASS-163: a project issue is checked against the latest master before any bug is raised): where its fix is made",
+    "supported-command-line-interfaces": [
+        "claude"
+    ],
+    "supported-models": [
+        "claude-opus-5-5",
+        "claude-opus-5",
+        "claude-sonnet-5",
+        "claude-opus-4-8",
+        "claude-opus-4-7"
+    ],
+    "persona": "harness-doctor",
+    "input-arguments": [
+        {
+            "name": "project",
+            "description": "Project folder name under data/projects/",
+            "example": "my-project",
+            "required": true
+        },
+        {
+            "name": "problem",
+            "description": "The checked analysis of the problem: summary, root cause, evidence",
+            "example": "Dev container needs rebuilding: node 24 image changed",
+            "required": true
+        }
+    ],
+    "output": {
+        "type": "object",
+        "properties": {
+            "issue": {
+                "type": "string",
+                "enum": [
+                    "harness",
+                    "project",
+                    "environment"
+                ],
+                "description": "Where the fix is made: harness (a fix ticket in the harness project's backlog), project (the cause is in the project's own code: checked against the latest master next, a bug raised in the project's own ticket system only when it fails there; the harness's backlog on the harness project), environment (where the work runs: repaired in place, else by the operator)"
+            },
+            "reasoning": {
+                "type": "string",
+                "description": "Why, from the evidence"
+            },
+            "human-action": {
+                "type": "string",
+                "description": "Environment only: what the operator must do should it not be repaired in place; left out otherwise"
+            }
+        },
+        "required": [
+            "issue",
+            "reasoning"
+        ]
+    }
+}

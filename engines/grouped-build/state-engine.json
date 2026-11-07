@@ -1,0 +1,314 @@
+{
+    "steps": [
+        {
+            "id": "refresh-repositories",
+            "sequence": 1,
+            "name": "Refresh the Reference Repositories",
+            "description": "Bring the repositories the ticket does not change up to their default branch, so the work is built against current upstream",
+            "action": {
+                "type": "script",
+                "command": "./agent.sh vm:refresh-repositories {project} {ticket} {variation}"
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "exit-code": 0
+                    },
+                    "move-to-state": "generate-automated-tests"
+                },
+                {
+                    "condition": {
+                        "not": {
+                            "exit-code": 0
+                        }
+                    },
+                    "move-to-state": "blocked"
+                }
+            ]
+        },
+        {
+            "id": "generate-automated-tests",
+            "sequence": 2,
+            "name": "Generate Automated Tests",
+            "description": "Generating the tests",
+            "max-visits": 3,
+            "on-max-visits": "blocked",
+            "action": {
+                "type": "prompt",
+                "prompt": "generate-automated-tests-grouped",
+                "agent-count": 1,
+                "run-in-dev-container": false
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "all": [
+                            {
+                                "turn-complete": true
+                            },
+                            {
+                                "script-succeeds": "./agent.sh automated-tests:verify-exist-and-runnable {project} {ticket} {variation}"
+                            }
+                        ]
+                    },
+                    "move-to-state": "generate-solution"
+                },
+                {
+                    "condition": {
+                        "all": [
+                            {
+                                "turn-complete": true
+                            },
+                            {
+                                "not": {
+                                    "script-succeeds": "./agent.sh automated-tests:verify-exist-and-runnable {project} {ticket} {variation}"
+                                }
+                            }
+                        ]
+                    },
+                    "move-to-state": "generate-automated-tests"
+                }
+            ],
+            "run-location": "vm"
+        },
+        {
+            "id": "generate-solution",
+            "sequence": 3,
+            "name": "Generate Solution",
+            "description": "Generating the solution",
+            "max-visits": 5,
+            "on-max-visits": "blocked",
+            "action": {
+                "type": "prompt",
+                "prompt": "generate-solution-grouped",
+                "agent-count": 1,
+                "run-in-dev-container": true
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "turn-complete": true
+                    },
+                    "move-to-state": "refresh-before-testing"
+                }
+            ],
+            "run-location": "vm"
+        },
+        {
+            "id": "refresh-before-testing",
+            "sequence": 4,
+            "name": "Refresh the Reference Repositories Before Testing",
+            "description": "Bring the repositories the ticket does not change up to their default branch again, so the tests run against current upstream",
+            "action": {
+                "type": "script",
+                "command": "./agent.sh vm:refresh-repositories {project} {ticket} {variation}"
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "exit-code": 0
+                    },
+                    "move-to-state": "automated-testing"
+                },
+                {
+                    "condition": {
+                        "not": {
+                            "exit-code": 0
+                        }
+                    },
+                    "move-to-state": "blocked"
+                }
+            ]
+        },
+        {
+            "id": "automated-testing",
+            "sequence": 5,
+            "name": "Automated Testing",
+            "description": "Run automated tests",
+            "max-visits": 3,
+            "on-max-visits": "blocked",
+            "action": {
+                "type": "script",
+                "command": "./agent.sh automated-tests:verify-success {project} {ticket} {variation}"
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "exit-code": 0
+                    },
+                    "move-to-state": "ci-checks"
+                },
+                {
+                    "condition": {
+                        "exit-code": 3
+                    },
+                    "move-to-state": "blocked"
+                },
+                {
+                    "condition": {
+                        "exit-code": 4
+                    },
+                    "move-to-state": "generate-automated-tests"
+                },
+                {
+                    "condition": {
+                        "not": {
+                            "exit-code": 0
+                        }
+                    },
+                    "move-to-state": "generate-solution"
+                }
+            ],
+            "run-location": "vm"
+        },
+        {
+            "id": "ci-checks",
+            "sequence": 6,
+            "name": "CI Checks",
+            "description": "Run the merge-request CI checks the project declares (ci-checks.json) for each repository the ticket changes; a project that declares none passes with nothing run",
+            "max-visits": 3,
+            "on-max-visits": "blocked",
+            "action": {
+                "type": "script",
+                "command": "./agent.sh ci-checks:verify {project} {ticket} {variation}"
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "exit-code": 0
+                    },
+                    "move-to-state": "code-review"
+                },
+                {
+                    "condition": {
+                        "exit-code": 3
+                    },
+                    "move-to-state": "blocked"
+                },
+                {
+                    "condition": {
+                        "not": {
+                            "exit-code": 0
+                        }
+                    },
+                    "move-to-state": "generate-solution"
+                }
+            ],
+            "run-location": "vm"
+        },
+        {
+            "id": "code-review",
+            "sequence": 7,
+            "name": "Code Review",
+            "description": "Reviewing the solution",
+            "max-visits": 3,
+            "on-max-visits": "blocked",
+            "action": {
+                "type": "prompt",
+                "prompt": "code-review-grouped",
+                "agent-count": 1,
+                "run-in-dev-container": false
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "all": [
+                            {
+                                "turn-complete": true
+                            },
+                            {
+                                "structured-output": {
+                                    "is-approved": true
+                                }
+                            }
+                        ]
+                    },
+                    "move-to-state": "security-review"
+                },
+                {
+                    "condition": {
+                        "all": [
+                            {
+                                "turn-complete": true
+                            },
+                            {
+                                "structured-output": {
+                                    "is-approved": false
+                                }
+                            }
+                        ]
+                    },
+                    "move-to-state": "generate-solution"
+                }
+            ],
+            "run-location": "vm"
+        },
+        {
+            "id": "security-review",
+            "sequence": 8,
+            "name": "Security Review",
+            "description": "Security review",
+            "max-visits": 3,
+            "on-max-visits": "blocked",
+            "action": {
+                "type": "prompt",
+                "prompt": "security-review-grouped",
+                "agent-count": 1,
+                "run-in-dev-container": false
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "all": [
+                            {
+                                "turn-complete": true
+                            },
+                            {
+                                "structured-output": {
+                                    "is-approved": true
+                                }
+                            }
+                        ]
+                    },
+                    "move-to-state": "done"
+                },
+                {
+                    "condition": {
+                        "all": [
+                            {
+                                "turn-complete": true
+                            },
+                            {
+                                "structured-output": {
+                                    "is-approved": false
+                                }
+                            }
+                        ]
+                    },
+                    "move-to-state": "generate-solution"
+                }
+            ],
+            "run-location": "vm"
+        },
+        {
+            "id": "done",
+            "name": "Done",
+            "description": "The group is finished; its parent step moves on",
+            "is-done": true,
+            "action": {
+                "type": "none"
+            },
+            "sequence": 9
+        },
+        {
+            "id": "blocked",
+            "name": "Blocked",
+            "description": "A step failed or looped too many times; the parent step sends the ticket to Blocked, which returns it to the start of this group",
+            "is-done": true,
+            "action": {
+                "type": "none"
+            },
+            "sequence": 10
+        }
+    ]
+}

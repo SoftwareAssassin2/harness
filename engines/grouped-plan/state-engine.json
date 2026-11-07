@@ -1,0 +1,339 @@
+{
+    "steps": [
+        {
+            "id": "enrich-ac",
+            "sequence": 1,
+            "name": "Extract Acceptance Criteria",
+            "description": "Extracting acceptance criteria from the ticket",
+            "is-planning-stage": true,
+            "max-visits": 3,
+            "on-max-visits": "blocked",
+            "action": {
+                "type": "prompt",
+                "prompt": "enrich-ac-grouped",
+                "agent-count": 1,
+                "run-in-dev-container": false
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "all": [
+                            {
+                                "turn-complete": true
+                            },
+                            {
+                                "structured-ticket-variation-array-check": {
+                                    "member-name": "acceptance-criteria",
+                                    "min-length": 1
+                                }
+                            }
+                        ]
+                    },
+                    "move-to-state": "root-cause-analysis"
+                }
+            ],
+            "run-location": "vm"
+        },
+        {
+            "id": "root-cause-analysis",
+            "sequence": 2,
+            "name": "Root Cause Analysis",
+            "description": "Analyzing the root cause of issues",
+            "is-planning-stage": true,
+            "max-visits": 3,
+            "on-max-visits": "blocked",
+            "action": {
+                "type": "prompt",
+                "prompt": "root-cause-analysis-grouped",
+                "agent-count": 1,
+                "run-in-dev-container": true
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "all": [
+                            {
+                                "turn-complete": true
+                            },
+                            {
+                                "file-updated": {
+                                    "file": "root-cause-analysis.md",
+                                    "since": "turn-start"
+                                }
+                            }
+                        ]
+                    },
+                    "move-to-state": "review-root-cause-analysis"
+                },
+                {
+                    "condition": {
+                        "all": [
+                            {
+                                "turn-complete": true
+                            },
+                            {
+                                "not": {
+                                    "file-updated": {
+                                        "file": "root-cause-analysis.md",
+                                        "since": "turn-start"
+                                    }
+                                }
+                            }
+                        ]
+                    },
+                    "move-to-state": "root-cause-analysis"
+                }
+            ],
+            "run-location": "vm"
+        },
+        {
+            "id": "review-root-cause-analysis",
+            "sequence": 3,
+            "name": "Review Root Cause Analysis",
+            "description": "Reviewing the root cause analysis",
+            "is-planning-stage": true,
+            "max-visits": 3,
+            "on-max-visits": "blocked",
+            "action": {
+                "type": "prompt",
+                "prompt": "review-root-cause-analysis-grouped",
+                "agent-count": 1,
+                "run-in-dev-container": false
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "all": [
+                            {
+                                "turn-complete": true
+                            },
+                            {
+                                "structured-output": {
+                                    "is-approved": true
+                                }
+                            }
+                        ]
+                    },
+                    "move-to-state": "write-execution-plan"
+                },
+                {
+                    "condition": {
+                        "all": [
+                            {
+                                "turn-complete": true
+                            },
+                            {
+                                "structured-output": {
+                                    "is-approved": false
+                                }
+                            }
+                        ]
+                    },
+                    "move-to-state": "root-cause-analysis"
+                }
+            ],
+            "run-location": "vm"
+        },
+        {
+            "id": "write-execution-plan",
+            "sequence": 4,
+            "name": "Write Execution Plan",
+            "description": "Planning the work to be done",
+            "is-planning-stage": true,
+            "max-visits": 3,
+            "on-max-visits": "blocked",
+            "action": {
+                "type": "prompt",
+                "prompt": "write-execution-plan-grouped",
+                "agent-count": 1,
+                "run-in-dev-container": false
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "all": [
+                            {
+                                "turn-complete": true
+                            },
+                            {
+                                "file-updated": {
+                                    "file": "execution-plan.md",
+                                    "since": "turn-start"
+                                }
+                            }
+                        ]
+                    },
+                    "move-to-state": "write-test-plan"
+                },
+                {
+                    "condition": {
+                        "all": [
+                            {
+                                "turn-complete": true
+                            },
+                            {
+                                "not": {
+                                    "file-updated": {
+                                        "file": "execution-plan.md",
+                                        "since": "turn-start"
+                                    }
+                                }
+                            }
+                        ]
+                    },
+                    "move-to-state": "write-execution-plan"
+                }
+            ],
+            "run-location": "vm"
+        },
+        {
+            "id": "write-test-plan",
+            "sequence": 5,
+            "name": "Write Test Plan",
+            "description": "Planning the test strategy",
+            "is-planning-stage": true,
+            "max-visits": 3,
+            "on-max-visits": "blocked",
+            "action": {
+                "type": "prompt",
+                "prompt": "write-test-plan-grouped",
+                "agent-count": 1,
+                "run-in-dev-container": false
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "all": [
+                            {
+                                "turn-complete": true
+                            },
+                            {
+                                "file-updated": {
+                                    "file": "test-plan.md",
+                                    "since": "turn-start"
+                                }
+                            }
+                        ]
+                    },
+                    "move-to-state": "enrich-automated-test-data"
+                },
+                {
+                    "condition": {
+                        "all": [
+                            {
+                                "turn-complete": true
+                            },
+                            {
+                                "not": {
+                                    "file-updated": {
+                                        "file": "test-plan.md",
+                                        "since": "turn-start"
+                                    }
+                                }
+                            }
+                        ]
+                    },
+                    "move-to-state": "write-test-plan"
+                }
+            ],
+            "run-location": "vm"
+        },
+        {
+            "id": "enrich-automated-test-data",
+            "sequence": 6,
+            "name": "Enrich Automated Test Data",
+            "description": "Enriching the automated test data",
+            "is-planning-stage": true,
+            "max-visits": 3,
+            "on-max-visits": "blocked",
+            "action": {
+                "type": "prompt",
+                "prompt": "enrich-automated-test-data-grouped",
+                "agent-count": 1,
+                "run-in-dev-container": false
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "all": [
+                            {
+                                "turn-complete": true
+                            }
+                        ]
+                    },
+                    "move-to-state": "review-plan"
+                }
+            ],
+            "run-location": "vm"
+        },
+        {
+            "id": "review-plan",
+            "sequence": 7,
+            "name": "Review Plan",
+            "description": "Reviewing the build and test plans",
+            "is-planning-stage": true,
+            "max-visits": 3,
+            "on-max-visits": "blocked",
+            "action": {
+                "type": "prompt",
+                "prompt": "review-plan-grouped",
+                "agent-count": 1,
+                "run-in-dev-container": false
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "all": [
+                            {
+                                "turn-complete": true
+                            },
+                            {
+                                "structured-output": {
+                                    "is-approved": true
+                                }
+                            }
+                        ]
+                    },
+                    "move-to-state": "done"
+                },
+                {
+                    "condition": {
+                        "all": [
+                            {
+                                "turn-complete": true
+                            },
+                            {
+                                "structured-output": {
+                                    "is-approved": false
+                                }
+                            }
+                        ]
+                    },
+                    "move-to-state-from-structured-output": "revise-from",
+                    "move-to-state": "write-execution-plan"
+                }
+            ],
+            "run-location": "vm"
+        },
+        {
+            "id": "done",
+            "name": "Done",
+            "description": "The group is finished; its parent step moves on",
+            "is-done": true,
+            "action": {
+                "type": "none"
+            },
+            "sequence": 8
+        },
+        {
+            "id": "blocked",
+            "name": "Blocked",
+            "description": "A step failed or looped too many times; the parent step sends the ticket to Blocked, which returns it to the start of this group",
+            "is-done": true,
+            "action": {
+                "type": "none"
+            },
+            "sequence": 9
+        }
+    ]
+}

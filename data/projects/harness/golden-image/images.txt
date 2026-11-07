@@ -1,0 +1,1 @@
+# Images baked into the harness golden image (vm:build-golden), one per line: none.

@@ -1,0 +1,57 @@
+> You are Gilfoyle, on ABC-1340 in Acme Shop 2. State: ensure-auto-merge. Make sure the merge request will merge on its own once the pipeline passes.
+[session abc126 started on opus-5]
+▶ Bash {"command":"glab mr view --output json | jq \"{iid, state, merge_when_pipeline_succeeds, head_pipeline: .head_pipeline.status}\"","description":"Check the MR and its pipeline"}
+◀ {"iid": 2401, "state": "opened", "merge_when_pipeline_succeeds": false, "head_pipeline": "running"}
+Pipeline is running; auto-merge isn't set yet. Setting it now so it merges when the pipeline passes.
+▶ Bash {"command":"glab mr merge 2401 --when-pipeline-succeeds --squash","description":"Set the MR to merge when the pipeline succeeds"}
+◀ ✓ Will merge !2401 when pipeline succeeds
+▶ Bash {"command":"agent.sh assignments:status-update Gilfoyle \"Waiting on the MR pipeline\""}
+◀ ok
+■ turn ended (success) after 22.6s, $0.42 so far
+> Check the MR can merge cleanly: conflicts, approvals, and whether it's behind master.
+▶ Bash {"command":"glab mr view 2401 --output json | jq \"{has_conflicts, merge_status: .detailed_merge_status, approvals_left, diverged_commits_count}\"","description":"Check the MR can merge"}
+◀ {"has_conflicts": false, "merge_status": "ci_still_running", "approvals_left": 0, "diverged_commits_count": 3}
+No conflicts and approvals are in, but the branch is 3 commits behind master. The project requires a linear history, so it has to be rebased before it can merge.
+▶ Bash {"command":"git fetch origin && git rebase origin/master","description":"Rebase onto master"}
+◀ Successfully rebased and updated refs/heads/change/ABC-1340.
+▶ Bash {"command":"npm test 2>&1 | tail -3","description":"Run the tests after the rebase"}
+◀ Test Suites: 88 passed, 88 total
+  Tests:       1204 passed, 1204 total
+  Time:        74.312 s
+▶ Bash {"command":"git push --force-with-lease","description":"Push the rebased branch"}
+◀ To gitlab.com:group/acme-shop-2.git
+   + 5e1d9aa...b72c014 change/ABC-1340 -> change/ABC-1340 (forced update)
+Rebased and pushed; that starts a new pipeline. Auto-merge stays set across the push.
+▶ Bash {"command":"glab mr view 2401 --output json | jq .merge_when_pipeline_succeeds","description":"Confirm auto-merge is still set"}
+◀ true
+■ turn ended (success) after 118.4s, $2.61 so far
+> Check the pipeline again.
+▶ Bash {"command":"glab ci status --branch change/ABC-1340","description":"Check the pipeline status"}
+◀ (running) • 2m 41s
+    ● lint (running)
+    ○ unit (created)
+    ○ integration (created)
+    ○ deploy-review (created)
+Just started — lint is running. Nothing to do yet.
+■ turn ended (success) after 7.6s, $2.75 so far
+> Supervisor: heartbeat check — say what you are doing and what is left.
+Waiting on the pipeline for !2401 (rebased onto master, auto-merge set). Nothing left for me to do unless it fails.
+■ turn ended (success) after 3.9s, $2.82 so far
+> Check the pipeline again.
+▶ Bash {"command":"glab ci status --branch change/ABC-1340","description":"Check the pipeline status"}
+◀ (running) • 6m 12s
+    ✓ lint
+    ● unit (running)
+    ○ integration (created)
+    ○ deploy-review (created)
+Lint passed; unit tests running.
+■ turn ended (success) after 6.8s, $2.95 so far
+> Check the pipeline again.
+▶ Bash {"command":"glab ci status --branch change/ABC-1340","description":"Check the pipeline status"}
+◀ (running) • 11m 04s
+    ✓ lint
+    ✓ unit
+    ● integration (running)
+    ○ deploy-review (created)
+Still running — integration is the long stage. Nothing to do until it finishes.
+■ turn ended (success) after 8.1s, $3.10 so far

@@ -1,0 +1,15 @@
+{
+    "steps": [
+
+        { "id": "clean-memory", "sequence": 1, "name": "Clean Memory", "description": "Checking the project's memory against the project as it stands now, removing what no longer holds",
+            "action": { "type": "prompt", "prompt": "clean-memory", "agent-count": 1, "run-in-dev-container": false },
+            "exit-events": [
+                { "condition": { "turn-complete": true }, "move-to-state": "done" }
+            ]
+        },
+
+        { "id": "done", "sequence": 2, "name": "Done", "description": "The project's memory is checked", "is-done": true,
+            "action": { "type": "none" }
+        }
+    ]
+}

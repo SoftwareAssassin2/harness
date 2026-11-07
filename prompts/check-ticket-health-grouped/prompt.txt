@@ -1,0 +1,17 @@
+Check that ticket {ticket} in project {ticket-project} is healthy: its records and its artifacts agree. You check it for the harness, from outside that project.
+
+1. Read the ticket's folder {ticket-project-folder}/work/{ticket}/ and its variation in the active sprint under {ticket-project-folder}/sprints/: current step, state-changes history, merge requests, last-script-failure. The sprint is the record: ticket.json is a snapshot from the last dispatch, stale once the ticket moves on.
+2. Check:
+   - The branch and worktree the current step implies exist, are on the ticket's branch, and are clean
+   - The merge request, where one should exist, is open, on that branch, and its draft state matches the step
+   - The files earlier steps should have produced exist and are not empty
+   - The state history is sane: no step visited past its max-visits, no state change without a reason, timestamps in order
+   - The ticketing system status matches the step's paired-ticket-system-status
+   - Seats: {ticket-project}'s limits and who holds its seats now: {seats}. Anyone in over-the-limits is a seat overflow: in motion past a limit, unhealthy. The ticket over the limits, or holding a seat while it waits on nothing, is unhealthy
+   - The variation's last-script-failure (step, exit code, timestamp): one at the step it is at now, since it entered it, is unhealthy: that step's script failed, it is not still running. Name the step and the exit code
+3. Don't change any file, branch, worktree, merge request or ticket.
+
+Finish with JSON: {"is-healthy": <bool>, "summary": "<one line>"}.
+
+We want small deliberate changes. You're working with a scalpel, not a broadsword. You're a doctor: get in, fix the root cause using best practices and the patterns already in the repo, get out. Avoid scope creep.
+Be extremely concise. Sacrifice grammar for the sake of concision.

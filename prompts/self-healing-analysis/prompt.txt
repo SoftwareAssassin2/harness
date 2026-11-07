@@ -1,0 +1,18 @@
+Something may be wrong in project {project}: a health check finding, a block, or a problem sampled from ticket {ticket}. Find its root cause and decide what it means for the sprint. Don't fix anything here.
+
+1. Read the finding in {ticket-folder}/ — the health check's reports, or the ticket's ticket.json, state-changes and files — as a lead, not a fact.
+2. Find the root cause: reproduce it, trace it back, attribute it to the harness, the project or the operator, with evidence for every claim (see above). Check what the harness itself did to the place before blaming the project or the operator.
+3. Answer:
+   - needs-fix: is it a real problem, reproduced now?
+   - root-cause: the cause, and the chain from it to the symptoms. cause-in: harness, project or operator.
+   - evidence: what you saw that proves it — "<command> → <first error line>", file:line, a log line. Unchecked claims marked unverified.
+   - blocks-tickets: only tickets whose own history, change-log or files show this failure.
+   - must-interrupt-work: does fixing it mean pausing agent work on a shared resource (dev container, workspace, database, harness)?
+   - can-continue-without-fix: can the highest-priority workable ticket still make progress?
+   - needs-human: does the fix need the operator's own uncommitted work or a credential (see above)? Then human-action: exactly what the operator must do, one line.
+   - pause-tickets: only tickets whose agents would get in the fix's way while it is built, tested and deployed. Not every ticket it blocks; a blocked ticket waits on its own. None when needs-human.
+
+Finish with JSON: {"needs-fix": <bool>, "summary": "<120 chars or fewer>", "root-cause": "<the cause and its chain>", "cause-in": "harness|project|operator", "evidence": ["<proof>", ...], "blocks-tickets": ["<ticket key>", ...], "must-interrupt-work": <bool>, "can-continue-without-fix": <bool>, "needs-human": <bool>, "human-action": "<what the operator must do, or empty>", "pause-tickets": ["<ticket key>", ...]}.
+
+We want small deliberate changes. You're working with a scalpel, not a broadsword. You're a doctor: get in, fix the root cause using best practices and the patterns already in the repo, get out. Avoid scope creep.
+Be extremely concise. Sacrifice grammar for the sake of concision.
