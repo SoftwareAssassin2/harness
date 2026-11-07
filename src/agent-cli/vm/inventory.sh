@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Description: A project's VMs and their disk use, against its limit — vm:inventory <project>; prints { project, limit-bytes, use-bytes, vms: [{ name, ticket, variation, state, disk-bytes, last-accessed, deletable, credential-kind? }] }, oldest access first (credential-kind the one vm:credentials last injected, 'claude' or 'anthropic', absent when the project declares neither; ASS-215).
+# Description: A project's VMs and their disk use, against its limit — vm:inventory <project>; prints { project, limit-bytes, use-bytes, golden-bytes, golden-built-at, vms: [{ name, ticket, variation, state, disk-bytes, last-accessed, deletable, credential-kind?, golden-built-at, old-generation }] }, oldest access first (credential-kind the one vm:credentials last injected, 'claude' or 'anthropic', absent when the project declares neither; ASS-215).
 set -euo pipefail
 
 # The inventory (data/projects/<project>/vms.json, ASS-75) reconciled with limactl

@@ -8,7 +8,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { randomBytes } from 'node:crypto';
-import { writeFileSync, readFileSync, existsSync, utimesSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { writeFileSync, readFileSync, existsSync, utimesSync, appendFileSync, rmSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { lima, edit } from './vm-fixture.js';
 
@@ -52,12 +53,12 @@ test('vm:inventory p reconciles vms.json with limactl list and the sprint, and l
   }));
   const inventory = await d.inventory();
   assert.deepEqual(inventory, {
-    project: 'p', 'limit-bytes': 1e9, 'use-bytes': 7 * KB,
+    project: 'p', 'limit-bytes': 1e9, 'use-bytes': 7 * KB, 'golden-bytes': 4 * KB, 'golden-built-at': null,
     vms: [
-      { name: 'abc-1-a', ticket: 'ABC-1', variation: 'A', state: 'Stopped', 'disk-bytes': 3 * KB, 'last-accessed': '2026-10-01T00:00:00Z', deletable: true },
-      { name: 'abc-3-c', ticket: 'ABC-3', variation: 'C', state: 'Stopped', 'disk-bytes': 2 * KB, 'last-accessed': '2026-10-10T00:00:00Z', deletable: false },
-      { name: 'abc-3-d', ticket: 'ABC-3', variation: 'D', state: 'Stopped', 'disk-bytes': 1 * KB, 'last-accessed': '2026-10-11T00:00:00Z', deletable: true },
-      { name: 'abc-3-a', ticket: 'ABC-3', variation: 'A', state: 'Running', 'disk-bytes': 1 * KB, 'last-accessed': '2026-10-22T00:00:00Z', deletable: false },
+      { name: 'abc-1-a', ticket: 'ABC-1', variation: 'A', state: 'Stopped', 'disk-bytes': 3 * KB, 'last-accessed': '2026-10-01T00:00:00Z', deletable: true, 'golden-built-at': null, 'old-generation': false },
+      { name: 'abc-3-c', ticket: 'ABC-3', variation: 'C', state: 'Stopped', 'disk-bytes': 2 * KB, 'last-accessed': '2026-10-10T00:00:00Z', deletable: false, 'golden-built-at': null, 'old-generation': false },
+      { name: 'abc-3-d', ticket: 'ABC-3', variation: 'D', state: 'Stopped', 'disk-bytes': 1 * KB, 'last-accessed': '2026-10-11T00:00:00Z', deletable: true, 'golden-built-at': null, 'old-generation': false },
+      { name: 'abc-3-a', ticket: 'ABC-3', variation: 'A', state: 'Running', 'disk-bytes': 1 * KB, 'last-accessed': '2026-10-22T00:00:00Z', deletable: false, 'golden-built-at': null, 'old-generation': false },
     ],
   });
   assert.deepEqual(Object.keys(d.vms()).sort(), ['abc-1-a', 'abc-3-a', 'abc-3-c', 'abc-3-d']);
@@ -94,8 +95,8 @@ test('the limit is project.json\'s vm-disk-limit-gb within harness.json\'s, the 
   await assert.rejects(d.cli('vm:inventory', 'p'), /harness\.json has no vm-disk-limit-gb/);
 });
 
-// 11.5 blocks: room for 11 (the limit is GB, so a fraction of one here).
-const ROOM = 11.5 * KB / 1e9;
+// 15.5 blocks: room for 15 (the limit is GB, so a fraction of one here), golden-p's 4 among them (ASS-287 AC3).
+const ROOM = 15.5 * KB / 1e9;
 
 test('vm:create deletes the least recently accessed stopped VMs no variation in flight needs, oldest first, until the new one fits — charged golden-p\'s size — and records it', async () => {
   const d = disk({ limit: ROOM });
@@ -105,7 +106,7 @@ test('vm:create deletes the least recently accessed stopped VMs no variation in 
   d.vm('abc-1-a', 2, 'Stopped', '2026-10-01T00:00:00Z');                             // an ended sprint's
   d.vm('abc-3-d', 2, 'Stopped', '2026-10-05T00:00:00Z'); d.record('D', 'abc-3-d');   // set aside
   writeFileSync(d.at('projects', 'p', 'vms.json'), JSON.stringify({ 'abc-1-a': { ticket: 'ABC-1', variation: 'A', state: 'Stopped', 'disk-bytes': 0, 'last-accessed': '2026-10-01T00:00:00Z' } }));
-  // 8 blocks used, 4 needed: one deletion (abc-1-a's 2) brings it to 10 of 11.
+  // 8 blocks used, golden-p's 4, 4 needed: one deletion (abc-1-a's 2) brings it to 14 of 15.
   const { stdout, stderr } = await d.cli('vm:create', 'p', 'ABC-3', 'A');
   assert.equal(JSON.parse(stdout).created, true);
   assert.match(stderr, /vm:create: deleted abc-1-a \(ABC-1 A, last accessed 2026-10-01T00:00:00Z, [\d.]+ GB\) to make room within p's VM disk limit/);
@@ -121,10 +122,10 @@ test('vm:create that cannot fit without deleting a running or in-flight VM delet
   d.mount();
   d.vm('abc-3-c', 6, 'Stopped', '2026-09-01T00:00:00Z'); d.record('C', 'abc-3-c');   // in flight
   d.vm('abc-3-b', 2, 'Running', '2026-09-02T00:00:00Z'); d.record('B', 'abc-3-b');   // running
-  d.vm('abc-3-d', 1, 'Stopped', '2026-10-05T00:00:00Z'); d.record('D', 'abc-3-d');   // set aside: deletable, but 9 - 1 + 4 is still over
+  d.vm('abc-3-d', 1, 'Stopped', '2026-10-05T00:00:00Z'); d.record('D', 'abc-3-d');   // set aside: deletable, but 9 - 1 + 4 + 4 is still over
   const error = await d.cli('vm:create', 'p', 'ABC-3', 'A').then(() => null, e => e);
   assert.equal(error?.code, 3, error?.stderr);
-  assert.match(error.stderr, /vm:create: p's VMs use [\d.]+ GB of its [\d.]+ GB VM disk limit \(vm-disk-limit-gb\), and abc-3-a needs [\d.]+ GB \(golden-p's size\); nothing more may be deleted/);
+  assert.match(error.stderr, /vm:create: p's VMs use [\d.]+ GB of its [\d.]+ GB VM disk limit \(vm-disk-limit-gb\), and abc-3-a needs [\d.]+ GB \(golden-p's size\); its golden images take [\d.]+ GB of it; nothing more may be deleted/);
   const feedback = JSON.parse(error.stdout);
   assert.equal(feedback['ai-feedback-short'], 'VM disk limit reached');
   assert.match(feedback['ai-feedback-long'], /^p's VMs use .* raise vm-disk-limit-gb\.$/);
@@ -198,4 +199,102 @@ test('vm:stop with a sprint file larger than 1 MB stops the VM and records it, a
   };
   const small = await scenario(false);
   assert.deepEqual(await scenario(true), small);
+});
+
+// ASS-287: golden generations. A VM holds a copy of the label of the golden image it was cloned from
+// (golden-image.json, vm:create); a rebuild deletes that image, but on APFS its blocks stay while any clone
+// references them. label(d, vm, builtAt) writes such a label; cloneOf(d, file, vm) makes vm's disk an APFS clone
+// (clonefile: cp -c) of file, as limactl clone does; allocated(file) is what it has allocated (st_blocks).
+const T1 = '2026-10-24T13:50:16Z', T2 = '2026-11-01T05:42:33Z';
+const label = (d, vm, builtAt) => writeFileSync(join(d.v.instances, vm, 'golden-image.json'), JSON.stringify({ project: 'p', hash: (builtAt === T2 ? 'b' : 'a').repeat(64), 'built-at': builtAt }));
+const cloneOf = (d, file, vm, status = 'Stopped') => { d.v.instance(vm, status); execFileSync('cp', ['-c', file, join(d.v.instances, vm, 'disk')]); };
+const allocated = file => statSync(file).blocks * 512;
+const entries = list => JSON.stringify(Object.fromEntries(list.map(([name, ticket, accessed]) => [name, { ticket, variation: 'A', state: 'Stopped', 'disk-bytes': 0, 'last-accessed': accessed ?? '2026-10-01T00:00:00Z' }])));
+
+test('ASS-287 AC2: vm:inventory charges a VM cloned from an older golden generation (or none recorded) its allocated bytes — the deleted image\'s blocks it pins, shared with other clones or not — and one of the current generation its private bytes; golden images are counted apart', async () => {
+  const d = disk();
+  label(d, 'golden-p', T2);
+  const old = join(d.v.dir, 'old-golden-disk');                                     // golden-p as built at T1, since deleted
+  writeFileSync(old, randomBytes(8 * KB));
+  cloneOf(d, old, 'abc-1-a'); label(d, 'abc-1-a', T1);
+  appendFileSync(join(d.v.instances, 'abc-1-a', 'disk'), randomBytes(KB));         // one block its own
+  cloneOf(d, old, 'abc-1-b'); label(d, 'abc-1-b', T1);
+  rmSync(old);
+  d.vm('abc-1-c', 2);                                                               // cloned before VMs recorded their image
+  cloneOf(d, join(d.v.instances, 'golden-p', 'disk'), 'abc-2-a'); label(d, 'abc-2-a', T2);
+  appendFileSync(join(d.v.instances, 'abc-2-a', 'disk'), randomBytes(KB));
+  d.vm('golden-p-build', 2);                                                        // a failed build, left for inspection
+  writeFileSync(d.at('projects', 'p', 'vms.json'), entries([['abc-1-a', 'ABC-1'], ['abc-1-b', 'ABC-1', '2026-10-02T00:00:00Z'], ['abc-1-c', 'ABC-1', '2026-10-03T00:00:00Z'], ['abc-2-a', 'ABC-2', '2026-10-04T00:00:00Z']]));
+  const inventory = await d.inventory();
+  const vm = Object.fromEntries(inventory.vms.map(v => [v.name, v]));
+  assert.equal(allocated(join(d.v.instances, 'abc-1-a', 'disk')), 9 * KB);
+  assert.deepEqual(['abc-1-a', 'abc-1-b', 'abc-1-c', 'abc-2-a'].map(n => [vm[n]['disk-bytes'], vm[n]['golden-built-at'], vm[n]['old-generation']]), [
+    [9 * KB, T1, true],
+    [8 * KB, T1, true],                                                              // its private size is 0 — every block shared with abc-1-a — yet it pins them
+    [2 * KB, null, true],
+    [1 * KB, T2, false],                                                             // the rest it shares with golden-p, counted once, as golden-p's
+  ]);
+  assert.deepEqual([inventory['use-bytes'], inventory['golden-bytes'], inventory['golden-built-at']], [20 * KB, 6 * KB, T2]);
+});
+
+test('ASS-287 AC3: vm:create with less free space on LIMA_HOME\'s volume (df) than golden-p\'s size deletes the least recently accessed deletable VMs until there is enough, though well within the project\'s limit', async () => {
+  const d = disk({ limit: 100 });
+  d.mount();
+  d.vm('abc-3-c', 3, 'Stopped', '2026-09-01T00:00:00Z'); d.record('C', 'abc-3-c');   // the oldest, but in flight
+  d.vm('abc-1-a', 2, 'Stopped', '2026-10-01T00:00:00Z');
+  d.vm('abc-1-b', 2, 'Stopped', '2026-10-02T00:00:00Z');
+  writeFileSync(d.at('projects', 'p', 'vms.json'), entries([['abc-1-a', 'ABC-1'], ['abc-1-b', 'ABC-1', '2026-10-02T00:00:00Z']]));
+  const used = Number(execFileSync('du', ['-sk', d.v.instances], { encoding: 'utf8' }).split('\t')[0]);
+  d.volume(used + 8);                                                               // 8 KiB free; golden-p's 16 KiB needed
+  const { stdout, stderr } = await d.cli('vm:create', 'p', 'ABC-3', 'A');
+  assert.equal(JSON.parse(stdout).created, true);
+  assert.match(stderr, /vm:create: deleted abc-1-a \(ABC-1 A, last accessed 2026-10-01T00:00:00Z, [\d.]+ GB\) to make room on the volume holding .*: [\d.]+ GB free, and abc-3-a needs [\d.]+ GB/);
+  assert.deepEqual(['abc-1-a', 'abc-1-b', 'abc-3-c', 'abc-3-a'].map(d.exists), [false, true, true, true]);
+  assert.equal(readFileSync(join(d.v.dir, 'df-path'), 'utf8').trim(), d.v.instances, 'the volume holding LIMA_HOME');
+});
+
+test('ASS-287 AC3: vm:create that cannot get enough free space on the volume without deleting a running or in-flight VM deletes nothing, clones nothing and exits 3, naming the free-space shortfall', async () => {
+  const d = disk({ limit: 100 });
+  d.mount();
+  d.vm('abc-3-c', 3, 'Stopped', '2026-09-01T00:00:00Z'); d.record('C', 'abc-3-c');   // in flight
+  d.vm('abc-3-b', 2, 'Running', '2026-09-02T00:00:00Z'); d.record('B', 'abc-3-b');   // running
+  d.vm('abc-3-d', 1, 'Stopped', '2026-10-05T00:00:00Z'); d.record('D', 'abc-3-d');   // set aside: deletable, but 8 + 4 KiB is still short of 16
+  const used = Number(execFileSync('du', ['-sk', d.v.instances], { encoding: 'utf8' }).split('\t')[0]);
+  d.volume(used + 8);
+  const error = await d.cli('vm:create', 'p', 'ABC-3', 'A').then(() => null, e => e);
+  assert.equal(error?.code, 3, error?.stderr);
+  assert.match(error.stderr, /vm:create: the volume holding .* has [\d.]+ GB free, and abc-3-a needs [\d.]+ GB \(golden-p's size\): [\d.]+ GB short; nothing more of p's VMs may be deleted/);
+  const feedback = JSON.parse(error.stdout);
+  assert.equal(feedback['ai-feedback-short'], 'Disk volume full');
+  assert.match(feedback['ai-feedback-long'], /^The volume holding .* GB short;/);
+  assert.deepEqual(['abc-3-d', 'abc-3-a'].map(d.exists), [true, false]);
+});
+
+test('ASS-287 AC1: vm:reclaim p deletes p\'s stopped VMs of an older golden generation whose variation is not in flight; keeps running and in-flight ones, the current generation\'s and other projects\'; --dry-run only says what it would', async () => {
+  const d = disk();
+  label(d, 'golden-p', T2);
+  d.vm('abc-1-a', 2, 'Stopped', '2026-10-01T00:00:00Z'); label(d, 'abc-1-a', T1);   // an ended sprint's: deleted
+  d.vm('abc-3-c', 2, 'Stopped', '2026-10-03T00:00:00Z'); label(d, 'abc-3-c', T1); d.record('C', 'abc-3-c');   // in flight
+  d.vm('abc-3-b', 1, 'Running', '2026-10-02T00:00:00Z'); label(d, 'abc-3-b', T1); d.record('B', 'abc-3-b');   // running
+  d.vm('abc-3-d', 1, 'Stopped', '2026-10-04T00:00:00Z'); label(d, 'abc-3-d', T2); d.record('D', 'abc-3-d');   // set aside, but the current generation's
+  d.vm('xyz-1-a', 1); label(d, 'xyz-1-a', T1);                                       // not p's
+  writeFileSync(d.at('projects', 'p', 'vms.json'), entries([['abc-1-a', 'ABC-1']]));
+  writeFileSync(join(d.home, '.harness', 'vm-tokens.json'), JSON.stringify({ 'abc-1-a': { hash: 'x' }, 'abc-3-b': { hash: 'y' } }));
+  const reclaim = async (...args) => JSON.parse((await d.cli('vm:reclaim', 'p', ...args)).stdout);
+  const plan = {
+    project: 'p', 'golden-built-at': T2, 'dry-run': true,
+    deleted: [{ name: 'abc-1-a', ticket: 'ABC-1', variation: 'A', 'golden-built-at': T1, 'disk-bytes': 2 * KB }],
+    kept: [
+      { name: 'abc-3-b', ticket: 'ABC-3', variation: 'B', 'golden-built-at': T1, 'disk-bytes': 1 * KB, why: 'running' },
+      { name: 'abc-3-c', ticket: 'ABC-3', variation: 'C', 'golden-built-at': T1, 'disk-bytes': 2 * KB, why: 'its variation is in flight' },
+    ],
+  };
+  assert.deepEqual(await reclaim('--dry-run'), plan);
+  assert.deepEqual(['abc-1-a', 'abc-3-b', 'abc-3-c', 'abc-3-d', 'xyz-1-a'].map(d.exists), [true, true, true, true, true]);
+  assert.deepEqual(await reclaim(), { ...plan, 'dry-run': false });
+  assert.deepEqual(['abc-1-a', 'abc-3-b', 'abc-3-c', 'abc-3-d', 'xyz-1-a'].map(d.exists), [false, true, true, true, true]);
+  assert.equal(d.vms()['abc-1-a'], undefined);
+  assert.deepEqual(Object.keys(JSON.parse(readFileSync(join(d.home, '.harness', 'vm-tokens.json'), 'utf8'))), ['abc-3-b']);
+  assert.deepEqual((await reclaim()).deleted, [], 'nothing more to reclaim');
+  await assert.rejects(d.cli('vm:reclaim', 'p', '--now'), /usage: vm:reclaim <project> \[--dry-run\]/);
 });

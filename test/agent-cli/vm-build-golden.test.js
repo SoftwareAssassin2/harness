@@ -7,7 +7,8 @@
 // in the VM and that script's stdin.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { execFile } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
 import { promisify } from 'node:util';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, chmodSync, cpSync, readdirSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -36,10 +37,19 @@ function setup({ images = '', warm = false, registry = true, upstream = true, re
   const fake = (name, body) => { writeFileSync(join(bin, name), `#!/usr/bin/env bash\n${body}\n`); chmodSync(join(bin, name), 0o755); };
   // shell [--workdir D] <vm> -- bash -c <script> <script name> <args…>: logs "shell <vm> <name> <args…>" and keeps its stdin; FAIL_SCRIPT=<name> fails it,
   // LEAK_SCRIPT=<name> writes its stdin, and LEAK=<text> anything, to the VM's disk; RUN_SCRIPT=<name> runs it here, its output in the log.
-  // Each call also logs whether the project's VM lock is held then (ASS-149): "<subcommand> <held|free>".
+  // Each call but list also logs whether the project's VM lock is held then (ASS-149): "<subcommand> <held|free>".
+  // list [<vm>] --format <f> (ASS-287: the inventory, unlogged) prints <f> for each instance folder, or the one (exit 1 when none), its
+  // {{.Name}}, {{.Dir}} and {{.Status}} (the folder's status file, else Stopped) filled.
   fake('limactl', `printf 'LIMA_HOME=%s\\n' "$LIMA_HOME" > '${log}/lima-home'
-perl -MFcntl=:flock -e 'open(my $f, ">>", $ARGV[0]) or die; print flock($f, LOCK_EX | LOCK_NB) ? "$ARGV[1] free\\n" : "$ARGV[1] held\\n"' "$PROJECTS_DIR/p/vms.lock" "$1" >> '${log}/vm-lock'
+[[ "$1" == list ]] || perl -MFcntl=:flock -e 'open(my $f, ">>", $ARGV[0]) or die; print flock($f, LOCK_EX | LOCK_NB) ? "$ARGV[1] free\\n" : "$ARGV[1] held\\n"' "$PROJECTS_DIR/p/vms.lock" "$1" >> '${log}/vm-lock'
 case "$1" in
+  list) shift; fmt="" names=()
+        while (( $# )); do if [[ "$1" == --format ]]; then fmt="$2"; shift 2; else names+=("$1"); shift; fi; done
+        (( \${#names[@]} )) || names=($(ls "$LIMA_HOME"))
+        for n in "\${names[@]}"; do
+          [[ -d "$LIMA_HOME/$n" ]] || { echo "No instance matching $n found." >&2; exit 1; }
+          st="$(cat "$LIMA_HOME/$n/status" 2>/dev/null || echo Stopped)"; out="\${fmt//'{{.Name}}'/$n}"; out="\${out//'{{.Dir}}'/$LIMA_HOME/$n}"; printf '%s\\n' "\${out//'{{.Status}}'/$st}"
+        done ;;
   create) name="\${2#--name=}"; mkdir "$LIMA_HOME/$name"; head -c 3000 /dev/zero > "$LIMA_HOME/$name/disk"; echo "create $name \${4##*/}" >> '${log}/limactl' ;;
   shell) shift; [[ "$1" == --workdir ]] && shift 2; vm="$1"; script="$5"; shift 5; name="$1"; shift
          echo "shell $vm $name $*" >> '${log}/limactl'; cat > '${log}/stdin.'"$name"
@@ -56,11 +66,14 @@ esac`);
   fake('glab', `echo "$*" >> '${log}/glab'; case "$*" in "auth status") [[ -z "\${GLAB_LOGGED_OUT:-}" ]] ;; "config get token --host gitlab.com") echo ${GL} ;; esac`);
   fake('security', `[[ "$*" == "find-generic-password -s GitHub PAT (Test) -w" ]] && echo ${PAT}`);
   fake('curl', `echo "$*" >> '${log}/curl'; [[ -e '${dir}/zot-up' ]]`);
+  // df (ASS-287): the volume holding LIMA_HOME, DF_CAPACITY_K KiB (ample by default) less what LIMA_HOME takes now.
+  fake('df', `cap=\${DF_CAPACITY_K:-1000000000000}; used=$(du -sk "$LIMA_HOME" | cut -f1); echo 'Filesystem 1024-blocks Used Available Capacity Mounted on'; echo "/dev/fake $cap $used $((cap - used)) 1% /"`);
+  writeFileSync(join(dir, 'harness.json'), JSON.stringify({ 'vm-disk-limit-gb': 100 }));
   // VM_KEYCHAIN_TIMEOUT: the fake keychain answers at once, but on a busy machine starting it took up to ~10s (ASS-109).
-  const env = { ...process.env, HOME: home, PATH: `${bin}:${process.env.PATH}`, PROJECTS_DIR: join(dir, 'projects'), LIMA_HOME: lima, GOLDEN_IMAGE_SHARED: shared, VM_KEYCHAIN_TIMEOUT: '60' };
+  const env = { ...process.env, HOME: home, PATH: `${bin}:${process.env.PATH}`, PROJECTS_DIR: join(dir, 'projects'), LIMA_HOME: lima, GOLDEN_IMAGE_SHARED: shared, VM_KEYCHAIN_TIMEOUT: '60', HARNESS_FILE: join(dir, 'harness.json') };
   const logOf = name => (existsSync(join(log, name)) ? readFileSync(join(log, name), 'utf8') : '');
   return {
-    dir, def, shared, lima, env, logOf,
+    dir, def, shared, lima, env, logOf, home,
     build: (extra = {}) => run(AGENT, ['vm:build-golden', 'p'], { env: { ...env, ...extra } }),
     calls: () => logOf('limactl').trim().split('\n').filter(Boolean),
     reset: () => rmSync(join(log, 'limactl'), { force: true }),
@@ -460,4 +473,57 @@ test('ASS-234 AC3: vm:build-golden --fix records the fix in the label; a later b
   assert.notEqual(s.label().hash, fixed.hash);
   assert.deepEqual([s.label().fix, s.label()['fixed-at']], [fixed.fix, fixed['fixed-at']]);
   await assert.rejects(run(AGENT, ['vm:build-golden', 'p', '--fix'], { env: s.env }), /usage: vm:build-golden <project> \[--fix <what it fixed>\]/);
+});
+
+// ASS-287 AC1: a rebuild deleted the old golden-p, but its blocks stayed allocated on APFS while any VM cloned from it
+// referenced them — each rebuild pinned a whole generation. Now, once the new image is swapped in, under the VM lock, every
+// one of p's VMs cloned from an older generation (its golden-image.json's built-at not the new image's) is deleted while it
+// is stopped and its variation is not in flight; a running or in-flight one is kept, never touched, and named. clone(s,
+// vm, status) makes vm an APFS clone (cp -c) of golden-p's disk with its label, as vm:create does; one of p's when listed
+// in its vms.json.
+function clone(s, vm, status = 'Stopped') {
+  mkdirSync(join(s.lima, vm));
+  execFileSync('cp', ['-c', join(s.lima, 'golden-p', 'disk'), join(s.lima, vm, 'disk')]);
+  cpSync(join(s.lima, 'golden-p', 'golden-image.json'), join(s.lima, vm, 'golden-image.json'));
+  writeFileSync(join(s.lima, vm, 'status'), status);
+}
+const ofP = (s, ...vms) => writeFileSync(join(s.dir, 'projects', 'p', 'vms.json'), JSON.stringify(Object.fromEntries(vms.map((vm, i) => [vm, { ticket: vm.slice(0, -2).toUpperCase(), variation: 'A', state: 'Stopped', 'disk-bytes': 0, 'last-accessed': `2026-10-0${i + 1}T00:00:00Z` }]))));
+const privateSize = (s, file) => execFileSync(join(s.home, '.harness', 'bin', 'private-size'), [file], { encoding: 'utf8' }).trim().split(' ').map(Number);
+
+test('ASS-287 AC1: a rebuild deletes p\'s stopped VMs cloned from the old generation, whose variation is not in flight, so it no longer occupies disk; a running one is kept and named, another project\'s untouched', async () => {
+  const s = setup();
+  await s.build();
+  const old = s.label()['built-at'];
+  clone(s, 'ass-1-a'); clone(s, 'ass-2-a', 'Running');
+  mkdirSync(join(s.lima, 'xyz-1-a')); writeFileSync(join(s.lima, 'xyz-1-a', 'disk'), 'another project\'s');
+  ofP(s, 'ass-1-a', 'ass-2-a');
+  writeFileSync(join(s.def, 'provision.sh'), '#!/bin/bash\necho v2\n');
+  s.reset();
+  const { stdout } = await s.build();
+  assert.notEqual(s.label()['built-at'], old);
+  assert.deepEqual(s.calls().slice(-3), ['delete -f golden-p', 'rename golden-p-build golden-p', 'delete -f ass-1-a']);
+  assert.match(stdout, new RegExp(`vm:build-golden: deleted ass-1-a \\(ASS-1 A, cloned from golden-p of ${old}, [\\d.]+ GB\\)`));
+  assert.match(stdout, new RegExp(`vm:build-golden: kept ass-2-a \\(ASS-2 A, cloned from golden-p of ${old}, [\\d.]+ GB\\): running`));
+  assert.deepEqual(['ass-1-a', 'ass-2-a', 'xyz-1-a'].map(vm => existsSync(join(s.lima, vm))), [false, true, true]);
+  assert.deepEqual(Object.keys(JSON.parse(readFileSync(join(s.dir, 'projects', 'p', 'vms.json'), 'utf8'))), ['ass-2-a']);
+  const [own, all] = privateSize(s, join(s.lima, 'ass-2-a', 'disk'));
+  assert.equal(own, all, 'the kept clone shares no block with a deleted generation\'s other clones');
+  assert.deepEqual(s.logOf('vm-lock').trim().split('\n').slice(-3), ['delete held', 'rename held', 'delete held']);
+});
+
+test('ASS-287 AC3: a build with less free space on LIMA_HOME\'s volume than golden-p\'s size deletes p\'s deletable VMs first; when that cannot free enough it fails before creating anything, naming the shortfall', async () => {
+  const s = setup();
+  await s.build();
+  clone(s, 'ass-2-a', 'Running'); ofP(s, 'ass-2-a');
+  writeFileSync(join(s.def, 'provision.sh'), '#!/bin/bash\necho v2\n');
+  const used = () => Number(execFileSync('du', ['-sk', s.lima], { encoding: 'utf8' }).split('\t')[0]);
+  s.reset();
+  await assert.rejects(s.build({ DF_CAPACITY_K: String(used() + 1) }), e => /vm:build-golden: the volume holding .* has [\d.]+ GB free, and golden-p-build needs [\d.]+ GB \(golden-p's size\): [\d.]+ GB short; nothing more of p's VMs may be deleted/.test(e.stderr));
+  assert.deepEqual(s.calls(), [], 'nothing deleted, nothing created');
+  clone(s, 'ass-1-a'); writeFileSync(join(s.lima, 'ass-1-a', 'disk'), randomBytes(8 * 4096));   // 32 KiB of its own
+  ofP(s, 'ass-1-a', 'ass-2-a');
+  const { stderr } = await s.build({ DF_CAPACITY_K: String(used() + 1) });         // 1 KiB free, golden-p's 4 KiB needed: deleting ass-1-a frees enough
+  assert.match(stderr, /vm:build-golden: deleted ass-1-a \(ASS-1 A, last accessed 2026-10-01T00:00:00Z, [\d.]+ GB\) to make room on the volume holding/);
+  assert.equal(s.calls()[0], 'delete -f ass-1-a');
+  assert.ok(existsSync(join(s.lima, 'ass-2-a')));
 });

@@ -54,6 +54,15 @@ set -euo pipefail
 # delete-and-rename swap only, as vm:create holds it while it clones
 # golden-<project>, so no VM is cloned from half an image; the ~50-minute
 # build itself takes no VM lock, and touches no VM but its own and the image.
+# Disk (ASS-287): before the build, when it is short (df), with the project's VM lock, room is made
+# on the volume holding LIMA_HOME for an image the size of the last (vm.bash
+# make_room … volume: the project's deletable VMs deleted, least recently
+# accessed first, until df shows enough free; when that cannot, it fails
+# before creating anything, naming the shortfall). After the swap, still under
+# that lock, the project's VMs cloned from an older image — which on APFS keep
+# its deleted blocks allocated — are deleted when stopped and their variation
+# is not in flight (vm.bash reclaim_generations); a running or in-flight one is
+# never touched, but named as kept, for vm:reclaim once its variation ends.
 # GOLDEN_IMAGE_SHARED overrides the shared steps' folder, for tests.
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/golden.bash"
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../vm-credentials.bash"
@@ -96,6 +105,14 @@ in_vm() { local script="$1"; shift; limactl shell --workdir / "$build" -- bash -
 
 echo "vm:build-golden: building $golden (inputs ${hash:0:12}); log: $log"
 [[ ! -d "$LIMA_HOME/$build" ]] || step "delete the last failed build" limactl delete -f "$build"
+need="$(golden_bytes "$project")"
+free="$(volume_free 2>&1)" || { echo "vm:build-golden: $free" >&2; exit 1; }
+if (( free < need )); then   # the VM lock only when VMs may have to go
+  lock_vms vm:build-golden "$project"
+  room=0; make_room vm:build-golden "$project" "$need" "$build" volume || room=$?
+  unlock_vms
+  [[ $room -eq 0 ]] || exit 1
+fi
 step create limactl create --name="$build" --tty=false "$folder/template.yaml"
 step start limactl start --tty=false "$build" 7>&-
 step provision in_vm "$folder/provision.sh" </dev/null
@@ -121,7 +138,15 @@ jq -n --arg p "$project" --arg h "$hash" --arg in "$inputs" --arg at "$(date -u 
 lock_vms vm:build-golden "$project"
 [[ ! -d "$LIMA_HOME/$golden" ]] || step "delete the old image" limactl delete -f "$golden"
 step rename limactl rename "$build" "$golden"
+reclaimed="$(reclaim_generations vm:build-golden "$project")" || reclaimed=""
 unlock_vms
+if [[ -z "$reclaimed" ]]; then
+  echo "vm:build-golden: could not delete every VM cloned from an older $golden; vm:reclaim $project tries again" >&2
+else
+  jq -r --arg g "$golden" --arg p "$project" 'def it: "\(.name) (\(.ticket) \(.variation), cloned from \($g) of \(.["golden-built-at"] // "unknown date"), \(.["disk-bytes"] / 1e7 | round / 100) GB)";
+    (.deleted[] | "vm:build-golden: deleted \(it): its old generation no longer held by it"),
+    (.kept[] | "vm:build-golden: kept \(it): \(.why); it holds its old generation until vm:reclaim \($p) deletes it, once its variation ends")' <<<"$reclaimed" | tee -a "$log"
+fi
 summary="built $golden in $((seconds / 60))m $((seconds % 60))s; $(awk -v k="$kib" 'BEGIN { printf "%.2f GiB", k / 1048576 }') on disk; inputs ${hash:0:12}"
 echo "$summary" >> "$log"
 echo "vm:build-golden: $summary"

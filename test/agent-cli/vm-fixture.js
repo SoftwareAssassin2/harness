@@ -14,6 +14,9 @@ export const edit = (file, change) => { const json = JSON.parse(readFileSync(fil
 // Project p with two repositories (one on main, one on master), its zot on 5101; harness.json's forwarder on 7787 and
 // VM disk limit 100 GB; golden-p built (no disk: it charges a new VM nothing);
 // in the VM's root a clone of each at /repos/<basename>, the ticket's folder "mounted" at /mnt/ticket.
+// LIMA_HOME is the fake's instances folder, and `df` a fake (ASS-287) for the volume holding it: its free space
+// volume(kib) KiB less what the instances take now (du), so deleting a VM frees what it held; ample by default.
+// The folder df was asked about is kept in <v.dir>/df-path.
 export function lima() {
   const f = fixture(), v = fakeVm(f.env);
   const at = (...rest) => join(f.dir, ...rest);
@@ -39,18 +42,22 @@ export function lima() {
   writeFileSync(join(home, '.harness', 'vm-credentials.json'), JSON.stringify({ p: { claude: { 'keychain-service': 'Claude Token (Test)' } } }));
   v.script('security', 'echo sk-ant-oat01-TEST');
   v.script('sandbox-exec', `[[ "$1" == -p ]] || exit 2; printf '%s\\n' "$2" > "${v.dir}/sandbox-profile"; shift 2; exec "$@"`);
+  const volume = kib => writeFileSync(join(v.dir, 'volume-k'), String(kib));
+  volume(1e12);
+  v.script('df', `printf '%s\\n' "\${@: -1}" > '${v.dir}/df-path'; cap=$(cat '${v.dir}/volume-k'); used=$(du -sk '${v.instances}' | cut -f1)
+echo 'Filesystem 1024-blocks Used Available Capacity Mounted on'; echo "/dev/fake $cap $used $((cap - used)) 1% /"`);
   v.inVm('sudo', 'exec "$@"');
   v.inVm('findmnt', 'echo tmpfs');
   v.inVm('mountpoint', '[[ "$1" == -q && -d "$2" ]]');
   v.inVm('ip', `echo "3: lima0    inet $(cat "${v.dir}/ip" 2>/dev/null || echo 192.168.64.15)/24 metric 100 brd 192.168.64.255 scope global dynamic lima0"`);
   for (const d of ['run', join('etc', 'profile.d'), join('usr', 'local', 'bin')]) mkdirSync(join(v.root, d), { recursive: true });
   // The fake keychain answers at once, but on a busy machine starting it took up to ~10s (ASS-109).
-  const env = { ...v.env, HOME: home, HARNESS_HOME: join(home, '.harness'), VM_KEYCHAIN_TIMEOUT: '60' };
+  const env = { ...v.env, LIMA_HOME: v.instances, HOME: home, HARNESS_HOME: join(home, '.harness'), VM_KEYCHAIN_TIMEOUT: '60' };
   const cli = (...args) => run(AGENT, args, { env });
   mkdirSync(at('projects', 'p', 'work', 'ABC-3'), { recursive: true });
   const folder = realpathSync(at('projects', 'p', 'work', 'ABC-3'));
   const mount = () => { mkdirSync(join(v.root, 'mnt'), { recursive: true }); rmSync(join(v.root, 'mnt', 'ticket'), { force: true, recursive: true }); execFileSync('ln', ['-s', folder, join(v.root, 'mnt', 'ticket')]); };
   const tokens = () => JSON.parse(readFileSync(join(home, '.harness', 'vm-tokens.json'), 'utf8'));
-  return { f, v, env, cli, origins, folder, mount, tokens, home, vmFile: (...p) => join(v.root, ...p) };
+  return { f, v, env, cli, origins, folder, mount, tokens, home, volume, vmFile: (...p) => join(v.root, ...p) };
 }
 
