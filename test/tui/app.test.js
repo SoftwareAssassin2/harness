@@ -13,6 +13,7 @@ import { backlogPriorities, rankBacklog } from '../../src/control/rank.js';
 import { ticketLines, PANEL, panelWidth } from '../../src/tui/ticket.js';
 import { sprintTickets, statusText, timestamp } from '../../src/tui/screens/shared.js';
 import { problems } from '../../src/tui/collaboration.js';
+import { localDate } from '../../src/downloader/cycle.js';
 import * as frame from '../../src/tui/screens/frame.js';
 import { headerLines, platform } from '../../src/tui/screens/frame.js';
 import * as sprintFlow from '../../src/tui/screens/sprint-flow.js';
@@ -1417,7 +1418,7 @@ test('above the bottom line, with a blank line between: a control box and one bo
     ],
   };
   const out = lines(initialState({ projects: [project] }));
-  const boxes = out.slice(-9, -2);
+  const boxes = out.slice(-11, -2);
   assert.match(out.at(-1), /press \? for menu/);
   assert.equal(out.at(-2), '');
   assert.match(boxes[0], /^ +┌─+┐ {4}┌─+┐ {4}┌─+┐ {4}┌─+┐$/);                 // the models box last, always there
@@ -1426,7 +1427,9 @@ test('above the bottom line, with a blank line between: a control box and one bo
   assert.match(boxes[3], /│ process-id: 44704 +│ {4}│ active-branch: master +│ {4}│ +│ {4}│ weekly: — +│$/);
   assert.match(boxes[4], /│ model: opus-5 +│ {4}│ +│ {4}│ +│ {4}│ account: — +│$/);
   assert.match(boxes[5], /│ uptime: 13m +│ {4}│ +│ {4}│ +│ {4}│ +│$/);
-  assert.match(boxes[6], /^ +└─+┘ {4}└─+┘ {4}└─+┘ {4}└─+┘$/);
+  assert.match(boxes[6], /│ disk free: unknown +│ {4}│ +│ {4}│ +│ {4}│ +│$/);   // ASS-292
+  assert.match(boxes[7], /│ golden image: none +│ {4}│ +│ {4}│ +│ {4}│ +│$/);
+  assert.match(boxes[8], /^ +└─+┘ {4}└─+┘ {4}└─+┘ {4}└─+┘$/);
   assert.ok(!boxes.join().includes('start-time'));
   assert.ok(!boxes.join().includes('type'));
   assert.equal(boxes[0].length - boxes[0].trimStart().length, Math.floor((120 - boxes[0].trim().length) / 2));
@@ -6443,4 +6446,38 @@ test('ASS-288 AC4: below disk-free-hold-gb the header says "Disk nearly full —
     assert.match(strip(headerLines({ ...state, screen: flow, disk: diskAt('warn', 42) }, 160, at160.now).join('\n')), /Disk low: 42\.0 GiB free/, flow);
     assert.doesNotMatch(strip(headerLines({ ...state, screen: flow, disk: diskAt('ok', 99) }, 160, at160.now).join('\n')), /Disk/, flow);
   }
+});
+
+// ===== ASS-292: the disk's free space and the project's golden image in the control box =====
+const goldenBuilt = { name: 'golden-p', 'built-at': '2026-11-01T05:42:33Z' };
+const controlBox = s => lines(s).filter(l => /│ (control|status|uptime|disk free|golden image|exited|last)/.test(l)).map(l => l.match(/│ ((control|status|uptime|disk free|golden image|exited|last)[^│]*?) +│/)?.[1]).filter(Boolean);
+
+test('ASS-292 AC1: the control box ends with the disk\'s free space and the project\'s golden image, its name and the local day it was built', () => {
+  const project = { id: 'p', name: 'P', sprint: null, control: { status: 'Online' }, environments: [], golden: goldenBuilt };
+  const box = controlBox(initialState({ projects: [project], disk: diskAt('ok', 120) }));
+  assert.deepEqual(box.slice(-2), ['disk free: 120.0 GiB', `golden image: golden-p (built ${localDate(new Date('2026-11-01T05:42:33Z'))})`]);
+  assert.equal(box[0], 'control');
+});
+
+test('ASS-292 AC1: below the warning level the disk free line is amber, as the low-disk line under the banner; at or above it, plain', () => {
+  const project = { id: 'p', name: 'P', sprint: null, control: { status: 'Online' }, environments: [], golden: goldenBuilt };
+  const at = disk => render(initialState({ projects: [project], disk }), screen).find(l => l.includes('disk free: '));
+  assert.ok(at(diskAt('warn', 42)).includes('\x1b[38;2;255;176;0mdisk free: 42.0 GiB'), at(diskAt('warn', 42)));
+  assert.ok(at(diskAt('hold', 12)).includes('\x1b[38;2;255;176;0mdisk free: 12.0 GiB'));
+  assert.ok(!at(diskAt('ok', 120)).includes('\x1b[38;2;255;176;0m'));
+});
+
+test('ASS-292 AC1/AC3: a project without a golden image says none, one never built says so, and a disk control never read is unknown', () => {
+  const box = (golden, disk) => controlBox(initialState({ projects: [{ id: 'p', name: 'P', sprint: null, control: { status: 'Online' }, environments: [], golden }], disk })).slice(-2);
+  assert.deepEqual(box(null, null), ['disk free: unknown', 'golden image: none']);
+  assert.deepEqual(box(undefined, diskAt('ok', 99)), ['disk free: 99.0 GiB', 'golden image: none']);
+  assert.deepEqual(box({ name: 'golden-p', 'built-at': null }, null), ['disk free: unknown', 'golden image: golden-p (not built)']);
+});
+
+test('ASS-292 AC2: the red control DOWN box shows the same two lines', () => {
+  const project = { id: 'p', name: 'P', sprint: null, control: { status: 'Online' }, environments: [], golden: goldenBuilt };
+  const logged = { ...initialState({ projects: [project], disk: diskAt('ok', 120) }), controlLog: [{ text: 'boom', project: 'p' }, { text: 'control exited (code 1)', project: 'p' }] };
+  const box = controlBox(controlExited(logged, 'p', 1));
+  assert.equal(box[0], 'control DOWN');
+  assert.deepEqual(box.slice(-2), ['disk free: 120.0 GiB', `golden image: golden-p (built ${localDate(new Date('2026-11-01T05:42:33Z'))})`]);
 });

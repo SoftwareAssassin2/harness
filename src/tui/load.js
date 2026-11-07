@@ -8,6 +8,7 @@ import { isHarnessProject } from '../control/harness-project.js';
 import { mergedWindows } from '../agents/session-usage.js';
 import { loadReviews } from './review.js';
 import { dataDir } from '../data-folder.js';
+import { limaHome } from '../control/vm.js';
 
 // A file's JSON, parsed again only once it has changed (its mtime or size), so
 // reading everything again on every change costs only the files that did. An
@@ -79,10 +80,11 @@ const asShown = sprint => sprint && Object.fromEntries(Object.entries(sprint).ma
 // ticket (src/tui/review.js loadReviews, ASS-118); spendLimit its tickets'
 // spending limit (ASS-191: control/spend.js defaultSpendLimit, harness.json the
 // one in `dir`'s parent, the data folder), null for none; apiCost its org's
-// API spend this month (see apiCostOf, ASS-221). Sprints and snapshots come
+// API spend this month (see apiCostOf, ASS-221); golden its golden image (see
+// loadGolden, ASS-292), looked for in `lima` (control/vm.js limaHome). Sprints and snapshots come
 // without their soft-deleted variations; sprints, snapshots, the backlog and
 // the questions without soft-deleted tickets (ASS-104).
-export const loadProjects = dir => readdirSync(dir)
+export const loadProjects = (dir, lima = limaHome()) => readdirSync(dir)
   .filter(name => existsSync(join(dir, name, 'project.json')))
   .map(name => {
     const project = readJson(join(dir, name, 'project.json'));
@@ -118,6 +120,7 @@ export const loadProjects = dir => readdirSync(dir)
       reviews: loadReviews(join(dir, name)),
       spendLimit: defaultSpendLimit(harnessOf(dir), project),
       apiCost: apiCostOf(dir, name, project),
+      golden: loadGolden(name, project, lima),
     };
   })
   .toSorted((a, b) => a.name.localeCompare(b.name));
@@ -167,6 +170,18 @@ export function loadApiCost(dir) {
   if (!existsSync(file)) return null;
   const harness = existsSync(join(dir, 'harness.json')) ? readJson(join(dir, 'harness.json')) : {};
   return { ...readJson(file), budget: harness['api-monthly-budget-usd'] ?? null };
+}
+
+// loadGolden(id, project, lima) — the project's golden image (ASS-292): the
+// Lima instance golden-<id> in the Lima folder `lima`, which vm:build-golden
+// builds from the folder project.json's "golden-image" names, as { name,
+// built-at } — built-at from its golden-image.json, null when it has never
+// been built (or the file is caught half-written); null for a project
+// without a "golden-image".
+export function loadGolden(id, project, lima) {
+  if (!project?.['golden-image']) return null;
+  const name = `golden-${id}`;
+  try { return { name, 'built-at': readJson(join(lima, name, 'golden-image.json'))['built-at'] ?? null }; } catch { return { name, 'built-at': null }; }
 }
 
 // loadDiskSpace(dir) — the data folder's disk-space.json (ASS-288: control's

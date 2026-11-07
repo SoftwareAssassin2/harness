@@ -41,8 +41,8 @@ test('projects come from project.json, sorted by name, each with its folder as i
   write(join(dir, 'a-dir', 'sprints', 'days', 'notes.json'), { ignored: true });
   mkdirSync(join(dir, 'not-a-project'));
   assert.deepEqual(loadProjects(dir), [
-    { id: 'z-dir', dir: join(dir, 'z-dir'), name: 'Alpha', stateEngine: undefined, switchedOffSteps: [], control: undefined, environments: [], repositories: [], sprint: null, backlog: [], backlogOfSprint: [], days: {}, questions: [], highlights: [], gcloudReauthentication: false, glabReauthentication: false, backgroundWorkOff: false, waitForDependencies: false, rateLimit: null, claudeUsage: null, accountHold: null, apiCapHold: null, hindsight: null, collaborations: {}, chatSpend: null, memorySpend: [], demoPlans: {}, reviews: {}, spendLimit: null, apiCost: null },
-    { id: 'a-dir', dir: join(dir, 'a-dir'), name: 'Beta', stateEngine: 'example-development', switchedOffSteps: [], control: { status: 'Online' }, environments: [{ name: 'ws', type: 'local-pc' }], repositories: [{ url: 'https://gitlab.com/g/r' }], sprint: { number: 10, start: '2026-09-18', end: '2026-10-01', features: [{ key: 'ABC-2' }] }, backlog: [{ key: 'ABC-1' }], backlogOfSprint: [{ key: 'abc-2' }], days: { '2026-09-18': { number: 10, features: [] } }, questions: [], highlights: [{ ticket: 'ABC-1', color: '#ffff00' }], gcloudReauthentication: true, glabReauthentication: false, backgroundWorkOff: true, waitForDependencies: false, rateLimit: { since: '2026-10-11T12:00:00Z', type: 'five_hour', 'resets-at': '2026-10-11T13:00:00Z' }, claudeUsage: { email: 'me@example.com', session: { percent: 7, 'resets-at': '2026-10-11T13:00:00Z' }, 'as-of': '2026-10-11T12:00:00Z' }, accountHold: null, apiCapHold: null, hindsight: null, collaborations: {}, chatSpend: null, memorySpend: [], demoPlans: {}, reviews: {}, spendLimit: null, apiCost: null },
+    { id: 'z-dir', dir: join(dir, 'z-dir'), name: 'Alpha', stateEngine: undefined, switchedOffSteps: [], control: undefined, environments: [], repositories: [], sprint: null, backlog: [], backlogOfSprint: [], days: {}, questions: [], highlights: [], gcloudReauthentication: false, glabReauthentication: false, backgroundWorkOff: false, waitForDependencies: false, rateLimit: null, claudeUsage: null, accountHold: null, apiCapHold: null, hindsight: null, collaborations: {}, chatSpend: null, memorySpend: [], demoPlans: {}, reviews: {}, spendLimit: null, apiCost: null, golden: null },
+    { id: 'a-dir', dir: join(dir, 'a-dir'), name: 'Beta', stateEngine: 'example-development', switchedOffSteps: [], control: { status: 'Online' }, environments: [{ name: 'ws', type: 'local-pc' }], repositories: [{ url: 'https://gitlab.com/g/r' }], sprint: { number: 10, start: '2026-09-18', end: '2026-10-01', features: [{ key: 'ABC-2' }] }, backlog: [{ key: 'ABC-1' }], backlogOfSprint: [{ key: 'abc-2' }], days: { '2026-09-18': { number: 10, features: [] } }, questions: [], highlights: [{ ticket: 'ABC-1', color: '#ffff00' }], gcloudReauthentication: true, glabReauthentication: false, backgroundWorkOff: true, waitForDependencies: false, rateLimit: { since: '2026-10-11T12:00:00Z', type: 'five_hour', 'resets-at': '2026-10-11T13:00:00Z' }, claudeUsage: { email: 'me@example.com', session: { percent: 7, 'resets-at': '2026-10-11T13:00:00Z' }, 'as-of': '2026-10-11T12:00:00Z' }, accountHold: null, apiCapHold: null, hindsight: null, collaborations: {}, chatSpend: null, memorySpend: [], demoPlans: {}, reviews: {}, spendLimit: null, apiCost: null, golden: null },
   ]);
 });
 
@@ -426,4 +426,15 @@ test('ASS-288 AC2: loadDiskSpace: the data folder\'s disk-space.json (control\'s
   assert.deepEqual(loadDiskSpace(dir), { level: 'warn', 'free-bytes': 42e9, 'warn-bytes': 50e9, 'hold-bytes': 15e9 });
   writeFileSync(join(dir, 'disk-space.json'), '{"level": "wa');
   assert.equal(loadDiskSpace(dir), null);
+});
+
+test('ASS-292: a project\'s golden image is the Lima instance golden-<id> in the Lima folder, with when its golden-image.json says it was built; not built without one; none without a golden-image in project.json', () => {
+  const lima = mkdtempSync(join(tmpdir(), 'lima-'));
+  assert.equal(load.loadGolden('p', {}, lima), null);
+  assert.deepEqual(load.loadGolden('p', { 'golden-image': { folder: 'projects/p/golden-image' } }, lima), { name: 'golden-p', 'built-at': null });
+  mkdirSync(join(lima, 'golden-p'));
+  writeFileSync(join(lima, 'golden-p', 'golden-image.json'), JSON.stringify({ project: 'p', hash: 'h', 'built-at': '2026-11-01T05:42:33Z' }));
+  assert.deepEqual(load.loadGolden('p', { 'golden-image': { folder: 'projects/p/golden-image' } }, lima), { name: 'golden-p', 'built-at': '2026-11-01T05:42:33Z' });
+  writeFileSync(join(lima, 'golden-p', 'golden-image.json'), '{ half');   // caught half-written
+  assert.deepEqual(load.loadGolden('p', { 'golden-image': {} }, lima), { name: 'golden-p', 'built-at': null });
 });

@@ -117,7 +117,8 @@ export const headerLines = (state, columns, now) => (state.screen === 'S' || sta
 // trades start-time for its uptime, environments leave out type; control and
 // environments add 🤖 to the title when an assignment has control true or a
 // local-environment naming them. A control that has ended (controlsDown) is
-// a red "control DOWN" box with its exit code and the line before it. The models
+// a red "control DOWN" box with its exit code and the line before it. Either
+// ends with the machine's lines (machineLines, ASS-292). The models
 // box, always there for a project, has a "model 🤖xN" line per model its
 // assignments use, most first, then how the project is billed (billingLines,
 // ASS-221), ending with the account.
@@ -131,8 +132,8 @@ export function platform(state, columns, now) {
   const uptime = start ? { uptime: since(start, now) } : {};
   const down = state.controlsDown?.[project?.id];
   const boxes = [
-    ...(down ? [[red('control DOWN'), `exited: code ${down.code}`, `last: ${ellipsis(down.line, 60)}`]] : []),
-    ...(project?.control && !down ? [box(projectAssignments(state).some(a => a.control === true) ? 'control 🤖' : 'control', { ...control, ...uptime })] : []),
+    ...(down ? [[red('control DOWN'), `exited: code ${down.code}`, `last: ${ellipsis(down.line, 60)}`, ...machineLines(state.disk, project)]] : []),
+    ...(project?.control && !down ? [[...box(projectAssignments(state).some(a => a.control === true) ? 'control 🤖' : 'control', { ...control, ...uptime }), ...machineLines(state.disk, project)]] : []),
     ...environments.map(({ name, type, ...fields }) => box(watched.has(name) ? `${name} 🤖` : name, fields)),
     ...(project ? [['models', ...[...models]
       .toSorted(([a, x], [b, y]) => y.length - x.length || String(a).localeCompare(String(b)))
@@ -140,6 +141,20 @@ export function platform(state, columns, now) {
   ];
   const row = boxRow(boxes, columns);
   return row.length ? [...row, ''] : row;
+}
+
+// machineLines(disk, project) — what the control box ends with (ASS-292): the
+// disk's free space as control last read it (disk-space.json, ASS-288) in
+// GiB, amber below the warning level as diskText's line, "unknown" never
+// read; then the project's golden image (load.js loadGolden), its name and
+// the local day it was built, "(not built)" never, or "none" without one.
+function machineLines(disk, project) {
+  const free = disk?.['free-bytes'] == null ? 'disk free: unknown' : `disk free: ${gib(disk['free-bytes'])} GiB`;
+  const golden = project?.golden;
+  return [
+    disk?.level === 'warn' || disk?.level === 'hold' ? AMBER(free) : free,
+    golden ? `golden image: ${golden.name} (${golden['built-at'] ? `built ${localDate(new Date(golden['built-at']))}` : 'not built'})` : 'golden image: none',
+  ];
 }
 
 // The models box's billing lines (ASS-221), by the project's login as control
