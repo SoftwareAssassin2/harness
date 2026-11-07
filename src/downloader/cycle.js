@@ -89,7 +89,7 @@ export async function runCycle({ root, project, now = new Date(), adapters, exec
     const lastFile = join(projects, project, 'last-data-download');
     const last = existsSync(lastFile) ? readFileSync(lastFile, 'utf8').trim() : null;
     if (last) {
-      const lastDate = localDate(new Date(last)), today = localDate(now);
+      const lastDate = utcDate(new Date(last)), today = utcDate(now);
       if (today > lastDate) {
         log(`snapshot of ${lastDate}`);
         try { await call(['ticket:snapshot-day', project, lastDate]); } catch (err) {
@@ -104,7 +104,7 @@ export async function runCycle({ root, project, now = new Date(), adapters, exec
       }
     }
 
-    if (source) await followBoard({ key: join(projects, project), project, read: file => existsSync(join(projects, project, file)) ? read(file) : {}, board, today: localDate(now), call, jira: adapters.jira, exec, log });
+    if (source) await followBoard({ key: join(projects, project), project, read: file => existsSync(join(projects, project, file)) ? read(file) : {}, board, today: utcDate(now), call, jira: adapters.jira, exec, log });
 
     const active = (existsSync(join(projects, project, 'sprints.json')) ? read('sprints.json') : {}).list?.find(s => s['is-active']);   // no sprints file: no active sprint
     const sprint = active?.number;
@@ -207,7 +207,11 @@ async function followBoard({ key, project, read, board, today, call, jira, exec,
   await advance(next);
 }
 
-// The date of a moment in this computer's time zone, YYYY-MM-DD.
-export function localDate(d) {
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+// The UTC date of a moment, YYYY-MM-DD (ASS-294: every day the harness
+// counts is a UTC day — the end-of-day snapshot's, sprint advance's today, the
+// sprint box's day and Day Spend — so they agree with each other and with the
+// UTC clock the dashboard shows; was localDate, this computer's day, ASS-216).
+// Null for an invalid moment, which is then on no day, rather than throwing.
+export function utcDate(d) {
+  return Number.isNaN(d.getTime()) ? null : d.toISOString().slice(0, 10);
 }

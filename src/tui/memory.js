@@ -7,7 +7,8 @@
 // main.js to delete it (memoryDelete), which loads them again.
 import { clip, visible, pad } from './text.js';
 
-export const MEMORY_HEADERS = ['Memory', 'Ticket', 'Step', 'Model', 'Saved'];
+// Saved is a UTC day (its metadata's date, dispatch.sh's date -u, else Hindsight's mentioned_at), and says so (ASS-294).
+export const MEMORY_HEADERS = ['Memory', 'Ticket', 'Step', 'Model', 'Saved (UTC)'];
 const NONE = '—';
 const TEXT_WIDTH = 90;
 

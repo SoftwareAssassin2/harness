@@ -46,7 +46,7 @@ const RESTARTED = [
 const freePort = () => new Promise(resolve => { const s = createServer().listen(0, '127.0.0.1', () => { const { port } = s.address(); s.close(() => resolve(port)); }); });
 
 // Project p, its Hindsight on a free port answering /metrics with `serve.metrics`; harness.json the repo's.
-async function setup(t, { key = 'sk-ant-test-not-a-real-key' } = {}) {
+async function setup(t, { key = 'sk-ant-test-not-a-real-key', env: extra = {} } = {}) {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), 'memory-spend-')));
   const port = await freePort();
   mkdirSync(join(dir, 'projects', 'p', 'hindsight'), { recursive: true });
@@ -55,7 +55,7 @@ async function setup(t, { key = 'sk-ant-test-not-a-real-key' } = {}) {
   const serve = { metrics: SAMPLE };
   const server = await new Promise(resolve => { const s = createServer((req, res) => res.end(req.url === '/metrics' ? serve.metrics : '{}')).listen(port, '127.0.0.1', () => resolve(s)); });
   t.after(() => server.close());
-  const env = { ...process.env, PROJECTS_DIR: join(dir, 'projects'), HARNESS_FILE: join(dir, 'harness.json') };
+  const env = { ...process.env, PROJECTS_DIR: join(dir, 'projects'), HARNESS_FILE: join(dir, 'harness.json'), ...extra };
   const file = join(dir, 'projects', 'p', 'memory-spend.json');
   return {
     serve, file,
@@ -102,6 +102,25 @@ test('ASS-269 AC2/AC5: reading the same counters twice records nothing the secon
   const again = await s.record();
   assert.deepEqual(again.collection.recorded, []);
   assert.deepEqual(s.records(), once);
+});
+
+// ASS-294: a model's spend is one record per UTC hour, whatever this
+// computer's zone — run in India's (UTC+5:30), whose hours turn at half past
+// the UTC ones. A record from earlier in this UTC hour (past the half hour:
+// another local hour) grows; one from the UTC hour before but this local hour
+// (before the half hour) does not.
+test('ASS-269/ASS-294: a model\'s collections within one UTC hour grow one record, in a zone whose hours are not UTC\'s', async t => {
+  const s = await setup(t, { env: { TZ: 'Asia/Kolkata' } });
+  await s.record();
+  const now = new Date(), hour = new Date(now).setUTCMinutes(0, 0, 0);
+  const late = now.getUTCMinutes() >= 30;
+  const at = new Date(late ? hour + 1000 : hour - 15 * 60e3).toISOString().replace(/\.\d{3}Z$/, 'Z');   // xx:00:01 this UTC hour, or xx-1:45
+  const json = JSON.parse(readFileSync(s.file, 'utf8'));
+  json.records = [{ timestamp: at, billing: 'api', source: 'memory', model: 'claude-haiku-5-5', 'input-tokens': 1, 'cache-read-tokens': 0, 'output-tokens': 0, 'cost-usd': 0 }];
+  writeFileSync(s.file, JSON.stringify(json));
+  s.serve.metrics = LATER;
+  await s.record();
+  assert.equal(s.records().length, late ? 1 : 2, JSON.stringify(s.records()));
 });
 
 test('ASS-269 AC2: a restarted Hindsight — its counters lower again — is counted from zero, and what was recorded before stays', async t => {

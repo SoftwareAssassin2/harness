@@ -13,7 +13,6 @@ import { backlogPriorities, rankBacklog } from '../../src/control/rank.js';
 import { ticketLines, PANEL, panelWidth } from '../../src/tui/ticket.js';
 import { sprintTickets, statusText, timestamp } from '../../src/tui/screens/shared.js';
 import { problems } from '../../src/tui/collaboration.js';
-import { localDate } from '../../src/downloader/cycle.js';
 import * as frame from '../../src/tui/screens/frame.js';
 import { headerLines, platform } from '../../src/tui/screens/frame.js';
 import * as sprintFlow from '../../src/tui/screens/sprint-flow.js';
@@ -612,12 +611,12 @@ test('the day steps back through the sprint\'s snapshots and forward again to th
   assert.deepEqual([press(back2, 'right').day, press(back2, 'right', 'right').day, press(back2, 'right', 'right', 'right').day], ['2026-09-30', null, null]);
 });
 
-test('a past day shows its own day, time left and end-of-day time — the end of that day in this computer\'s time zone (ASS-216 AC6)', () => {
+test('a past day shows its own day, time left and end-of-day time — the end of that UTC day (ASS-294; this computer\'s, ASS-216 AC6)', () => {
   const out = lines(press(dayState, 'tab', 'left', 'left'), wide);
   const at = text => out.find(l => l.includes(text));
   assert.ok(at('day 12 of 14'));
   assert.ok(at('sprint ends in 2 days'));
-  assert.ok(at(timestamp(new Date('2026-09-29T23:59:00'))));   // the dashboard's clock is UTC: 'Wed Sep 30 @ 3:59 AM UTC' in Eastern
+  assert.ok(at('Tue Sep 29 @ 11:59 PM UTC'));   // 23:59 UTC that day, whatever this computer's zone
 });
 
 // ASS-187: on S and B, a one-line header — project, sprint, day x of y, time
@@ -2617,7 +2616,7 @@ test('c shows control\'s output in a box the width of the screen, each line with
   const s = { ...state, screen: 'c', controlLog, controlLogFile: '/home/me/.harness/logs/control.log' };
   const out = lines(s, wide);
   const top = out.findIndex(l => l.startsWith('┌'));
-  assert.match(out[top], /^┌─ control ─+┐$/);
+  assert.match(out[top], /^┌─ control \(times UTC\) ─+┐$/);
   assert.equal(out[top].length, wide.columns);
   assert.deepEqual(out.slice(top + 1, top + 4).map(l => l.trimEnd()), [
     `│ 14:31:05  Hello world!${' '.repeat(wide.columns - 25)}│`,
@@ -2739,7 +2738,7 @@ test('the control screen is control\'s log alone, the full width: no engine boxe
   const run = { id: 'a2c1', project: 'example', 'state-engine': 'self-healing', state: 'init', 'start-time': '2026-10-01T14:00:00Z' };
   const out = lines({ ...initialState({ projects, workflows: [engine, healing], assignments, transientEngines: [run] }), screen: 'c', controlLogFile: '/tmp/control.log' }, wide);
   const top = out.find(l => l.startsWith('┌'));
-  assert.match(top, /^┌─ control ─+┐$/);
+  assert.match(top, /^┌─ control \(times UTC\) ─+┐$/);
   assert.equal(visible(top), wide.columns);
   assert.ok(!out.some(l => l.includes('self-healing')));
 });
@@ -2754,7 +2753,7 @@ test('the menu counts the selected project\'s agents on transient state engines 
 test('without a transient state engine for the selected project, control keeps the whole width', () => {
   const s = { ...initialState({ projects, workflows: [engine], assignments, transientEngines: [{ id: 'x', project: 'assassin', 'state-engine': 'test', state: 'test', 'start-time': '2026-10-01T14:00:00Z' }] }), screen: 'c', controlLogFile: '/tmp/control.log' };
   const out = lines(s, wide);
-  assert.match(out.find(l => l.startsWith('┌')), /^┌─ control ─+┐$/);
+  assert.match(out.find(l => l.startsWith('┌')), /^┌─ control \(times UTC\) ─+┐$/);
 });
 
 // A sprint with histories, and an engine whose last step is Done.
@@ -2986,7 +2985,7 @@ test('the ticket screen shows every detail of the ticket and the row\'s variatio
     '✨ ABC-5', 'Detailed', 'Every field this ticket has', 'In Progress', 'Pat Owner',
     'Code Review (1, 1)', 'Long health: the whole story.', 'change/ABC-5', 'wt-5', '3/4 passing', '🤖 Daredevil',
     'First criterion', 'Second criterion', 'Failed', 'Incomplete', '!55', 'Passed',
-    '10:00  Backlog   →   Code Review 🤖 Peter-Pan $0.86',   // the History tab
+    '10:00 UTC  Backlog   →   Code Review 🤖 Peter-Pan $0.86',   // the History tab, its times UTC (ASS-294)
   ]) assert.ok(out.includes(text), `shows ${text}`);
   assert.match(out, /Priority\s+4/);
   assert.match(out, /Points\s+8/);
@@ -3024,16 +3023,16 @@ test('history: each row shows the state left with its time and the agents that w
   const drawn = lines(onTab(press(s, 'return'), 'history'), tall);   // wide enough for a whole history row in its pane
   const out = drawn.join('\n');
   // The history's first state has no arrival time, and backlog does not prompt: no time, no bar.
-  assert.match(out, /│ {17}2026-09-29 10:00  Backlog   →   Code Review 🤖 Peter-Pan \$0\.61 /);
+  assert.match(out, /│ {17}2026-09-29 10:00 UTC  Backlog   →   Code Review 🤖 Peter-Pan \$0\.61 /);
   assert.equal(out.match(/┌─{10}┐/g)?.length, 1);
   // 1h of agent time in 2h 24m: 4 of 10 cells, 58% idle; Daredevil is still running.
   // Every entry is as tall as one with a bar, its text on the bar's line, a ↓ under the bar between entries.
   const inBox = timelineOf(drawn, tall);                             // the History tab's timeline, beside its states
-  const first = inBox.findIndex(l => l.includes('10:00  Backlog'));
+  const first = inBox.findIndex(l => l.includes('10:00 UTC  Backlog'));
   assert.deepEqual(inBox.slice(first - 1, first + 9).map(l => l.replace(/  20.*/, '  …')), [
     '', '                …', '', '', '        ↓', '  ┌──────────┐', '  │████░░░░░░│  …', '  └──────────┘', '    58% idle', '',
   ]);
-  assert.match(out, /┌─{10}┐.*\n.*│█{4}░{6}│  2026-09-29 12:24  Code Review \(2h 24m\) 🤖 Peter-Pan \(1h 0m\) \$0\.61   →   Done 🤖 Daredevil +│.*\n.*└─{10}┘.*\n.* {4}58% idle/);
+  assert.match(out, /┌─{10}┐.*\n.*│█{4}░{6}│  2026-09-29 12:24 UTC  Code Review \(2h 24m\) 🤖 Peter-Pan \(1h 0m\) \$0\.61   →   Done 🤖 Daredevil +│.*\n.*└─{10}┘.*\n.* {4}58% idle/);
 });
 
 test('with more than one variation, the ticket screen shows the variation\'s AI\'s feedback above Agents, a blank line between; with one, it does not', () => {
@@ -4775,7 +4774,7 @@ test('ASS-101 AC2/AC3/AC11, ASS-184 AC1: the History tab lists the states beside
   assert.ok(states.includes('Plan (1, 2)') && states.includes('Blocked (1, 1)') && states.includes('Add Screenshots to Merge Request (0, 0)'), states.join('\n'));
   assert.equal(statesPane(out).filter(l => l.trim() === '↓').length, quarantineSteps.length - 1);
   assert.ok(!statesPane(out).join('\n').includes('…'), 'a long name wraps whole');
-  assert.ok(timelineOf(out).some(l => /2026-09-28 10:00 {2}Plan +→ {3}Build/.test(l)), timelineOf(out).join('\n'));
+  assert.ok(timelineOf(out).some(l => /2026-09-28 10:00 UTC {2}Plan +→ {3}Build/.test(l)), timelineOf(out).join('\n'));
   const one = statesPane(lines(onHistory(press(ticketOn([{ id: 'only', name: 'Only Step', sequence: 1, action: { type: 'prompt' } }], 'only'), 'return')), wide));
   assert.deepEqual([one.filter(l => l.trim() === '↓').length, one.some(l => l.startsWith('Only Step'))], [0, true]);
 });
@@ -5304,9 +5303,9 @@ const historyColumn = s => timelineOf(lines(onTab(s, 'history'), { ...wide, rows
 test('ASS-42 AC3: the backlog ticket screen\'s History is its refinement history, step names from its engine, a cause where there is one', () => {
   const s = press(handleKey(withBacklog([backlogTicket('ABC-60', 'groom', { variations: [{ name: 'A', 'harness-status': { state: 'groom', 'state-engine': 'example-backlog-refinement' }, 'state-changes': refinementChanges }] })]), key('b')), 'return');
   assert.deepEqual(historyColumn(s), [
-    '2026-09-20 10:00  Groom   →   Awaiting Approval',
+    '2026-09-20 10:00 UTC  Groom   →   Awaiting Approval',
     '↓',
-    '2026-09-21 10:00  Awaiting Approval (1d 0h)   →   Groom   (operator: AC3 is vague)',   // whole on its row: the timeline is wide
+    '2026-09-21 10:00 UTC  Awaiting Approval (1d 0h)   →   Groom   (operator: AC3 is vague)',   // whole on its row: the timeline is wide
   ]);
 });
 
@@ -5322,13 +5321,13 @@ test('ASS-42 AC4: the sprint ticket screen\'s History lists its backlog entry\'s
   });
   assert.deepEqual(historyColumn(press(state([backlogEntry]), 'return')), [
     'example-backlog-refinement',
-    '2026-09-20 10:00  Groom   →   Awaiting Approval',
+    '2026-09-20 10:00 UTC  Groom   →   Awaiting Approval',
     '↓',
-    '2026-09-21 10:00  Awaiting Approval (1d 0h)   →   Groom   (operator: AC3 is vague)',   // whole on its row: the timeline is wide
+    '2026-09-21 10:00 UTC  Awaiting Approval (1d 0h)   →   Groom   (operator: AC3 is vague)',   // whole on its row: the timeline is wide
     'example-development',
-    '2026-09-28 10:00  Plan   →   Build',
+    '2026-09-28 10:00 UTC  Plan   →   Build',
   ]);
-  assert.deepEqual(historyColumn(press(state([]), 'return')), ['2026-09-28 10:00  Plan   →   Build'], 'no backlog entry: the development history alone');
+  assert.deepEqual(historyColumn(press(state([]), 'return')), ['2026-09-28 10:00 UTC  Plan   →   Build'], 'no backlog entry: the development history alone');
 });
 
 // ASS-166: a ticket worked by hand (worked-manually) — ✋ and who since when on the grids, cleared from its screen.
@@ -6453,10 +6452,10 @@ test('ASS-288 AC4: below disk-free-hold-gb the header says "Disk nearly full —
 const goldenBuilt = { name: 'golden-p', 'built-at': '2026-11-01T05:42:33Z' };
 const controlBox = s => lines(s).filter(l => /│ (control|status|uptime|disk free|golden image|exited|last)/.test(l)).map(l => l.match(/│ ((control|status|uptime|disk free|golden image|exited|last)[^│]*?) +│/)?.[1]).filter(Boolean);
 
-test('ASS-292 AC1: the control box ends with the disk\'s free space and the project\'s golden image, its name and the local day it was built', () => {
+test('ASS-292 AC1: the control box ends with the disk\'s free space and the project\'s golden image, its name and the day it was built (UTC, ASS-294)', () => {
   const project = { id: 'p', name: 'P', sprint: null, control: { status: 'Online' }, environments: [], golden: goldenBuilt };
   const box = controlBox(initialState({ projects: [project], disk: diskAt('ok', 120) }));
-  assert.deepEqual(box.slice(-2), ['disk free: 120.0 GiB', `golden image: golden-p (built ${localDate(new Date('2026-11-01T05:42:33Z'))})`]);
+  assert.deepEqual(box.slice(-2), ['disk free: 120.0 GiB', 'golden image: golden-p (built 2026-11-01 UTC)']);
   assert.equal(box[0], 'control');
 });
 
@@ -6480,7 +6479,7 @@ test('ASS-292 AC2: the red control DOWN box shows the same two lines', () => {
   const logged = { ...initialState({ projects: [project], disk: diskAt('ok', 120) }), controlLog: [{ text: 'boom', project: 'p' }, { text: 'control exited (code 1)', project: 'p' }] };
   const box = controlBox(controlExited(logged, 'p', 1));
   assert.equal(box[0], 'control DOWN');
-  assert.deepEqual(box.slice(-2), ['disk free: 120.0 GiB', `golden image: golden-p (built ${localDate(new Date('2026-11-01T05:42:33Z'))})`]);
+  assert.deepEqual(box.slice(-2), ['disk free: 120.0 GiB', 'golden image: golden-p (built 2026-11-01 UTC)']);
 });
 
 // ===== ASS-293: the project's Hindsight, as the dashboard last checked it, in the control box =====
@@ -6493,7 +6492,7 @@ const since1558 = timestamp(new Date('2026-10-01T15:58:00Z'));
 
 test('ASS-293 AC2: after the golden image line the control box ends with the project\'s Hindsight: up with its port, down with its port and since when, checking before the first check', () => {
   const box = memoryHealth => memoryBox({ ...initialState({ projects: [withHindsight] }), memoryHealth });
-  assert.deepEqual(box(checked(true)).slice(-2), [`golden image: golden-p (built ${localDate(new Date('2026-11-01T05:42:33Z'))})`, 'hindsight: up (port 9077)']);
+  assert.deepEqual(box(checked(true)).slice(-2), ['golden image: golden-p (built 2026-11-01 UTC)', 'hindsight: up (port 9077)']);
   assert.equal(box(checked(false)).at(-1), `hindsight: down (port 9077) since ${since1558}`);
   assert.equal(box(undefined).at(-1), 'hindsight: checking');
   assert.equal(box({}).at(-1), 'hindsight: checking');

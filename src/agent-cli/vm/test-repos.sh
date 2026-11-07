@@ -55,6 +55,7 @@ zot="$(jq -r '.registry.port // empty' "$json")"
 log="$(cd "$projects/$project" && pwd -P)/golden-image-tests.log"
 : > "$log"
 
+# Epoch seconds, the same in every zone: a unique name, not a day or a time shown (ASS-294).
 vm="test-$project-$(date +%s)"
 trap 'limactl delete -f "$vm" >/dev/null 2>&1 || true' EXIT
 limactl clone --tty=false "$golden" "$vm" --set ".mounts = [] | .ssh.localPort = $(free_port)" >/dev/null 2>&1 \

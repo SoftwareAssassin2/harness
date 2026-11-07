@@ -119,16 +119,16 @@ const SIDE = '  │          │  ';
 // ASS-268: a dispatch whose cost is usage.json's estimate (an agent killed or dying mid-turn) shows it with a ~, and counts in the spend as any other.
 test('ASS-268 AC3: an estimated dispatch cost shows as ~$x.xx in the History and counts in the variation\'s token spend', () => {
   const estimated = { ...thor, 'cost-usd': 20.48, 'cost-estimated': true };
-  assert.equal(historyOf(90, () => false, [change('plan', 'build', 0, [estimated]), change('build', 'done', 2)])[1], `${INDENT}2026-10-12 08:00  plan   →   build 🤖 Thor ~$20.48`);
+  assert.equal(historyOf(90, () => false, [change('plan', 'build', 0, [estimated]), change('build', 'done', 2)])[1], `${INDENT}2026-10-12 08:00 UTC  plan   →   build 🤖 Thor ~$20.48`);
   assert.equal(tokenSpend({ 'state-changes': [change('plan', 'build', 0, [estimated, thor])] }), '$21.09');
 });
 
 test('ASS-64 AC1: a History entry that fits is drawn exactly as before — its multi-space separators kept', () => {
   assert.deepEqual(historyOf(90), [
-    '', `${INDENT}2026-10-12 08:00  plan   →   build 🤖 Thor $0.61`, '', '',
+    '', `${INDENT}2026-10-12 08:00 UTC  plan   →   build 🤖 Thor $0.61`, '', '',
     '        ↓',
     '  ┌──────────┐',
-    '  │███░░░░░░░│  2026-10-12 10:00  build (2h 0m) 🤖 Thor (30m 0s) $0.61   →   done',
+    '  │███░░░░░░░│  2026-10-12 10:00 UTC  build (2h 0m) 🤖 Thor (30m 0s) $0.61   →   done',
     '  └──────────┘',
     '    75% idle',
   ]);
@@ -138,7 +138,7 @@ test('ASS-64 AC1/AC2/AC3: an entry too wide for its bar\'s row wraps between the
   const out = historyOf(60);   // 44 columns of text beside the bar
   assert.deepEqual(out.slice(out.indexOf('        ↓') + 1), [
     '  ┌──────────┐',
-    '  │███░░░░░░░│  2026-10-12 10:00  build (2h 0m)',
+    '  │███░░░░░░░│  2026-10-12 10:00 UTC  build (2h 0m)',
     `${SIDE}🤖 Thor (30m 0s) $0.61`,
     `${SIDE}→   done`,
     '  └──────────┘',
@@ -150,13 +150,13 @@ test('ASS-64 AC1/AC2/AC3: an entry too wide for its bar\'s row wraps between the
 test('ASS-64 AC3: an entry without a bar wraps onto rows at the same column, its two blank rows kept after them', () => {
   const out = historyOf(60, () => false);
   assert.deepEqual(out.slice(out.indexOf('        ↓') + 1), [
-    '', `${INDENT}2026-10-12 10:00  build (2h 0m)`, `${INDENT}🤖 Thor (30m 0s) $0.61`, `${INDENT}→   done`, '', '',
+    '', `${INDENT}2026-10-12 10:00 UTC  build (2h 0m)`, `${INDENT}🤖 Thor (30m 0s) $0.61`, `${INDENT}→   done`, '', '',
   ]);
 });
 
 test('ASS-64 AC2: an entry that does not fit breaks before → even when the → would fit on the first row', () => {
-  // "2026-10-12 08:00  plan   →   build 🤖 Thor $0.61" is 48 columns, 4 too many.
-  assert.deepEqual(historyOf(60).slice(0, 4), ['', `${INDENT}2026-10-12 08:00  plan`, `${INDENT}→   build 🤖 Thor $0.61`, '']);
+  // "2026-10-12 08:00 UTC  plan   →   build 🤖 Thor $0.61" is 48 columns, 4 too many.
+  assert.deepEqual(historyOf(60).slice(0, 4), ['', `${INDENT}2026-10-12 08:00 UTC  plan`, `${INDENT}→   build 🤖 Thor $0.61`, '']);
 });
 
 test('ASS-64 AC1/AC5: a piece wider than its row wraps by words — no row past the width, no emoji split; a narrow box floors the width at 20 and does not throw', async () => {
@@ -176,10 +176,10 @@ test('ASS-145 AC1: ticketLines gives each History entry\'s first row, whatever i
   const changes = [...moves, change('done', 'build', 3)];
   const { history, starts } = ticketLines({ icon: '✨', key: 'ABC-1', title: 'T', variation: { 'local-testing': {}, 'state-changes': changes } },
     { status: 'Done', stepName: id => id, prompted: id => id === 'build', agents: [], columns: 60, steps: [] });
-  // A wrapped entry without a bar (5 rows), a wrapped barred one (6 rows), one that fits without a bar (4 rows).
+  // A wrapped entry without a bar (5 rows), a wrapped barred one (6 rows), a wrapped one without a bar (5 rows: its time says UTC, ASS-294).
   assert.deepEqual(starts, [0, 6, 13]);
   assert.deepEqual(starts.map(at => history[at - 1]), [undefined, '        ↓', '        ↓']);
-  assert.equal(history.length, 17);
+  assert.equal(history.length, 18);
 });
 
 test('ASS-145: a ticket with no history has no entry starts', () => {
@@ -212,9 +212,9 @@ test('ASS-42 AC3: a History entry shows its cause when it has one, a rejection\'
   const out = historyOf(120, () => false, [change('groom', 'awaiting-approval', 0), reset, rejected], id => ({ groom: 'Groom', ready: 'Ready', 'awaiting-approval': 'Awaiting Approval' }[id]));
   const rows = out.filter(l => l.startsWith(INDENT)).map(l => l.slice(16));
   assert.deepEqual(rows, [
-    '2026-10-12 08:00  Groom   →   Awaiting Approval',
-    '2026-10-12 09:00  Ready (1h 0m)   →   Groom   (requirements-changed)',
-    '2026-10-12 10:00  Awaiting Approval (1h 0m)   →   Groom   (operator: AC3 is vague)',
+    '2026-10-12 08:00 UTC  Groom   →   Awaiting Approval',
+    '2026-10-12 09:00 UTC  Ready (1h 0m)   →   Groom   (requirements-changed)',
+    '2026-10-12 10:00 UTC  Awaiting Approval (1h 0m)   →   Groom   (operator: AC3 is vague)',
   ]);
 });
 
@@ -227,11 +227,11 @@ test('ASS-42 AC4: given its refinement history, History lists it first, then the
   const text = history.map(l => l.trim()).filter(Boolean);
   assert.deepEqual(text, [
     'harness-backlog-refinement',
-    '2026-10-12 08:00  Groom   →   Ready   (operator)',
+    '2026-10-12 08:00 UTC  Groom   →   Ready   (operator)',
     'harness-development',
-    '2026-10-12 11:00  backlog   →   Plan',
+    '2026-10-12 11:00 UTC  backlog   →   Plan',
     '↓',
-    '2026-10-12 12:00  Plan (1h 0m)   →   Build',
+    '2026-10-12 12:00 UTC  Plan (1h 0m)   →   Build',
   ]);
   assert.deepEqual(starts.map(at => history[at + 1].trim().slice(0, 16)), ['2026-10-12 08:00', '2026-10-12 11:00', '2026-10-12 12:00']);
 });
@@ -267,7 +267,7 @@ test('ASS-166 AC3: a ticket worked by hand has its screen mark its key ✋ and s
   const lines = ticket => ticketLines({ icon: '🐞', key: 'ASS-166', title: 'T', ...ticket, variation: { 'local-testing': {}, 'state-changes': [] } }, { status: 'Build', stepName: id => id, prompted: () => false, agents: [], columns: 120, steps: [] }).details;
   const hand = lines({ 'worked-manually': { by: 'alice', since: '2026-10-27T10:05:00Z', note: 'in the coordinator' } });
   assert.ok(hand.some(l => l.startsWith('Ticket number') && l.includes('🐞 ✋ ASS-166')));
-  assert.ok(hand.some(l => /^By hand +worked by hand by alice since 2026-10-27 10:05: in the coordinator$/.test(l)), hand.join('\n'));
+  assert.ok(hand.some(l => /^By hand +worked by hand by alice since 2026-10-27 10:05 UTC: in the coordinator$/.test(l)), hand.join('\n'));
   assert.ok(!lines({}).some(l => l.includes('✋') || l.startsWith('By hand')));
 });
 
@@ -316,7 +316,7 @@ test('ASS-184 AC2: Needs you, in red, after the title when something does; Pause
   assert.equal(plain[0], '✨ ⚡ ✋ ASS-171 · A');
   assert.equal(plain[4], 'Needs you: Human Review — tab 1');
   assert.match(out[4], /\x1b\[31m/);
-  assert.deepEqual(plain.slice(5, 10), ['State: Human Review (1, 1)', '  since 10-27 09:46 UTC (2h 14m)', 'Paused: for fast-track ASS-160', 'By hand: alice since 10-27 10:05', 'Agents: 🤖 Teal, 🤖 Orange']);
+  assert.deepEqual(plain.slice(5, 10), ['State: Human Review (1, 1)', '  since 10-27 09:46 UTC (2h 14m)', 'Paused: for fast-track ASS-160', 'By hand: alice since 10-27 10:05 UTC', 'Agents: 🤖 Teal, 🤖 Orange']);
   assert.ok(quick({}, { 'is-paused': true }).map(strip).includes('Paused: yes'));
 });
 

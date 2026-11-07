@@ -59,10 +59,10 @@ export function testCounts(tests) {
 
 // workedByHand(t) — who has worked ticket `t` by hand since when, and the
 // note (ASS-166: its worked-manually, ticket:set-manual): "worked by hand by
-// <by> since <yyyy-mm-dd hh:mm>[: <note>]"; null when it is not.
+// <by> since <yyyy-mm-dd hh:mm> UTC[: <note>]" (ASS-294: the time says UTC); null when it is not.
 export function workedByHand(t) {
   const m = t?.['worked-manually'];
-  return m ? `worked by hand by ${m.by} since ${String(m.since).replace('T', ' ').slice(0, 16)}${m.note ? `: ${m.note}` : ''}` : null;
+  return m ? `worked by hand by ${m.by} since ${String(m.since).replace('T', ' ').slice(0, 16)} UTC${m.note ? `: ${m.note}` : ''}` : null;
 }
 
 export function tokenSpend(v, chat = 0, running = 0) {
@@ -178,7 +178,8 @@ export function ticketLines(t, { status, stepName, prompted, agents, columns, st
   const criteria = v['acceptance-criteria'] ?? [];
   const mrs = v['merge-request'] ?? [];
   const changes = v['state-changes'] ?? [];
-  const at = iso => iso.replace('T', ' ').slice(0, 16);
+  // A history entry's time, saying UTC (ASS-294): "2026-10-12 08:00 UTC"; nothing for none.
+  const at = iso => (iso ? `${iso.replace('T', ' ').slice(0, 16)} UTC` : '');
   const time = ms => (ms == null ? null : duration(ms));
   const key = `${t.icon} ${t['fast-track'] === true ? '⚡ ' : ''}${workedByHand(t) ? '✋ ' : ''}${t.key}`;   // ⚡ fast-tracked (ASS-83), ✋ worked by hand (ASS-166)
   const details = [
@@ -633,7 +634,7 @@ export function quickLines(t, { status, agents = [], needs, chatSpend = 0, runni
     `State: ${status ?? NONE}`,
     ...(moved ? [`  since ${at(moved)} UTC (${duration(now - Date.parse(moved))})`] : []),
     ...(v['is-paused'] === true ? [`Paused: ${v['paused-for-fast-track'] ? `for fast-track ${v['paused-for-fast-track']}` : 'yes'}`] : []),
-    ...(hand ? [`By hand: ${hand.by} since ${at(hand.since)}`] : []),
+    ...(hand ? [`By hand: ${hand.by} since ${at(hand.since)} UTC`] : []),   // UTC, as State's since (ASS-294)
     agentsOf(agents),
     '',
     `${priorityOf(t)} · Points ${t.points ?? NONE}`,

@@ -7,7 +7,7 @@ source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../json-file.bash"
 # sprint-<n>/sprint.json, <n> the is-active entry of sprints.json; PROJECTS_DIR
 # overrides the projects folder, used by tests) to sprints/days/<date>.json,
 # making the folder. The downloader calls it with the date of the previous
-# day's last download, before the first download of a new day, so the
+# day's last download (its UTC day, ASS-294), before the first download of a new day, so the
 # snapshot is the day's final data. A copy, not a locked edit: the file is
 # only read, and a writer replaces it atomically (see json-file.bash), so the
 # copy is always a whole file; it is written beside the snapshot and renamed

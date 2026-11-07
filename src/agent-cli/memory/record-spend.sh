@@ -20,7 +20,7 @@ source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../json-file.bash"
 #     at the input rate: cache writes among them), cache-read-tokens,
 #     output-tokens, cost-usd }
 # priced from harness.json's model-prices (USD per million; cost-usd null for
-# a model with none, named in unpriced); a model's spend within one local hour
+# a model with none, named in unpriced); a model's spend within one UTC hour (ASS-294)
 # is one record, its timestamp the latest read's — so each read appends or
 # grows one. Counted against the project's API caps and its spend tiles,
 # never a ticket's (control/spend.js spendRecords).
@@ -53,7 +53,7 @@ pid="$(tr -d '[:space:]' 2>/dev/null < "$data/hindsight.pid" || true)"
 file="$projects/$1/memory-spend.json"
 
 update_json --create "$file" --arg metrics "$metrics" --arg pid "$pid" --argjson prices "$prices" --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '
-  def hour: fromdateiso8601 | strflocaltime("%Y-%m-%dT%H");
+  def hour: fromdateiso8601 | strftime("%Y-%m-%dT%H");
   [$metrics | splits("\n") | capture("^(?<key>hindsight_llm_tokens_(?<kind>input|output|cached_input)_tokens_total\\{(?<labels>[^}]*)\\}) (?<value>\\S+)$")
     | .value |= tonumber | .model = ((.labels | capture("(^|,)model=\"(?<m>[^\"]*)\"").m) // "unknown")] as $series
   | ($series | map({ (.key): .value }) | add // {}) as $counters

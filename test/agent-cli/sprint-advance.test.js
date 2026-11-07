@@ -71,6 +71,30 @@ test('sprint:advance on the sprint\'s last day itself, or before it, changes not
   assert.ok(!existsSync(join(dir, 'projects', 'p', 'sprints', 'sprint-2')));
 });
 
+// ASS-294: with no date, today is the UTC day, whatever this computer's zone.
+// Between them, a zone 12 hours behind UTC (Etc/GMT+12) and one 14 ahead
+// (Pacific/Kiritimati) are on another day than UTC's at every hour, so a
+// local today would show at whatever time this runs.
+test('sprint:advance without a date takes today as the UTC day, in a zone behind UTC and one ahead of it (ASS-294)', async () => {
+  const day = offset => new Date(Date.now() + offset * 864e5).toISOString().slice(0, 10);
+  const today = day(0), yesterday = day(-1);
+  const dated = (start, end) => {
+    const dir = fixture();
+    const file = join(dir, 'projects', 'p', 'sprints', 'sprint-1', 'sprint.json');
+    writeFileSync(file, JSON.stringify({ ...JSON.parse(readFileSync(file, 'utf8')), start, end }));
+    return dir;
+  };
+  const inZone = (dir, TZ) => run(AGENT, ['sprint:advance', 'p'], { env: { ...env(dir), TZ } });
+  // Ended yesterday (UTC): behind UTC, local today may still be that last day — the UTC one has moved past it.
+  const ended = dated(day(-14), yesterday);
+  assert.match((await inZone(ended, 'Etc/GMT+12')).stdout, /sprint 1 → 2/);
+  assert.equal(read(ended, 'sprints/sprint-2/sprint.json').start, today);
+  // Ends today (UTC): ahead of UTC, local today may be tomorrow already — the UTC one is still its last day.
+  const ending = dated(day(-13), today);
+  assert.equal((await inZone(ending, 'Pacific/Kiritimati')).stdout, '');
+  assert.ok(!existsSync(join(ending, 'projects', 'p', 'sprints', 'sprint-2')));
+});
+
 test('sprint:advance after two missed ends catches up to the sprint holding today, the skipped one created empty and inactive', async () => {
   const dir = fixture();
   const before = read(dir, 'sprints/sprint-1/sprint.json');

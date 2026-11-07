@@ -7,7 +7,7 @@ import { kindOfAccount } from '../../agents/account.js';
 import { blockText } from '../font.js';
 import { duration } from '../metrics.js';
 import { visible, link } from '../text.js';
-import { localDate } from '../../downloader/cycle.js';
+import { utcDate } from '../../downloader/cycle.js';
 import { flattenSprint } from '../../control/rank.js';
 import { spendRecords, daySpend, sprintSpend, spendText } from '../../control/spend.js';
 import { ellipsis, refining, agentLine, projectAssignments, liveAssignments, viewedSprint, operatorNeeded, ICONS, since, indent, center, middle, color, green, red, gold, timestamp, sprintTickets } from './shared.js';
@@ -21,13 +21,13 @@ export const PAUSABLE = new Set(['s', 'S', 'b', 'B', 'c', 'a', 'A']);
 export const updatedOf = state => (typeof state.updatedAt === 'object' && state.updatedAt ? state.updatedAt[state.projects[state.project]?.id] : state.updatedAt);
 export const below = state => (updatedOf(state) ? 2 : 1);
 
-// The sprint's days are this computer's (ASS-216), as the midnight snapshot
-// names them (localDate): dayNumber(ms) the number of the local day of `ms`,
-// a sprint's YYYY-MM-DD dates numbered alike; shownAt(state, now) the moment
-// on show — a past day is seen as it was captured, at 23:59 that local day.
-const dayNumber = ms => Date.parse(localDate(new Date(ms))) / 864e5;
+// The sprint's days are UTC days (ASS-294; this computer's from ASS-216), as
+// the end-of-day snapshot names them (utcDate): dayNumber(ms) the number of
+// the UTC day of `ms`, a sprint's YYYY-MM-DD dates numbered alike; shownAt(state,
+// now) the moment on show — a past day is seen as it was captured, at 23:59 UTC that day.
+const dayNumber = ms => Math.floor(ms / 864e5);   // whole UTC days since the epoch: utcDate's day, numbered
 const sprintDay = date => Date.parse(date) / 864e5;
-const shownAt = (state, now) => (state.day ? new Date(`${state.day}T23:59:00`).getTime() : now);
+const shownAt = (state, now) => (state.day ? Date.parse(`${state.day}T23:59:00Z`) : now);
 
 // Whether no agent of the selected project works a ticket of its active
 // sprint (ASS-59), whatever its status or variation: only today, since
@@ -148,14 +148,15 @@ export function platform(state, columns, now) {
 // disk's free space as control last read it (disk-space.json, ASS-288) in
 // GiB, amber below the warning level as diskText's line, "unknown" never
 // read; then the project's golden image (load.js loadGolden), its name and
-// the local day it was built, "(not built)" never, or "none" without one;
+// the UTC day it was built, saying UTC (ASS-294: "built 2026-11-07 UTC"),
+// "(not built)" never, or "none" without one;
 // then its Hindsight (hindsightLine, ASS-293).
 function machineLines(disk, project, health) {
   const free = disk?.['free-bytes'] == null ? 'disk free: unknown' : `disk free: ${gib(disk['free-bytes'])} GiB`;
   const golden = project?.golden;
   return [
     disk?.level === 'warn' || disk?.level === 'hold' ? AMBER(free) : free,
-    golden ? `golden image: ${golden.name} (${golden['built-at'] ? `built ${localDate(new Date(golden['built-at']))}` : 'not built'})` : 'golden image: none',
+    golden ? `golden image: ${golden.name} (${golden['built-at'] ? `built ${utcDate(new Date(golden['built-at']))} UTC` : 'not built'})` : 'golden image: none',
     hindsightLine(project, health?.[project?.id]),
   ];
 }

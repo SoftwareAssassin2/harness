@@ -1,5 +1,7 @@
 // One downloader cycle for a project: snapshot the old day, sync the sprint
-// and the backlog, record the time — every write an agent.sh call.
+// and the backlog, record the time — every write an agent.sh call. Run in
+// Eastern time (ASS-294): the days are UTC ones, whatever this computer's zone.
+process.env.TZ = 'America/New_York';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
@@ -65,11 +67,12 @@ function recorder(fail = () => null) {
   };
   return { calls, exec };
 }
-const local = (y, m, d, h, min = 0) => new Date(y, m - 1, d, h, min);
-const date = d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+// A UTC moment, and its UTC day (ASS-294: the downloader's days are UTC ones).
+const utc = (y, m, d, h, min = 0) => new Date(Date.UTC(y, m - 1, d, h, min));
+const date = d => d.toISOString().slice(0, 10);
 
 test('a cycle snapshots the previous day, syncs the sprint with its merge requests from every Active repository, syncs the backlog and records the time', async () => {
-  const yesterday = local(2026, 10, 10, 23, 30), now = local(2026, 10, 11, 0, 5);
+  const yesterday = utc(2026, 10, 10, 23, 30), now = utc(2026, 10, 11, 0, 5);
   const dir = root({ last: yesterday.toISOString() });
   const a = adapters(), { calls, exec } = recorder();
   const lines = [];
@@ -91,20 +94,21 @@ test('a cycle snapshots the previous day, syncs the sprint with its merge reques
   assert.ok(lines.some(l => /snapshot/.test(l)) && lines.some(l => /sprint/.test(l)) && lines.some(l => /backlog/.test(l)), lines.join('\n'));
 });
 
-test('the snapshot fires only when the local date has moved on since the last download, and a day already kept is no error', async () => {
+test('the snapshot fires only when the UTC date has moved on since the last download, and a day already kept is no error (ASS-294)', async () => {
   const snapshots = async (last, now, fail) => {
     const { calls, exec } = recorder(fail);
     await runCycle({ root: root({ last }), project: 'p', now, adapters: adapters(), exec, log: () => {} });
     return calls.filter(c => c.args[0] === 'ticket:snapshot-day').map(c => c.args[2]);
   };
-  assert.deepEqual(await snapshots(local(2026, 10, 10, 0, 1).toISOString(), local(2026, 10, 10, 23, 59)), []);        // same local day
-  assert.deepEqual(await snapshots(local(2026, 10, 10, 23, 59).toISOString(), local(2026, 10, 11, 0, 0)), ['2026-10-10']); // past local midnight
-  assert.deepEqual(await snapshots(local(2026, 10, 8, 12, 0).toISOString(), local(2026, 10, 11, 9, 0)), ['2026-10-08']);   // days missed: the last data is still that day's
-  assert.deepEqual(await snapshots(null, local(2026, 10, 11, 9, 0)), []);                                                   // first download ever
+  assert.deepEqual(await snapshots(utc(2026, 10, 10, 0, 1).toISOString(), utc(2026, 10, 10, 23, 59)), []);        // same UTC day
+  assert.deepEqual(await snapshots(utc(2026, 10, 10, 23, 59).toISOString(), utc(2026, 10, 11, 0, 0)), ['2026-10-10']); // past UTC midnight, though 20:00 EDT the same local day
+  assert.deepEqual(await snapshots(utc(2026, 10, 11, 3, 0).toISOString(), utc(2026, 10, 11, 5, 0)), []);   // past local midnight (23:00 → 01:00 EDT), the same UTC day
+  assert.deepEqual(await snapshots(utc(2026, 10, 8, 12, 0).toISOString(), utc(2026, 10, 11, 9, 0)), ['2026-10-08']);   // days missed: the last data is still that day's
+  assert.deepEqual(await snapshots(null, utc(2026, 10, 11, 9, 0)), []);                                                   // first download ever
   const kept = Object.assign(new Error('already exists'), { code: 2 });
-  assert.deepEqual(await snapshots(local(2026, 10, 10, 1, 0).toISOString(), local(2026, 10, 11, 1, 0), cmd => cmd === 'ticket:snapshot-day' ? kept : null), ['2026-10-10']);
+  assert.deepEqual(await snapshots(utc(2026, 10, 10, 1, 0).toISOString(), utc(2026, 10, 11, 1, 0), cmd => cmd === 'ticket:snapshot-day' ? kept : null), ['2026-10-10']);
   const broken = Object.assign(new Error('no active sprint'), { code: 1 });
-  await assert.rejects(snapshots(local(2026, 10, 10, 1, 0).toISOString(), local(2026, 10, 11, 1, 0), cmd => cmd === 'ticket:snapshot-day' ? broken : null), /no active sprint/);
+  await assert.rejects(snapshots(utc(2026, 10, 10, 1, 0).toISOString(), utc(2026, 10, 11, 1, 0), cmd => cmd === 'ticket:snapshot-day' ? broken : null), /no active sprint/);
 });
 
 test('without an active sprint the sprint sync is skipped; the backlog still syncs and the time is recorded', async () => {
@@ -118,7 +122,7 @@ test('without an active sprint the sprint sync is skipped; the backlog still syn
 test('a dry run fetches but runs nothing: it prints the agent.sh commands and the files they would get', async () => {
   const { calls, exec } = recorder();
   const lines = [];
-  await runCycle({ root: root(), project: 'p', now: local(2026, 10, 12, 9), adapters: adapters(), exec, dryRun: true, log: l => lines.push(l) });
+  await runCycle({ root: root(), project: 'p', now: utc(2026, 10, 12, 9), adapters: adapters(), exec, dryRun: true, log: l => lines.push(l) });
   assert.deepEqual(calls, []);
   const text = lines.join('\n');
   assert.match(text, /agent\.sh ticket:snapshot-day p 2026-10-10/);
@@ -142,7 +146,7 @@ test('a project with only an off-board work source (the harness\'s own) skips Ji
 test('a repository whose merge requests cannot be listed is logged, and the sprint syncs with no merge requests, so every record is kept (ASS-98 AC2)', async () => {
   const a = adapters(), { calls, exec } = recorder(), lines = [];
   a.gitlab.fetchMergeRequests = async ({ repoUrl }) => { if (repoUrl.endsWith('/one')) throw new Error('404 Not Found.\nmore'); return [{ key: '!9', url: 'u9', branch: 'change/EX-1' }]; };
-  await runCycle({ root: root({ last: ISO }), project: 'p', now: local(2026, 10, 10, 20), adapters: a, exec, log: l => lines.push(l) });
+  await runCycle({ root: root({ last: ISO }), project: 'p', now: utc(2026, 10, 10, 20), adapters: a, exec, log: l => lines.push(l) });
   assert.ok(lines.includes('https://gitlab.com/g/one: merge requests skipped: 404 Not Found.'), lines.join('\n'));
   const sync = calls.find(c => c.args[0] === 'ticket:sync' && c.args[2] === 'sprint');
   assert.deepEqual(sync.args[3]['merge-requests'], []);
@@ -285,7 +289,7 @@ test('an off-board project\'s first cycle after its sprint\'s last day advances 
     variations: [{ name: 'A', 'harness-status': { state, 'state-engine': 'dev' }, 'merge-request': [], 'state-changes': [{ 'to-state': state, 'work-is-done': false }], 'local-testing': { vm: 'v' } }] });
   writeFileSync(join(p, 'sprints', 'sprint-1', 'sprint.json'), JSON.stringify({ number: 1, name: 'Harness Sprint 1', start: '2026-10-12', end: '2026-10-25',
     features: [held('ASS-1', 'In Progress', 'build'), held('ASS-2', 'Done', 'done')], bugs: [], spikes: [] }));
-  const last = local(2026, 10, 25, 22), now = local(2026, 10, 26, 0, 5);
+  const last = utc(2026, 10, 25, 22), now = utc(2026, 10, 26, 0, 5);
   writeFileSync(join(p, 'last-data-download'), last.toISOString());
   const env = { ...process.env, PROJECTS_DIR: join(dir, 'data', 'projects'), ENGINES_DIR: join(dir, 'engines') };
   const agent = (...args) => promisify(execFile)(AGENT, args, { env }).then(r => r.stdout);
@@ -315,8 +319,8 @@ test('an off-board ticket closed straight from Backlog (ASS-296): the next cycle
   writeFileSync(join(p, 'backlog.json'), JSON.stringify({ tickets: [] }));
   writeFileSync(join(p, 'sprints.json'), JSON.stringify({ list: [{ number: 1, 'is-active': true }] }));
   writeFileSync(join(p, 'sprints', 'sprint-1', 'sprint.json'), JSON.stringify({ number: 1, name: 'Harness Sprint 1', start: '2026-10-12', end: '2026-10-25', features: [], bugs: [], spikes: [] }));
-  const now = local(2026, 10, 20, 12);
-  writeFileSync(join(p, 'last-data-download'), local(2026, 10, 20, 11).toISOString());
+  const now = utc(2026, 10, 20, 12);
+  writeFileSync(join(p, 'last-data-download'), utc(2026, 10, 20, 11).toISOString());
   const offBoard = (key, status) => ({ key, title: key, description: '', url: null, 'ticket-system-status': status, 'ticket-system-priority': null, 'ticket-system-assignment': null, points: null, 'issue-type': 'Story', dependencies: [], 'sprint-tag': null });
   const env = { ...process.env, PROJECTS_DIR: join(dir, 'data', 'projects'), ENGINES_DIR: join(dir, 'engines') };
   const calls = [];
@@ -348,9 +352,9 @@ test('the sprint advance runs only on a new day, and never for a project with a 
     await runCycle({ root: root({ ...opts, last }), project: 'p', now, adapters: a, exec, log: () => {} });
     return calls.filter(c => c.args[0] === 'sprint:advance').map(c => c.args);
   };
-  const last = local(2026, 10, 10, 23).toISOString(), now = local(2026, 10, 11, 0, 5);
+  const last = utc(2026, 10, 10, 23).toISOString(), now = utc(2026, 10, 11, 0, 5);
   assert.deepEqual(await advances({ jira: false }, last, now), [['sprint:advance', 'p', '2026-10-11']]);
-  assert.deepEqual(await advances({ jira: false }, last, local(2026, 10, 10, 23, 30)), []);
+  assert.deepEqual(await advances({ jira: false }, last, utc(2026, 10, 10, 23, 30)), []);
   assert.deepEqual(await advances({}, last, now), []);
 });
 

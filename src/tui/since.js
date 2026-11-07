@@ -1,7 +1,7 @@
 // The progress bar's changes since yesterday (ASS-260): each run's count of
 // ticket variations on the day on show against the same run's count in the
 // latest end-of-day snapshot before it.
-import { localDate } from '../downloader/cycle.js';
+import { utcDate } from '../downloader/cycle.js';
 import { sprintTickets } from './screens/shared.js';
 
 // earlierDay({ sprint, days }, day) — "yesterday's snapshot": the latest
@@ -16,9 +16,9 @@ export const earlierDay = ({ sprint, days }, day) => (sprint
 // bar's own `runs` (tickets → Map of run → its tickets) over sprintTickets of
 // that day, so a change is exactly today's run count minus the snapshot's; or
 // null with no earlier snapshot (no changes shown). The day on show is
-// state.day, or `now`'s local day (the midnight snapshot's, localDate).
+// state.day, or `now`'s UTC day (the end-of-day snapshot's, utcDate, ASS-294).
 export function runsBefore(state, now, runs) {
   const project = state.projects[state.project];
-  const day = project && earlierDay(project, state.day ?? localDate(new Date(now ?? Date.now())));
+  const day = project && earlierDay(project, state.day ?? utcDate(new Date(now ?? Date.now())));
   return day ? runs(sprintTickets({ ...state, day }).tickets) : null;
 }

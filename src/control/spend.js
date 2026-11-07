@@ -82,18 +82,20 @@ export const spendRecords = (tickets, collaborations = {}, chatSpend = null, mem
   ...memory,
 ];
 
-// The local (this computer's time zone) midnight starting the day of `date`, `days` on, in ms.
-const midnight = (date, days = 0) => new Date(date.getFullYear(), date.getMonth(), date.getDate() + days).getTime();
+// The UTC midnight starting the UTC day of `date`, `days` on, in ms (ASS-294:
+// Day and Sprint Spend count UTC days, as the sprint box and the end-of-day
+// snapshot do; this computer's from ASS-216).
+const midnight = (date, days = 0) => Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate() + days);
 // The dollars of `records` timestamped from `from` up to `to` (ms); an undated one is in no period.
 const spentBetween = (records, from, to) => records.filter(r => r.timestamp && Date.parse(r.timestamp) >= from && Date.parse(r.timestamp) < to)
   .reduce((sum, r) => sum + (r['cost-usd'] ?? 0), 0);
 
-// daySpend(records, at) — the dollars of `records` (spendRecords) on the local day of `at` (a Date).
+// daySpend(records, at) — the dollars of `records` (spendRecords) on the UTC day of `at` (a Date).
 export const daySpend = (records, at) => spentBetween(records, midnight(at), midnight(at, 1));
 
-// sprintSpend(records, start, at) — the same from the local day `start`
-// (YYYY-MM-DD, a sprint's) through the local day of `at`; 0 with no start.
-export const sprintSpend = (records, start, at) => (start ? spentBetween(records, midnight(new Date(`${start}T00:00:00`)), midnight(at, 1)) : 0);
+// sprintSpend(records, start, at) — the same from the UTC day `start`
+// (YYYY-MM-DD, a sprint's) through the UTC day of `at`; 0 with no start.
+export const sprintSpend = (records, start, at) => (start ? spentBetween(records, Date.parse(`${start}T00:00:00Z`), midnight(at, 1)) : 0);
 
 // apiCapReached(records, json, sprint, at, running = 0) — the API dollar cap
 // (ASS-217: project.json's max-api-spend-per-day-usd, then

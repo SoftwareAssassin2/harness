@@ -1,7 +1,7 @@
 // ASS-217 AC4: a project's API dollar caps — project.json's
 // max-api-spend-per-day-usd and max-api-spend-per-sprint-usd, null (or left
 // out) for none — checked against its api-billed spend (ASS-216's records,
-// subscription ones never counted) on the local day and over the active sprint.
+// subscription ones never counted) on the UTC day (ASS-294) and over the active sprint.
 process.env.TZ = 'America/New_York';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';

@@ -61,7 +61,8 @@ if [[ ( $# -eq 5 || $# -eq 7 ) && "$3" == "--jira-sprint" ]]; then
   set -- "$1" "$2"
 fi
 [[ $# -eq 1 || $# -eq 2 ]] || { echo "usage: sprint:advance <project> [<YYYY-MM-DD> [--jira-sprint <id> <name> [<start> <end>]]]" >&2; exit 1; }
-project="$1" today="${2:-$(date +%F)}"
+# Today, unless given, is the UTC day (ASS-294), as the downloader's end-of-day snapshot names it.
+project="$1" today="${2:-$(date -u +%F)}"
 # The project becomes a path segment, so it may not climb out of the projects folder.
 [[ "$project" =~ ^[A-Za-z0-9_-]+$ ]] || { echo "sprint:advance: invalid project '$project'" >&2; exit 1; }
 [[ "$today" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || { echo "sprint:advance: the date must be YYYY-MM-DD, not '$today'" >&2; exit 1; }

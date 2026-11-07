@@ -8,7 +8,7 @@ export function view(state, size) {
   // Control's output in a box filling the space between the header and the
   // platform boxes, its log file beneath: lines top down as a terminal shows
   // them, the newest that fit once it is full, each with its UTC time and
-  // cut to the box; stderr in red. Beside it, to the right, the project's
+  // cut to the box — its title says the times are UTC (ASS-294); stderr in red. Beside it, to the right, the project's
   // transient state engines, a box each (see engineBoxes).
   const { columns, now = 0 } = size;
   const room = size.rows - headerLines(state, columns, now).length - below(state) - platform(state, columns, now).length;
@@ -24,7 +24,7 @@ export function view(state, size) {
     })
     : ['control has not printed anything yet'];
   const control = [
-    `┌─ control ${'─'.repeat(Math.max(0, width - 12))}┐`,
+    `┌─ control (times UTC) ${'─'.repeat(Math.max(0, width - 24))}┐`,
     ...Array.from({ length: height }, (_, i) => `│ ${pad(shown[i] ?? '', inner)} │`),
     `└${'─'.repeat(Math.max(0, width - 2))}┘`,
   ];
