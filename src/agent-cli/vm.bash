@@ -122,13 +122,17 @@ start_sandboxed() {
 # it shares being the image's. Generations (ASS-287): a VM holds a copy of the
 # label of the image it was cloned from (vm:create), and every rebuild deletes
 # the image — but on APFS a deleted file's blocks stay allocated while any clone
-# references them, so a VM whose label's built-at (golden-built-at; null when it
-# has none) is not golden-<project>'s now (old-generation) pins its old
+# references them, so a VM whose label's generation is not golden-<project>'s
+# now (old-generation) pins its old
 # image's blocks, and is charged its disk files' allocated bytes: the private
 # size cannot tell blocks shared with the current image from blocks shared with a
 # deleted one, and none of it is the current image's. (Sibling clones of one old
 # generation are each charged the blocks they share: they are freed only once all
-# go.) With no labelled golden-<project> no VM is of an old generation. The
+# go.) With no labelled golden-<project> no VM is of an old generation. A
+# label's generation (ASS-291) is its generation id, unique to each build
+# (vm:build-golden), else — a label from before it — its built-at: whole
+# seconds, which two builds may share, and then a VM of the last image looked
+# current. golden-built-at stays the label's built-at (null without one). The
 # golden images — golden-<project> and a golden-<project>-build left over —
 # are counted apart, allocated (golden-bytes: AC3); the registry cache is not.
 # A golden-<project>-build (ASS-289) is no ticket's VM, and is never in vms.json
@@ -187,6 +191,8 @@ golden_bytes() { disk_bytes "$(limactl list "golden-$1" --format '{{.Dir}}' 2>/d
 
 # built_at <instance folder> — the built-at of the golden image label in it, empty without one.
 built_at() { jq -r '.["built-at"] // empty' "$1/golden-image.json" 2>/dev/null || true; }
+# generation_of <instance folder> — the generation of the golden image label in it (ASS-291): its generation id, else its built-at; empty without one.
+generation_of() { jq -r '.generation // .["built-at"] // empty' "$1/golden-image.json" 2>/dev/null || true; }
 
 # volume_free — df's free bytes on the volume holding LIMA_HOME (its nearest existing folder: disk.bash volume_of).
 volume_free() { local line; line="$(volume_of "$LIMA_HOME")" || return 1; echo "${line%%$'\t'*}"; }
@@ -213,7 +219,7 @@ vm_disk_limit() {
 # files (--slurpfile, a process substitution for one held here), never as
 # arguments: past ARG_MAX (1 MB on macOS) jq would not start (ASS-135).
 reconcile_vms() {
-  local command="$1" project="$2" file listing sprint recorded measured="{}" name dir limit blind=false current="" golden=0 generation old build=null leftover
+  local command="$1" project="$2" file listing sprint recorded measured="{}" name dir limit blind=false current="" current_at="" golden=0 generation old build=null leftover
   file="$(vms_file "$project")"
   sysctl -n kern.bootsessionuuid >/dev/null 2>&1 || blind=true
   limit="$(vm_disk_limit "$command" "$project")" || return 1
@@ -224,7 +230,7 @@ reconcile_vms() {
   for name in "golden-$project" "golden-$project-build"; do
     dir="$(jq -r --arg n "$name" '.[$n].dir // empty' <<<"$listing")"
     [[ -z "$dir" ]] || golden=$(( golden + $(disk_bytes "$dir" 2) ))
-    [[ -z "$dir" || "$name" != "golden-$project" ]] || current="$(built_at "$dir")"
+    [[ -z "$dir" || "$name" != "golden-$project" ]] || { current="$(generation_of "$dir")" current_at="$(built_at "$dir")"; }
   done
   dir="$(jq -r --arg n "golden-$project-build" '.[$n].dir // empty' <<<"$listing")"
   if [[ -n "$dir" ]]; then
@@ -234,17 +240,17 @@ reconcile_vms() {
   fi
   while IFS=$'\t' read -r name dir; do
     [[ -n "$name" ]] || continue
-    generation="$(built_at "$dir")" old=false
+    generation="$(generation_of "$dir")" old=false
     [[ -z "$current" || "$generation" == "$current" ]] || old=true
     measured="$(jq -c --arg n "$name" --argjson b "$(disk_bytes "$dir" "$( [[ $old == true ]] && echo 2 || echo 1)")" --arg at "$(accessed_at "$dir")" \
-      --arg g "$generation" --argjson old "$old" '.[$n] = { bytes: $b, accessed: $at, generation: (if $g == "" then null else $g end), old: $old }' <<<"$measured")"
+      --arg g "$(built_at "$dir")" --argjson old "$old" '.[$n] = { bytes: $b, accessed: $at, "built-at": (if $g == "" then null else $g end), old: $old }' <<<"$measured")"
   done < <(jq -rn --slurpfile v "$file" --slurpfile l <(printf '%s' "$listing") --slurpfile r <(printf '%s' "$recorded") \
     '$l[0] as $l | $v[0] + $r[0] | keys[] | select($l[.]) | "\(.)\t\($l[.].dir)"')
   update_json "$file" --slurpfile l <(printf '%s' "$listing") --slurpfile r <(printf '%s' "$recorded") --slurpfile m <(printf '%s' "$measured") --argjson blind "$blind" \
     '. as $old | $l[0] as $l | $r[0] as $r
     | $m[0] | with_entries(.key as $n | .value = (($old[$n] // ($r[$n] + { "last-accessed": .value.accessed }))
       + { state: (if $blind and $old[$n].state then $old[$n].state else $l[$n].status end), "disk-bytes": .value.bytes }))'
-  jq -n --slurpfile vms "$file" --slurpfile s "$sprint" --slurpfile m <(printf '%s' "$measured") --argjson golden "$golden" --argjson build "$build" --arg current "$current" --slurpfile e <(engine_files "$project" | { mapfile -t list; jq -n 'reduce inputs as $e ({}; .[input_filename | split("/") | .[-2]] = ($e.steps // []))' /dev/null "${list[@]}"; }) \
+  jq -n --slurpfile vms "$file" --slurpfile s "$sprint" --slurpfile m <(printf '%s' "$measured") --argjson golden "$golden" --argjson build "$build" --arg current "$current_at" --slurpfile e <(engine_files "$project" | { mapfile -t list; jq -n 'reduce inputs as $e ({}; .[input_filename | split("/") | .[-2]] = ($e.steps // []))' /dev/null "${list[@]}"; }) \
     --arg p "$project" --argjson limit "$limit" '
     $s[0] as $sprint | $e[0] as $engines
     | def use($v): [$v["harness-status"] | recurse(.["sub-status"] // empty) | select(.state != null) | . as $l
@@ -252,7 +258,7 @@ reconcile_vms() {
     def live($e): first(($sprint // {}) | (.features, .bugs, .spikes) // [] | .[] | select(.key | ascii_downcase == ($e.ticket | ascii_downcase))
       | .variations // [] | .[] | select(.name == $e.variation and (.["is-deleted"] | not))) // null;
     ($vms[0] | to_entries | map({ name: .key } + .value | . + { deletable: (.state != "Running" and (live(.) as $v | $v == null or use($v) == null)),
-        "golden-built-at": $m[0][.name].generation, "old-generation": $m[0][.name].old })
+        "golden-built-at": $m[0][.name]["built-at"], "old-generation": $m[0][.name].old })
       | sort_by(.["last-accessed"], .name)) as $list
     | { project: $p, "limit-bytes": $limit, "use-bytes": ($list | map(.["disk-bytes"]) | add // 0), "golden-bytes": $golden,
         "golden-built-at": (if $current == "" then null else $current end), "golden-build": $build, vms: $list }'

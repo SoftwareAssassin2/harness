@@ -67,6 +67,8 @@ set -euo pipefail
 # its deleted blocks allocated — are deleted when stopped and their variation
 # is not in flight (vm.bash reclaim_generations); a running or in-flight one is
 # never touched, but named as kept, for vm:reclaim once its variation ends.
+# Each build's label carries a generation id of its own (ASS-291: a uuid), which
+# tells generations apart: built-at has whole seconds, which two builds may share.
 # GOLDEN_IMAGE_SHARED overrides the shared steps' folder, for tests.
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/golden.bash"
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../vm-credentials.bash"
@@ -157,8 +159,8 @@ SCAN_GH_TOKEN="$gh_token" SCAN_GL_TOKEN="$gl_token" step scan "$agent" vm:scan-i
 seconds=$((SECONDS - started))
 kib="$(du -sk "$LIMA_HOME/$build" | cut -f1)"
 jq -n --arg p "$project" --arg h "$hash" --arg in "$inputs" --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --argjson s "$seconds" --argjson b "$((kib * 1024))" \
-  --arg fix "$fix" --slurpfile old <(cat "$label" 2>/dev/null || true) \
-  '{ project: $p, hash: $h, "built-at": $at, "build-seconds": $s, "disk-bytes": $b, inputs: ($in | rtrimstr("\n") | split("\n")) }
+  --arg g "$(uuidgen | tr '[:upper:]' '[:lower:]')" --arg fix "$fix" --slurpfile old <(cat "$label" 2>/dev/null || true) \
+  '{ project: $p, hash: $h, "built-at": $at, generation: $g, "build-seconds": $s, "disk-bytes": $b, inputs: ($in | rtrimstr("\n") | split("\n")) }
   + if $fix != "" then { fix: $fix, "fixed-at": $at } else ($old[0] // {} | with_entries(select(.key == "fix" or .key == "fixed-at"))) end' > "$LIMA_HOME/$build/golden-image.json"
 lock_vms vm:build-golden "$project"
 [[ ! -d "$LIMA_HOME/$golden" ]] || step "delete the old image" limactl delete -f "$golden"

@@ -13,7 +13,10 @@ import { promisify } from 'node:util';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, chmodSync, cpSync, readdirSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { until } from '../support/until.js';
+import { until, LOADED_MS } from '../support/until.js';
+// untilBuilt — until() for a detached build's end: a whole build of fakes, ~20 steps of processes, which on a busy
+// machine (other test files alongside) took past until()'s 30s (ASS-291: one run in 30); one that ends returns at once.
+const untilBuilt = check => until(check, 3 * LOADED_MS);
 
 const esc = text => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
@@ -22,7 +25,7 @@ const AGENT = join(import.meta.dirname, '..', '..', 'agent.sh');
 const SHARED = join(import.meta.dirname, '..', '..', 'src', 'agent-cli', 'vm', 'golden-image');
 const GH = 'gho_GITHUBtok', GL = 'glpat-GITLAB.tok', PAT = 'ghp_DECLAREDtok';
 
-function setup({ images = '', warm = false, registry = true, upstream = true, repositories = ['https://github.com/o/harness', 'https://gitlab.com/g/example-project'], tools } = {}) {
+function setup({ images = '', warm = false, registry = true, upstream = true, repositories = ['https://github.com/o/harness', 'https://gitlab.com/g/example-project'], tools, builtAt } = {}) {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), 'golden-')));
   const bin = join(dir, 'bin'), log = join(dir, 'log'), lima = join(dir, 'lima'), def = join(dir, 'projects', 'p', 'golden-image'), shared = join(dir, 'shared'), home = join(dir, 'home');
   for (const d of [bin, log, lima, def, join(home, '.harness')]) mkdirSync(d, { recursive: true });
@@ -74,6 +77,8 @@ esac`);
   fake('curl', `echo "$*" >> '${log}/curl'; [[ -e '${dir}/zot-up' ]]`);
   // df (ASS-287): the volume holding LIMA_HOME, DF_CAPACITY_K KiB (ample by default) less what LIMA_HOME takes now.
   fake('df', `cap=\${DF_CAPACITY_K:-1000000000000}; used=$(du -sk "$LIMA_HOME" | cut -f1); echo 'Filesystem 1024-blocks Used Available Capacity Mounted on'; echo "/dev/fake $cap $used $((cap - used)) 1% /"`);
+  // builtAt (ASS-291): date's UTC timestamp — the label's built-at — is always it, as for builds finishing in the same second.
+  if (builtAt) fake('date', `[[ "$*" == "-u +%Y-%m-%dT%H:%M:%SZ" ]] && echo ${builtAt} || exec /bin/date "$@"`);
   writeFileSync(join(dir, 'harness.json'), JSON.stringify({ 'vm-disk-limit-gb': 100 }));
   // VM_KEYCHAIN_TIMEOUT: the fake keychain answers at once, but on a busy machine starting it took up to ~10s (ASS-109).
   const env = { ...process.env, HOME: home, PATH: `${bin}:${process.env.PATH}`, PROJECTS_DIR: join(dir, 'projects'), LIMA_HOME: lima, GOLDEN_IMAGE_SHARED: shared, VM_KEYCHAIN_TIMEOUT: '60', HARNESS_FILE: join(dir, 'harness.json') };
@@ -430,8 +435,8 @@ test('ASS-151 AC3: vm:build-golden-start starts the build detached and returns a
   assert.equal((await golden(s, 'vm:golden-status')).status, 'building');
   assert.deepEqual(await golden(s, 'vm:build-golden-start', gate), { project: 'p', image: 'golden-p', status: 'building', started: false, 'exit-code': null, ...LOGS(s) });
   writeFileSync(join(s.dir, 'go'), '');
-  assert.ok(await until(() => existsSync(join(s.lima, 'golden-p', 'golden-image.json'))), 'built');
-  assert.ok(await until(() => existsSync(join(s.dir, 'projects', 'p', 'golden-build-run.exit'))));
+  assert.ok(await untilBuilt(() => existsSync(join(s.lima, 'golden-p', 'golden-image.json'))), 'built');
+  assert.ok(await untilBuilt(() => existsSync(join(s.dir, 'projects', 'p', 'golden-build-run.exit'))));
   assert.deepEqual(await golden(s, 'vm:golden-status'), { project: 'p', image: 'golden-p', status: 'current', 'exit-code': 0, ...LOGS(s) });
   assert.equal(s.calls().filter(c => c.startsWith('create ')).length, 1, 'one build');
   s.reset();
@@ -447,18 +452,18 @@ test('vm:build-golden-start run several times at once starts one build (ASS-179 
   assert.ok(starts.every(r => r.status === 'building'));
   assert.equal((await golden(s, 'vm:build-golden-start', gate)).started, false, 'a start while it builds does not wait on the build');
   writeFileSync(join(s.dir, 'go'), '');
-  assert.ok(await until(() => existsSync(join(s.dir, 'projects', 'p', 'golden-build-run.exit'))));
+  assert.ok(await untilBuilt(() => existsSync(join(s.dir, 'projects', 'p', 'golden-build-run.exit'))));
   assert.equal(s.calls().filter(c => c.startsWith('create ')).length, 1, 'one build');
 });
 
 test('ASS-151 AC3: a build started that fails is reported failed, with its exit code and logs; the next start builds again', async () => {
   const s = setup();
   assert.equal((await golden(s, 'vm:build-golden-start', { FAIL_SCRIPT: 'provision.sh' })).started, true);
-  assert.ok(await until(() => existsSync(join(s.dir, 'projects', 'p', 'golden-build-run.exit'))));
+  assert.ok(await untilBuilt(() => existsSync(join(s.dir, 'projects', 'p', 'golden-build-run.exit'))));
   assert.deepEqual(await golden(s, 'vm:golden-status'), { project: 'p', image: 'golden-p', status: 'failed', 'exit-code': 1, ...LOGS(s) });
   assert.match(readFileSync(LOGS(s)['run-log'], 'utf8'), /provision failed/);
   assert.equal((await golden(s, 'vm:build-golden-start')).started, true);
-  assert.ok(await until(() => existsSync(join(s.dir, 'projects', 'p', 'golden-build-run.exit'))));
+  assert.ok(await untilBuilt(() => existsSync(join(s.dir, 'projects', 'p', 'golden-build-run.exit'))));
   assert.deepEqual(await golden(s, 'vm:golden-status'), { project: 'p', image: 'golden-p', status: 'current', 'exit-code': 0, ...LOGS(s) });
 });
 
@@ -513,8 +518,11 @@ test('ASS-234 AC3: vm:build-golden --fix records the fix in the label; a later b
 
 // ASS-287 AC1: a rebuild deleted the old golden-p, but its blocks stayed allocated on APFS while any VM cloned from it
 // referenced them — each rebuild pinned a whole generation. Now, once the new image is swapped in, under the VM lock, every
-// one of p's VMs cloned from an older generation (its golden-image.json's built-at not the new image's) is deleted while it
-// is stopped and its variation is not in flight; a running or in-flight one is kept, never touched, and named. clone(s,
+// one of p's VMs cloned from an older generation (its golden-image.json's generation not the new image's) is deleted while it
+// is stopped and its variation is not in flight; a running or in-flight one is kept, never touched, and named. ASS-291:
+// generations were told apart by built-at, whole seconds, and two builds in one second (this test's, on a fast run) looked
+// like one, nothing deleted; each build's label now has a generation id of its own, so here both builds share a built-at
+// (builtAt) and the old generation is still told apart. clone(s,
 // vm, status) makes vm an APFS clone (cp -c) of golden-p's disk with its label, as vm:create does; one of p's when listed
 // in its vms.json.
 function clone(s, vm, status = 'Stopped') {
@@ -527,16 +535,17 @@ const ofP = (s, ...vms) => writeFileSync(join(s.dir, 'projects', 'p', 'vms.json'
 const privateSize = (s, file) => execFileSync(join(s.home, '.harness', 'bin', 'private-size'), [file], { encoding: 'utf8' }).trim().split(' ').map(Number);
 
 test('ASS-287 AC1: a rebuild deletes p\'s stopped VMs cloned from the old generation, whose variation is not in flight, so it no longer occupies disk; a running one is kept and named, another project\'s untouched', async () => {
-  const s = setup();
+  const s = setup({ builtAt: '2026-11-07T12:00:00Z' });
   await s.build();
-  const old = s.label()['built-at'];
+  const { 'built-at': old, generation } = s.label();
+  assert.match(generation, /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
   clone(s, 'ass-1-a'); clone(s, 'ass-2-a', 'Running');
   mkdirSync(join(s.lima, 'xyz-1-a')); writeFileSync(join(s.lima, 'xyz-1-a', 'disk'), 'another project\'s');
   ofP(s, 'ass-1-a', 'ass-2-a');
   writeFileSync(join(s.def, 'provision.sh'), '#!/bin/bash\necho v2\n');
   s.reset();
   const { stdout } = await s.build();
-  assert.notEqual(s.label()['built-at'], old);
+  assert.deepEqual([s.label()['built-at'], s.label().generation === generation], [old, false], 'one built-at, two generations');
   assert.deepEqual(s.calls().slice(-3), ['delete -f golden-p', 'rename golden-p-build golden-p', 'delete -f ass-1-a']);
   assert.match(stdout, new RegExp(`vm:build-golden: deleted ass-1-a \\(ASS-1 A, cloned from golden-p of ${old}, [\\d.]+ GB\\)`));
   assert.match(stdout, new RegExp(`vm:build-golden: kept ass-2-a \\(ASS-2 A, cloned from golden-p of ${old}, [\\d.]+ GB\\): running`));

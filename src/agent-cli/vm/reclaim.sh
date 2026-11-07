@@ -7,7 +7,8 @@ set -euo pipefail
 # have ended, and for those a build left before ASS-287. Under the project's VM
 # lock: see vm.bash reclaim_generations. Only the project's VMs (its inventory,
 # or recorded on its active sprint's variations) whose golden-image.json's
-# built-at is not golden-<project>'s, and only those stopped whose variation
+# generation (its generation id, else its built-at: ASS-291) is not
+# golden-<project>'s, and only those stopped whose variation
 # is not in flight; a running or in-flight one is listed as kept, with why.
 # --dry-run deletes nothing, listing what it would.
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../vm.bash"
