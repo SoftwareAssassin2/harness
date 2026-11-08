@@ -394,11 +394,43 @@ test('ASS-180 AC4: write-test-plan and -grouped name ticket:set-demo-plan, not a
   }
 });
 
-test('ASS-180 AC4: groom names ticket:set-requirements, ticket:set-acceptance-criteria - and ticket:post-comment', () => {
+// ASS-298 AC3: groom runs on the host, confined, so both calls take a staged file's path, not stdin.
+test('ASS-180 AC4: groom names ticket:set-requirements, ticket:set-acceptance-criteria and ticket:post-comment — the first two with a staged file\'s path (ASS-298)', () => {
   const t = text('groom');
-  assert.match(t, /\{agent-sh\} ticket:set-requirements \{project\} \{ticket\}/);
-  assert.match(t, /\{agent-sh\} ticket:set-acceptance-criteria \{project\} \{ticket\} -/);
+  assert.match(t, /`\{agent-sh\} ticket:set-requirements \{project\} \{ticket\} [^`\s-][^`\s]*`/);
+  assert.match(t, /`\{agent-sh\} ticket:set-acceptance-criteria \{project\} \{ticket\} [^`\s-][^`\s]*`/);
+  assert.doesNotMatch(t, /ticket:set-(requirements|acceptance-criteria)[^\n]*on stdin/);
   assert.match(t, /\{agent-sh\} ticket:post-comment/);
+});
+
+// ASS-298 AC3: a confined host agent's agent.sh call must be a bare line — a
+// pipe or redirect re-sandboxes it — so the reflect-on-* reports (read by
+// assess-health-v2) are staged in a file and its path given as work:write's
+// last argument. Runs overlap, so each staged name is unique to the run (its
+// <folder>, or {ticket}), and the path is the resolved absolute one, not a
+// $TMPDIR left for the shell to expand.
+const REFLECT = ['reflect-on-harness', 'reflect-on-project', 'reflect-on-local-environment', 'reflect-on-local-data', 'reflect-on-worktrees'];
+
+test('ASS-298 AC3: each reflect-on-* prompt writes its report with work:write\'s trailing file-path argument, not stdin', () => {
+  for (const p of REFLECT) {
+    const t = text(p);
+    assert.match(t, /`\{agent-sh\} work:write \{project\} <folder> - [a-z0-9-]+\.md [^`\n]+`/, p);
+    assert.doesNotMatch(t, /work:write[^\n]*on stdin/, p);
+  }
+});
+
+test('ASS-298 AC3: the reflect-on-* and groom prompts stage the body in a file unique to the run and pass its absolute path', () => {
+  for (const p of REFLECT) {
+    const line = text(p).split('\n').find(l => l.includes('work:write')) ?? '';
+    assert.ok(/`\{agent-sh\} work:write \{project\} <folder> - [a-z0-9-]+\.md [^`\s]*<folder>[^`\s]*`/.test(line) || /\bunique\b/.test(line), `${p}: the staged file's name carries <folder>, or the prompt says it is unique`);
+    assert.match(line, /absolute path/, `${p}: says to pass the absolute path`);
+    assert.doesNotMatch(line, /`[^`]*\$TMPDIR[^`]*`/, `${p}: no $TMPDIR for the shell to expand in the call`);
+  }
+  const groom = text('groom').split('\n').find(l => l.includes('ticket:set-requirements')) ?? '';
+  for (const command of ['ticket:set-requirements', 'ticket:set-acceptance-criteria'])
+    if (!/\bunique\b/.test(groom)) assert.match(groom, new RegExp(`\`\\{agent-sh\\} ${command} \\{project\\} \\{ticket\\} [^\`\\s]*\\{ticket\\}[^\`\\s]*\``), `groom: ${command}'s staged file's name carries {ticket}, or the prompt says it is unique`);
+  assert.match(groom, /absolute path/, 'groom: says to pass the absolute path');
+  assert.doesNotMatch(groom, /`[^`]*\$TMPDIR[^`]*`/, 'groom: no $TMPDIR for the shell to expand in the call');
 });
 
 // ASS-198: check-on-merge-request, check-on-merge-request-grouped and

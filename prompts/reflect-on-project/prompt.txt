@@ -7,7 +7,7 @@ Check that every project's own records match reality, as far as you can without 
    - Each sprint ticket exists in the ticketing system and its status there matches the step's paired-ticket-system-status
    - Each ticket's branch, worktree and merge request, where the step says they should exist, exist
    - Any value still TODO or null that control needs
-3. Write the report to {ticket-folder}/project.md (through `{agent-sh} work:write {project} <folder> - project.md`, <folder> the last part of {ticket-folder}, the whole file on stdin), one section per project: each mismatch with the file, the value, what you observed, and the fix you'd recommend.
+3. Write the report to {ticket-folder}/project.md — stage it in a temp file of your own, unique to this run (mktemp, writing temp is allowed), then `{agent-sh} work:write {project} <folder> - project.md <report-file>`, <folder> the last part of {ticket-folder}, <report-file> that temp file's absolute path, a bare call (a pipe, redirect or heredoc would re-sandbox it), one section per project: each mismatch with the file, the value, what you observed, and the fix you'd recommend.
 
 Don't change any file or any ticket — only report. If everything matches, say so.
 

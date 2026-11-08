@@ -38,7 +38,9 @@ const same = (a, b) => typeof a === 'string' && a.length === b.length && timingS
 // project, ticket (in any case) or variation the binding's; each it names
 // as an agent one assigned to the binding's ticket variation (agents change
 // from step to step; the VM, and its token, stay); each it names as stdin
-// "-", the content on stdin (ASS-182: never a path, of the VM's or the Mac's).
+// "-", the content on stdin (ASS-182: never a path, of the VM's or the Mac's);
+// and no more arguments than its "max-args" allows (ASS-298: work:write's
+// optional trailing file path is the Mac's alone).
 // A command whose rule says "fast-track": true
 // (ASS-151: vm:build-golden-start, vm:golden-status — a golden-image rebuild
 // ticket's work on the Mac) runs only for a binding fastTracked(binding)
@@ -51,6 +53,7 @@ export function authorize(tokens, assignments, token, argv, fastTracked = () => 
   const [command, ...args] = argv;
   const rule = typeof command === 'string' && !command.startsWith('_') && Object.hasOwn(ALLOW, command) ? ALLOW[command] : null;
   if (!rule) return { vm, refuse: `command not allowed: ${command}` };
+  if (typeof rule['max-args'] === 'number' && args.length > rule['max-args']) return { vm, refuse: `${command} takes at most ${rule['max-args']} arguments` };
   if (rule['fast-track'] === true && !fastTracked(binding)) return { vm, refuse: `${binding.ticket} is not fast-tracked` };
   for (const field of ['project', 'ticket', 'variation']) {
     if (!(field in rule)) continue;

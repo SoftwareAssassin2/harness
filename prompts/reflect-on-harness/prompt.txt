@@ -6,7 +6,7 @@ Check whether the agent harnesses are healthy, so failures caused by the tooling
    - It is signed in, and the sign-in is accepted (not expired or refused)
    - Each listed model is one the CLI and account can actually use
    - Recent sessions for signs of trouble: rate limits, usage limits, auth errors, crashes, or hung turns
-3. Write the report to {ticket-folder}/harness.md (through `{agent-sh} work:write {project} <folder> - harness.md`, <folder> the last part of {ticket-folder}, the whole file on stdin): each problem with its evidence (the command you ran and what it printed) and the fix you'd recommend.
+3. Write the report to {ticket-folder}/harness.md — stage it in a temp file of your own, unique to this run (mktemp, writing temp is allowed), then `{agent-sh} work:write {project} <folder> - harness.md <report-file>`, <folder> the last part of {ticket-folder}, <report-file> that temp file's absolute path, a bare call (a pipe, redirect or heredoc would re-sandbox it): each problem with its evidence (the command you ran and what it printed) and the fix you'd recommend.
 
 Don't install, upgrade, sign in, or change any file — only report. If everything is healthy, say so.
 

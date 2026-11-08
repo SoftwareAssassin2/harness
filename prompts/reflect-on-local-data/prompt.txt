@@ -8,7 +8,7 @@ Check that the factory's local data for project {project} is consistent.
    - More than one active sprint, or an active sprint whose dates have passed
    - Assignments that contradict themselves, such as an unassigned agent with a task, or an agent working a ticket that is Done
    - Ticket files the ticket's current step should have produced but are missing or empty
-3. Write the report to {ticket-folder}/local-data.md (through `{agent-sh} work:write {project} <folder> - local-data.md`, <folder> the last part of {ticket-folder}, the whole file on stdin): each inconsistency with the file, the value, and the fix you'd recommend.
+3. Write the report to {ticket-folder}/local-data.md — stage it in a temp file of your own, unique to this run (mktemp, writing temp is allowed), then `{agent-sh} work:write {project} <folder> - local-data.md <report-file>`, <folder> the last part of {ticket-folder}, <report-file> that temp file's absolute path, a bare call (a pipe, redirect or heredoc would re-sandbox it): each inconsistency with the file, the value, and the fix you'd recommend.
 
 Don't change any file but that report — only report. If everything is consistent, say so.
 

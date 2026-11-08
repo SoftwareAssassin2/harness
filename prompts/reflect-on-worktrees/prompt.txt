@@ -6,7 +6,7 @@ List the worktrees under every project's local folders and flag the ones that ne
    - It has no uncommitted or untracked changes; otherwise it is dirty
    - Its branch is not already merged into the default branch
    - The folder exists and is not locked or prunable
-3. Write the report to {ticket-folder}/worktrees.md (through `{agent-sh} work:write {project} <folder> - worktrees.md`, <folder> the last part of {ticket-folder}, the whole file on stdin), one section per project: one line per worktree with path, branch, ticket, and stale/dirty/merged/prunable flags, then the fix you'd recommend for each flagged one.
+3. Write the report to {ticket-folder}/worktrees.md — stage it in a temp file of your own, unique to this run (mktemp, writing temp is allowed), then `{agent-sh} work:write {project} <folder> - worktrees.md <report-file>`, <folder> the last part of {ticket-folder}, <report-file> that temp file's absolute path, a bare call (a pipe, redirect or heredoc would re-sandbox it), one section per project: one line per worktree with path, branch, ticket, and stale/dirty/merged/prunable flags, then the fix you'd recommend for each flagged one.
 
 Don't prune, delete, commit or check out anything — only report. If every worktree is current and clean, say so.
 

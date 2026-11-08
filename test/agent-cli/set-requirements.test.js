@@ -275,3 +275,73 @@ test('ticket:set-requirements accepts a lowercase key', async () => {
   const r = await f.pipe(NEW_BODY, 'ticket:set-requirements', 'p', 'hd-40');
   assert.equal(r.code, 0, r.stderr);
 });
+
+// ASS-298 AC1: a confined host agent can't pipe or redirect into agent.sh, so
+// ticket:set-requirements takes an optional 3rd argument, and
+// ticket:set-acceptance-criteria's host-only 3-arg form a path in place of "-",
+// each a file it staged in temp. "-" and no argument stay stdin.
+test('ASS-298 AC1: ticket:set-requirements <project> <ticket> <file> reads the body from the file, nothing on stdin', async () => {
+  const f = fixture();
+  f.putTicket('HD-50', ORIGINAL_BODY);
+  const original = (await f.offBoardJson('ticket:get', 'p', 'HD-50')).description;
+  f.seedBacklog({ key: 'HD-50', title: 'HD-50 title', description: original, variations: [] });
+  const file = join(f.dir, 'req.md');
+  writeFileSync(file, NEW_BODY);
+  const r = await f.pipe('', 'ticket:set-requirements', 'p', 'HD-50', file);
+  assert.equal(r.code, 0, r.stderr);
+  assert.deepEqual(JSON.parse(r.stdout), { key: 'HD-50' });
+  const got = await f.offBoardJson('ticket:get', 'p', 'HD-50');
+  assert.ok(got.description.startsWith('## User story\n\nAs a reviser.'), 'the file\'s sections are at the start');
+  assert.ok(got.description.includes('## Acceptance criteria\n\n1. AC1: Old criterion'), 'the AC section is kept');
+  assert.equal(f.backlog().tickets[0].description, got.description, 'the mirror matches');
+  assert.equal(f.history('HD-50').length, 1);
+});
+
+test('ASS-298 AC1: ticket:set-acceptance-criteria <project> <ticket> <file> replaces the AC section from the file, nothing on stdin', async () => {
+  const f = fixture();
+  f.putTicket('HD-51', ORIGINAL_BODY);
+  const original = (await f.offBoardJson('ticket:get', 'p', 'HD-51')).description;
+  f.seedBacklog({ key: 'HD-51', title: 'HD-51 title', description: original, variations: [] });
+  const file = join(f.dir, 'ac.json');
+  writeFileSync(file, JSON.stringify([{ 'criteria-number': 1, description: 'AC1: from a file' }]));
+  const r = await f.pipe('', 'ticket:set-acceptance-criteria', 'p', 'HD-51', file);
+  assert.equal(r.code, 0, r.stderr);
+  const got = await f.offBoardJson('ticket:get', 'p', 'HD-51');
+  assert.deepEqual(got['acceptance-criteria'], [{ 'criteria-number': 1, description: 'AC1: from a file' }]);
+  assert.equal(f.backlog().tickets[0].description, got.description, 'mirror description updated');
+  assert.equal(f.history('HD-51').length, 1);
+});
+
+test('ASS-298 AC1: the file forms refuse, writing nothing, a missing file, a body the stdin form refuses, malformed JSON, or one argument too many', async () => {
+  const f = fixture();
+  f.putTicket('HD-52', ORIGINAL_BODY);
+  const original = (await f.offBoardJson('ticket:get', 'p', 'HD-52')).description;
+  f.seedBacklog({ key: 'HD-52', title: 'HD-52 title', description: original, variations: [] });
+  const before = { md: f.read('HD-52'), backlog: readFileSync(f.backlogFile, 'utf8') };
+  const staged = (name, content) => { const file = join(f.dir, name); writeFileSync(file, content); return file; };
+  const missing = join(f.dir, 'no-such.md');
+  for (const command of ['ticket:set-requirements', 'ticket:set-acceptance-criteria']) {
+    const r = await f.pipe('', command, 'p', 'HD-52', missing);
+    assert.equal(r.code, 1, `${command} missing file`);
+    assert.ok(r.stderr.includes(missing), `${command}: the error names the file: ${r.stderr}`);
+  }
+  for (const [name, body, pat] of [
+    ['H1 heading', '# A new title\n\n## Context\n\ntext\n', /H1/],
+    ['AC section', '## User story\n\n## Acceptance criteria\n\n1. x\n', /Acceptance criteria/],
+  ]) {
+    const r = await f.pipe('', 'ticket:set-requirements', 'p', 'HD-52', staged('req.md', body));
+    assert.equal(r.code, 1, name);
+    assert.match(r.stderr, pat, name);
+  }
+  for (const [name, body] of [['not JSON', 'nope'], ['not array', '{"a":1}'], ['empty description', '[{"criteria-number":1,"description":""}]']]) {
+    const r = await f.pipe('', 'ticket:set-acceptance-criteria', 'p', 'HD-52', staged('ac.json', body));
+    assert.equal(r.code, 1, name);
+    assert.match(r.stderr, /ticket:set-acceptance-criteria:[^\n]*criteria-number/i, name);
+  }
+  const extra = await f.pipe('', 'ticket:set-requirements', 'p', 'HD-52', staged('req.md', NEW_BODY), 'extra');
+  assert.equal(extra.code, 1);
+  assert.match(extra.stderr, /usage: ticket:set-requirements/);
+  assert.equal(f.read('HD-52'), before.md, 'the .md was not changed');
+  assert.equal(readFileSync(f.backlogFile, 'utf8'), before.backlog, 'backlog was not changed');
+  assert.deepEqual(f.history('HD-52'), [], 'no history line');
+});

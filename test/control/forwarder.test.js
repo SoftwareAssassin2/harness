@@ -343,3 +343,23 @@ test('ASS-238 AC1, ASS-239 AC1: the VM\'s agent.sh sends merge-request:update\'s
     }
   } finally { server.close(); }
 });
+
+// ASS-298 AC2: work:write's optional 5th argument (a host file path) is the
+// Mac's alone: the forwarder caps the rule at 4 arguments, so a VM keeps the
+// stdin form only.
+test('ASS-298 AC2: a VM\'s work:write with a 5th argument — a path or "-" — is refused (max-args); the 4-argument stdin form is still allowed', () => {
+  const f = fixture(), { tokens, assignments } = bindings(f.dir);
+  const may = (...argv) => authorize(tokens, assignments, 'harness-token', argv);
+  assert.deepEqual(may('work:write', 'harness', 'ASS-74', 'A', 'execution-plan.md').argv, ['work:write', 'harness', 'ASS-74', 'A', 'execution-plan.md']);
+  for (const fifth of ['/mnt/ticket/body.md', '-']) {
+    const r = may('work:write', 'harness', 'ASS-74', 'A', 'execution-plan.md', fifth);
+    assert.equal(r.argv, undefined, fifth);
+    assert.match(r.refuse ?? '', /work:write takes at most 4 arguments/, fifth);
+  }
+});
+
+test('ASS-298 AC2: the allowlist caps work:write at 4 arguments — { project: 0, ticket: 1, variation: 2, max-args: 4 } — and no other rule carries max-args', () => {
+  const allowlist = JSON.parse(readFileSync(join(ROOT, 'src', 'control', 'forwarder-allowlist.json'), 'utf8'));
+  assert.deepEqual(allowlist['work:write'], { project: 0, ticket: 1, variation: 2, 'max-args': 4 });
+  assert.deepEqual(Object.entries(allowlist).filter(([k, r]) => k !== 'work:write' && r && typeof r === 'object' && Object.hasOwn(r, 'max-args')).map(([k]) => k), []);
+});

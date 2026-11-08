@@ -207,7 +207,12 @@ Blocked for Human, saying what was found and what to do.
   `ticket:set-acceptance-criteria … -` (Extract Acceptance Criteria runs
   `enrich-ac-grouped`), a ticket comment with `ticket:post-comment … -`
   (Write Steps to Test runs `write-steps-to-test-grouped`), screenshots with
-  `work:add-screenshot`. A confined host agent writes only temp. validate.js
+  `work:add-screenshot`. A confined host agent writes only temp, so to save a
+  report it stages the body in a temp file and passes that path as the trailing
+  `<file>` argument of `work:write` / `ticket:set-requirements` /
+  `ticket:set-acceptance-criteria` (stdin would re-sandbox the call; ASS-298);
+  the forwarder caps `work:write` at four arguments, so a VM can give only
+  stdin, never a path. validate.js
   (`promptWriteErrors`) fails any prompt or persona telling an agent to write
   a file under `{ticket-folder}`, `{project-folder}` or `data/` without an
   `{agent-sh}` command.
