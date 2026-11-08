@@ -124,7 +124,7 @@ export function fitRows(rows, room) {
 // name-keyed on the agents screen so the tile input and the zoom share one draft.
 export function logView(state, { columns = 0, rows = Infinity, now = 0 }, view = AGENT_LOG) {
   const bottom = below(state) + platform(state, columns, now).length;
-  const rows_in = Math.max(5, rows - headerLines(state, columns, now).length - bottom - 3);
+  const rows_in = Math.max(4, rows - headerLines(state, columns, now).length - bottom - 3);   // box+prompt total, floored as before ASS-299 (max(3, …-4)+1)
   const chat = chatBox(state, { columns, rows: rows_in }, view);
   const boxHeight = chat.inner + 2;
   const body = scrollBox(chat.list, { width: columns, height: boxHeight, scroll: state[view.scroll] ?? Infinity, wrap: true });

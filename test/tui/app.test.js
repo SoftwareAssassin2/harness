@@ -6688,3 +6688,13 @@ test('ASS-299 AC6: the agents grid, the chat screen and the Chat tab render inta
     assert.ok(left?.text.some(l => l.includes('x')), `${size.columns}: ${left?.text.join('\n')}`);
   }
 });
+
+test('ASS-299 AC5: the zoomed log reserves the same box+prompt rows as before the chat component — Math.max(4, rows-chrome-3), no extra row on a cramped terminal', () => {
+  const st = agentReading(['line 1', 'line 2', 'line 3']);
+  for (const rows of [26, 28, 30, 44]) {
+    const size = { ...wide, rows };
+    const chrome = headerLines(st, size.columns, size.now).length + frame.below(st) + platform(st, size.columns, size.now).length;
+    const view = logScreen.logView(st, size, agentsScreen.AGENT_LOG);
+    assert.equal(view.body.length + view.prompt.length, Math.max(4, rows - chrome - 3), `rows=${rows}`);
+  }
+});
