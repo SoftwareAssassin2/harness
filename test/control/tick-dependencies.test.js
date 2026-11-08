@@ -112,6 +112,20 @@ test('ASS-195 AC1: a project without wait-for-dependencies, or with it false or 
   }
 });
 
+test('ASS-301 AC4: dependencyHold sees the flag project:set-wait-for-dependencies sets — none, no hold; on, held; off, released', async () => {
+  const sprint = () => [at('ABC-1', 'committed', { dependencies: ['ABC-2'] }), at('ABC-2', 'plan')];
+  const f = waiting({ flag: undefined, sprint: sprint() });
+  await f.ticks();
+  assert.equal(f.stateOf('ABC-1'), 'plan', f.lines.join('\n'));
+  const g = waiting({ flag: undefined, sprint: sprint() });
+  await g.agent('project:set-wait-for-dependencies', 'p', 'on');
+  await g.ticks(2);
+  held(g);
+  await g.agent('project:set-wait-for-dependencies', 'p', 'off');
+  await g.ticks();
+  assert.notEqual(g.stateOf('ABC-1'), 'committed', g.lines.join('\n'));
+});
+
 test('ASS-195 AC1: the wait is logged once per change of what it waits on, its keys in dependency order', async () => {
   const f = waiting({ sprint: [at('ABC-1', 'committed', { dependencies: ['ABC-4', 'ABC-2'] }), at('ABC-2', 'plan'), at('ABC-4', 'plan')] });
   await f.ticks(2);
