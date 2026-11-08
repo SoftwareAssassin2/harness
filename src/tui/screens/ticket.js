@@ -13,7 +13,7 @@ import { visible, wrap } from '../text.js';
 import { ticketLines, overlapsOf, workedByHand, refinementHistory, humanGate, gateLines, stateCounts, statesColumn, pendingChange, quickLines, stripLines, needsYou, defaultTab, gateWaits, tabWidth, panelWidth, ticketTabs, tabsOf, RETURN_STEPS } from '../ticket.js';
 import { featureOn } from '../features.js';
 import { below, headerLines, platform } from './frame.js';
-import { foldResults, promptRows, fitRows, viewLog } from './log.js';
+import { chatBox, viewLog } from './log.js';
 import { NONE, projectAssignments, liveAssignments, clamp, ICONS, backlogTickets, refinementName, color, red, sprintTickets, statusText, ticketAgents, chatSpend, refinementSteps } from './shared.js';
 
 // The answer form's fields, in tab order.
@@ -55,7 +55,8 @@ const CLOSED_TICKET = { ticket: null, ...OPENED_TICKET, ticketChatLog: null, tic
 
 // The ticket screen's chat (ASS-35): its log scrolls on the Chat tab (see ticketView), and closing leaves the ticket screen.
 const TICKET_LOG = {
-  log: 'ticketChatLog', scroll: 'ticketChatScroll', draft: 'ticketChatDraft', cursor: 'ticketChatCursor', message: 'ticketChatMessage',
+  log: 'ticketChatLog', scroll: 'ticketChatScroll', draft: 'ticketChatDraft', cursor: 'ticketChatCursor', events: 'ticketChatEvents', message: 'ticketChatMessage',
+  empty: () => 'no messages yet: type one, enter sends it',
   send: (state, text) => ({ ticketChatSend: { project: state.projects[state.project]?.id, key: state.ticket.key, text } }),
   close: CLOSED_TICKET,
   last: (state, size) => ticketView(state, size).pane?.last ?? 0,
@@ -313,12 +314,13 @@ function ticketView(state, size) {
     panes = [{ lines, scroll: state.ticketQuestionsScroll }];
     paged = { field: 'ticketQuestionsScroll', content: height };
   } else {
-    const log = foldResults(state.ticketChatLog?.filter(line => !line.startsWith('{"type":'))) ?? ['no messages yet: type one, enter sends it'];
+    // The Chat tab draws through the one chat component (ASS-299): the tab box's
+    // outer border is the scroll box, so the pane's head is what sending last
+    // said (ASS-35) above the component's help + blank, its lines are the
+    // component's filtered log, and its foot is the component's prompt rows.
     const said = state.ticketChatMessage ? [red(state.ticketChatMessage)] : [];
-    // The prompt has the tab's lines less what sending said and one for the log (ASS-43).
-    const prompt = fitRows(promptRows(state.ticketChatDraft, state.ticketChatCursor, true, text), height - said.length - 1);
-    const content = height - said.length - prompt.length;
-    panes = [{ head: said, lines: log, foot: prompt, wrap: true, scroll: state.ticketChatScroll ?? Infinity, last: scrollLast(log, { width, height: content + 2, wrap: true }) }];
+    const chat = chatBox(state, { columns: text, rows: height - said.length }, TICKET_LOG);
+    panes = [{ head: [...said, chat.help, ''], lines: chat.list, foot: chat.prompt, wrap: true, scroll: state.ticketChatScroll ?? Infinity, last: scrollLast(chat.list, { width: text, height: chat.inner + 2, wrap: true }) }];
   }
   const main = panes.at(-1);
   const open = openQuestions(state);

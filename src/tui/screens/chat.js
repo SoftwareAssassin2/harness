@@ -1,5 +1,5 @@
 // The chat screen (x): the project's chats, and a chat's log (ASS-201: moved from app.js).
-import { boxTable, scrollBox } from '../table.js';
+import { boxTable } from '../table.js';
 import { below, headerLines, platform } from './frame.js';
 import { logView } from './log.js';
 import { NONE, move, written, red } from './shared.js';
@@ -37,10 +37,10 @@ export function confirmDelete(state, key) {
 
 export function view(state, size) {
   if (state.chat != null) {
-    const { head, list, boxHeight, prompt } = logView(state, size, CHAT_LOG);
+    const { head, body, prompt } = logView(state, size, CHAT_LOG);
     const at = state.chat.id && state.chatsWritten[state.chat.id];
     if (at != null && at !== false) head[1] = `log last written ${written(at, size.now)}`;
-    return [...head, ...scrollBox(list, { width: size.columns, height: boxHeight, scroll: state.chatLogScroll ?? Infinity, wrap: true }), ...prompt, state.chatMessage];
+    return [...head, ...body, ...prompt, state.chatMessage];
   }
   const chats = chatLayout(state, size);
   const asking = state.chatConfirm && chats.list.find(c => c.id === state.chatConfirm);
