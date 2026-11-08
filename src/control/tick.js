@@ -51,11 +51,13 @@ import { dispatch } from './dispatch.js';
 import { fastTrack } from './fast-track.js';
 import { checkUsage } from './usage.js';
 import { checkApiCost } from './api-cost.js';
+import { checkPushAccount } from './push-account.js';
 import { detectReverts } from './reverts.js';
 import { raiseDependencies } from './dependencies.js';
 import { checkDisk, diskHeld } from './disk.js';
 import { sessionUsage } from '../agents/usage.js';
 import { monthCost } from '../agents/api-cost.js';
+import { pushAccount } from '../agents/forge.js';
 
 // createContext({ root, env, command, log, now }) — what every phase works
 // with: `root` the repo (agent.sh lives there), `env` the agent-cli's path
@@ -109,6 +111,12 @@ export function createContext({ root, env = process.env, command, log = () => {}
   // CLAUDE_USAGE_DISABLED is — so a test's control never reads the admin key
   // or calls the Cost Admin API. Tests replace it.
   ctx.apiCost = env.ANTHROPIC_API_COST_DISABLED === '1' ? null : (now, service) => monthCost({ now, env, service });
+  // pushAccount({ provider, host, service }) — the account a project's VM
+  // token for its repositories' forge pushes as (ASS-307, see
+  // src/agents/forge.js and push-account.js); null with PUSH_ACCOUNT_DISABLED=1
+  // — the test fixtures' env, as ANTHROPIC_API_COST_DISABLED is — so a test's
+  // control never reads a forge token or calls a forge. Tests replace it.
+  ctx.pushAccount = env.PUSH_ACCOUNT_DISABLED === '1' ? null : args => pushAccount({ ...args, env });
   ctx.cli = (args, env) => runCli(ctx, args, env);
   ctx.script = (argv, vm) => runScript(ctx, argv, vm);
   ctx.succeeds = (argv, vm) => scriptSucceeds(ctx, argv, vm);
@@ -137,9 +145,9 @@ const login = (command, args) => () => new Promise(done => execFile(command, arg
 
 // The phases that start agents, skipped while a restart drains.
 const NEW_WORK = new Set([fastTrack, refineBacklog, dispatch]);
-const PHASES = [finishEnded, superviseRegistries, superviseMemory, backupMemory, recordMemorySpend, superviseVms, fastTrack, runSteps, detectGaps, fireTimers, detectReverts, checkGcloud, checkGlab, checkUsage, checkApiCost, sampleHealth, raiseDependencies, refineBacklog, superviseAgents, dispatch];
+const PHASES = [finishEnded, superviseRegistries, superviseMemory, backupMemory, recordMemorySpend, superviseVms, fastTrack, runSteps, detectGaps, fireTimers, detectReverts, checkGcloud, checkGlab, checkUsage, checkApiCost, checkPushAccount, sampleHealth, raiseDependencies, refineBacklog, superviseAgents, dispatch];
 
-// tick(ctx) — the twenty phases, in order, each reading the data afresh; a
+// tick(ctx) — the twenty-one phases, in order, each reading the data afresh; a
 // phase that throws is logged under "error" and the next still runs. The
 // rate limits — recorded by the finish phase, so checked after it — are
 // logged and cleared (checkRateLimits), the tick going on. Then the disk

@@ -38,6 +38,9 @@ node_modules/
 # A project's Claude session usage and account, kept by control (ASS-47)
 /data/projects/*/claude-usage.json
 /data/projects/*/claude-usage.json.lock
+# A project's push account, as control last checked it (ASS-307)
+/data/projects/*/push-account.json
+/data/projects/*/push-account.json.lock
 # The Anthropic API organization's month-to-date spend, kept by control (ASS-153)
 /data/api-cost.json
 /data/api-cost.json.lock
