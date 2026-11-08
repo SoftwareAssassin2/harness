@@ -17,7 +17,11 @@ set -euo pipefail
 #     the blocked ticket's own key), so there is nothing to fast-track;
 #   - <ticket> is not an off-board key (a project issue in the project's own
 #     ticket system, ASS-83 Q2): fast-track is off-board only;
-#   - <ticket> is in the active sprint already: it is left where it is.
+#   - <ticket> is in the active sprint already: it is left where it is;
+#   - <ticket>'s off-board status is not Backlog (Committed, In Progress or
+#     Done, outside the active sprint): AC2 scopes fast-tracking to a ticket
+#     "still at Backlog" — a Done or otherwise-in-progress ticket is left as
+#     it is, not reopened and pulled into the sprint fast-tracked.
 # A failed join (no sprint tracking work, an open blocking question) is
 # tolerated: the ticket stays off-board at Backlog with its mark — still
 # waited on (ticket:wait-on, ticket:fix-landed read the backlog too) and
@@ -45,6 +49,9 @@ in_sprint() {
   jq -e --arg key "$key" 'any((.features, .bugs, .spikes) // [] | .[]; .key | ascii_upcase == $key)' "$sprint" >/dev/null
 }
 ! in_sprint || skip "$key is in $home's active sprint already: left where it is"
+
+status="$(off_board_run "$command" ticket:get "$home" "$key" | jq -r .status)" || skip "could not read $key's off-board status"
+[[ "$status" == "Backlog" ]] || skip "$key is $status, not Backlog: left as it is"
 
 marked=false joined=false
 if off_board_run "$command" ticket:mark-fast-track "$home" "$key" >/dev/null; then

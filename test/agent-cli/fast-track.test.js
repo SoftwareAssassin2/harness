@@ -88,6 +88,15 @@ test('ASS-306 AC2: a fix ticket already in the sprint is left where it is — un
   assert.deepEqual(f.ticket('HD-2'), before);
 });
 
+test('ASS-306 AC2: a fix ticket off-board but not Backlog (Done, outside the active sprint) is left as it is — unmarked, unmoved, exit 0', async () => {
+  const f = await offBoard();
+  await run(OFF_BOARD, ['ticket:update-status', 'p', 'HD-2', 'Done'], { env: f.env });
+  await f.agent('ticket:fast-track', 'p', 'X-1', 'HD-2');
+  assert.equal(f.sprint().bugs.some(t => t.key === 'HD-2'), false);
+  const got = JSON.parse((await run(OFF_BOARD, ['ticket:get', 'p', 'HD-2'], { env: f.env })).stdout);
+  assert.deepEqual([got.status, 'fast-track' in got], ['Done', false]);
+});
+
 test('ASS-306 AC3: ticket:fast-track no-ops when {ticket} is the blocked ticket itself (ticket == work-item) — nothing joined, exit 0', async () => {
   const f = await offBoard();
   await f.agent('ticket:fast-track', 'p', 'HD-1', 'HD-1');         // no fix ticket raised: {ticket} fell back to {work-item}
