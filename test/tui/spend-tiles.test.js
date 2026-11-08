@@ -62,15 +62,14 @@ test('ASS-271 AC3: the project\'s chat-screen turns (chatSpend, its chat-spend.j
   assert.ok(out.slice(6, 10).some(l => l.includes('$35.26') && l.includes('$60.26')), out.slice(6, 10).join('\n'));
 });
 
-test('ASS-269 AC3: the project\'s memory spend (its Hindsight\'s Claude calls, memory-spend.json) counts in Day Spend and Sprint Spend, shown as memory spend', () => {
+test('ASS-269 AC3: the project\'s memory spend (its Hindsight\'s Claude calls, memory-spend.json) counts in Day Spend and Sprint Spend, which show the total alone', () => {
   const memorySpend = [
     { timestamp: '2026-09-30T14:00:00Z', billing: 'api', source: 'memory', model: 'claude-haiku-5-5', 'cost-usd': 0.4 },   // today
     { timestamp: '2026-09-29T14:00:00Z', billing: 'api', source: 'memory', model: 'claude-haiku-5-5', 'cost-usd': 0.1 },   // earlier in the sprint
   ];
   const out = lines({ ...state, projects: [{ ...project, memorySpend }] }, { columns: 300, rows: 44, now });
-  assert.ok(out.some(l => l.includes('$34.66 incl. $0.40 memory')), out.join('\n'));
-  assert.ok(out.some(l => l.includes('$59.76 incl. $0.50 memory')), out.join('\n'));
+  assert.ok(!out.some(l => l.includes('memory')), out.join('\n'));   // the total alone, no memory part named
   assert.ok(out.some(l => /Day Spend .*Sprint Spend/.test(l)));
-  const box = out.find(l => l.includes('$34.66 incl.'));
-  assert.match(box, /│ \$34\.66 incl\. \$0\.40 memory │ {4}│ \$59\.76 incl\. \$0\.50 memory │$/);   // each boxed, its width the value's
+  const box = out.find(l => l.includes('$34.66'));
+  assert.match(box, /│ {2}\$34\.66 {3}│ {4}│ {4}\$59\.76 {4}│$/);   // each boxed, as wide as its label
 });

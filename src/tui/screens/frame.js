@@ -351,25 +351,22 @@ function sprintLines(sprint, now, focused, project, warnings) {
 // what the project spent (ASS-216) on the day on show and over its sprint
 // through that day: its sprint's and backlog's dispatches, its ticket chats'
 // turns, its chat-screen turns (ASS-271) and its Hindsight's Claude calls
-// (spend.js), in dollars to the cent — the memory's part named when it has one
-// ("$4.20 incl. $0.40 memory", ASS-269); each a value boxed, as wide as its
-// label or value, with its label beneath.
+// (spend.js), in dollars to the cent, the total alone; each a value boxed, as
+// wide as its label or value, with its label beneath.
 function metricTiles(state, now) {
   const { tickets, done } = sprintTickets(state);
   const unique = list => [...new Map(list.map(t => [t.key, t])).values()];
   const needed = operatorNeeded(state, tickets).size;
   const delivered = unique(tickets.filter(t => t.step?.sequence === done));
   const project = state.projects[state.project], sprint = viewedSprint(state), at = new Date(shownAt(state, now));
-  const memory = project?.memorySpend ?? [];
-  const records = spendRecords([...flattenSprint(sprint ?? {}), ...(project?.backlog ?? [])], project?.collaborations, project?.chatSpend, memory);
+  const records = spendRecords([...flattenSprint(sprint ?? {}), ...(project?.backlog ?? [])], project?.collaborations, project?.chatSpend, project?.memorySpend ?? []);
   const dollars = usd => `$${usd.toFixed(2)}`;
-  const spent = (all, mine) => (mine >= 0.005 ? `${dollars(all)} incl. ${dollars(mine)} memory` : dollars(all));
   return [
     [needed, 'Operator Needed Tickets', needed > 0 && '44;97'],
     [delivered.length, 'Delivered Tickets'],
     [delivered.reduce((sum, t) => sum + (t.points ?? 0), 0), 'Delivered Points'],
-    [spent(daySpend(records, at), daySpend(memory, at)), 'Day Spend'],
-    [spent(sprintSpend(records, sprint?.start, at), sprintSpend(memory, sprint?.start, at)), 'Sprint Spend'],
+    [dollars(daySpend(records, at)), 'Day Spend'],
+    [dollars(sprintSpend(records, sprint?.start, at)), 'Sprint Spend'],
   ].map(([value, label, fill]) => {
     const width = Math.max(label.length, String(value).length) + 2;
     const inside = middle(String(value), width);
