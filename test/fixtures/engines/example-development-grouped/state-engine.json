@@ -488,7 +488,7 @@
         {
             "id": "review",
             "name": "Review",
-            "description": "Risk assessment, human review, token expense, payment gate, variation selection",
+            "description": "Risk assessment, token expense, payment gate, variation selection",
             "vm": "running",
             "paired-ticket-system-status": "In Progress",
             "max-visits": 3,

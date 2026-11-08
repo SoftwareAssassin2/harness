@@ -4,7 +4,7 @@
             "id": "explain-the-change",
             "sequence": 1,
             "name": "Explain the Change",
-            "description": "Explaining in plain words what the variation changes and why, for the human review and each merge request's Summary",
+            "description": "Explaining in plain words what the variation changes and why, for the operator and each merge request's Summary",
             "max-visits": 3,
             "on-max-visits": "blocked",
             "action": {
@@ -69,43 +69,10 @@
                     "condition": {
                         "turn-complete": true
                     },
-                    "move-to-state": "human-review"
+                    "move-to-state": "token-expense-check"
                 }
             ],
             "run-location": "vm"
-        },
-        {
-            "id": "human-review",
-            "sequence": 3,
-            "name": "Human Review",
-            "description": "The operator reviews the variation before any of its merge requests leaves draft or merges",
-            "max-visits": 3,
-            "on-max-visits": "blocked",
-            "action": {
-                "type": "human",
-                "instructions": "Review the variation: its explanation, risk profile, merge requests with their screenshots, the test failures master has too, and its demo. Approve it to go on (its merge requests leave draft or merge only after this), or reject it with the reason and the step it goes back to — Write Execution Plan (the default), Write Test Plan or Generate Solution: your reason is added to the variation's operator-review file, which every step from there on reads, and the next pass explains it anew with your reason."
-            },
-            "exit-events": [
-                {
-                    "condition": {
-                        "human-review": "Approved"
-                    },
-                    "move-to-state": "token-expense-check"
-                },
-                {
-                    "condition": {
-                        "human-review": "Rejected"
-                    },
-                    "move-to-state-from-human-review": "return-to",
-                    "move-to-state": "replan"
-                },
-                {
-                    "condition": {
-                        "fast-tracked": true
-                    },
-                    "move-to-state": "token-expense-check"
-                }
-            ]
         },
         {
             "id": "token-expense-check",
@@ -235,7 +202,7 @@
         {
             "id": "replan",
             "name": "Back to Plan",
-            "description": "Rejected by a human (at Human Review, back to Write Execution Plan, its default); the parent step sends the ticket back into Plan at Write Execution Plan",
+            "description": "Rejected by a human at the Payment Gate; the parent step sends the ticket back into Plan at Write Execution Plan",
             "is-done": true,
             "action": {
                 "type": "none"
@@ -245,7 +212,7 @@
         {
             "id": "write-test-plan",
             "name": "Back to Write Test Plan",
-            "description": "Rejected at Human Review back to Write Test Plan (ASS-228); the parent step sends the ticket back into Plan at Write Test Plan",
+            "description": "Unreached since ASS-314 (grouped-review has no Human Review to reject back from); kept as the parent Review step reads it",
             "is-done": true,
             "action": {
                 "type": "none"
@@ -255,7 +222,7 @@
         {
             "id": "generate-solution",
             "name": "Back to Generate Solution",
-            "description": "Rejected at Human Review back to Generate Solution (ASS-228); the parent step sends the ticket back into Build at Generate Solution",
+            "description": "Unreached since ASS-314 (grouped-review has no Human Review to reject back from); kept as the parent Review step reads it",
             "is-done": true,
             "action": {
                 "type": "none"

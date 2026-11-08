@@ -407,7 +407,8 @@ test('ASS-215 AC1: a refresh whose vm:start prints a kind other than the declare
 // planFor) — ex-2280-a and ex-2493-a, waiting for a slot, held 32 of the
 // host's 48 GiB. One in-progress slot here (the fixture's harness.json).
 const ONE_SEAT = { limits: { 'max-tickets-in-progress': 1 } };
-const HUMAN_REVIEW = at('review', ['grouped-review', 'human-review']);
+// ASS-314: grouped-review's Human Review is gone; its Payment Gate is the human step a variation waits at there.
+const PAYMENT_GATE = at('review', ['grouped-review', 'payment-gate']);
 
 test('ASS-233 AC1, AC3: a variation waiting for a slot has its VM stopped, logged with the reason, and not started; the seat holder\'s runs', async () => {
   const l = lifecycle({ A: [BUILDING, 'Stopped'], B: [BUILDING, 'Running'], C: [BUILDING, 'Stopped'] }, ONE_SEAT);
@@ -416,12 +417,12 @@ test('ASS-233 AC1, AC3: a variation waiting for a slot has its VM stopped, logge
 });
 
 test('ASS-233 AC1, AC3: a seat holder waiting at a human step (ASS-203) keeps its VM; the variation behind it waits for the slot without one', async () => {
-  const l = lifecycle({ A: [HUMAN_REVIEW, 'Running'], B: [BUILDING, 'Running'] }, ONE_SEAT);
+  const l = lifecycle({ A: [PAYMENT_GATE, 'Running'], B: [BUILDING, 'Running'] }, ONE_SEAT);
   assert.deepEqual(await l.pass(), ['vm:stop p abc-3-b']);
 });
 
 test('ASS-233 AC2, AC3: once the seat holder leaves, the waiting variation\'s VM is started, and its step waits for it (awaitsVm) — not judged while it waits for its slot', async () => {
-  const l = await reentering({ A: [HUMAN_REVIEW, 'Running'], B: [TESTING, 'Running'] }, ONE_SEAT);
+  const l = await reentering({ A: [PAYMENT_GATE, 'Running'], B: [TESTING, 'Running'] }, ONE_SEAT);
   await l.tick(); await l.settle();
   assert.ok(l.calls.includes('vm:stop p abc-3-b'), l.calls.join('\n'));
   writeFileSync(join(l.v.instances, 'abc-3-b', 'status'), 'Stopped');   // as vm:stop left it
