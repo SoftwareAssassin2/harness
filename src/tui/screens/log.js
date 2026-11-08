@@ -125,9 +125,10 @@ export function logView(state, { columns = 0, rows = Infinity, now = 0 }, view =
 // the code point before the cursor and delete the one under it;
 // enter asks for the whole draft to be sent as `agentPrompt`, for main.js to hand the
 // agent-cli, once it is not blank; escape clears it, or with none returns to
-// the screen it was opened from (view.back) as it was; ctrl+o shows or hides the JSON event lines
-// (unfolding/folding tool results with them, ASS-40, ASS-299), following the end
-// again; ↑/↓ scroll no further than the last line, and
+// the screen it was opened from (view.back) as it was; ctrl+o is the events/expand
+// toggle — it expands every chat-look line to its full self (whole results, diffs
+// and thinking) and shows the raw JSON event lines with them (ASS-40, ASS-299,
+// ASS-300), following the end again; ↑/↓ scroll no further than the last line, and
 // reaching it follows the end again as the log grows.
 // Sending and clearing put the cursor back at the start.
 // shift+enter puts a newline in the draft at the cursor (ASS-43), enter then
