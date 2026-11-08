@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Description: Replace a ticket's acceptance criteria — ticket:set-acceptance-criteria <project> <ticket-key> <variation> <json-file|-> | <project> <ticket-key> - < json.
+# Description: Replace a ticket's acceptance criteria — ticket:set-acceptance-criteria <project> <ticket-key> <variation> <json-file|-> | <project> <ticket-key> <json-file|-> < json.
 set -euo pipefail
 
 # Two forms. The 4-arg form writes the file's array (stdin's for "-", ASS-182:
@@ -9,8 +9,11 @@ set -euo pipefail
 # description (a string), given dev-status and testing-status "Incomplete"
 # when it has none.
 #
-# The 3-arg `-` form (ASS-180, host-only) replaces the ticket's own acceptance
-# criteria from stdin — the whole [{ criteria-number, description }] list,
+# The 3-arg form (ASS-180, host-only) replaces the ticket's own acceptance
+# criteria from stdin ("-") or from the file whose path is given instead
+# (ASS-298: a confined host agent can't pipe or redirect into agent.sh without
+# re-sandboxing it, so it stages the JSON in a file of its own and passes the
+# path, the call a bare one) — the whole [{ criteria-number, description }] list,
 # each description a non-empty, single-line string. An off-board ticket (its
 # key carries the off-board key prefix): rewrites the `## Acceptance criteria`
 # section of the ticket file through off-board.sh ticket:replace-acceptance-criteria
@@ -18,21 +21,27 @@ set -euo pipefail
 # under tickets.lock (see set_offboard_description), touching no variation's
 # acceptance-criteria. A Jira ticket: writes nothing, exits 0 saying to post a
 # comment. Fails, writing nothing, when the file/stdin is not such an array,
-# or the ticket or variation is missing.
+# the given file is no file, or the ticket or variation is missing.
 here="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
 source "$here/../sprint.bash"
 source "$here/../ticket-system.bash"
 
 command=ticket:set-acceptance-criteria
-usage="usage: $command <project> <ticket-key> <variation> <json-file|-> | <project> <ticket-key> - (JSON on stdin)"
+usage="usage: $command <project> <ticket-key> <variation> <json-file|-> | <project> <ticket-key> <json-file|-> (JSON on stdin) for -"
 
-if [[ $# -eq 3 && "${3:-}" == - ]]; then
+if [[ $# -eq 3 ]]; then
   project="$1" key="$(tr '[:lower:]' '[:upper:]' <<< "$2")"
+  from=stdin
+  if [[ "$3" != - ]]; then
+    from="$3"
+    [[ -f "$from" ]] || { echo "$command: no file $from: nothing written" >&2; exit 1; }
+    exec < "$from"
+  fi
   input="$(cat; echo x)"; input="${input%x}"
   printf '%s' "$input" | jq -se 'length == 1 and (.[0] | type == "array" and all(.[]; type == "object"
       and (.["criteria-number"] | type) == "number"
       and (.description | type) == "string" and (.description | test("\\S")) and ((.description | test("\n")) | not)))' >/dev/null 2>&1 \
-    || { echo "$command: stdin must be a JSON array of { criteria-number (number), description (non-empty, single-line string) }: nothing written" >&2; exit 1; }
+    || { echo "$command: $from must be a JSON array of { criteria-number (number), description (non-empty, single-line string) }: nothing written" >&2; exit 1; }
 
   home="$(off_board_home "$project")"
   prefix=""

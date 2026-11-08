@@ -140,3 +140,56 @@ test('ASS-228 AC2: operator-review.md is the operator\'s own — work:write and 
   }
   assert.deepEqual(readdirSync(folder), []);
 });
+
+// ASS-298 AC1: a confined host agent can't pipe or redirect (that re-sandboxes
+// agent.sh), so work:write takes the content from an optional 5th argument, a
+// file it staged in temp; stdin stays the form when it is omitted.
+test('ASS-298 AC1: work:write <project> <ticket> <variation|-> <name> <file> writes the file\'s content, whole, nothing on stdin — the variation\'s own or, for "-", a run folder\'s', async () => {
+  const { dir, folder } = projects();
+  const body = join(dir, 'body.md');
+  writeFileSync(body, '# Plan\n');
+  const r = await cli(dir, '', 'work:write', 'p', 'ABC-5', 'A', 'execution-plan.md', body);
+  assert.equal(r.code, 0, r.stderr);
+  assert.equal(readFileSync(join(folder, 'execution-plan-A.md'), 'utf8'), '# Plan\n');
+  assert.equal((await cli(dir, '', 'work:write', 'p', 'ABC-5', '-', 'estimate.md', body)).code, 0);
+  assert.equal(readFileSync(join(folder, 'estimate.md'), 'utf8'), '# Plan\n');
+  const run = join(dir, 'p', 'work', 'run-0a1b2c3d-4e5f');
+  mkdirSync(run);
+  writeFileSync(body, '# Harness\n');
+  assert.equal((await cli(dir, '', 'work:write', 'p', 'run-0a1b2c3d-4e5f', '-', 'harness.md', body)).code, 0);
+  assert.equal(readFileSync(join(run, 'harness.md'), 'utf8'), '# Harness\n');
+  assert.deepEqual(readdirSync(folder).filter(f => !/\.(md|lock)$/.test(f)), [], 'no temp file left behind');
+  assert.equal(readFileSync(body, 'utf8'), '# Harness\n', 'the staged file is left as it was');
+});
+
+test('ASS-298 AC1: the file form writes Unicode, "quotes", $dollars and `backticks` byte for byte', async () => {
+  const { dir, folder } = projects();
+  const content = '# Café — naïve ✓ 日本\n"quoted" \'single\' $HOME ${x} $(echo no) `uname`\n\\n back\\slash\n';
+  const body = join(dir, 'body.md');
+  writeFileSync(body, content);
+  assert.equal((await cli(dir, '', 'work:write', 'p', 'ABC-5', 'A', 'code-review.md', body)).code, 0);
+  assert.equal(readFileSync(join(folder, 'code-review-A.md'), 'utf8'), content);
+});
+
+test('ASS-298 AC1: the file form refuses, writing nothing, a missing file, a directory, an empty file, a refused or harness-own name, or a 6th argument', async () => {
+  const { dir, folder } = projects();
+  const body = join(dir, 'body.md');
+  writeFileSync(body, 'x\n');
+  const missing = await cli(dir, '', 'work:write', 'p', 'ABC-5', 'A', 'x.md', '/no/such/path');
+  assert.equal(missing.code, 1);
+  assert.match(missing.stderr, /\/no\/such\/path/, 'the error names the file');
+  const directory = await cli(dir, '', 'work:write', 'p', 'ABC-5', 'A', 'x.md', dir);
+  assert.equal(directory.code, 1);
+  const empty = join(dir, 'empty.md');
+  writeFileSync(empty, '');
+  const nothing = await cli(dir, '', 'work:write', 'p', 'ABC-5', 'A', 'x.md', empty);
+  assert.equal(nothing.code, 1);
+  assert.ok(nothing.stderr.includes(empty), `the error names the empty file: ${nothing.stderr}`);
+  for (const name of ['Upper.md', '../x.md']) assert.match((await cli(dir, '', 'work:write', 'p', 'ABC-5', 'A', name, body)).stderr, /work:write: invalid name/, name);
+  for (const [variation, name] of [['-', 'ticket.json'], ['A', 'operator-review.md']])
+    assert.match((await cli(dir, '', 'work:write', 'p', 'ABC-5', variation, name, body)).stderr, /work:write: .* is the harness's own: not written/, name);
+  const six = await cli(dir, '', 'work:write', 'p', 'ABC-5', 'A', 'x.md', body, 'extra');
+  assert.equal(six.code, 1);
+  assert.match(six.stderr, /usage: work:write/);
+  assert.deepEqual(readdirSync(folder).filter(f => !f.endsWith('.lock')), [], 'nothing written');
+});

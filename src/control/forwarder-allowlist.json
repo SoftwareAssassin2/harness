@@ -1,5 +1,5 @@
 {
-    "_comment": "The agent.sh commands a run-location: vm step may call through the forwarder (src/control/forwarder.js), each with the argument positions (0-based, after the command) that hold the project, ticket, variation and agent names: every one must match the calling VM's binding (an agent: one assigned to that ticket variation); and those that hold stdin, which must be \"-\": the content on stdin (ASS-182: /mnt/ticket is read-only, and no path reaches the Mac). A rule with \"fast-track\": true runs only for a VM whose ticket is fast-tracked (ASS-151: a golden-image rebuild ticket's host work; its project argument any project's). A command not listed is refused. validate.js fails a vm step whose script or prompt calls one missing here.",
+    "_comment": "The agent.sh commands a run-location: vm step may call through the forwarder (src/control/forwarder.js), each with the argument positions (0-based, after the command) that hold the project, ticket, variation and agent names: every one must match the calling VM's binding (an agent: one assigned to that ticket variation); and those that hold stdin, which must be \"-\": the content on stdin (ASS-182: /mnt/ticket is read-only, and no path reaches the Mac). A rule's \"max-args\" caps how many arguments the command may be given (ASS-298: work:write's optional trailing file path is the Mac's alone — a VM gives the content on stdin, never a path). A rule with \"fast-track\": true runs only for a VM whose ticket is fast-tracked (ASS-151: a golden-image rebuild ticket's host work; its project argument any project's). A command not listed is refused. validate.js fails a vm step whose script or prompt calls one missing here.",
     "assignments:status-update": { "agent": [0] },
     "assignments:approve": { "agent": [0] },
     "agent-interaction:send-message": { "agent": [0, 1] },
@@ -26,7 +26,7 @@
     "automated-tests:record": { "project": 0, "ticket": 1, "variation": 2 },
     "ci-checks:verify": { "project": 0, "ticket": 1, "variation": 2 },
     "ticket:set-demo-plan": { "project": 0, "ticket": 1, "variation": 2 },
-    "work:write": { "project": 0, "ticket": 1, "variation": 2 },
+    "work:write": { "project": 0, "ticket": 1, "variation": 2, "max-args": 4 },
     "work:append": { "project": 0, "ticket": 1, "variation": 2 },
     "work:add-screenshot": { "project": 0, "ticket": 1, "variation": 2 },
     "work:output-page": { "project": 0, "ticket": 1, "variation": 2 },

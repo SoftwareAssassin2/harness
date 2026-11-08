@@ -9,7 +9,7 @@ Check whether every project's local environments are ready for agents to work in
    - It exists and starts
    - Whether it needs rebuilding (needs-rebuilt, or its base image or config changed)
    - The tools the workflow's scripts call are available inside it
-4. Write the report to {ticket-folder}/local-environment.md (through `{agent-sh} work:write {project} <folder> - local-environment.md`, <folder> the last part of {ticket-folder}, the whole file on stdin), one section per project: each problem with its evidence and the fix you'd recommend. Flag any value still set to TODO or null that the factory needs.
+4. Write the report to {ticket-folder}/local-environment.md — stage it in a temp file of your own, unique to this run (mktemp, writing temp is allowed), then `{agent-sh} work:write {project} <folder> - local-environment.md <report-file>`, <folder> the last part of {ticket-folder}, <report-file> that temp file's absolute path, a bare call (a pipe, redirect or heredoc would re-sandbox it), one section per project: each problem with its evidence and the fix you'd recommend. Flag any value still set to TODO or null that the factory needs.
 
 Don't change anything — only report. If everything is ready, say so.
 
