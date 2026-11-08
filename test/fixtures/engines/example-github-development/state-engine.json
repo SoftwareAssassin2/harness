@@ -643,7 +643,8 @@
                         ]
                     },
                     "move-to-state": "build",
-                    "start-sub-engine-at": "generate-solution"
+                    "start-sub-engine-at": "generate-solution",
+                    "cause": "merge-gate-red"
                 },
                 {
                     "condition": {
