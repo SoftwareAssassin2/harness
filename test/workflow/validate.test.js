@@ -447,6 +447,45 @@ test('ASS-182 AC3: every real prompt and persona writes the harness\'s data only
   assert.deepEqual(promptWriteErrors(ROOT), []);
 });
 
+test('ASS-303 AC1-AC3: the grouped create-ticket prompt states the bare-command-line rule for both create commands, with the report-and-retry-once-bare rule on a failed create; the flat prompt is untouched', () => {
+  const grouped = readFileSync(join(ROOT, 'prompts', 'create-ticket-grouped', 'prompt.txt'), 'utf8');
+  const flat = readFileSync(join(ROOT, 'prompts', 'create-ticket', 'prompt.txt'), 'utf8');
+
+  // AC1: both create commands are named, and the raise-bug line keeps its f.json placeholder (pinned verbatim elsewhere, raise-bug.test.js:146)
+  assert.match(grouped, /off-board\.sh ticket:create/);
+  assert.match(grouped, /agent\.sh ticket:raise-bug <name> "<title>" f\.json \[Story\]/);
+
+  // AC1: the bare-command-line rule, with the forbidden syntax named together in its own sentence (a stray && elsewhere must not satisfy it)
+  const plain = grouped.replace(/`/g, '');
+  const bareRuleSentence = (plain.match(/[^.]*bare command line[^.]*\./) ?? [''])[0];
+  assert.notEqual(bareRuleSentence, '');
+  assert.match(bareRuleSentence, /no pipe, redirect, heredoc, *&&, *;, *\$\(…\)/);
+  assert.match(bareRuleSentence, /\bcd\b/);
+
+  // AC1: the body is a file-path argument, never on stdin
+  assert.match(grouped, /never on stdin/);
+
+  // AC1: the reason is stated, so the rule doesn't read as style
+  assert.match(grouped, /sandboxed/);
+
+  // AC1 regression guard: the wording that caused the bug (ASS-301) is gone
+  assert.doesNotMatch(grouped, /mktemp/);
+
+  // AC2: a failed create is reported verbatim, retried once bare, and only then finishes with an empty key
+  assert.match(grouped, /report/);
+  assert.match(grouped, /as it printed it/);
+  assert.match(grouped, /once more, bare/);
+  assert.match(grouped, /Only if that fails too/);
+  assert.match(grouped, /Finish with JSON: \{"key": "<ticket key>"\}/);
+
+  // AC3: the flat prompt is untouched
+  assert.doesNotMatch(flat, /bare command line/);
+  assert.doesNotMatch(flat, /never on stdin/);
+  assert.doesNotMatch(flat, /once more, bare/);
+  assert.match(flat, /acli jira workitem create --project <key>/);
+  assert.match(flat, /temp file made with mktemp/);
+});
+
 test('ASS-277: given a project\'s own engines folder, the validator finds the engines its steps run there before engines/ — a sub-engine, its start step and its done steps, and the refinement engine it runs — as control does for that project', () => {
   const own = mkdtempSync(join(tmpdir(), 'own-'));
   const put = (name, json) => { mkdirSync(join(own, name), { recursive: true }); writeFileSync(join(own, name, 'state-engine.json'), JSON.stringify(json)); };
