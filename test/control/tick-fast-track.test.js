@@ -128,7 +128,7 @@ test('ASS-83 AC4: control logs a fast-tracked ticket joining the sprint while it
   writeFileSync(join(f.dir, 'projects', 'p', 'backlog.json'), JSON.stringify({ tickets: [{ key: 'F-9', 'fast-track': true, variations: [] }, { key: 'B-1', variations: [] }] }));
   await f.cycle();
   await f.cycle();
-  assert.deepEqual(f.logged(/^fast-track /), ['fast-track fast-tracked F-9 is in the backlog, not the sprint: its join failed; the health check tries again on its next run']);
+  assert.deepEqual(f.logged(/^fast-track /), ['fast-track fast-tracked F-9 is in the backlog, not the sprint: its join failed; join it by hand, or its source tries again on its next run']);
   f.edit(s => { s.features.push({ key: 'F-9', 'fast-track': true, variations: [{ name: 'A', 'harness-status': hs('committed'), 'state-changes': [] }] }); });   // joined; its backlog entry stays (ASS-84)
   await f.cycle();
   await f.cycle();

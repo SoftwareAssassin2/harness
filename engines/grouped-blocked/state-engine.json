@@ -403,13 +403,39 @@
                     "condition": {
                         "is-done": true
                     },
+                    "move-to-state": "fast-track-fix"
+                }
+            ]
+        },
+        {
+            "id": "fast-track-fix",
+            "sequence": 12,
+            "name": "Fast-Track the Fix",
+            "description": "ASS-306: a harness off-board fix ticket is marked fast-track and joined to the sprint at committed, so it is built at once instead of waiting in the backlog for grooming (agent.sh ticket:fast-track, host-side). Best-effort: a project issue in its own ticket system, one already in the sprint, or none raised is left alone, and a failed join leaves the ticket off-board at Backlog with its mark — whatever happens, the fix is waited on as before",
+            "action": {
+                "type": "script",
+                "command": "./agent.sh ticket:fast-track {project} {work-item} {ticket}"
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "exit-code": 0
+                    },
+                    "move-to-state": "wait-on"
+                },
+                {
+                    "condition": {
+                        "not": {
+                            "exit-code": 0
+                        }
+                    },
                     "move-to-state": "wait-on"
                 }
             ]
         },
         {
             "id": "wait-on",
-            "sequence": 12,
+            "sequence": 13,
             "name": "Wait on the Fix",
             "description": "Record the fix ticket the blocked ticket waits on; none raised, or one no project claims, is Blocked for Human (AC7)",
             "record-script-output": true,
@@ -436,7 +462,7 @@
         },
         {
             "id": "await-fix",
-            "sequence": 13,
+            "sequence": 14,
             "name": "Await the Fix",
             "description": "Wait until the fix ticket is Done and merged, polling while it is not (exit 1, its waiting-exit-code: no failure, ASS-253); one closed unmerged is a failed attempt: Blocked again, afresh; nothing to wait on is Blocked for Human (AC7)",
             "record-script-output": true,
@@ -470,7 +496,7 @@
         },
         {
             "id": "done",
-            "sequence": 14,
+            "sequence": 15,
             "name": "Done",
             "description": "Fixed, repaired, or nothing wrong any more: the parent follows return-to-state",
             "is-done": true,
@@ -480,7 +506,7 @@
         },
         {
             "id": "retry",
-            "sequence": 15,
+            "sequence": 16,
             "name": "Retry",
             "description": "The fix ticket was closed unmerged, a failed attempt: the parent goes round Blocked again, its attempts counted afresh",
             "is-done": true,
@@ -490,7 +516,7 @@
         },
         {
             "id": "blocked-for-human",
-            "sequence": 16,
+            "sequence": 17,
             "name": "Blocked for Human",
             "description": "No fix could be raised, waited on or made, or 3 fix attempts failed: the parent goes to Blocked for Human, the run's ai-feedback saying why",
             "is-done": true,

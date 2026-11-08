@@ -3,7 +3,8 @@
 # points when estimated, depends-on: <KEY>, <KEY> when set (ASS-194,
 # ticket:set-dependencies), overlaps-with: <KEY>, <KEY> when set (ASS-196,
 # ticket:set-overlaps), priority when set, fast-track: true on a
-# fast-tracked ticket — ASS-83, ticket:create --fast-track — kept-whole: true
+# fast-tracked ticket — ASS-83, ticket:create --fast-track, and ASS-306,
+# ticket:mark-fast-track on one already created — kept-whole: true
 # on a ticket the operator kept whole and split-into: <KEY>, <KEY> on one split
 # into others — ASS-252, ticket:keep-whole and ticket:mark-split — created,
 # updated) between `---` lines, an H1 title, then H2 sections, the

@@ -14,7 +14,7 @@ import { priorityOrder } from '../../src/control/rank.js';
 const run = promisify(execFile);
 const OFF_BOARD = join(import.meta.dirname, '..', '..', 'off-board.sh');
 const STAMP = /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$/;
-const COMMANDS = ['create', 'get', 'list', 'update-name', 'update-status', 'update-requirements', 'add-acceptance-criteria', 'update-acceptance-criteria', 'replace-acceptance-criteria', 'update-points', 'update-priority', 'set-dependencies', 'set-overlaps', 'keep-whole', 'mark-split'];
+const COMMANDS = ['create', 'get', 'list', 'update-name', 'update-status', 'update-requirements', 'add-acceptance-criteria', 'update-acceptance-criteria', 'replace-acceptance-criteria', 'update-points', 'update-priority', 'set-dependencies', 'set-overlaps', 'keep-whole', 'mark-split', 'mark-fast-track'];
 const fails = (promise, message) => assert.rejects(promise, e => message.test(e.stderr));
 
 const write = (file, content) => {
@@ -563,6 +563,30 @@ test('ASS-252 AC3: ticket:keep-whole marks a ticket kept whole — once, a secon
   assert.equal(sections(once), sections(STORY('HD-1', BODY)));
   await fails(f.offBoard('ticket:keep-whole', 'p', 'HD-9'), /ticket:keep-whole: no ticket HD-9 in p/);
   await fails(f.offBoard('ticket:keep-whole', 'p'), /^usage: ticket:keep-whole/);
+});
+
+// ASS-306 AC2: the grouped blocked flow fast-tracks the existing off-board fix
+// ticket it finds at Backlog. ticket:mark-fast-track writes `fast-track: true`
+// into its front matter (before created:, see ticket.bash) and stamps updated,
+// so a later ticket:join-sprint carries the mark into the sprint; a ticket
+// already marked writes nothing and stamps nothing; a missing ticket fails.
+test('ASS-306 AC2: ticket:mark-fast-track marks a ticket fast-track — once, a second time writing nothing — ticket:get shows it, a missing ticket fails writing nothing', async () => {
+  const f = fixture();
+  f.put('HD-1', STORY('HD-1', BODY));
+  assert.equal((await f.json('ticket:get', 'p', 'HD-1'))['fast-track'], undefined);
+  assert.deepEqual(await f.json('ticket:mark-fast-track', 'p', 'hd-1'), { key: 'HD-1', 'fast-track': true });
+  assert.match(f.read('HD-1'), /^status: To Do\nfast-track: true\ncreated:/m);
+  assert.equal((await f.json('ticket:get', 'p', 'HD-1'))['fast-track'], true);
+  assert.match((await f.json('ticket:get', 'p', 'HD-1')).updated, STAMP);
+  assert.notEqual((await f.json('ticket:get', 'p', 'HD-1')).updated, '2020-01-01T00:00:00Z');   // stamped
+  const once = f.read('HD-1');
+  await f.json('ticket:mark-fast-track', 'p', 'HD-1');
+  assert.equal(f.read('HD-1'), once);                                                           // already marked: no write, no stamp
+  assert.equal(sections(once), sections(STORY('HD-1', BODY)));                                  // nothing but the front matter touched
+  const before = f.snapshot();
+  await fails(f.offBoard('ticket:mark-fast-track', 'p', 'HD-9'), /ticket:mark-fast-track: no ticket HD-9 in p/);
+  await fails(f.offBoard('ticket:mark-fast-track', 'p'), /^usage: ticket:mark-fast-track/);
+  assert.equal(f.snapshot(), before);
 });
 
 test('ASS-252 AC3: ticket:mark-split marks a ticket split into its pieces and Done; ticket:get shows the pieces; unknown keys, itself, or none are refused, writing nothing', async () => {
