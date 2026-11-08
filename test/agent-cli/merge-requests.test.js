@@ -391,6 +391,64 @@ test('ASS-219 AC2/AC4: the head pipeline\'s .pre jobs (mr-title) are waited for 
   assert.ok(!g.forge.log('glab').some(l => /pipelines/.test(l)));
 });
 
+// ASS-302: GitHub truncates a commit subject over ~70 characters in messageHeadline — cut at 69 characters
+// and ended with "…" (U+2026) — and holds the rest in messageBody, itself led by "…", the commit's own
+// body following after a blank line.
+// LONG_SUBJECT is 104 characters, its trailing (ABC-5) past the cut, as seen on ASS-301's branch.
+const LONG_SUBJECT = 'ABC-5: Close the account and re-pin the five cluster allowances it held open while it all drains (ABC-5)';
+const COMMIT_BODY = 'The allowances were pinned by hand in the console.';
+const truncated = (subject = LONG_SUBJECT, body = COMMIT_BODY) => ({ messageHeadline: `${subject.slice(0, 69)}…`, messageBody: `…${subject.slice(69)}\n\n${body}` });
+
+// Project p's one merge request on GitHub, MR 1 (#4) Open, its PR as gh pr view answers it; f.pr re-answers
+// it, f.check and f.report read as detailed()'s do.
+async function hubDetailed({ title = 'ABC-5: Close the account', body = `> ABC-5\n\n- ${LONG_SUBJECT}`, commits = [truncated()] } = {}) {
+  const f = await planned([{ id: 1, repository: HUB }]);
+  f.record({ 1: { status: 'Open', key: '#4', base: 'main' } });
+  f.pr = (v = {}) => f.forge.route('gh', /^pr view 4 --repo o\/h --json title,body,commits$/, { out: { title, body, commits, ...v } });
+  f.pr();
+  f.check = async () => JSON.parse((await f.agent('merge-request:check-details', 'p', 'ABC-5', 'A')).stdout);
+  f.report = join(f.dir, 'p', 'work', 'ABC-5', 'merge-request-details-check-A.md');
+  return f;
+}
+
+test('ASS-302 AC1/AC3: a GitHub commit subject cut short in messageHeadline is rebuilt from messageBody, both "…" markers left off, before the match — the full subject in the description passes with no report, case aside and its trailing (KEY) aside; an empty or absent messageBody falls back to the headline', async () => {
+  const f = await hubDetailed();
+  assert.deepEqual(await f.check(), { status: 'passed' });
+  assert.equal(existsSync(f.report), false);
+  // The commit's own body, past the subject's first line, is not folded into the subject: the description never names it.
+  assert.ok(!`> ABC-5\n\n- ${LONG_SUBJECT}`.includes(COMMIT_BODY));
+  // The same subject named in another case, and named without the trailing (ABC-5) that sits in the remainder.
+  for (const body of [`> ABC-5\n\n- ${LONG_SUBJECT.toLowerCase()}`, `> ABC-5\n\n- ${LONG_SUBJECT.replace(' (ABC-5)', '')}`]) {
+    const g = await hubDetailed({ body });
+    assert.deepEqual(await g.check(), { status: 'passed' }, body);
+    assert.equal(existsSync(g.report), false);
+  }
+  // A headline ending in "…" with no remainder to rebuild from: the headline without it, and no jq error taking the command down.
+  for (const messageBody of ['', null]) {
+    const g = await hubDetailed({ commits: [{ ...truncated(), messageBody }], body: `> ABC-5\n\n- ${LONG_SUBJECT.slice(0, 69)}` });
+    const { stdout, stderr } = await g.agent('merge-request:check-details', 'p', 'ABC-5', 'A');
+    assert.deepEqual(JSON.parse(stdout), { status: 'passed' }, JSON.stringify(messageBody));
+    assert.doesNotMatch(stderr, /jq: error/, stderr);
+  }
+});
+
+test('ASS-302 AC2/AC3: a subject missing from the description fails, the report naming the full untruncated subject and never GitHub\'s "…" form; naming it passes and removes the report, and an untruncated commit missing beside a truncated one present is listed alone', async () => {
+  const f = await hubDetailed({ body: '> ABC-5\n\n- Something else' });
+  assert.deepEqual(await f.check(), { status: 'failed' });
+  const report = readFileSync(f.report, 'utf8');
+  assert.ok(report.includes(`- ${LONG_SUBJECT.replace(' (ABC-5)', '')}`), report);
+  assert.ok(!report.includes('…'), report);
+  // Named in the description now.
+  f.pr({ body: `> ABC-5\n\n- ${LONG_SUBJECT}` });
+  assert.deepEqual(await f.check(), { status: 'passed' });
+  assert.equal(existsSync(f.report), false);
+  const g = await hubDetailed({ commits: [truncated(), { messageHeadline: 'Keep the audit row' }] });
+  assert.deepEqual(await g.check(), { status: 'failed' });
+  const mixed = readFileSync(g.report, 'utf8');
+  assert.ok(mixed.includes('- Keep the audit row'), mixed);
+  assert.ok(!mixed.includes(LONG_SUBJECT.slice(0, 69)), mixed);
+});
+
 test('ASS-219 AC2: on GitHub the title and commits come from gh pr view, and with no pre-stage jobs there it passes at once; Closed, Merged and Not Created ones are not checked', async () => {
   const f = await planned([{ id: 1, repository: HUB }, { id: 2, repository: APP }, { id: 3, repository: APP }]);
   f.record({ 1: { status: 'Open', key: '#4', base: 'main' }, 2: { status: 'Merged', key: '!8', base: 'master' } });
