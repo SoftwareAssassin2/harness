@@ -6,7 +6,7 @@ import { mkdirSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { execFile, execFileSync } from 'node:child_process';
 import { join } from 'node:path';
-import { initialState, handleKey, render, decided, controlExited, controlDraining } from './app.js';
+import { initialState, handleKey, render, decided, controlStarted, controlExited, controlDraining } from './app.js';
 import { loadProjects, loadWorkflows, loadPauses, loadSelfHealing, loadAssignments, loadTransientEngines, loadChats, loadHarness, loadModelUsage, loadDiskSpace, watchFiles, dataFiles, keepSame, projectsChanged } from './load.js';
 import { startControl } from '../control/process.js';
 import { ender, stillNamed } from './shutdown.js';
@@ -200,6 +200,10 @@ const controls = state.projects.map(p => startControl({
     if (state.screen === 'c' || legend) draw();
   },
 }));
+// Each running control's process id and when it started go on the state, for the footer's control box (ASS-310);
+// they all start in this tick, so one start time stands for them all, and controlExited drops each as it ends.
+const startTime = new Date();
+controls.forEach((c, i) => { state = controlStarted(state, controlIds[i], { pid: c.pid, startTime }); });
 // restartWaitsFor() — the controls still running that harness:request-restart's request names (stillNamed).
 const ended = new Set();
 const RESTART = join(process.env.HARNESS_HOME ?? join(homedir(), '.harness'), 'restart-requested.json');

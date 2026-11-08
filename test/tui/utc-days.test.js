@@ -77,7 +77,7 @@ const controlBox = s => lines(s, { columns: 200, rows: 50, now: new Date('2026-1
 
 test('ASS-294 AC1/AC3: the golden image\'s built date is its UTC day, and says UTC', () => {
   const golden = { name: 'golden-p', 'built-at': LATE.toISOString() };
-  const box = controlBox(initialState({ projects: [{ id: 'p', name: 'P', sprint: null, control: { status: 'Online' }, environments: [], golden }] }));
+  const box = controlBox(initialState({ projects: [{ id: 'p', name: 'P', sprint: null, environments: [], golden }], controls: { p: { pid: 1, startTime: '2026-10-01T15:51:00Z' } } }));
   assert.ok(box.includes('golden image: golden-p (built 2026-11-08 UTC)'), box.join('\n'));
 });
 
