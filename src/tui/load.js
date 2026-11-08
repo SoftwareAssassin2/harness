@@ -73,7 +73,10 @@ const asShown = sprint => sprint && Object.fromEntries(Object.entries(sprint).ma
 // tickets it depends on (wait-for-dependencies, ASS-195);
 // rateLimit its rate-limit.json (one entry per credential kind, ASS-215), or null (ASS-94); claudeUsage its
 // claude-usage.json — its login's session and weekly (ASS-65) usage and account, as control last
-// read them — or null (ASS-47); collaborations each ticket's
+// read them — or null (ASS-47); pushAccount its push-account.json — the
+// account its VM token for its repositories' forge pushes as, as control last
+// checked (ASS-307, src/control/push-account.js) — or null;
+// collaborations each ticket's
 // chat on its screen (see loadCollaborations); memorySpend what its Hindsight
 // spent on Claude (see loadMemorySpend, ASS-269); demoPlans each variation's
 // demo plan (see loadDemoPlans); reviews what Human Review shows of each
@@ -110,6 +113,7 @@ export const loadProjects = (dir, lima = limaHome()) => readdirSync(dir)
 
       rateLimit: existsSync(join(dir, name, 'rate-limit.json')) ? readJson(join(dir, name, 'rate-limit.json')) : null,
       claudeUsage: existsSync(join(dir, name, 'claude-usage.json')) ? readJson(join(dir, name, 'claude-usage.json')) : null,
+      pushAccount: existsSync(join(dir, name, 'push-account.json')) ? readJson(join(dir, name, 'push-account.json')) : null,   // ASS-307: control's last push-account check
       accountHold: project['account-hold'] ?? null,
       apiCapHold: project['api-cap-hold'] ?? null,   // ASS-217: the API cap holding its fallback, control's
       hindsight: project.hindsight ?? null,   // its memory's server, for the memory screen (ASS-62)
@@ -322,7 +326,7 @@ export function watchFiles(files, onChange, { delay = 50 } = {}) {
 // dataFiles(root, { projects, workflows, project, day }) — the files the
 // dashboard reads, to watch: assignments.json, chats.json, api-cost.json,
 // context-windows.json, harness.json (see loadApiCost and loadModelUsage) and disk-space.json (loadDiskSpace), each workflow's
-// state-engine.json (engines/'s, or a project's own), each project's project.json, gcloud- and glab-requires-reauthentication, rate-limit.json, claude-usage.json, api-cost.json, sprints.json, backlog.json, questions
+// state-engine.json (engines/'s, or a project's own), each project's project.json, gcloud- and glab-requires-reauthentication, rate-limit.json, claude-usage.json, push-account.json, api-cost.json, sprints.json, backlog.json, questions
 // files (see loadQuestions), ticket chats (see loadCollaborations) and chat-spend.json (see loadChatSpend) — and of the sprints only the one on show: the
 // selected project's snapshot of the past `day`, or its active sprint.json;
 // then each project's golden image (ASS-292: loadGolden) as its golden-<id>
@@ -342,7 +346,7 @@ export function dataFiles(root, { projects, workflows, project, day }, lima = li
     join(dataDir(root), 'disk-space.json'),
     ...workflows.map(w => w.file ?? join(root, 'engines', w.name, 'state-engine.json')),   // a project's own at its file (ASS-277)
     ...projects.flatMap(({ id }) => [
-      join(dir(id), 'project.json'), join(dir(id), 'gcloud-requires-reauthentication'), join(dir(id), 'glab-requires-reauthentication'), join(dir(id), 'rate-limit.json'), join(dir(id), 'claude-usage.json'), join(dir(id), 'api-cost.json'), join(dir(id), 'memory-spend.json'), join(dir(id), 'sprints.json'), join(dir(id), 'backlog.json'), join(dir(id), 'global-questions-and-answers.json'), join(dir(id), 'chat-spend.json'),
+      join(dir(id), 'project.json'), join(dir(id), 'gcloud-requires-reauthentication'), join(dir(id), 'glab-requires-reauthentication'), join(dir(id), 'rate-limit.json'), join(dir(id), 'claude-usage.json'), join(dir(id), 'push-account.json'), join(dir(id), 'api-cost.json'), join(dir(id), 'memory-spend.json'), join(dir(id), 'sprints.json'), join(dir(id), 'backlog.json'), join(dir(id), 'global-questions-and-answers.json'), join(dir(id), 'chat-spend.json'),
       ...(existsSync(work(id)) ? readdirSync(work(id)).toSorted() : []).flatMap(ticket => ['questions-and-answers.json', 'collaboration.json'].map(file => join(work(id), ticket, file))),
     ]),
     ...(shown ? [shown] : []),

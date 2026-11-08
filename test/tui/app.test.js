@@ -6554,6 +6554,112 @@ test('ASS-293 AC3: the red control DOWN box shows the same line, still checked l
   assert.equal(down({}).at(-1), 'hindsight: checking');
 });
 
+// ===== ASS-307: the project's repository provider, repository link and push account in the control box =====
+// The footer's first box, cell by cell (raw: with its colors and links; else stripped) — the
+// control box (or control DOWN), never the models box, which has its own `account:` line.
+const footerOf = (s, columns = screen.columns) => platform(s, columns, screen.now);
+const rawCells = (s, columns) => {
+  const rows = footerOf(s, columns);
+  return rows.slice(1, rows.findIndex(l => l.includes('└'))).map(l => l.split('│')[1].slice(1).trimEnd());
+};
+const controlCells = (s, columns) => rawCells(s, columns).map(strip).filter(Boolean);
+const HUB = 'https://github.com/SoftwareAssassin2/harness';
+const caselaw = Array.from({ length: 26 }, (_, i) => ({ url: `https://gitlab.com/caselaw-group/repo-${i}` }));
+const onForge = (repositories, extra = {}) => ({ id: 'p', name: 'P', sprint: null, control: { status: 'Online' }, environments: [], golden: null, claudeUsage: { email: 'me@example.com' }, repositories, ...extra });
+const forgeState = (repositories, extra) => initialState({ projects: [onForge(repositories, extra)] });
+const pushed = (provider, account, error = null) => ({ project: 'p', provider, account, error, 'checked-at': '2026-11-08T13:00:00Z' });
+const MACHINE = ['disk free: unknown', 'golden image: none', 'hindsight: none'];
+
+test('ASS-307 AC1: one repository — provider: GitHub and repo: owner/name linked to the repository\'s url, after the control fields and before the machine lines', () => {
+  const s = forgeState([{ url: HUB }], { pushAccount: pushed('GitHub', 'SoftwareAssassin2') });
+  assert.deepEqual(controlCells(s), ['control', 'status: Online', 'provider: GitHub', 'repo: SoftwareAssassin2/harness', 'account: SoftwareAssassin2', ...MACHINE]);
+  assert.ok(rawCells(s).some(c => c.includes(`repo: ${link('SoftwareAssassin2/harness', HUB)}`)), rawCells(s).join('\n'));
+  assert.deepEqual(controlCells(forgeState([{ url: 'https://gitlab.com/g/app' }])).slice(2, 4), ['provider: GitLab', 'repo: g/app']);
+});
+
+test('ASS-307 AC1: several repositories — repos: <N> in <group>, linked to their longest common group/owner page', () => {
+  const s = forgeState(caselaw);
+  assert.deepEqual(controlCells(s).slice(2, 4), ['provider: GitLab', 'repos: 26 in caselaw-group']);
+  const repos = rawCells(s).find(c => strip(c).startsWith('repos: '));
+  assert.ok(repos.includes('\x1b]8;;https://gitlab.com/caselaw-group\x1b\\'), repos);
+  assert.ok(repos.includes('26 in caselaw-group'));
+  const nested = forgeState([{ url: 'https://gitlab.com/g/sub/a' }, { url: 'https://gitlab.com/g/sub/b' }]);
+  assert.equal(controlCells(nested)[3], 'repos: 2 in g/sub');
+  assert.ok(rawCells(nested)[3].includes('\x1b]8;;https://gitlab.com/g/sub\x1b\\'));
+});
+
+test('ASS-307 AC1: several repositories under no common owner — repos: <N> in <host>, linked to the host', () => {
+  const s = forgeState([{ url: 'https://gitlab.com/one/a' }, { url: 'https://gitlab.com/two/b' }]);
+  assert.equal(controlCells(s)[3], 'repos: 2 in gitlab.com');
+  assert.ok(rawCells(s)[3].includes('\x1b]8;;https://gitlab.com\x1b\\'), rawCells(s)[3]);
+});
+
+test('ASS-307 AC1: every repository project.json lists is counted, Active or not; a malformed url is dropped, not thrown', () => {
+  const mixed = [...caselaw.slice(0, 3).map((r, i) => ({ ...r, status: i ? 'Active' : 'Archived' })), { url: 'not a url' }];
+  assert.equal(controlCells(forgeState(mixed))[3], 'repos: 3 in caselaw-group');
+  assert.deepEqual(controlCells(forgeState([{ url: 'not a url' }, { url: HUB }])).slice(2, 4), ['provider: GitHub', 'repo: SoftwareAssassin2/harness']);
+});
+
+test('ASS-307 AC1: no repositories (none, an empty list, or none whose url parses) — no provider, repo or account line: the box as before', () => {
+  const before = ['control', 'status: Online', ...MACHINE];
+  for (const repositories of [undefined, [], [{ url: 'not a url' }], [{}]]) {
+    assert.deepEqual(controlCells(forgeState(repositories, { pushAccount: pushed('GitHub', 'ada') })), before, JSON.stringify(repositories));
+  }
+});
+
+test('ASS-307 AC3: account: … plain while the lookup has not run, or its record is for another provider than the repositories\' now', () => {
+  for (const pushAccount of [null, undefined, pushed('GitLab', 'old-login'), pushed('GitLab', null, 'token rejected (401)')]) {
+    const s = forgeState([{ url: HUB }], { pushAccount });
+    assert.equal(controlCells(s)[4], 'account: …', JSON.stringify(pushAccount));
+    assert.ok(!rawCells(s)[4].includes('\x1b[31m'), JSON.stringify(pushAccount));
+  }
+});
+
+test('ASS-307 AC3: a resolved account — account: <login>, plain', () => {
+  const s = forgeState(caselaw, { pushAccount: pushed('GitLab', 'ada') });
+  assert.equal(controlCells(s)[4], 'account: ada');
+  assert.ok(!rawCells(s)[4].includes('\x1b[31m'));
+});
+
+test('ASS-307 AC3: a failed lookup — account: <reason> in red, for each reason', () => {
+  for (const reason of ['no token declared', 'no token in the keychain', 'token rejected (401)', 'the forge is unavailable (500)', 'the forge is unreachable', 'the forge answered no account']) {
+    const s = forgeState([{ url: HUB }], { pushAccount: pushed('GitHub', null, reason) });
+    assert.equal(controlCells(s)[4], `account: ${reason}`);
+    assert.ok(rawCells(s)[4].includes(`\x1b[31maccount: ${reason}`), rawCells(s)[4]);
+  }
+});
+
+test('ASS-307 AC3: the control box\'s account is the push account, the models box\'s still the Claude login', () => {
+  const s = forgeState([{ url: HUB }], { pushAccount: pushed('GitHub', 'SoftwareAssassin2') });
+  assert.ok(controlCells(s).includes('account: SoftwareAssassin2'));
+  assert.ok(!controlCells(s).includes('account: me@example.com'));
+  const footer = footerOf(s).map(strip);
+  // Both accounts appear in the rendered footer — the push account's cell is the control box's (first), the Claude login's the models box's; their rows may differ because the boxes differ in height.
+  assert.ok(footer.some(l => /^\s*│ account: SoftwareAssassin2 +│/.test(l)), footer.join('\n'));
+  assert.ok(footer.some(l => /│ account: me@example\.com +│$/.test(l)), footer.join('\n'));
+});
+
+test('ASS-307 AC4: at 80 columns and 30 rows the control box with its new lines still fits, every row as wide as its border', () => {
+  const s = forgeState([{ url: HUB }], { pushAccount: pushed('GitHub', null, 'the forge is unavailable (500)'), golden: { name: 'golden-p', 'built-at': '2026-11-01T05:42:33Z' } });
+  const size = { columns: 80, rows: 30, now: screen.now };
+  const footer = footerOf(s, 80).filter(Boolean);
+  assert.ok(controlCells(s, 80).includes('repo: SoftwareAssassin2/harness'));
+  for (const line of footer) {
+    assert.equal(visible(line), visible(footer[0]), strip(line));
+    assert.ok(visible(line) <= 80, strip(line));
+  }
+  const out = render(s, size);
+  assert.equal(out.length, 30);
+  for (const line of out) assert.ok(visible(line) <= 80, strip(line));
+  assert.ok(out.map(strip).some(l => l.includes('provider: GitHub')));
+});
+
+test('ASS-307 AC4: the control DOWN box is unchanged — no provider, repo or account line for a project with repositories', () => {
+  const logged = { ...forgeState(caselaw, { pushAccount: pushed('GitLab', 'ada') }), controlLog: [{ text: 'boom', project: 'p' }, { text: 'control exited (code 1)', project: 'p' }] };
+  const box = controlCells(controlExited(logged, 'p', 1));
+  assert.deepEqual(box, ['control DOWN', 'exited: code 1', 'last: boom', ...MACHINE]);
+});
+
 // ===== ASS-299: one chat component draws every chat view (zoomed agent log,
 // chat screen, ticket Chat tab, agents-grid tile) with one layout, ctrl+o
 // toggles events everywhere, tab toggles events nowhere.

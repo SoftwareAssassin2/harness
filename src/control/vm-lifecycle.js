@@ -48,7 +48,6 @@
 // each Running VM not yet in vmsUp before using it.
 import { execFile } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
-import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { statusOf, isHeld } from './engine.js';
 import { planFor } from './plan.js';
@@ -56,6 +55,7 @@ import { backoffDelay, held } from './backoff.js';
 import { limaEnv } from './vm.js';
 import { diskHeld } from './disk.js';
 import { humanPause } from './moves.js';
+import { declaredCredentials } from './vm-credentials.js';
 
 const PHASE = 'vm';
 
@@ -101,10 +101,8 @@ export const credentialKindOf = (ctx, projectId, name) => (name && inventoryOf(c
 // both, and switching between them per dispatch never refreshes it),
 // 'anthropic', 'claude', or null when it declares neither, or the file cannot be read.
 function declaredVmKind(ctx, id) {
-  try {
-    const d = JSON.parse(readFileSync(join(ctx.env?.HARNESS_HOME ?? join(homedir(), '.harness'), 'vm-credentials.json'), 'utf8'))?.[id];
-    return d?.anthropic && d?.claude ? 'both' : d?.anthropic ? 'anthropic' : d?.claude ? 'claude' : null;
-  } catch { return null; }
+  const d = declaredCredentials(ctx.env, id);
+  return d?.anthropic && d?.claude ? 'both' : d?.anthropic ? 'anthropic' : d?.claude ? 'claude' : null;
 }
 
 // The project's VMs: name → { ticket, variation, state (its variation's top-level step, in the sprint), run (whether it should), waits (for a slot),

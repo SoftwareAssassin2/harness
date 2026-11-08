@@ -1,4 +1,8 @@
 # The credentials a project's VMs get (ASS-71), for vm:credentials and vm:scan-image.
+# Control reads the declaration itself too (src/control/vm-credentials.js):
+# which Claude login kinds a project declares (vm-lifecycle.js), and the
+# github or gitlab keychain item whose token it asks the forge which account
+# the project pushes as (ASS-307, src/control/push-account.js).
 #
 #   source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../vm-credentials.bash"
 #   declared_credentials <command> <project>   # the project's object in ~/.harness/vm-credentials.json, as JSON; fails on a bad one

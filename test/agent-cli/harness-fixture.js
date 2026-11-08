@@ -113,6 +113,8 @@ export function fixture() {
     ACLI_DISABLED: '1', CLAUDE_USAGE_DISABLED: '1',
     // Control's API cost check never reads the admin key or calls the Cost Admin API; its file is the fixture's (ASS-153).
     ANTHROPIC_API_COST_DISABLED: '1', API_COST_FILE: at('api-cost.json'),
+    // Control's push-account check never reads a forge token or calls a forge (ASS-307).
+    PUSH_ACCOUNT_DISABLED: '1',
     // The learned context-window cache (ASS-190): harness:set-context-window writes here, not the real data folder.
     CONTEXT_WINDOWS_FILE: at('context-windows.json'),
     // Control's disk watch (ASS-288) is off, so a test's control never reads the real disk with df; its record is the fixture's.

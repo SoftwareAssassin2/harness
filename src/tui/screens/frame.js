@@ -4,6 +4,7 @@
 // (ASS-187). Every screen sizes itself against it, so it sits below them all.
 import { boxRow } from '../boxes.js';
 import { kindOfAccount } from '../../agents/account.js';
+import { providerOf, repoPath, commonOwner } from '../../agents/forge.js';
 import { blockText } from '../font.js';
 import { duration } from '../metrics.js';
 import { visible, link } from '../text.js';
@@ -116,8 +117,11 @@ export const headerLines = (state, columns, now) => (state.screen === 'S' || sta
 // models. Each box is titled and lists its fields as "field: value"; control
 // trades start-time for its uptime, environments leave out type; control and
 // environments add 🤖 to the title when an assignment has control true or a
-// local-environment naming them. A control that has ended (controlsDown) is
-// a red "control DOWN" box with its exit code and the line before it. Either
+// local-environment naming them. A running control then shows where the
+// project's code goes — its repository provider, repository and push account
+// (forgeLines, ASS-307); the DOWN box does not. A control that has ended
+// (controlsDown) is a red "control DOWN" box with its exit code and the line
+// before it. Either
 // ends with the machine's lines and the project's Hindsight (machineLines,
 // ASS-292, ASS-293). The models
 // box, always there for a project, has a "model 🤖xN" line per model its
@@ -134,7 +138,7 @@ export function platform(state, columns, now) {
   const down = state.controlsDown?.[project?.id];
   const boxes = [
     ...(down ? [[red('control DOWN'), `exited: code ${down.code}`, `last: ${ellipsis(down.line, 60)}`, ...machineLines(state.disk, project, state.memoryHealth)]] : []),
-    ...(project?.control && !down ? [[...box(projectAssignments(state).some(a => a.control === true) ? 'control 🤖' : 'control', { ...control, ...uptime }), ...machineLines(state.disk, project, state.memoryHealth)]] : []),
+    ...(project?.control && !down ? [[...box(projectAssignments(state).some(a => a.control === true) ? 'control 🤖' : 'control', { ...control, ...uptime }), ...forgeLines(project), ...machineLines(state.disk, project, state.memoryHealth)]] : []),
     ...environments.map(({ name, type, ...fields }) => box(watched.has(name) ? `${name} 🤖` : name, fields)),
     ...(project ? [['models', ...[...models]
       .toSorted(([a, x], [b, y]) => y.length - x.length || String(a).localeCompare(String(b)))
@@ -142,6 +146,40 @@ export function platform(state, columns, now) {
   ];
   const row = boxRow(boxes, columns);
   return row.length ? [...row, ''] : row;
+}
+
+// forgeLines(project) — ASS-307: in the control (not control DOWN) box, the
+// project's repository provider, its repository (or repository count) as a
+// link, and the account its code pushes as (project.pushAccount, from
+// data/projects/<p>/push-account.json, control's last check — see
+// src/control/push-account.js). `provider: GitHub`/`GitLab` (by the first
+// repository url's host, github.com → GitHub, else GitLab, including a
+// self-hosted GitLab); one repository → `repo: <owner>/<name>` linked to the
+// repository; several → `repos: <N> in <owner>` linked to the urls' longest
+// common group/owner page, or `repos: <N> in <host>` linked to the host when
+// there is none; `account: <login>` plain, `account: <reason>` in red on
+// failure, `account: …` plain while the lookup has not run or its record is
+// for another provider than the repositories' now. Every repository
+// project.json lists is counted, Active or not; a malformed url is dropped
+// from the count. Nothing — no provider, repo or account line — for a project
+// with no repositories (or none whose url parses).
+function forgeLines(project) {
+  const urls = (project.repositories ?? []).map(r => { try { return new URL(r.url).href; } catch { return null; } }).filter(Boolean);
+  if (!urls.length) return [];
+  const { provider, host } = providerOf(urls[0]);
+  const repoLine = urls.length === 1
+    ? `repo: ${link(repoPath(urls[0]), urls[0])}`
+    : (() => {
+      const owner = commonOwner(urls);
+      return owner
+        ? `repos: ${link(`${urls.length} in ${owner}`, `https://${host}/${owner}`)}`
+        : `repos: ${link(`${urls.length} in ${host}`, `https://${host}`)}`;
+    })();
+  const push = project.pushAccount;
+  const accountLine = !push || push.provider !== provider ? 'account: …'
+    : push.error ? red(`account: ${push.error}`)
+    : `account: ${push.account}`;
+  return [`provider: ${provider}`, repoLine, accountLine];
 }
 
 // machineLines(disk, project, health) — what the control box ends with (ASS-292): the
