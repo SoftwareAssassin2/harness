@@ -310,8 +310,13 @@ export function handleKey(state, key, size = {}) {
   return state;
 }
 
+// drawColumns(columns) — the width the dashboard draws at: one less than the
+// terminal's, so the rightmost column always stays blank (ASS-311). Never
+// below 1, so a degenerate or unknown terminal width still renders.
+export const drawColumns = columns => Math.max(1, (columns || 1) - 1);
+
 // render(state, { columns, rows, now }) — exactly `rows` lines, the legend
-// last, none wider than `columns`.
+// last, none wider than `columns`. main.js passes drawColumns(stdout.columns).
 export function render(state, { columns, rows, now }) {
   const header = headerLines(state, columns, now);
   const footer = [...platform(state, columns, now), center(legend(state), columns),

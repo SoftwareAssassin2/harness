@@ -1,12 +1,14 @@
 #!/usr/bin/env node
 // Terminal shell for the dashboard: owns the whole screen, turns keypresses
-// into state, redraws. All behaviour lives in app.js.
+// into state, redraws. It lays out and handles keys at drawColumns(stdout.columns),
+// one column narrower than the terminal, so the rightmost column of the screen
+// stays blank (ASS-311). All behaviour lives in app.js.
 import { emitKeypressEvents } from 'node:readline';
 import { mkdirSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { execFile, execFileSync } from 'node:child_process';
 import { join } from 'node:path';
-import { initialState, handleKey, render, decided, controlStarted, controlExited, controlDraining } from './app.js';
+import { initialState, handleKey, render, decided, controlStarted, controlExited, controlDraining, drawColumns } from './app.js';
 import { loadProjects, loadWorkflows, loadPauses, loadSelfHealing, loadAssignments, loadTransientEngines, loadChats, loadHarness, loadModelUsage, loadDiskSpace, watchFiles, dataFiles, keepSame, projectsChanged } from './load.js';
 import { startControl } from '../control/process.js';
 import { ender, stillNamed } from './shutdown.js';
@@ -54,7 +56,7 @@ state = { ...state, updatedAt: Object.fromEntries(state.projects.map(p => [p.id,
 // newline, so the terminal cannot scroll. Only changed lines are rewritten.
 let frame = [];
 function draw() {
-  const lines = render(state, { columns: stdout.columns, rows: stdout.rows, now: new Date() });
+  const lines = render(state, { columns: drawColumns(stdout.columns), rows: stdout.rows, now: new Date() });
   const out = lines.map((line, i) => (line === frame[i] ? '' : `\x1b[${i + 1};1H${line}\x1b[0m\x1b[K`)).join('');
   frame = lines;
   if (out) stdout.write(out);
@@ -293,7 +295,7 @@ rewatch();
 
 stdin.on('keypress', (_, key) => {
   // The time the screens size themselves at, as render draws the footer (ASS-295).
-  let next = handleKey(state, key, { columns: stdout.columns, rows: stdout.rows, now: new Date() });
+  let next = handleKey(state, key, { columns: drawColumns(stdout.columns), rows: stdout.rows, now: new Date() });
   if (next.quit) process.exit(0);
   if (next.quitting && !state.quitting) quit();
   // Space holds or releases the human's pause: the banner flips at once; the
