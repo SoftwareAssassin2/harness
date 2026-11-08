@@ -89,8 +89,11 @@ learning from the ticket's earlier blocks (every Blocked run is kept in its
 `blocks`, append-output-to, and given to the prompts as {problem}), then
 classifies: a harness issue's fix ticket to the harness project's backlog, a
 project issue's to the ticket's own project's ticket system, both waited on
-alike; a fix that lands ends the stay, the step it returns to its proof; an
-environment issue repaired in place, else Blocked for Human. It never
+alike; a fix that lands ends the stay, the step it returns to its proof — it
+has landed once its ticket is Done with a merge step anywhere in a live
+variation's state changes, top level or nested in a `sub-state-change` at any
+depth, as a grouped fix ticket's own merge is, in its Release sub-engine's run
+(ASS-309); an environment issue repaired in place, else Blocked for Human. It never
 resumes as if fixed when no fix can be raised or waited on. A repository the
 project lacks, which the ticket's work needs, is an environment issue
 (ASS-121): Troubleshoot names its forge url (missing-repository), and Repair
@@ -188,7 +191,12 @@ Blocked for Human, saying what was found and what to do.
   Loops that stay inside a group, such as a code review sending the work back to
   Generate Solution, are the sub-engine's own. A step's visits count within its run and start again at
   zero each time the group is entered. The group step's `max-visits` caps how
-  often the group is entered (Build 5, the rest 3).
+  often the group is entered (Build 5, the rest 3). A block a landed fix clears
+  restarts that counting: the move out of Blocked records the cause `fix-landed`,
+  and every group's visits count from it (ASS-309), so a ticket that was blocked
+  with its groups at their caps resumes where it returns instead of being
+  redirected straight back to Blocked. The other clears — a retry, an
+  environment repaired, nothing found wrong — keep the counts.
 - **Setup.** Check Setup Complete asks `vm:setup-complete` whether the
   variation's VM holds the setup-complete marker (`/repos/.setup-complete`).
   If it does, Setup ends at once. If not, Create VM (`vm:create`, which is
