@@ -73,7 +73,10 @@ const asShown = sprint => sprint && Object.fromEntries(Object.entries(sprint).ma
 // tickets it depends on (wait-for-dependencies, ASS-195);
 // rateLimit its rate-limit.json (one entry per credential kind, ASS-215), or null (ASS-94); claudeUsage its
 // claude-usage.json — its login's session and weekly (ASS-65) usage and account, as control last
-// read them — or null (ASS-47); collaborations each ticket's
+// read them — or null (ASS-47); pushAccount its push-account.json — the
+// account its VM token for its repositories' forge pushes as, as control last
+// checked (ASS-307, src/control/push-account.js) — or null;
+// collaborations each ticket's
 // chat on its screen (see loadCollaborations); memorySpend what its Hindsight
 // spent on Claude (see loadMemorySpend, ASS-269); demoPlans each variation's
 // demo plan (see loadDemoPlans); reviews what Human Review shows of each
@@ -323,7 +326,7 @@ export function watchFiles(files, onChange, { delay = 50 } = {}) {
 // dataFiles(root, { projects, workflows, project, day }) — the files the
 // dashboard reads, to watch: assignments.json, chats.json, api-cost.json,
 // context-windows.json, harness.json (see loadApiCost and loadModelUsage) and disk-space.json (loadDiskSpace), each workflow's
-// state-engine.json (engines/'s, or a project's own), each project's project.json, gcloud- and glab-requires-reauthentication, rate-limit.json, claude-usage.json, api-cost.json, sprints.json, backlog.json, questions
+// state-engine.json (engines/'s, or a project's own), each project's project.json, gcloud- and glab-requires-reauthentication, rate-limit.json, claude-usage.json, push-account.json, api-cost.json, sprints.json, backlog.json, questions
 // files (see loadQuestions), ticket chats (see loadCollaborations) and chat-spend.json (see loadChatSpend) — and of the sprints only the one on show: the
 // selected project's snapshot of the past `day`, or its active sprint.json;
 // then each project's golden image (ASS-292: loadGolden) as its golden-<id>

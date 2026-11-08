@@ -15,8 +15,10 @@
 //   6. timers                    triggers.js; reverted tickets' memory
 //                                reviews, reverts.js (ASS-146); the gcloud
 //                                and glab logins, each project's Claude
-//                                usage (usage.js) and the Anthropic API
-//                                cost (api-cost.js, ASS-153)
+//                                usage (usage.js), the Anthropic API
+//                                cost (api-cost.js, ASS-153) and each
+//                                project's push account (push-account.js,
+//                                ASS-307)
 //   7. ticket health sampling    triggers.js; the priority raises a waiting
 //                                ticket's dependencies are given and given
 //                                back, dependencies.js (ASS-195), before
