@@ -115,18 +115,17 @@ export const headerLines = (state, columns, now) => (state.screen === 'S' || sta
 // The platform boxes above the legend, and a blank line under them: the
 // selected project's control process, one per local environment, then its
 // models. Each box is titled and lists its fields as "field: value";
-// environments leave out type; control and
-// environments add 🤖 to the title when an assignment has control true or a
-// local-environment naming them. The control box is built from the control
-// the dashboard started (state.controls, ASS-310: status — Draining while it
-// drains, Restarting through a restart, else Online — its process id and its
-// uptime), so it shows for as long as that control runs; it then shows where
-// the project's code goes — its repository provider, repository and push
-// account (forgeLines, ASS-307); the DOWN box has neither. A control that
-// has ended (controlsDown) is a red "control DOWN" box with its exit code
-// and the line before it. Either
-// ends with the machine's lines and the project's Hindsight (machineLines,
-// ASS-292, ASS-293). The models
+// environments leave out type; control and environments add 🤖 to the title
+// when an assignment has control true or a local-environment naming them.
+// The control box is built from the control the dashboard started
+// (state.controls, ASS-310): its status — Draining while it drains,
+// Restarting through a restart, else Online — its process id and its uptime,
+// so it shows for as long as that control runs; it then shows where the
+// project's code goes — its repository provider, repository and push account
+// (forgeLines, ASS-307); the DOWN box has neither. A control that has ended
+// (controlsDown) is a red "control DOWN" box with its exit code and the line
+// before it. Either ends with the machine's lines and the project's
+// Hindsight (machineLines, ASS-292, ASS-293). The models
 // box, always there for a project, has a "model 🤖xN" line per model its
 // assignments use, most first, then how the project is billed (billingLines,
 // ASS-221), ending with the account.
