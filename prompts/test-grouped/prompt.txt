@@ -13,6 +13,8 @@ Don't fix anything you find — report it.
 
 Leave every repository on the branch it was on when you started, with no uncommitted changes; if you check out another commit to compare, switch back to the branch by name.
 
+Never end your turn while a command you started is still running: run a long one (a full test suite, say) in the foreground with a timeout long enough for it, or, when it may outlast the tool's foreground limit, in the background, polling it until it exits — then write your results and finish.
+
 If {ticket-folder}/operator-review-{variation}.md exists, it holds the operator's notes from rejecting earlier passes at Human Review: read it and address each note in this step's work.
 
 Finish with JSON: {"is-approved": true, "summary": "<one line>"} when every criterion passed, or {"is-approved": false, "summary": "<what failed, one line>"} otherwise.
