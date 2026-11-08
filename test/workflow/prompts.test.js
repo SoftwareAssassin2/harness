@@ -672,3 +672,40 @@ test('ASS-249 AC5: generate-solution-grouped and security-review-grouped read ci
   assert.match(security, /[Nn]ever copy a secret value/);
   for (const flat of ['generate-solution', 'security-review']) assert.doesNotMatch(read(flat), /ci-checks/, flat);
 });
+
+// ASS-305: every criterion the harness writes must be one a Test agent can
+// check by itself in the ticket's VM. Work needing the operator, the host, a
+// Claude login, a credential or a live outside system goes to an Operator
+// follow-up section, never a criterion: the agent rewrites the criterion as
+// the nearest check it can run, else asks a --non-blocking question with that
+// rewrite as the recommended answer. One shared verbatim rule in all five
+// grouped/refinement prompts; the flat engines' prompts are unchanged.
+const AC_WRITING = ['create-ticket-grouped', 'enrich-ac-grouped', 'revise-acceptance-criteria', 'groom', 'split-ticket'];
+const AGENT_CHECKABLE = /a Test agent can check by itself in the ticket's VM \(commands, tests, the app, screenshots, throwaway data\)/;
+const NOT_A_CRITERION = /never one needing the operator, the host, a Claude login, a credential or a live outside system/;
+
+test('ASS-305 AC1/AC2/AC3: every prompt that writes or revises acceptance criteria says a criterion must be one a Test agent can check by itself in the ticket\'s VM, routes operator/host/login/credential/outside-system work to Operator follow-up with a rewrite-or-ask fallback, and drops create-ticket-grouped\'s "written as the operator\'s" line; the flat engines\' prompts are unchanged', () => {
+  for (const p of AC_WRITING) {
+    const t = text(p);
+    assert.match(t, AGENT_CHECKABLE, p);
+    assert.match(t, NOT_A_CRITERION, p);
+    assert.match(t, /Operator follow-up/, p);
+    assert.match(t, /nearest check an agent can run/, p);
+    assert.match(t, /Operator follow-up[^\n]*never a criterion/i, p);
+  }
+  // create-ticket-grouped runs before the ticket exists, so it has no
+  // question:ask; the other four fall back to a --non-blocking question.
+  for (const p of AC_WRITING.filter(p => p !== 'create-ticket-grouped')) assert.match(text(p), /--non-blocking/, p);
+
+  const grouped = text('create-ticket-grouped');
+  assert.doesNotMatch(grouped, /written as the operator's/);
+  assert.match(grouped, /No criterion may need anyone but the operator/);   // the sibling safety sentence stays
+  // The new section is declared in the optional extras, so ":19 No other headings" stays true.
+  assert.match(grouped.split('\n').find(l => l.startsWith('- Operator follow-up')) ?? '', /after Out of scope/);
+
+  for (const flat of ['create-ticket', 'enrich-ac']) {
+    assert.doesNotMatch(text(flat), AGENT_CHECKABLE, flat);
+    assert.doesNotMatch(text(flat), NOT_A_CRITERION, flat);
+  }
+  assert.match(text('create-ticket'), /written as the operator's/);
+});
