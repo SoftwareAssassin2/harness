@@ -1,6 +1,7 @@
 // A session log open under a prompt line (ASS-201: moved from app.js) — the
 // agents screen's, the chat screen's and the ticket screen's Chat tab.
 import { scrollBox, scrollLast } from '../table.js';
+import { chatLines } from '../chat-look.js';
 import { visible } from '../text.js';
 import { AGENT_LOG } from './agents.js';
 import { below, headerLines, platform } from './frame.js';
@@ -11,34 +12,18 @@ import { clamp } from './shared.js';
 // fields it keeps — `cursor` holds where in `draft` the cursor sits, in code
 // points (ASS-41) — what sending asks main.js to do, and what closing clears.
 
-// Fold each tool result (ASS-40) into one line: a '◀ ' line and the lines
-// under its 2-space continuation indent (session.js) become
-// '◀ <first non-blank line> … (<n> lines)' — one-line results pass through,
-// the 'error: ' prefix survives as the first content. Render-only, off the
-// already-event-filtered array; the session log file is untouched (AC4).
-// Accepted limit: an assistant line that itself starts with two spaces right
-// after a result is absorbed into it.
-export function foldResults(lines) {
-  if (!lines) return lines;
-  const out = [];
-  for (let i = 0; i < lines.length; i++) {
-    if (!lines[i].startsWith('◀ ')) { out.push(lines[i]); continue; }
-    let j = i + 1;
-    while (j < lines.length && lines[j].startsWith('  ')) j++;
-    const block = lines.slice(i, j);
-    if (block.length === 1) out.push(block[0]);
-    else out.push(`◀ ${block.map(l => l.slice(2)).find(c => c.trim()) ?? ''} … (${block.length} lines)`);
-    i = j - 1;
-  }
-  return out;
-}
-// One chat's log lines as a chat view draws them (ASS-299): fold tool results
-// and drop event-JSON lines unless `events` is on; `[empty]` for an absent log.
+// One chat's log lines as a chat view draws them (ASS-299, ASS-300): the
+// session log rendered the way a Claude Code session reads (chat-look.js) —
+// '⏺' bullets, tool calls as Claude Code names them, results and diffs under
+// a '  ⎿  ' gutter, markdown in the agent's own text — in rows already fitted
+// to `width`, in a box `rows` tall; `events` (ctrl+o) expands every line to
+// its full self, the raw JSON event lines with it. `[empty]` for an absent log.
 // The one place every chat view decides what a log shows, before the view
-// hands the lines to a scrollBox or to a tile's wrap.
-export function chatLog(lines, events, empty) {
+// hands the rows to a scrollBox or to a tile's wrap. Render-only: the lines
+// themselves are never changed.
+export function chatLog(lines, events, empty, { width, rows } = {}) {
   if (lines == null) return [empty];
-  return events ? lines : foldResults(lines.filter(line => !line.startsWith('{"type":')));
+  return chatLines(lines, { width, rows, expand: events });
 }
 
 // A chat view's help line (ASS-299): the shared wording, ctrl+o for the events
@@ -51,9 +36,9 @@ export function helpLine(view, events) {
 
 // The one chat component (ASS-299): what every full-screen chat view draws in
 // `rows` tall × `columns` wide — help line (ctrl+o wording), log in a wrapping
-// scroll box (JSON hidden and tool results folded unless events are shown) and
+// scroll box (the chat-look render, expanded when events are shown) and
 // prompt rows, the box giving lines to the prompt as logView does today
-// (fitRows). Returns the help line, the folded/filtered list, the prompt's
+// (fitRows). Returns the help line, the rendered list, the prompt's
 // fit rows, and `inner` — the content rows the box has below help + blank and
 // above the prompt. Callers dress the list in their own frame: the chat screen
 // and the agents-screen zoom wrap it in a scrollBox; the ticket screen's Chat
@@ -61,12 +46,15 @@ export function helpLine(view, events) {
 // reach the same decisions through the component's primitives (chatLog,
 // helpLine, typeRow) instead of this bordered-box composition, since a tile's
 // shape — no inner border, a one-row prompt, ASS-189 — is not the shape here.
-export function chatBox(state, { columns = 0, rows = Infinity }, view = AGENT_LOG) {
+// `text` is the width the view's box lays the rows at, `columns` less its
+// border and padding by default and named by a caller whose box is wider than
+// the component it hands them to (ASS-300: the ticket screen's Chat tab).
+export function chatBox(state, { columns = 0, rows = Infinity, text = columns - 4 }, view = AGENT_LOG) {
   const space = Math.max(2, rows - 2);
-  const { draft: text, cursor } = view.get(state);
-  const draftRows = promptRows(text, cursor, true, columns || Infinity);
+  const { draft, cursor } = view.get(state);
+  const draftRows = promptRows(draft, cursor, true, columns || Infinity);
   const inner = Math.max(1, space - draftRows.length);
-  const list = chatLog(state[view.log], state[view.events], view.empty(state));
+  const list = chatLog(state[view.log], state[view.events], view.empty(state), { width: Math.max(1, text), rows: inner });
   const prompt = fitRows(draftRows, space - inner);
   return { help: helpLine(view, state[view.events]), list, prompt, inner };
 }

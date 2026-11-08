@@ -207,15 +207,16 @@ export function costLabel(usage) {
 
 const usageLabel = usage => [contextLabel(usage), costLabel(usage)].filter(Boolean).join('  ');
 
-// The lines a tile's body shows (ASS-299): its agent's session log through the
-// shared chatLog — event JSON hidden, tool results folded (events shown on the
-// focused agent tile when state.agentEvents is on, AC4) — each log line
-// wrapped to the tile's `inner` width (AC3) and the latest rows that fit.
+// The lines a tile's body shows (ASS-299, ASS-300): its agent's session log
+// through the shared chatLog — the chat-look render at the tile's `inner`
+// width in the `room` it has (expanded on the focused agent tile when
+// state.agentEvents is on, AC4) — and the latest rows that fit. The rows come
+// fitted, so the wrap is a no-op on them and still wraps the empty text.
 // A log never written shows the component's empty text, filling the room.
 const tileBody = (state, item, inner, room, events) => {
   const tail = state.sessionTails?.[item.key];
   const empty = AGENT_LOG.empty(state, item.name);
-  const list = tail ? chatLog(tail, events, empty) : [empty];
+  const list = tail ? chatLog(tail, events, empty, { width: Math.max(1, inner), rows: room }) : [empty];
   const wrapped = list.flatMap(l => wrapLine(l, inner));
   return wrapped.slice(-Math.max(0, room));
 };

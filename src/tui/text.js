@@ -55,14 +55,16 @@ export function wrap(text, width) {
 // A wider line breaks at the last space that fits, the space dropped; a token
 // longer than a row splits at the width, an emoji (two columns) never in half.
 // Every row after the first hangs under an indent as wide as the line's
-// lead-in — `(thinking) ` (11 columns), `> `, `▶ ` or `◀ ` (2), else its
+// lead-in — `hang` when the caller names it (ASS-300: a row starting with an
+// SGR code, or one whose lead-in is a markdown marker, is no string prefix to
+// guess at), else `(thinking) ` (11 columns), `> `, `▶ ` or `◀ ` (2), else its
 // leading spaces, else none — so a wrapped entry reads as one; an indent
 // leaving under two columns to write in is dropped.
 const LEAD_INS = ['(thinking) ', '> ', '▶ ', '◀ '];
 const LINK_END = '\x1b]8;;\x1b\\', RESETS = new Set(['\x1b[0m', '\x1b[m']);
-export function wrapLine(line, columns) {
+export function wrapLine(line, columns, hang = null) {
   if (visible(line) <= columns) return [line];
-  const found = LEAD_INS.find(l => line.startsWith(l))?.length ?? line.match(/^ */)[0].length;
+  const found = hang ?? (LEAD_INS.find(l => line.startsWith(l))?.length ?? line.match(/^ */)[0].length);
   const lead = found + 2 <= columns ? found : 0;
   const indent = Array(lead).fill(' ');
   const rows = [];

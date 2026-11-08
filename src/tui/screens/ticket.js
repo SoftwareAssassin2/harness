@@ -319,8 +319,11 @@ function ticketView(state, size) {
     // said (ASS-35) above the component's help + blank, its lines are the
     // component's filtered log, and its foot is the component's prompt rows.
     const said = state.ticketChatMessage ? [red(state.ticketChatMessage)] : [];
-    const chat = chatBox(state, { columns: text, rows: height - said.length }, TICKET_LOG);
-    panes = [{ head: [...said, chat.help, ''], lines: chat.list, foot: chat.prompt, wrap: true, scroll: state.ticketChatScroll ?? Infinity, last: scrollLast(chat.list, { width: text, height: chat.inner + 2, wrap: true }) }];
+    // ASS-300: the pane's scrollBox is the tab box, `width` wide, so it lays
+    // the rows out at `text` — what the component fits them to and what
+    // scrollLast must count them at, or ↑/↓ scroll past the last row.
+    const chat = chatBox(state, { columns: text, text, rows: height - said.length }, TICKET_LOG);
+    panes = [{ head: [...said, chat.help, ''], lines: chat.list, foot: chat.prompt, wrap: true, scroll: state.ticketChatScroll ?? Infinity, last: scrollLast(chat.list, { width, height: chat.inner + 2, wrap: true }) }];
   }
   const main = panes.at(-1);
   const open = openQuestions(state);
