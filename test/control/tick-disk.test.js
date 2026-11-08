@@ -6,10 +6,10 @@
 // or golden build — like a rate-limit hold, until the free space is back above
 // the warn level. df and limactl are fakes on the PATH: never the real disk or
 // a real VM.
-import { test } from 'node:test';
+import { test, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { join } from 'node:path';
-import { readFileSync, writeFileSync, mkdirSync, realpathSync, mkdtempSync } from 'node:fs';
+import { readFileSync, writeFileSync, rmSync, mkdirSync, realpathSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { controlFixture } from './control-fixture.js';
 import { hs } from '../agent-cli/harness-fixture.js';
@@ -26,6 +26,8 @@ const edit = (file, change) => { const json = JSON.parse(readFileSync(file, 'utf
 // bytes). free(kib) sets it; later(ms) moves the clock.
 function watching() {
   const f = controlFixture();
+  process.env.FAKE_HOLD = join(f.dir, 'hold');                    // hold every dispatched agent's turn open (a host agent has control's process.env)
+  writeFileSync(process.env.FAKE_HOLD, '');
   const v = fakeVm(f.env);
   const limaHome = realpathSync(mkdtempSync(join(tmpdir(), 'lima-home-')));
   v.script('df', `echo 'Filesystem 1024-blocks Used Available Capacity Mounted on'; echo "/dev/fake 999999999 1 $(cat '${v.dir}/k') 1% /Volumes/Big"`);
@@ -43,6 +45,7 @@ function watching() {
 }
 const checks = calls => calls.filter(c => c === 'harness:check-disk-space').length;
 const dispatched = f => f.assignments().assignments.filter(a => a['work-item'] === 'ABC-3');
+afterEach(() => { delete process.env.FAKE_HOLD; });
 
 test('ASS-288 AC1: control reads the disk at most once a minute, recording it in disk-space.json; above the warn level it says nothing and reclaims nothing', async () => {
   const w = watching();
@@ -111,6 +114,7 @@ test('ASS-288 AC4/AC6: below the hold level control starts no agent and runs no 
   assert.ok(!w.f.lines.some(l => /^script .*vm:create/.test(l)), w.f.lines.join('\n'));
   assert.ok(w.f.lines.some(l => l === 'steps ABC-4 A build: waits: the disk is nearly full'), w.f.lines.join('\n'));
   assert.deepEqual([...w.f.ctx.agents.keys()], running, 'the running agent is not stopped');
+  rmSync(process.env.FAKE_HOLD);                                  // release the held turn only now, so the assertion above gated on a real running agent, not a reaped one
   assert.ok(await until(() => [...w.f.ctx.agents.values()].every(a => a.result)), 'its turn ends');
   // Its turn finished, the step moves on as usual; no new agent while held.
   for (let i = 0; i < 3; i++) await tick(w.f.ctx);
