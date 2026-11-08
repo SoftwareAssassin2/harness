@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Description: Replace a ticket's acceptance criteria — ticket:set-acceptance-criteria <project> <ticket-key> <variation> <json-file|-> | <project> <ticket-key> <json-file|-> < json.
+# Description: Replace a ticket's acceptance criteria — ticket:set-acceptance-criteria <project> <ticket-key> <variation> <json-file|-> | <project> <ticket-key> <json-file> | <project> <ticket-key> - < json.
 set -euo pipefail
 
 # Two forms. The 4-arg form writes the file's array (stdin's for "-", ASS-182:
@@ -29,7 +29,7 @@ source "$here/../sprint.bash"
 source "$here/../ticket-system.bash"
 
 command=ticket:set-acceptance-criteria
-usage="usage: $command <project> <ticket-key> <variation> <json-file|-> | <project> <ticket-key> <json-file|-> (JSON on stdin) for -"
+usage="usage: $command <project> <ticket-key> <variation> <json-file|-> | <project> <ticket-key> <json-file> | <project> <ticket-key> - (JSON on stdin)"
 
 if [[ $# -eq 3 ]]; then
   project="$1" key="$(tr '[:lower:]' '[:upper:]' <<< "$2")"
