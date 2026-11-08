@@ -8,6 +8,7 @@ const CHAT_ON = { 'chat-screen': true, 'ticket-chat-tab': true };
 const initialState = (options = {}) => flagged({ features: CHAT_ON, ...options });
 const flagsOff = (s, features = {}) => ({ ...s, features });
 import * as agentsScreen from '../../src/tui/screens/agents.js';
+import * as logScreen from '../../src/tui/screens/log.js';
 import { visible, link, clip, from } from '../../src/tui/text.js';
 import { backlogPriorities, rankBacklog } from '../../src/control/rank.js';
 import { ticketLines, PANEL, panelWidth } from '../../src/tui/ticket.js';
@@ -25,8 +26,13 @@ import { engineDir } from '../support/engine-walk.js';
 const hs = state => ({ state, 'state-engine': 'example-development' });
 
 const key = (name, extra = {}) => ({ name, ...extra });
+const ctrl = (name, sequence) => key(name, { ctrl: true, sequence });
 const screen = { columns: 120, rows: 40, now: new Date('2026-10-01T16:04:00Z') };
 const wide = { ...screen, columns: 200, rows: 44 };
+// The narrow end of the widths a chat is drawn at (ASS-299 AC6: the grid, the
+// chat screen and the Chat tab render-checked at 80 and 200 columns). At 80 the
+// grid's tiles are 40 columns wide, so a log line wraps inside its tile.
+const at80 = { ...wide, columns: 80 };
 // A draft with one code point ([...multiByteDraft].length is 3) that is two UTF-16 units
 // (.length is 4) — a cursor step, backspace or delete must treat it as one character, not two.
 const multiByteDraft = 'a🤖b';
@@ -1013,7 +1019,7 @@ test('enter opens the selected agent\'s session log in a box that follows its en
 test('on an agent\'s session log, typing writes a prompt under the box and enter asks for it to be sent through the agent-cli; esc clears it, then returns', () => {
   const team = [{ ...assignment('Daredevil', 'ABC-1'), 'start-time': '2026-10-01T13:43:00Z' }];
   const reading = { ...handleKey(handleKey(initialState({ projects, workflows: [engine], assignments: team }), key('a')), zKey, wide), agentLog: ['line 0'] };
-  assert.ok(lines(reading, wide).some(l => l.startsWith('type a prompt, enter sends it   ←/→ move the cursor   ↑/↓ scroll   tab shows events   esc returns to the agents')));
+  assert.ok(lines(reading, wide).some(l => l.startsWith('type a prompt, enter sends it   ←/→ move the cursor   ↑/↓ scroll   ctrl+o shows events   esc returns to the agents')));
   const typed = typing(reading, 'Run it again');
   assert.ok(!typed.pauses.human);                               // space is text here, not pause
   assert.ok(lines(typed, wide).some(l => /^> Run it again█$/.test(l)));
@@ -1028,17 +1034,17 @@ test('on an agent\'s session log, typing writes a prompt under the box and enter
   assert.equal(handleKey(cleared, key('escape'), wide).agent, null);
 });
 
-test('an agent\'s session log hides its JSON event lines; tab shows them, and tab again hides them', () => {
+test('an agent\'s session log hides its JSON event lines; ctrl+o shows them, and ctrl+o again hides them (ASS-299)', () => {
   const team = [{ ...assignment('Daredevil', 'ABC-1'), 'start-time': '2026-10-01T13:43:00Z' }];
   const log = ['said one', '{"type":"system","subtype":"thinking_tokens"}', '▶ Bash {"command":"ls"}', '  {"type":"not an event, indented output"}', '{"type":"tool_progress"}', 'said two'];
   const reading = { ...handleKey(handleKey(initialState({ projects, workflows: [engine], assignments: team }), key('a')), zKey, wide), agentLog: log };
   const shown = s => lines(s, wide).filter(l => /^│ /.test(l)).map(l => l.slice(2).replace(/ +[│█]$/, '')).filter(Boolean);
   assert.deepEqual(shown(reading), ['said one', '▶ Bash {"command":"ls"}', '  {"type":"not an event, indented output"}', 'said two']);
-  const showing = handleKey(reading, key('tab'), wide);
+  const showing = handleKey(reading, ctrl('o', '\x0f'), wide);
   assert.deepEqual(shown(showing), log);
-  assert.equal(openDraft(showing), '');                          // tab is not text
-  assert.ok(lines(showing, wide).some(l => l.includes('tab hides events')));
-  assert.deepEqual(shown(handleKey(showing, key('tab'), wide)), shown(reading));
+  assert.equal(openDraft(showing), '');                          // ctrl+o is not text
+  assert.ok(lines(showing, wide).some(l => l.includes('ctrl+o hides events')));
+  assert.deepEqual(shown(handleKey(showing, ctrl('o', '\x0f'), wide)), shown(reading));
 });
 
 // Session logs holding tool results, as session.js writes them (ASS-40's fold): '◀ ' then its output's
@@ -1065,14 +1071,14 @@ const agentReading = log => ({ ...handleKey(handleKey(initialState({ projects, w
 // `folding` drawn folded: its result one line, everything else as it was.
 const folded = ['> run the tests', '▶ Bash {"command":"npm test"}', '◀ pass 7 … (3 lines)', '■ turn ended (success) after 1.0s, $0.01 so far'];
 
-test('tab on an agent\'s session log shows the full output with the JSON event lines, and tab again folds it', () => {
+test('ctrl+o on an agent\'s session log shows the full output with the JSON event lines, and ctrl+o again folds it (ASS-299)', () => {
   const log = [...folding, '{"type":"tool_progress"}'];
   const reading = agentReading(log);
   assert.deepEqual(logLines(reading), folded);
-  const showing = handleKey(reading, key('tab'), wide);
+  const showing = handleKey(reading, ctrl('o', '\x0f'), wide);
   assert.deepEqual(logLines(showing), log);                                   // the whole output, the event lines with it
-  assert.ok(lines(showing, wide).some(l => l.includes('tab hides events')));
-  assert.deepEqual(logLines(handleKey(showing, key('tab'), wide)), folded);
+  assert.ok(lines(showing, wide).some(l => l.includes('ctrl+o hides events')));
+  assert.deepEqual(logLines(handleKey(showing, ctrl('o', '\x0f'), wide)), folded);
 });
 
 test('a folded error result keeps its error: prefix', () => {
@@ -1105,7 +1111,7 @@ test('a result at the end of the log folds', () => {
 test('a JSON event line between a result and its continuation does not break the fold', () => {
   const reading = agentReading(eventInResult);
   assert.deepEqual(logLines(reading), ['◀ pass 7 … (2 lines)']);              // the event line is out before the fold, so it is not counted
-  assert.deepEqual(logLines(handleKey(reading, key('tab'), wide)), eventInResult);
+  assert.deepEqual(logLines(handleKey(reading, ctrl('o', '\x0f'), wide)), eventInResult);
 });
 
 test('an indented JSON line inside a result\'s output is part of the fold', () => {
@@ -4088,7 +4094,7 @@ test('a one-line tool result is drawn as it is', () => {
 test('a log with no tool result is unchanged', () => {
   const reading = chatReading(noResult);
   assert.deepEqual(logLines(reading), noResult);
-  assert.deepEqual(logLines(handleKey(reading, key('tab'), wide)), noResult);     // the same folded and unfolded
+  assert.deepEqual(logLines(handleKey(reading, ctrl('o', '\x0f'), wide)), noResult);     // the same folded and unfolded
 });
 
 test('the agents screen\'s session log folds tool results the same way the chat screen does', () => {
@@ -4097,12 +4103,12 @@ test('the agents screen\'s session log folds tool results the same way the chat 
     logLines(chatReading(folding)).filter(l => l.startsWith('◀')));              // the two surfaces agree
 });
 
-test('tab on a chat\'s log unfolds it too', () => {
+test('ctrl+o on a chat\'s log unfolds it too (ASS-299)', () => {
   const reading = chatReading(folding);
   assert.deepEqual(logLines(reading), folded);
-  const showing = handleKey(reading, key('tab'), wide);
+  const showing = handleKey(reading, ctrl('o', '\x0f'), wide);
   assert.deepEqual(logLines(showing), folding);
-  assert.deepEqual(logLines(handleKey(showing, key('tab'), wide)), folded);
+  assert.deepEqual(logLines(handleKey(showing, ctrl('o', '\x0f'), wide)), folded);
 });
 
 // The ticket's chat (ASS-35): a third section on the ticket screen, below the human actions.
@@ -4174,13 +4180,18 @@ test('the ticket chat folds tool results', () => {
   assert.ok(!right.some(l => l.includes('fail 0')));
 });
 
-test('the ticket chat has no fold toggle and stays folded', () => {
-  const moved = press(ticketReading(folding), 'tab');
-  assert.equal(moved.ticketTab, 'actions');                                     // tab switches tabs, as everywhere on the screen
-  assert.ok(!('ticketChatEvents' in moved));
-  const right = chatOf(lines(handleKey(moved, key('tab', { shift: true }), wide), wide));
-  assert.ok(right.some(l => l.includes('◀ pass 7 … (3 lines)')), right.join('\n'));
-  assert.ok(!lines(ticketReading(folding), wide).some(l => /tab (shows|hides) events/.test(l)));
+test('the ticket chat has a ctrl+o fold toggle; tab still switches tabs, as everywhere on the screen (ASS-299)', () => {
+  const chat = ticketReading(folding);
+  const moved = press(chat, 'tab');
+  assert.equal(moved.ticketTab, 'actions');                                     // tab switches tabs, not events
+  const showing = handleKey(chat, ctrl('o', '\x0f'), wide);
+  assert.equal(showing.ticketChatEvents, true);
+  assert.equal(showing.ticketTab, 'chat');                                      // ctrl+o did not switch tabs
+  const right = chatOf(lines(showing, wide));
+  assert.ok(!right.some(l => l.includes('… (3 lines)')), right.join('\n'));     // unfolded: no "…" line
+  assert.ok(right.some(l => l.includes('fail 0')), right.join('\n'));           // and the result's inner lines are shown
+  assert.equal(handleKey(showing, ctrl('o', '\x0f'), wide).ticketChatEvents, false);   // ctrl+o re-folds
+  assert.ok(!lines(chat, wide).some(l => /tab (shows|hides) events/.test(l)));
 });
 
 test('an empty or absent log still says so', () => {
@@ -4207,7 +4218,6 @@ const at = (p, s) => (p.held ? p.held(s) : [s[p.draft], s[p.cursor]]);
 // screens draw it on its own row, the ticket chat beside the details box's bottom corner.
 // its cell is padded out to its column, so the prompt ends where two spaces follow it.
 const promptRow = s => { const row = render(s, wide).find(l => /(^|[│█] )> /.test(strip(l))); return row.slice(row.indexOf('> ')).replace(/ {2,}.*$/, ''); };
-const ctrl = (name, sequence) => key(name, { ctrl: true, sequence });
 
 test('←/→ move the cursor through a prompt\'s draft and stop at its ends, leaving the text alone', () => {
   for (const p of prompts) {
@@ -4447,13 +4457,14 @@ test('enter sends the whole multi-line draft, trimmed at its ends with its inner
 });
 
 // The log rows a prompt's log box shows above it, in order, stripped: between the box's top border (on
-// the ticket screen, the Chat tab's) and the prompt's rows.
+// the ticket screen, the Chat tab's help + blank line, ASS-299) and the prompt's rows.
 const logShown = (s, size = wide) => {
   const cells = s.ticket ? chatOf(lines(s, size)) : lines(s, size);
   const hint = cells.findLastIndex(l => HINT.test(l));
   const prompt = hint >= 0 ? hint : cells.findLastIndex(l => l.startsWith('> '));
-  const top = s.ticket ? cells.findLastIndex((l, i) => i < prompt && l.startsWith('Chat')) : cells.findLastIndex((l, i) => i < prompt && l.startsWith('┌'));
-  return cells.slice(top + 1, s.ticket ? prompt : prompt - 1).map(l => l.replace(/^│ /, '').replace(/ *[│█]$/, '').trimEnd());
+  const top = s.ticket ? cells.findLastIndex((l, i) => i < prompt && l.includes('ctrl+o')) : cells.findLastIndex((l, i) => i < prompt && l.startsWith('┌'));
+  const start = s.ticket && (cells[top + 1] ?? '').trim() === '' ? top + 2 : top + 1;
+  return cells.slice(start, s.ticket ? prompt : prompt - 1).map(l => l.replace(/^│ /, '').replace(/ *[│█]$/, '').trimEnd());
 };
 const LOGS = ['agentLog', 'chatLog', 'ticketChatLog'];
 const longLog = Array.from({ length: 100 }, (_, i) => `line ${i}`);
@@ -4871,9 +4882,11 @@ test('ASS-101 AC7: an answer typed on the ticket screen is saved for the questio
   assert.equal(saved.ticket?.key, 'ABC-5', 'still on the ticket screen');
 });
 
-test('ASS-35, ASS-184 AC1: the Chat tab is the chat alone — its log over the prompt line, the full width of the tabs', () => {
+test('ASS-35, ASS-184 AC1: the Chat tab is the chat alone — its help line, its log over the prompt line, the full width of the tabs', () => {
   const chat = tabOf(lines({ ...press(blockable('code-review'), 'return'), ticketChatLog: ['> hi', 'Hi: ABC-5 is in code review.'] }, wide));
-  assert.deepEqual(chat.slice(0, 2), ['> hi', 'Hi: ABC-5 is in code review.']);
+  assert.ok(chat[0].includes('ctrl+o shows events'), chat.join('\n'));                        // the shared help line (ASS-299)
+  assert.equal(chat[1], '', chat.join('\n'));                                                 // the blank line between help and log (ASS-299, same layout as chat/zoom)
+  assert.deepEqual(chat.slice(2, 4), ['> hi', 'Hi: ABC-5 is in code review.']);
   assert.ok(chat.at(-1).startsWith('> '), chat.join('\n'));
   assert.ok(!chat.some(l => /Block this ticket|Ticket number|States/.test(l)));
 });
@@ -5509,6 +5522,19 @@ const tileTail = ['said one', '{"type":"system","subtype":"thinking_tokens"}', '
 // lines before it, for the delivered-before-exit case.
 const exitedTail = (before = []) => [...before, '[agent exited (code 0)]'];
 
+// A session tail wider than any tile: `reply`'s long prose, then one 300-char
+// unbroken word — hard-wrapped and space-wrapped inside the tile (ASS-299 AC3: a
+// tile wraps its log instead of clipping it at its edge). The x's come last so a
+// tile showing only the newest rows of a long log still shows them wrapping.
+// Wider than the 100-col tile at `wide` and the 40-col tile at `at80`.
+const longTail = [reply, 'x'.repeat(300)];
+
+// A terminal short enough that every tile is the smallest a tile gets: at 28
+// rows each tile is 6 lines, leaving two body rows under its two header lines —
+// too few for a help line, a log line and a prompt (ASS-299 AC3's too-short
+// tile, which shows the log alone).
+const shortTiles = { ...wide, rows: 28 };
+
 // The tiles a render draws (ASS-188), in reading order: each from its top border
 // `┌─ <name> ─…┐` — its name, line and column, width and height (to the └ under
 // its ┌), and the text inside its borders, a line each.
@@ -5819,21 +5845,23 @@ test('ASS-188 AC2: under the header, the agent\'s latest log lines — event JSO
   assert.ok(!many.includes('line 0'));
 });
 
-test('ASS-188 AC2: a long log line is clipped at the tile\'s edge, not wrapped into its neighbour', () => {
-  const s = { ...onAgents(teamOf(2)), sessionTails: { 'Agent-0': ['x'.repeat(300)] } };
+test('ASS-299 AC3: a long log line wraps inside its tile across multiple rows, no ellipsis, never bleeding into its neighbour', () => {
+  const s = { ...onAgents(teamOf(2)), sessionTails: { 'Agent-0': longTail } };
   const [left, right] = tilesOf(s);
   assert.equal(left.row, right.row);
   const out = lines(s, wide);
   for (let r = left.row + 1; r < left.row + left.height - 1; r++) assert.equal(out[r][right.left], '│', out[r]);
-  assert.ok(!right.text.some(l => l.includes('x')));
+  assert.ok(!right.text.some(l => l.includes('x')), right.text.join('\n'));                 // the x's never reach the neighbour
+  const xRows = left.text.filter(l => l.includes('x'));
+  assert.ok(xRows.length > 1, `tile wraps 300 x's across multiple rows: ${xRows.length}`);  // wrapped, not clipped
+  assert.ok(!left.text.some(l => /…\s*$/.test(l)), left.text.join('\n'));                   // no ellipsis clipping
+  for (const r of left.text) assert.ok(visible(r) <= left.width - 2, r);                    // every row fits inside the border
 });
 
-test('ASS-188 AC2: a tile with no log yet shows only its header', () => {
+test('ASS-299 AC3: a tile whose log was never written shows the component\'s empty text', () => {
   const base = onAgents(queuedTeam);
-  const nonblank = s => tilesOf(s)[0].text.map(l => l.trim()).filter(Boolean);
-  const header = nonblank(base);
-  assert.ok(header.length > 0);
-  assert.deepEqual(nonblank({ ...base, sessionTails: { Daredevil: ['said one'] } }), [...header, 'said one']);
+  const empty = tilesOf(base)[0].text.map(l => l.trim()).filter(Boolean);
+  assert.ok(empty.includes('no session log for Daredevil'), empty.join('\n'));
 });
 
 // ── AC3: focus, Tab, zoom and the table.
@@ -6156,8 +6184,10 @@ test('ASS-189 AC1: one Esc stops typing and keeps the draft; Enter again opens t
   const stopped = handleKey(typed, key('escape'), wide);
   assert.deepEqual([stopped.agentTyping, stopped.agent], [false, null]);                 // still the grid
   assert.equal(stopped.agentDraft['Agent-0'], 'half a thought');
-  assert.equal(inputRow(stopped), undefined);
-  assert.ok(inputRow(onTile(stopped)).includes('half a thought'));
+  assert.ok(inputRow(stopped).includes('half a thought'), 'the draft shows on the focused tile (ASS-299)');
+  assert.ok(!inputRow(stopped).includes('█'), 'but with no cursor — not in typing mode');
+  const reopened = inputRow(onTile(stopped));
+  assert.ok(reopened.includes('half a thought') && reopened.includes('█'));                // Enter reopens the input on it, cursor back
 });
 
 test('ASS-189 AC1: a blank or whitespace-only draft sends nothing and is not cleared', () => {
@@ -6522,4 +6552,149 @@ test('ASS-293 AC3: the red control DOWN box shows the same line, still checked l
   assert.equal(down(checked(true)).at(-1), 'hindsight: up (port 9077)');
   assert.equal(down(checked(false)).at(-1), `hindsight: down (port 9077) since ${since1558}`);
   assert.equal(down({}).at(-1), 'hindsight: checking');
+});
+
+// ===== ASS-299: one chat component draws every chat view (zoomed agent log,
+// chat screen, ticket Chat tab, agents-grid tile) with one layout, ctrl+o
+// toggles events everywhere, tab toggles events nowhere.
+
+test('ASS-299 AC1: the zoomed agent log, the chat screen and the Chat tab show the same lines for the same log at the same size', () => {
+  const agent = logLines(agentReading(folding));
+  const chat = logLines(chatReading(folding));
+  assert.deepEqual(chat, agent);                                                             // shared chatLog folds/filters the same way
+  const ticket = chatOf(lines(ticketReading(folding), wide)).map(l => l.trim()).filter(Boolean);
+  for (const line of folded) assert.ok(ticket.includes(line), `Chat tab missing: ${line} in ${ticket.join('\n')}`);
+  assert.ok(!ticket.some(l => l.includes('"type"')), ticket.join('\n'));                      // event JSON hidden
+  assert.ok(!ticket.some(l => l.includes('fail 0')), ticket.join('\n'));                      // tool result folded
+});
+
+test('ASS-299 AC1: chatLog is exported from log.js — folds+filters when events=false, raw when events=true, [empty] when lines absent', () => {
+  assert.ok(typeof logScreen.chatLog === 'function', 'chatLog not exported from src/tui/screens/log.js');
+  const log = [...folding, '{"type":"tool_progress"}'];
+  assert.deepEqual(logScreen.chatLog(log, false, 'empty'), folded);                           // folded + event line filtered
+  assert.deepEqual(logScreen.chatLog(log, true, 'empty'), log);                               // raw: nothing dropped, nothing folded
+  assert.deepEqual(logScreen.chatLog(undefined, false, 'no log'), ['no log']);
+  assert.deepEqual(logScreen.chatLog(null, false, 'no log'), ['no log']);
+});
+
+test('ASS-299 AC2: the Chat tab keeps what sending last said above the log', () => {
+  const sent = { ...ticketReading(folding), ticketChatMessage: 'send failed: offline' };
+  const chat = chatOf(lines(sent, wide));
+  const say = chat.findIndex(l => l.includes('send failed: offline'));
+  const firstLog = chat.findIndex(l => l.includes('run the tests'));
+  assert.ok(say >= 0, chat.join('\n'));
+  assert.ok(firstLog > say, `said line (${say}) above the log (${firstLog}):\n${chat.join('\n')}`);
+});
+
+test('ASS-299 AC2: the Chat tab help line ends at "ctrl+o shows events" — no "esc returns" clause', () => {
+  const chat = chatOf(lines(ticketReading(folding), wide));
+  const help = chat.find(l => l.includes('ctrl+o'));
+  assert.ok(help, chat.join('\n'));
+  assert.ok(!help.includes('esc returns'), help);
+});
+
+test('ASS-299 AC3: the focused agent tile draws a help line and a one-row prompt on the shared agentDraft', () => {
+  const s = { ...onAgents(queuedTeam), sessionTails: { Daredevil: ['said one'] }, agentDraft: { Daredevil: 'hello' }, agentCursor: { Daredevil: 5 } };
+  const t = tilesOf(s)[0];
+  assert.ok(t.text.some(l => l.includes('ctrl+o shows events')), t.text.join('\n'));
+  assert.ok(t.text.some(l => l.includes('> hello')), t.text.join('\n'));
+  const zoomed = handleKey(s, zKey, wide);
+  assert.ok(promptRow({ ...zoomed, agentLog: ['line 0'] }).includes('hello'));               // tile and zoom share one draft
+});
+
+test('ASS-299 AC3: a non-focused agent tile shows the wrapped log alone — no help line, no prompt', () => {
+  const s = { ...onAgents(teamOf(2)), sessionTails: { 'Agent-0': ['said one'], 'Agent-1': ['said two'] } };
+  const unfocused = tilesOf(s).find(t => t.name !== focusedTile(s));
+  assert.ok(unfocused, 'a non-focused tile exists');
+  assert.ok(!unfocused.text.some(l => l.includes('ctrl+o')), unfocused.text.join('\n'));
+  assert.ok(!unfocused.text.some(l => /^>\s/.test(l.trim())), unfocused.text.join('\n'));
+});
+
+test('ASS-299 AC3: a tile too short for help + log + prompt falls back to the wrapped log alone', () => {
+  const s = { ...onAgents(teamOf(2)), sessionTails: { 'Agent-0': longTail } };
+  const t = tilesOf(s, shortTiles).find(t => t.name === 'Agent-0');
+  assert.ok(t, 'Agent-0 tile exists at short size');
+  assert.ok(!t.text.some(l => l.includes('ctrl+o')), t.text.join('\n'));                      // no help line
+  assert.ok(!t.text.some(l => /^>\s/.test(l.trim())), t.text.join('\n'));                     // no prompt row
+  assert.ok(t.text.some(l => l.includes('x')), t.text.join('\n'));                            // the log still fills the body
+});
+
+test('ASS-299 AC4: ctrl+o on the focused agent tile toggles agentEvents (only through the agents focus)', () => {
+  const s = { ...onAgents(teamOf(2)), sessionTails: { 'Agent-0': ['said one', '{"type":"tool_progress"}'] } };
+  assert.equal(s.focus, 'agents');
+  const unfolded = handleKey(s, ctrl('o', '\x0f'), wide);
+  assert.equal(unfolded.agentEvents, true);
+  assert.equal(handleKey(unfolded, ctrl('o', '\x0f'), wide).agentEvents, false);
+  const offAgents = { ...s, focus: 'menu' };
+  assert.equal(handleKey(offAgents, ctrl('o', '\x0f'), wide).agentEvents, offAgents.agentEvents);
+});
+
+test('ASS-299 AC4: ctrl+o toggles events in each of the four chat views — zoom, chat screen, Chat tab, focused tile', () => {
+  const zoom = agentReading(folding);
+  const zoomShown = handleKey(zoom, ctrl('o', '\x0f'), wide);
+  assert.equal(zoomShown.agentEvents, true);
+  assert.equal(handleKey(zoomShown, ctrl('o', '\x0f'), wide).agentEvents, false);
+  const chat = chatReading(folding);
+  const chatShown = handleKey(chat, ctrl('o', '\x0f'), wide);
+  assert.equal(chatShown.chatEvents, true);
+  assert.equal(handleKey(chatShown, ctrl('o', '\x0f'), wide).chatEvents, false);
+  const tab = ticketReading(folding);
+  const tabShown = handleKey(tab, ctrl('o', '\x0f'), wide);
+  assert.equal(tabShown.ticketChatEvents, true);
+  assert.equal(handleKey(tabShown, ctrl('o', '\x0f'), wide).ticketChatEvents, false);
+  const tileState = { ...onAgents(teamOf(2)), sessionTails: { 'Agent-0': ['said one'] } };
+  assert.equal(handleKey(tileState, ctrl('o', '\x0f'), wide).agentEvents, true);
+});
+
+test('ASS-299 AC4: ctrl+o is never inserted as text in any chat prompt', () => {
+  for (const p of prompts) {
+    const typed = typing(p.open(), 'hi');
+    const after = handleKey(typed, ctrl('o', '\x0f'), wide);
+    assert.deepEqual(at(p, after), at(p, typed), p.name);
+  }
+});
+
+test('ASS-299 AC4: on the zoomed agent log and the chat screen, tab leaves the events field unchanged', () => {
+  const zoom = agentReading(folding);
+  assert.equal(handleKey(zoom, key('tab'), wide).agentEvents, zoom.agentEvents);
+  const chat = chatReading(folding);
+  assert.equal(handleKey(chat, key('tab'), wide).chatEvents, chat.chatEvents);
+});
+
+test('ASS-299 AC4: no chat view renders a help line matching "tab (shows|hides) events"', () => {
+  for (const s of [agentReading(folding), chatReading(folding), ticketReading(folding)]) {
+    assert.ok(!lines(s, wide).some(l => /tab (shows|hides) events/.test(l)), JSON.stringify(s.screen));
+  }
+});
+
+test('ASS-299 AC6: the agents grid, the chat screen and the Chat tab render intact at 80 and 200 columns', () => {
+  const grid = { ...onAgents(teamOf(2)), sessionTails: { 'Agent-0': longTail } };
+  const chat = chatReading(['> hi', reply]);
+  const ticket = ticketReading(folding);
+  for (const size of [wide, at80]) {
+    for (const s of [grid, chat, ticket]) {
+      for (const l of render(s, size)) assert.ok(visible(l) <= size.columns, `${size.columns}: ${strip(l)}`);
+    }
+    const chatRows = logLines(chat, size);
+    assert.ok(chatRows.length > 1 && !chatRows.some(r => r.includes('…')), `chat wraps at ${size.columns}: ${chatRows.join('\n')}`);
+    const tiles = tilesOf(grid, size);
+    assert.ok(tiles.length >= 1, `${size.columns}: tiles rendered`);
+    const focused = tiles.find(t => t.name === focusedTile(grid, size));
+    assert.ok(focused?.text.some(l => l.includes('ctrl+o')), `focused tile shows help at ${size.columns}: ${focused?.text.join('\n')}`);
+    // The x's wrap inside their own tile, never bleeding into the neighbour (the ┐ at the shared border is intact).
+    const left = tiles.find(t => t.name === 'Agent-0');
+    const right = tiles.find(t => t.name === 'Agent-1');
+    if (right) assert.ok(!right.text.some(l => l.includes('x')), `${size.columns}: ${right.text.join('\n')}`);
+    assert.ok(left?.text.some(l => l.includes('x')), `${size.columns}: ${left?.text.join('\n')}`);
+  }
+});
+
+test('ASS-299 AC5: the zoomed log reserves the same box+prompt rows as before the chat component — Math.max(4, rows-chrome-3), no extra row on a cramped terminal', () => {
+  const st = agentReading(['line 1', 'line 2', 'line 3']);
+  for (const rows of [26, 28, 30, 44]) {
+    const size = { ...wide, rows };
+    const chrome = headerLines(st, size.columns, size.now).length + frame.below(st) + platform(st, size.columns, size.now).length;
+    const view = logScreen.logView(st, size, agentsScreen.AGENT_LOG);
+    assert.equal(view.body.length + view.prompt.length, Math.max(4, rows - chrome - 3), `rows=${rows}`);
+  }
 });

@@ -2,11 +2,11 @@
 // shows every project's — the old table behind `t`, and an agent's session log
 // (ASS-201: moved from app.js).
 import { runsInVm } from '../../control/vm.js';
-import { boxTable, scrollBox } from '../table.js';
-import { link, visible, clip, pad } from '../text.js';
+import { boxTable } from '../table.js';
+import { link, visible, clip, pad, wrapLine } from '../text.js';
 import * as chat from './chat.js';
 import { below, headerLines, platform } from './frame.js';
-import { foldResults, logView, promptRows, NEWLINE_KEYS, withKeyTail } from './log.js';
+import { chatLog, helpLine, logView, promptRows, NEWLINE_KEYS, withKeyTail } from './log.js';
 import { count } from '../metrics.js';
 import { ticketUrls, ticketLink, NONE, cell, feedback, agentLines, projectAssignments, ICONS, center, clamp, ellipsis, move, since, written, repoName } from './shared.js';
 
@@ -33,7 +33,7 @@ const bodyHeight = (state, columns, rows, now = 0) =>
 
 export const AGENT_LOG = {
   log: 'agentLog', scroll: 'agentLogScroll', draft: 'agentDraft', cursor: 'agentCursor', events: 'agentEvents', message: 'agentMessage', back: 'the agents',
-  empty: state => `no session log for ${state.agent.name}`,
+  empty: (state, name = state.agent?.name) => `no session log for ${name}`,
   // The message is queued until its "> text" line shows in the agent's log
   // (settlePending): until then its tile is marked `queued` (ASS-189 AC3).
   send: (state, text) => ({
@@ -207,25 +207,32 @@ export function costLabel(usage) {
 
 const usageLabel = usage => [contextLabel(usage), costLabel(usage)].filter(Boolean).join('  ');
 
-// The lines a tile's body shows: its agent's session log as the full log view
-// shows it (main.js keeps the last of it in sessionTails, by the tile's key) —
-// event JSON hidden, tool results folded — the latest that fit, each clipped at
-// the tile's edge. A log never written shows none.
-const tileBody = (state, item, room) =>
-  foldResults((state.sessionTails?.[item.key] ?? []).filter(line => !line.startsWith('{"type":'))).slice(-Math.max(0, room));
+// The lines a tile's body shows (ASS-299): its agent's session log through the
+// shared chatLog — event JSON hidden, tool results folded (events shown on the
+// focused agent tile when state.agentEvents is on, AC4) — each log line
+// wrapped to the tile's `inner` width (AC3) and the latest rows that fit.
+// A log never written shows the component's empty text, filling the room.
+const tileBody = (state, item, inner, room, events) => {
+  const tail = state.sessionTails?.[item.key];
+  const empty = AGENT_LOG.empty(state, item.name);
+  const list = tail ? chatLog(tail, events, empty) : [empty];
+  const wrapped = list.flatMap(l => wrapLine(l, inner));
+  return wrapped.slice(-Math.max(0, room));
+};
 
-// typeRow(text, cursor, room) — the focused tile's one-row input (ASS-189):
+// typeRow(text, cursor, room, focused) — the focused tile's one-row input (ASS-189):
 // `room` cols wide, always starting with a '> ' lead-in, newlines shown as
-// spaces, cursor cell in reverse video or '█' past the draft's end. Built
-// from promptRows at `room` width, taking the row the cursor sits on; a
-// scrolled row's '  ' lead-in is swapped for '> ' so the input is always
-// visibly a prompt, and a cursor at the draft's end slides '█' to the right
-// edge, filling the gap with spaces.
-export function typeRow(text, cursor, room) {
+// spaces, cursor cell in reverse video or '█' past the draft's end (ASS-299:
+// unfocused: the same row without the cursor cell, so the persisted draft shows
+// on every agent tile's help+prompt row). Built from promptRows at `room` width,
+// taking the row the cursor sits on; a scrolled row's '  ' lead-in is swapped
+// for '> ' so the input is always visibly a prompt, and a cursor at the draft's
+// end slides '█' to the right edge, filling the gap with spaces.
+export function typeRow(text, cursor, room, focused = true) {
   const flat = (text ?? '').replace(/\n/g, ' ');
-  const rows = promptRows(flat, cursor, true, room);
-  const marker = cursor >= [...flat].length ? '█' : '\x1b[7m';
-  const idx = Math.max(0, rows.findIndex(r => r.includes(marker)));
+  const rows = promptRows(flat, cursor, focused, room);
+  const marker = focused ? (cursor >= [...flat].length ? '█' : '\x1b[7m') : null;
+  const idx = focused ? Math.max(0, rows.findIndex(r => r.includes(marker))) : 0;
   const row = idx === 0 ? rows[idx] : `> ${rows[idx].slice(2)}`;
   const padCols = Math.max(0, room - visible(row));
   if (padCols === 0) return row;
@@ -234,19 +241,33 @@ export function typeRow(text, cursor, room) {
 
 // One tile: a box `width` × `height` with its agent's name in the top border,
 // reversed while the tile has the focus and clipped with an ellipsis when the
-// tile is too narrow for it; its header inside, and the log under that. When
-// the tile is the focused one and agentTyping is on, the last body line is a
-// one-row input (ASS-189), shared with the zoom's draft.
+// tile is too narrow for it; its header inside, and the chat under that drawn
+// through the shared chatLog/helpLine primitives (ASS-299). On a focused
+// agent-kind tile with enough room (help + 1 log + prompt), under the header
+// sits the help line, the latest log lines wrapped (not clipped, AC3) to the
+// inner width, and a one-row prompt (ASS-189, typeRow) on the same per-agent
+// draft the zoom shows (focused when agentTyping is on, else the draft text
+// without the cursor cell). A too-short tile and every other kind — unfocused,
+// chat-kind — show the wrapped log alone.
 function renderTile(state, item, { width, height, selected, now }) {
   const inner = width - 2;
   const label = ellipsis(item.name, Math.max(0, inner - 3));
   const header = tileHeader(state, item, now).filter(Boolean);
-  const typing = selected && state.agentTyping && item.kind === 'agent';
-  const bodyRows = Math.max(0, height - 2 - header.length - (typing ? 1 : 0));
-  const text = [...header, ...tileBody(state, item, bodyRows), ...(typing ? [typeRow(state.agentDraft?.[item.key] ?? '', state.agentCursor?.[item.key] ?? 0, inner)] : [])];
+  const body = Math.max(0, height - 2 - header.length);
+  const isAgent = item.kind === 'agent';
+  // A focused agent tile with room for a help line, a log line and the prompt
+  // draws all three; too short, it falls back to the log alone (AC3). The help
+  // line wraps to the tile's width (not clipped) so its ctrl+o wording survives
+  // a narrow tile (AC4), capped to keep at least one log row and the prompt.
+  const hasPrompt = selected && isAgent && body >= 3;
+  const events = hasPrompt && state.agentEvents;
+  const help = hasPrompt ? wrapLine(helpLine(AGENT_LOG, events), inner).slice(0, body - 2) : [];
+  const logRoom = Math.max(0, body - (hasPrompt ? help.length + 1 : 0));
+  const log = tileBody(state, item, inner, logRoom, events);
+  const text = [...header, ...(hasPrompt ? help : []), ...log, ...(hasPrompt ? [typeRow(state.agentDraft?.[item.key] ?? '', state.agentCursor?.[item.key] ?? 0, inner, state.agentTyping === true)] : [])];
   return [
     `┌─ ${selected ? `\x1b[7m${label}\x1b[0m` : label} ${'─'.repeat(Math.max(0, inner - 3 - visible(label)))}┐`,
-    ...Array.from({ length: Math.max(0, height - 2) }, (_, i) => `│${pad(clip(text[i] ?? '', inner), inner)}│`),
+    ...Array.from({ length: Math.max(0, height - 2) }, (_, i) => `│${pad(visible(text[i] ?? '') <= inner ? text[i] ?? '' : clip(text[i], inner), inner)}│`),
     `└${'─'.repeat(inner)}┘`,
   ];
 }
@@ -295,17 +316,12 @@ export function settlePending(state) {
 
 export function view(state, size) {
   if (state.agent != null) {
-    const { head, list, boxHeight, prompt } = logView(state, size, AGENT_LOG);
+    const { head, body, prompt } = logView(state, size, AGENT_LOG);
     const at = state.sessionWritten[state.agent.name];
     if (at != null) head[1] = `log last written ${written(at, size.now)}`;
     const usage = usageLabel(state.usage?.[state.agent.name]);
     if (usage) head[1] = [head[1], usage].filter(Boolean).join('  ');
-    return [
-      ...head,
-      ...scrollBox(list, { width: size.columns, height: boxHeight, scroll: state.agentLogScroll ?? Infinity, wrap: true }),
-      ...prompt,
-      state.agentMessage,
-    ];
+    return [...head, ...body, ...prompt, state.agentMessage];
   }
   // A zoomed chat tile is the chat screen's own view, so esc leaves it as it does there.
   if (state.chat != null) return chat.view(state, size);
@@ -326,6 +342,9 @@ export function view(state, size) {
 // still zooms a chat tile to its chat. On the table, as before: ↑/↓ move its
 // selection and enter opens the selected agent's session log.
 export function onKey(state, key, size, { step, sideways }) {
+  if (key.ctrl && key.name === 'o' && state.focus === 'agents') {
+    return { ...state, agentEvents: !state.agentEvents, agentLogScroll: null };
+  }
   if (key.sequence === 't' && !key.ctrl) return { ...state, agentsTable: !state.agentsTable };
   if (state.agentsTable) {
     if (step && !sideways && state.focus === 'agents') {
@@ -381,6 +400,8 @@ export function typeKey(state, key, size) {
   const nav = new Set(['tab', 'left', 'right', 'up', 'down']);
   if (nav.has(key.name)) return undefined;
   if (key.name === 'escape') return { ...state, agentTyping: false };
+  // ctrl+o toggles the focused tile's events while typing, so the tile's help line stays truthful (ASS-299).
+  if (key.ctrl && key.name === 'o') return { ...state, agentEvents: !state.agentEvents, agentLogScroll: null };
   return withKeyTail(state, key, (state, key) => {
     const sequence = key.sequence ?? '';
     if (NEWLINE_KEYS.has(sequence) || key.name === 'enter') return state;   // shift+enter / ctrl+j inert

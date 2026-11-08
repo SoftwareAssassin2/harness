@@ -1,6 +1,6 @@
 // A session log open under a prompt line (ASS-201: moved from app.js) — the
 // agents screen's, the chat screen's and the ticket screen's Chat tab.
-import { scrollLast } from '../table.js';
+import { scrollBox, scrollLast } from '../table.js';
 import { visible } from '../text.js';
 import { AGENT_LOG } from './agents.js';
 import { below, headerLines, platform } from './frame.js';
@@ -32,6 +32,45 @@ export function foldResults(lines) {
   }
   return out;
 }
+// One chat's log lines as a chat view draws them (ASS-299): fold tool results
+// and drop event-JSON lines unless `events` is on; `[empty]` for an absent log.
+// The one place every chat view decides what a log shows, before the view
+// hands the lines to a scrollBox or to a tile's wrap.
+export function chatLog(lines, events, empty) {
+  if (lines == null) return [empty];
+  return events ? lines : foldResults(lines.filter(line => !line.startsWith('{"type":')));
+}
+
+// A chat view's help line (ASS-299): the shared wording, ctrl+o for the events
+// toggle, `esc returns to ${view.back}` only when `view.back` is set.
+export function helpLine(view, events) {
+  const toggle = `ctrl+o ${events ? 'hides' : 'shows'} events`;
+  const back = view.back ? `   esc returns to ${view.back}` : '';
+  return `type a prompt, enter sends it   ←/→ move the cursor   ↑/↓ scroll   ${toggle}${back}`;
+}
+
+// The one chat component (ASS-299): what every full-screen chat view draws in
+// `rows` tall × `columns` wide — help line (ctrl+o wording), log in a wrapping
+// scroll box (JSON hidden and tool results folded unless events are shown) and
+// prompt rows, the box giving lines to the prompt as logView does today
+// (fitRows). Returns the help line, the folded/filtered list, the prompt's
+// fit rows, and `inner` — the content rows the box has below help + blank and
+// above the prompt. Callers dress the list in their own frame: the chat screen
+// and the agents-screen zoom wrap it in a scrollBox; the ticket screen's Chat
+// tab hands it to ticketColumn, whose outer border is the box. The grid tiles
+// reach the same decisions through the component's primitives (chatLog,
+// helpLine, typeRow) instead of this bordered-box composition, since a tile's
+// shape — no inner border, a one-row prompt, ASS-189 — is not the shape here.
+export function chatBox(state, { columns = 0, rows = Infinity }, view = AGENT_LOG) {
+  const space = Math.max(2, rows - 2);
+  const { draft: text, cursor } = view.get(state);
+  const draftRows = promptRows(text, cursor, true, columns || Infinity);
+  const inner = Math.max(1, space - draftRows.length);
+  const list = chatLog(state[view.log], state[view.events], view.empty(state));
+  const prompt = fitRows(draftRows, space - inner);
+  return { help: helpLine(view, state[view.events]), list, prompt, inner };
+}
+
 // A prompt line as it is drawn (ASS-41): the draft after '> ', the code point
 // under the cursor in reverse video, or a █ trailing it at the draft's end —
 // an empty draft and a cursor at the end look as they did before there was one.
@@ -85,14 +124,11 @@ export function fitRows(rows, room) {
 // name-keyed on the agents screen so the tile input and the zoom share one draft.
 export function logView(state, { columns = 0, rows = Infinity, now = 0 }, view = AGENT_LOG) {
   const bottom = below(state) + platform(state, columns, now).length;
-  const space = Math.max(3, rows - headerLines(state, columns, now).length - bottom - 4) + 1;   // the box's lines and the prompt's
-  const { draft: text, cursor } = view.get(state);
-  const draft = promptRows(text, cursor, true, columns || Infinity);
-  const boxHeight = Math.max(3, space - draft.length);
-  const log = state[view.events] ? state[view.log] : foldResults(state[view.log]?.filter(line => !line.startsWith('{"type":')));
-  const list = log ?? [view.empty(state)];
-  const events = `tab ${state[view.events] ? 'hides' : 'shows'} events`;
-  return { head: [`type a prompt, enter sends it   ←/→ move the cursor   ↑/↓ scroll   ${events}   esc returns to ${view.back}`, ''], list, boxHeight, prompt: fitRows(draft, space - boxHeight), last: scrollLast(list, { width: columns, height: boxHeight, wrap: true }) };
+  const rows_in = Math.max(4, rows - headerLines(state, columns, now).length - bottom - 3);   // box+prompt total, floored as before ASS-299 (max(3, …-4)+1)
+  const chat = chatBox(state, { columns, rows: rows_in }, view);
+  const boxHeight = chat.inner + 2;
+  const body = scrollBox(chat.list, { width: columns, height: boxHeight, scroll: state[view.scroll] ?? Infinity, wrap: true });
+  return { head: [chat.help, ''], body, prompt: chat.prompt, last: scrollLast(chat.list, { width: columns, height: boxHeight, wrap: true }) };
 }
 
 // A key on the session view: every printable key is text in the prompt, typed
@@ -101,8 +137,8 @@ export function logView(state, { columns = 0, rows = Infinity, now = 0 }, view =
 // the code point before the cursor and delete the one under it;
 // enter asks for the whole draft to be sent as `agentPrompt`, for main.js to hand the
 // agent-cli, once it is not blank; escape clears it, or with none returns to
-// the screen it was opened from (view.back) as it was; tab shows or hides the JSON event lines
-// (unfolding/folding tool results with them, ASS-40), following the end
+// the screen it was opened from (view.back) as it was; ctrl+o shows or hides the JSON event lines
+// (unfolding/folding tool results with them, ASS-40, ASS-299), following the end
 // again; ↑/↓ scroll no further than the last line, and
 // reaching it follows the end again as the log grows.
 // Sending and clearing put the cursor back at the start.
@@ -141,7 +177,7 @@ export function viewLog(state, key, size, view) {
     if (key.name === 'escape') return draft ? edit([], 0) : { ...state, ...view.close };
     if (key.name === 'backspace') return cursor ? edit(text.toSpliced(cursor - 1, 1), cursor - 1) : state;
     if (key.name === 'delete') return cursor < text.length ? edit(text.toSpliced(cursor, 1), cursor) : state;
-    if (key.name === 'tab') return { ...state, [view.events]: !state[view.events], [view.scroll]: null };
+    if (key.ctrl && key.name === 'o') return { ...state, [view.events]: !state[view.events], [view.scroll]: null };
     if (NEWLINE_KEYS.has(sequence) || key.name === 'enter') return edit(text.toSpliced(cursor, 0, '\n'), cursor + 1);
     if (key.name === 'return') {
       return draft.trim() ? { ...view.set(state, { draft: '', cursor: 0 }), [view.message]: '', ...view.send(state, draft.trim()) } : state;
