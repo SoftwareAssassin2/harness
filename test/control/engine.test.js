@@ -318,6 +318,41 @@ test('sinceResolution: the changes from the last move out of a step with restart
   assert.deepEqual(sinceResolution(engine, [...run, returned]), [...run, returned]);   // without the flag: no restart
 });
 
+// ASS-309 AC2: a block cleared by a landed fix (grouped-blocked's await-fix, whose
+// ticket:fix-landed output says landed) restarts the step-visit window, as a human's
+// resolution of Blocked for Human does — else the counts it was blocked with send it
+// straight back to Blocked (ASS-303: build 5/5, test 3/3). The clear is marked on the
+// change it makes (cause "fix-landed"), so the moves after it count afresh too.
+const v2 = () => JSON.parse(readFileSync(join(engineDir('harness-development-v2'), 'state-engine.json'), 'utf8'));
+// ASS-303's shape: Build entered 5 times and Test 3 times, both at their max-visits, then Blocked.
+const exhausted = [change('plan', 'build'), change('build', 'test'), change('test', 'build'), change('build', 'test'),
+  change('test', 'build'), change('build', 'test'), change('test', 'build'), change('build', 'blocked'),
+  change('blocked', 'build'), change('build', 'blocked')];
+const landed = { subEngineDone: true, subEngineState: 'done', structuredOutput: { landed: true } };
+const retried = { subEngineDone: true, subEngineState: 'done' };
+
+test('sinceResolution: the changes from the last block cleared by a landed fix — its change\'s cause (ASS-309)', () => {
+  const cleared = change('blocked', 'build', { cause: 'fix-landed' });
+  assert.deepEqual(sinceResolution(v2(), [...exhausted, cleared, change('build', 'test')]), [cleared, change('build', 'test')]);
+  assert.deepEqual(sinceResolution(v2(), [...exhausted, change('blocked', 'build')]).length, exhausted.length + 1);   // no cause: no restart
+  assert.deepEqual(sinceResolution(v2(), exhausted), exhausted);
+});
+
+test('nextState (ASS-309 AC2): a landed fix clears Blocked back to Build though Build and Test are at their max-visits; a retry keeps the count', () => {
+  const v2Engine = v2(), blocked = stepOf(v2Engine, 'blocked');
+  assert.deepEqual(nextState(blocked, v2Engine, landed, exhausted), { to: 'build', exit: blocked['exit-events'].at(-1), reason: 'exit' });
+  // No landed fix: the counts stand, so the return to Build redirects back to Blocked (the ASS-303 loop).
+  assert.deepEqual(nextState(blocked, v2Engine, retried, exhausted), { to: 'blocked', exit: blocked['exit-events'].at(-1), reason: 'max-visits' });
+  assert.equal(nextState(blocked, v2Engine, { ...landed, structuredOutput: { landed: false } }, exhausted).reason, 'max-visits');
+});
+
+test('nextState (ASS-309 AC2): after the clearing change\'s cause is recorded, the next exit counts afresh too — Build moves on to Test', () => {
+  const v2Engine = v2(), build = stepOf(v2Engine, 'build');
+  const changes = [...exhausted, change('blocked', 'build', { cause: 'fix-landed' })];
+  assert.deepEqual(nextState(build, v2Engine, retried, changes), { to: 'test', exit: build['exit-events'].at(-1), reason: 'exit' });
+  assert.equal(nextState(build, v2Engine, retried, exhausted).to, 'blocked');   // without the clear: Test is at its cap
+});
+
 test('nextState: a ticket reopened from Done moves on without hitting max-visits; real repeated visits since still hit it (ASS-130)', () => {
   const run = [...pass('committed', 'test', 'gate'), change('gate', 'done')];
   const thrice = [...run, change('done', 'committed'), ...run, change('done', 'committed'), ...run, change('done', 'committed'), change('committed', 'build'), change('build', 'review')];

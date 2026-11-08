@@ -137,15 +137,29 @@ function isResolution(engine, from, to) {
   return !(stepOf(engine, from)['exit-events'] ?? []).some(e => e['move-to-state'] === to);
 }
 
+// FIX_LANDED — the cause of a move that clears a block because the fix it
+// waited on landed (ASS-309: grouped-blocked's await-fix, whose ticket:fix-landed
+// says landed). Recorded on the clearing change (MOVE_CAUSE, moves.js causeEnv),
+// so sinceResolution restarts the step-visit window at it, and the moves after it
+// count afresh too — else the counts the ticket was blocked with send it straight
+// back to Blocked (ASS-303: build 5/5, test 3/3).
+export const FIX_LANDED = { cause: 'fix-landed' };
+// clearedByFix(facts) — the current move clears a block because the fix landed:
+// the sub-engine run (grouped-blocked) is done and its recorded output says
+// landed (facts.structuredOutput.landed; steps.js record-script-output). Tells a
+// landed-fix clear apart from the retry and other (needs-fix:false, repaired) clears.
+export const clearedByFix = facts => facts?.subEngineState === 'done' && facts?.structuredOutput?.landed === true;
+
 // sinceResolution(engine, stateChanges) — the changes from the last
 // resolution of Blocked for Human, the last move out of a done step (a
-// ticket reopened from Done, ASS-130), or the last move out of a human step
+// ticket reopened from Done, ASS-130), the last move out of a human step
 // with restarts-visit-count (ASS-264: the family's Too Large, whose operator
-// sends a ticket back to be groomed and estimated afresh), on (it included),
-// the history step visits are counted over; the whole history when there has
-// been none.
+// sends a ticket back to be groomed and estimated afresh), or the last block
+// cleared by a landed fix (ASS-309: its change's cause is fix-landed), on (it
+// included), the history step visits are counted over; the whole history when
+// there has been none.
 export function sinceResolution(engine, stateChanges = []) {
-  const at = stateChanges.findLastIndex(c => isResolution(engine, c['from-state'], c['to-state']) || isDoneStep(engine, c['from-state']) || restartsVisits(engine, c['from-state']));
+  const at = stateChanges.findLastIndex(c => isResolution(engine, c['from-state'], c['to-state']) || isDoneStep(engine, c['from-state']) || restartsVisits(engine, c['from-state']) || c.cause === FIX_LANDED.cause);
   return at < 0 ? stateChanges : stateChanges.slice(at);
 }
 
@@ -156,13 +170,14 @@ export function sinceResolution(engine, stateChanges = []) {
 // instead, 'unresolved' with `to` null when the exit's target cannot be told.
 // Null when no exit matches, so a step without exits (done) rests. Visits
 // count since the last resolution of Blocked for Human (sinceResolution), and
-// from none on the move that is itself one; the return walk reads it all.
+// from none on the move that is itself one, or itself a block cleared by a
+// landed fix (clearedByFix, ASS-309); the return walk reads it all.
 export function nextState(step, engine, facts, stateChanges = []) {
   const exit = firstExit(step, facts);
   if (!exit) return null;
   let to = resolveTarget(exit, step, engine, stateChanges, facts);
   if (to == null) return { to: null, exit, reason: 'unresolved' };
-  const counted = isResolution(engine, step.id, to) ? [] : sinceResolution(engine, stateChanges);
+  const counted = isResolution(engine, step.id, to) || clearedByFix(facts) ? [] : sinceResolution(engine, stateChanges);
   let reason = 'exit';
   for (const seen = new Set(); !seen.has(to); reason = 'max-visits') {
     seen.add(to);

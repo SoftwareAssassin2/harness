@@ -6,7 +6,10 @@ set -euo pipefail
 # its own project's active sprint, else its backlog. Landed is its ticket
 # system status Done with a live variation that went through a merge step —
 # merge-pull-request (harness-development) or ensure-auto-merge
-# (a GitLab project's own engine) — in its state changes. Prints { waits-on, status,
+# (a GitLab project's own engine) — anywhere in its state changes: top level
+# (flat harness-development) or nested in a sub-state-change at any depth
+# (grouped/v2 engines, whose merge lives in the release sub-engine; ASS-309).
+# Prints { waits-on, status,
 # landed } and exits 0 once landed; exits 3 when it is Done without a merge
 # (closed without its fix merged: a failed fix attempt); 1 until then. When
 # the variation waits on nothing, or is missing, exit 4, printing why as { ai-feedback-short, ai-feedback-long } (ASS-107 AC7: the
@@ -28,7 +31,7 @@ backlog="$(dirname "$(dirname "$(dirname "${files[0]}")")")/backlog.json"
 found="$(jq -cs --arg key "$fix" '
   first(.[] | (.features, .bugs, .spikes, .tickets) // [] | .[] | select(.key | ascii_upcase == $key))
   | { status: (.["ticket-system-status"] // null),
-      merged: any(.variations // [] | .[] | select(.["is-deleted"] | not) | .["state-changes"] // [] | .[]; .["from-state"] | IN("merge-pull-request", "ensure-auto-merge")) }' "${files[@]}")"
+      merged: any(.variations // [] | .[] | select(.["is-deleted"] | not) | .["state-changes"] // [] | .[] | .. | objects | select(has("from-state")); .["from-state"] | IN("merge-pull-request", "ensure-auto-merge")) }' "${files[@]}")"
 status="$(jq -r '.status // "unknown"' <<< "${found:-null}")"
 merged="$(jq -r '.merged // false' <<< "${found:-null}")"
 landed=false

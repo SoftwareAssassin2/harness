@@ -79,3 +79,29 @@ test('ASS-253 AC2: a genuine error between not-landed polls is not "in a row" â€
   assert.equal(codes.length, 0, f.lines.join('\n'));
   assert.equal(state(f), 'blocked', f.lines.join('\n'));
 });
+
+// ASS-309: the fix landed under a grouped engine, where the merge step is nested in a
+// sub-state-change (ASS-304's merge, read as unmerged) â€” await-fix lands it, and the parent
+// leaves Blocked though the step it returns to is at its max-visits (ASS-303: Blocked's only
+// exit redirected it straight back). The clearing change says why (cause "fix-landed"), so
+// the moves after it count afresh too.
+test('ASS-309: a landed fix whose merge is only in a nested sub-state-change clears Blocked back to Build, the change marked "fix-landed", though Build is at its max-visits', async () => {
+  const f = fixture();
+  edit(join(f.dir, 'engines', 'example-development', 'state-engine.json'), e => Object.assign(e.steps.find(s => s.id === 'blocked'), {
+    'follow-return-to-state': true, 'exit-events': [{ condition: { 'is-done': true }, 'follow-return-to-state': true }],
+  }));
+  const was = (from, to) => ({ 'state-engine': 'example-development', 'from-state': from, 'to-state': to, timestamp: '2026-10-29T20:00:00Z', 'agent-dispatch-log': [], 'work-is-done': true });
+  const nested = (from, to, sub) => ({ 'state-engine': 'harness-development-v2', 'from-state': from, 'to-state': to, 'agent-dispatch-log': [], ...(sub ? { 'sub-state-change': sub } : {}) });
+  edit(sprint(f), s => {
+    s.features[0].variations[0]['state-changes'] = [was('plan', 'build'), was('build', 'build'), was('build', 'build'), was('build', 'blocked')];   // Build 3/3: its max-visits
+    Object.assign(s.features[1], { 'ticket-system-status': 'Done', variations: [{ name: 'A', 'harness-status': hs('done'), 'state-changes': [
+      nested('release', 'release', { 'state-engine': 'v2-release', 'from-state': 'merge-pull-request', 'to-state': 'update-workspace' }),
+      nested('release', 'done'),
+    ] }] });
+  });
+  for (let i = 0; i < 4 && state(f) === 'blocked'; i++) { await tick(f.ctx); f.now += 5 * 60e3 + 1e3; }
+  assert.notEqual(state(f), 'blocked', f.lines.join('\n'));
+  const cleared = f.variation()['state-changes'].find(c => c['from-state'] === 'blocked' && !c['sub-state-change']);   // its own move out, not one within its run
+  assert.equal(cleared?.['to-state'], 'build', f.lines.join('\n'));
+  assert.equal(cleared?.cause, 'fix-landed', f.lines.join('\n'));
+});
