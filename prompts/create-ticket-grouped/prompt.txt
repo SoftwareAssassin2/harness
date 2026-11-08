@@ -12,14 +12,15 @@ Headings: H2, in this order:
 Optional extras: only if real content.
 - Scope: between Context and Acceptance criteria. What's in.
 - Out of scope: after Acceptance criteria.
+- Operator follow-up: after Out of scope. What only the operator, the host, a Claude login, a credential or a live outside system can verify or do. Never a criterion.
 - Related: last. Ticket keys plus one-word why.
 
 Rules:
 - Same template for Story and Bug.
 - No other headings. No Summary, Problem or Goal sections.
 - Terse. Fragments OK. No restating the title.
-- Criteria are checkable outcomes, not tasks: each says how to see it's done (a command and what it prints, a state).
-- No criterion may need anyone but the operator to touch the operator's uncommitted work or a credential, or to delete or overwrite anything. Work only the operator can do is written as the operator's ("The operator has …").
+- Criteria are checkable outcomes, not tasks: each says how to see it's done (a command and what it prints, a state), and each is one a Test agent can check by itself in the ticket's VM (commands, tests, the app, screenshots, throwaway data); never one needing the operator, the host, a Claude login, a credential or a live outside system.
+- No criterion may need anyone but the operator to touch the operator's uncommitted work or a credential, or to delete or overwrite anything. Work only verifiable operator-side: rewrite the criterion as the nearest check an agent can run (e.g. the CLI form against a throwaway store), else it is Operator follow-up, never a criterion.
 - Blocked tickets only as the analysis proves them; nothing guessed.
 - Refs: ticket keys, MR !N, repo-relative paths.
 
