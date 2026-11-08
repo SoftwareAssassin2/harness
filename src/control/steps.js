@@ -283,8 +283,9 @@ async function runVariation(ctx, state, project, key, name) {
           await ctx.cli(['ticket:record-output', project.id, key, name, step['append-output-to'], JSON.stringify(kept), 'append']);
           ctx.log(PHASE, `${who}: its ${run['state-engine']} run kept in ${step['append-output-to']}`);
         }
-        // A block cleared by a landed fix (ASS-309) records the fix-landed cause, so the visit window restarts.
-        if (!await move(next, clearedByFix(facts) ? FIX_LANDED : undefined)) return;   // gated: the run stays until the human opens the gate, then goes as orphaned (runTransient)
+        // A block cleared by a landed fix (ASS-309) records the fix-landed cause, so the visit window
+        // restarts — as does the cause the exit itself names (ASS-315: merge-gate-red, on release's rebuild exit).
+        if (!await move(next, clearedByFix(facts) ? FIX_LANDED : next.exit?.cause)) return;   // gated: the run stays until the human opens the gate, then goes as orphaned (runTransient)
         // Why it went there, when the run says (ai-feedback-short/-long in its output; ASS-75: Create VM's
         // out-of-disk reason, for Blocked for Human): the variation's health, set after the move, which clears it.
         const why = run['structured-output'];

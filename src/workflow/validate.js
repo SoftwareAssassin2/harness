@@ -124,6 +124,11 @@ export function validateStateEngine(engine, root, name, own) {
       collectLeaves(exit.condition, positive, negated);
       checkStartAt(exit, byId, at, root, subSteps, errors, own);
 
+      // cause (ASS-315: merge-gate-red) is recorded on the move the exit makes as given (steps.js), and
+      // read by value to restart the visit window (engine.js sinceResolution), so it must be a string:
+      // anything else would match no cause control looks for, and nothing would say so.
+      if (exit.cause !== undefined && typeof exit.cause !== 'string') errors.push(`${at} exit cause "${exit.cause}" is no string`);
+
       const target = exit['move-to-state'];
       if (target === undefined) continue;
       if (!byId.has(target)) { errors.push(`${at} moves to unknown step "${target}"`); continue; }

@@ -257,6 +257,33 @@ test('tick: sub-engine-ended-at reads which done step a run ended at, at both le
   assert.deepEqual(f.assignments()['transient-state-engines'], []);
 });
 
+// ASS-315: a merge-gate red's return to Build is no fault of the steps it passes back through, so
+// the exit that makes the move says why — its own "cause" in the engine JSON (merge-gate-red, on
+// harness-development-v2's release rebuild exit) — and control records it on the change, as it
+// records a landed fix's (ASS-309, whose cause still wins: tick-await-fix.test.js). The visit
+// window then restarts there (engine.js sinceResolution). An exit with no cause records none.
+test('ASS-315: the cause an exit names is recorded on the move it makes; an exit naming none records no cause', async () => {
+  const moveOut = async exit => {
+    const f = controlFixture();
+    atBuild(f);
+    edit(engineFile(f, 'example-development'), e => { e.steps.find(s => s.id === 'local-testing')['exit-events'] = [
+      { condition: { all: [{ 'is-done': true }, { 'sub-engine-ended-at': 'rebuild' }] }, 'move-to-state': 'done', ...exit },
+      { condition: { 'is-done': true }, 'move-to-state': 'done' },
+    ]; });
+    writeFileSync(engineFile(f, 'test'), JSON.stringify({ steps: [
+      { id: 'check', sequence: 1, action: { type: 'none' }, 'exit-events': [{ condition: { always: true }, 'move-to-state': 'rebuild' }] },
+      { id: 'rebuild', sequence: 2, 'is-done': true, action: { type: 'none' } },
+      { id: 'done', sequence: 3, 'is-done': true, action: { type: 'none' } },
+    ] }));
+    for (let i = 0; i < 10 && f.variation()['harness-status'].state !== 'done'; i++) await tick(f.ctx);
+    const moved = levelChanges(f.variation()).find(c => c['from-state'] === 'local-testing');
+    assert.equal(moved?.['to-state'], 'done', f.lines.join('\n'));
+    return moved;
+  };
+  assert.equal((await moveOut({ cause: 'merge-gate-red' })).cause, 'merge-gate-red');
+  assert.ok(!('cause' in await moveOut({})));
+});
+
 test('tick: an agent finishing a prompt step inside a run is judged against its ticket\'s facts too — the variation, its files, its scripts — as at the top level (ASS-68)', async () => {
   const f = controlFixture();
   atBuild(f);

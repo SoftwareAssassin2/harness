@@ -395,6 +395,17 @@ test('ASS-264: restarts-visit-count is a boolean, on a human step alone — a pe
   assertError(two({ 'restarts-visit-count': true }), /step "b" has restarts-visit-count but is no human step/);
 });
 
+// ASS-315: an exit may say why the move it makes was made ("cause": merge-gate-red on
+// harness-development-v2's release rebuild exit, which restarts the visit window — engine.js
+// sinceResolution, steps.js). It is recorded as given, so it must be a string: a non-string would
+// never match the cause control looks for, and nothing would say so.
+test('ASS-315: an exit\'s cause is a string', () => {
+  const withCause = cause => engine([step('a', 1, { 'exit-events': [{ condition: { always: true }, 'move-to-state': 'b', cause }] }), step('b', 2, { 'is-done': true })]);
+  assert.deepEqual(errorsFor(withCause('merge-gate-red')), []);
+  assertError(withCause(5), /step "a".*cause/);
+  assertError(withCause(true), /step "a".*cause/);
+});
+
 test('ASS-209 AC2: a project.json switched-off-steps entry names an existing engine and step, which may be switched off by ASS-192\'s rules', () => {
   const pass = { 'exit-events': [{ condition: { always: true }, 'move-to-state': 'c' }] };
   const engines = { e: engine([step('a', 1, pass), step('b', 2, pass), step('n', 3), step('c', 4, { 'is-done': true })], { 'x-steps': [step('x', 1, pass)] }) };

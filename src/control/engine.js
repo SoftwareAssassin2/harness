@@ -150,16 +150,30 @@ export const FIX_LANDED = { cause: 'fix-landed' };
 // landed-fix clear apart from the retry and other (needs-fix:false, repaired) clears.
 export const clearedByFix = facts => facts?.subEngineState === 'done' && facts?.structuredOutput?.landed === true;
 
-// sinceResolution(engine, stateChanges) — the changes from the last
+// MERGE_GATE_RED — the cause of the move an exit makes when the merge gate went red
+// (ASS-315: v2-release's merge-pull-request failing npm test on the rebased branch, or no clean
+// rebase, ends its run at rebuild, and release's exit for it sends the ticket back to Build).
+// The exit itself names it, in the engine JSON ("cause" on harness-development-v2's release
+// rebuild exit; steps.js records it), so the window restarts there for every step the return trip
+// passes back through — but never for the step the move left (release), whose own max-visits still
+// bounds a gate that never goes green (AC2). Else a green, cleanly rebased change is sent to
+// Blocked at Build's exit because the reds left Test at its cap (ASS-311).
+export const MERGE_GATE_RED = { cause: 'merge-gate-red' };
+
+// sinceResolution(engine, stateChanges, targetStep) — the changes from the last
 // resolution of Blocked for Human, the last move out of a done step (a
 // ticket reopened from Done, ASS-130), the last move out of a human step
 // with restarts-visit-count (ASS-264: the family's Too Large, whose operator
-// sends a ticket back to be groomed and estimated afresh), or the last block
-// cleared by a landed fix (ASS-309: its change's cause is fix-landed), on (it
-// included), the history step visits are counted over; the whole history when
-// there has been none.
-export function sinceResolution(engine, stateChanges = []) {
-  const at = stateChanges.findLastIndex(c => isResolution(engine, c['from-state'], c['to-state']) || isDoneStep(engine, c['from-state']) || restartsVisits(engine, c['from-state']) || c.cause === FIX_LANDED.cause);
+// sends a ticket back to be groomed and estimated afresh), the last block
+// cleared by a landed fix (ASS-309: its change's cause is fix-landed), or the
+// last merge-gate red (ASS-315: cause merge-gate-red), on (it included), the
+// history step visits are counted over; the whole history when there has been
+// none. `targetStep` is the step whose visits are being counted: a merge-gate
+// red is no restart for the step it left (release), so that step's own visits
+// keep accumulating across reds and its max-visits still bounds the gate.
+export function sinceResolution(engine, stateChanges = [], targetStep) {
+  const at = stateChanges.findLastIndex(c => isResolution(engine, c['from-state'], c['to-state']) || isDoneStep(engine, c['from-state']) || restartsVisits(engine, c['from-state']) || c.cause === FIX_LANDED.cause
+    || (c.cause === MERGE_GATE_RED.cause && c['from-state'] !== targetStep));
   return at < 0 ? stateChanges : stateChanges.slice(at);
 }
 
@@ -169,15 +183,17 @@ export function sinceResolution(engine, stateChanges = []) {
 // has been visited `max-visits` times already and its `on-max-visits` is taken
 // instead, 'unresolved' with `to` null when the exit's target cannot be told.
 // Null when no exit matches, so a step without exits (done) rests. Visits
-// count since the last resolution of Blocked for Human (sinceResolution), and
-// from none on the move that is itself one, or itself a block cleared by a
-// landed fix (clearedByFix, ASS-309); the return walk reads it all.
+// count since the last resolution of Blocked for Human (sinceResolution, over
+// the step being counted), and from none on the move that is itself one, itself
+// a block cleared by a landed fix (clearedByFix, ASS-309), or itself a merge-gate
+// red's return (ASS-315: else the first red is redirected by the counts it is
+// meant to restart); the return walk reads it all.
 export function nextState(step, engine, facts, stateChanges = []) {
   const exit = firstExit(step, facts);
   if (!exit) return null;
   let to = resolveTarget(exit, step, engine, stateChanges, facts);
   if (to == null) return { to: null, exit, reason: 'unresolved' };
-  const counted = isResolution(engine, step.id, to) || clearedByFix(facts) ? [] : sinceResolution(engine, stateChanges);
+  const counted = isResolution(engine, step.id, to) || clearedByFix(facts) || exit.cause === MERGE_GATE_RED.cause ? [] : sinceResolution(engine, stateChanges, to);
   let reason = 'exit';
   for (const seen = new Set(); !seen.has(to); reason = 'max-visits') {
     seen.add(to);
