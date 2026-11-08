@@ -435,6 +435,7 @@ test('ASS-118 AC4: no merge request leaves draft and nothing merges before Relea
     assert.deepEqual(into, ['review'], top);
     // Walked with the risk not flagged, the ticket still goes through the whole of Review before Release.
     const trail = walked(top);
+    assert.ok(trail.includes('grouped-review/variation-selection') && trail.includes(`${top}/release`), top);
     assert.ok(trail.indexOf('grouped-review/variation-selection') < trail.indexOf(`${top}/release`), top);
   }
 });
