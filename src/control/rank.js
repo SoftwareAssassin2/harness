@@ -29,8 +29,9 @@ export const flattenSprint = sprint => [['features', 'feature'], ['bugs', 'bug']
 export const isLiveBacklogEntry = (t, inSprint) => t['is-deleted'] !== true && t['ticket-system-status'] !== 'Done' && !inSprint.has(t.key.toUpperCase());
 
 // rankSprint(tickets, { engine }) — the sprint's tickets (see flattenSprint)
-// in dispatch order: a fast-tracked ticket (fast-track: true, ASS-83 — one
-// the health check raised for the harness itself) above every other, manual
+// in dispatch order: a fast-tracked ticket (fast-track: true, ASS-83/ASS-306 —
+// one the health check or the grouped blocked flow raised for the harness
+// itself) above every other, manual
 // priorities included; then manual-priority, ascending; then Jira priority
 // (priorityOrder, then none); bugs before the rest; tickets another in the
 // list depends on; closer to done (the highest step sequence in `engine`

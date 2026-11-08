@@ -13,8 +13,10 @@ set -euo pipefail
 # sets the step's paired status). Prints { key, state, moved: [<variation>…] }.
 # Fails, writing nothing, when the ticket is neither in the sprint nor
 # off-board, or the project tracks no sprint — a fast-tracked ticket then
-# stays off-board at Backlog, synced to the backlog with its mark, for the
-# health check's next try (ASS-83). It also fails, writing nothing, while the
+# stays off-board at Backlog, synced to the backlog with its mark, to be
+# joined by hand or by its source on a later run (ASS-83; ASS-306 added the
+# grouped blocked flow's fix ticket as a second source, whose one-shot
+# fast-track-fix step does not retry). It also fails, writing nothing, while the
 # ticket has an open blocking question (ASS-248: Asked or Answer Rejected — any
 # status but Answered, Answer Accepted or Assumed — and not flagged blocking:
 # false, so one asked before the flag counts), naming each: it is not
