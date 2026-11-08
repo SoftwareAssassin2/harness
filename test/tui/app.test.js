@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { initialState as flagged, handleKey, render, decided, fitRows, controlExited, controlDraining } from '../../src/tui/app.js';
+import { initialState as flagged, handleKey, render, decided, fitRows, controlExited, controlDraining, drawColumns } from '../../src/tui/app.js';
 import * as app from '../../src/tui/app.js';   // controlStarted (ASS-310) by the namespace so the suite still loads before it is exported
 // The chat screen and the ticket screen's Chat tab on (ASS-262: off in
 // src/tui/features.json), so the tests from before their flags run as they
@@ -6890,5 +6890,16 @@ test('ASS-310 AC4: the control box fits beside the environment and models boxes 
     assert.equal((stripped[top].match(/┌/g) || []).length, 3, `three boxes side by side at ${size.columns}`);   // control, local-pc, models
     assert.match(stripped[top + 1], /│ control .*│ local-pc .*│ models /);
     for (const l of out) assert.ok(visible(l) <= size.columns, `${size.columns}: ${strip(l)}`);
+  }
+});
+
+test('ASS-311 AC1, AC2: the dashboard draws one column narrower than the terminal, so its rightmost column stays blank', () => {
+  assert.deepEqual([200, 80, 2, 1, 0, undefined].map(c => drawColumns(c)), [199, 79, 1, 1, 1, 1]);   // never below 1
+  for (const terminal of [200, 80]) {                      // a wide and a narrow terminal
+    const size = { ...wide, columns: drawColumns(terminal) };
+    for (const screen of [...'sSbBcfmruaxh', 'A']) {        // every screen, the menu over it
+      const s = { ...state, screen, menuOpen: true };
+      for (const l of render(s, size)) assert.ok(visible(l) <= terminal - 1, `${terminal} ${screen}: ${strip(l)}`);
+    }
   }
 });
