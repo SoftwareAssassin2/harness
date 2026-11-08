@@ -23,3 +23,7 @@ test('agent-names.json has the Super Smash Bros. fighters and StarCraft\'s main 
   for (const name of ['Jim-Raynor', 'Sarah-Kerrigan', 'Arcturus-Mengsk', 'Zeratul', 'Artanis', 'Tassadar', 'Nova']) assert.ok(of('StarCraft').includes(name), name);
   assert.ok(of('Super Mario').includes('Mario') && !of('Super Smash Bros.').includes('Mario'));   // a fighter already there stays as it was
 });
+
+test('agent-names.json has no Pokemon-Trainer (ASS-312)', () => {
+  assert.equal(names.filter(n => n.name === 'Pokemon-Trainer').length, 0);
+});
