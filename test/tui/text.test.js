@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { visible, clip, pad, link, markWords, wrapLine } from '../../src/tui/text.js';
+const strip = s => s.replace(/\x1b\[[0-9;]*m|\x1b\]8;;[^\x1b]*\x1b\\/g, '');
 
 test('emoji take two columns; colors and links take none', () => {
   assert.equal(visible('✨ a'), 4);
@@ -65,6 +66,16 @@ test('wrapLine hangs continuation rows under the line\'s lead-in: > , ▶ , ◀ 
 
 test('wrapLine drops the indent when it leaves no room to write in', () => {
   assert.deepEqual(wrapLine('(thinking) abcdef', 12), ['(thinking)', 'abcdef']);
+});
+
+test('ASS-300 AC6: wrapLine takes an explicit hang width as a third arg, overriding the lead-in guess', () => {
+  assert.deepEqual(wrapLine('⏺ hello world foo bar', 10, 2), ['⏺ hello', '  world', '  foo bar']);
+  // An SGR-prefixed row where the LEAD_INS guess fails: the explicit hang still indents the continuation at 2.
+  const green = '\x1b[32m', reset = '\x1b[0m';
+  const rows = wrapLine(`${green}⏺${reset} Read(src/one/two/three)`, 10, 2);
+  assert.ok(rows.length > 1, 'the SGR-prefixed row wraps');
+  assert.ok(rows.every(r => visible(r) <= 10), rows.map(visible).join(','));
+  assert.ok(rows.slice(1).every(r => strip(r).startsWith('  ')), `hang at 2: ${JSON.stringify(rows.map(strip))}`);
 });
 
 test('wrapLine wraps a colored or linked line where its visible text says, never splitting a code; each row closes what is open and the next opens it again', () => {

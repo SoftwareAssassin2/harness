@@ -1001,7 +1001,7 @@ test('enter opens the selected agent\'s session log in a box that follows its en
   assert.deepEqual(opened.agent, { name: 'Spock', start: '2026-10-01T13:44:00Z' });
   const log = Array.from({ length: 100 }, (_, i) => `line ${i}`);
   const reading = { ...opened, agentLog: log };
-  const shown = s => lines(s, wide).filter(l => /^│ line \d+ +[│█]$/.test(l)).map(l => Number(l.match(/line (\d+)/)[1]));
+  const shown = s => lines(s, wide).filter(l => /^│ (?:⏺ |  )line \d+ +[│█]$/.test(l)).map(l => Number(l.match(/line (\d+)/)[1]));   // ASS-300: one message, its first row bulleted, the rest hung at 2
   assert.equal(shown(reading).at(-1), 99);                              // its end, newest last
   assert.ok(lines(reading, wide).some(l => l.endsWith('█')));          // with a scrollbar
   assert.equal(shown({ ...reading, agentLog: [...log, 'line 100'] }).at(-1), 100);   // still following as it grows
@@ -1038,101 +1038,59 @@ test('an agent\'s session log hides its JSON event lines; ctrl+o shows them, and
   const team = [{ ...assignment('Daredevil', 'ABC-1'), 'start-time': '2026-10-01T13:43:00Z' }];
   const log = ['said one', '{"type":"system","subtype":"thinking_tokens"}', '▶ Bash {"command":"ls"}', '  {"type":"not an event, indented output"}', '{"type":"tool_progress"}', 'said two'];
   const reading = { ...handleKey(handleKey(initialState({ projects, workflows: [engine], assignments: team }), key('a')), zKey, wide), agentLog: log };
-  const shown = s => lines(s, wide).filter(l => /^│ /.test(l)).map(l => l.slice(2).replace(/ +[│█]$/, '')).filter(Boolean);
-  assert.deepEqual(shown(reading), ['said one', '▶ Bash {"command":"ls"}', '  {"type":"not an event, indented output"}', 'said two']);
+  const shown = s => lines(s, wide).filter(l => /^│ /.test(l)).map(l => strip(l.slice(2).replace(/ +[│█]$/, ''))).filter(Boolean);
+  assert.deepEqual(shown(reading), ['⏺ said one', '⏺ Bash(ls)', '⏺   {"type":"not an event, indented output"}', '⏺ said two']);   // ASS-300: the chat-look render, event JSON hidden
   const showing = handleKey(reading, ctrl('o', '\x0f'), wide);
-  assert.deepEqual(shown(showing), log);
+  for (const line of ['"type":"system"', '"type":"tool_progress"']) assert.ok(shown(showing).some(l => l.includes(line)), `${line} shown when expanded`);
   assert.equal(openDraft(showing), '');                          // ctrl+o is not text
   assert.ok(lines(showing, wide).some(l => l.includes('ctrl+o hides events')));
   assert.deepEqual(shown(handleKey(showing, ctrl('o', '\x0f'), wide)), shown(reading));
 });
 
-// Session logs holding tool results, as session.js writes them (ASS-40's fold): '◀ ' then its output's
-// lines each under a 2-space indent. The fold draws one line per result, so these feed the chat screen,
-// the agents screen and the ticket chat alike — all three read the same lines from the same arrays.
+// Session logs holding tool results, as session.js writes them (ASS-40): '◀ ' then its output's
+// lines each under a 2-space indent. Under the chat-look renderer (ASS-300) the chat views draw
+// each tool as `⏺ Name(args)` with a `  ⎿  ` gutter under it — the rendered rows feed the chat
+// screen, the agents screen and the ticket chat alike, all three read the same lines.
 const folding = ['> run the tests', '▶ Bash {"command":"npm test"}', '◀ pass 7', '  fail 0', '  done', '■ turn ended (success) after 1.0s, $0.01 so far'];
-const oneLineResult = ['◀ pass 7', '■ turn ended (success) after 1.0s, $0.01 so far'];
 const noResult = ['> hi', 'Hello!', '(thinking) hm'];
-const errorResult = ['◀ error: no such file', '  at open()', '  giving up'];
-const blankResult = ['◀ ', '  ', '  real output', '  more'];
-const emptyResult = ['◀ '];
-// A result followed in turn by every kind of line that opens the next event, and a plain assistant line.
-const afterResult = ['◀ pass 7', '  fail 0', '▶ Bash {"command":"ls"}', '■ turn ended (success) after 1.0s, $0.01 so far', '(thinking) x', '> hi', 'said two'];
-const twoResults = ['◀ a', '  b', '◀ c', '  d', '  e'];
-const resultAtEnd = ['said one', '◀ pass 7', '  fail 0'];
-const eventInResult = ['◀ pass 7', '{"type":"tool_progress"}', '  fail 0'];        // a JSON event line, filtered before the fold
-const indentedInResult = ['◀ pass 7', '  {"type":"not an event, indented output"}', '  fail 0'];   // output that looks like one
-const manyResults = Array.from({ length: 40 }, (_, i) => [`◀ result ${i}`, '  more', '  and more']).flat();
-const longResult = [`◀ ${'x'.repeat(300)}`, '  fail 0'];
+const manyCalls = Array.from({ length: 40 }, (_, i) => [`▶ Bash {"command":"echo ${i}"}`, `◀ out ${i}`]).flat();
+const longResult = ['▶ Bash {"command":"echo"}', `◀ ${'x'.repeat(300)}`];
 
-// The lines a log box draws, its border and padding off; and an agent's session log open on the agents screen.
-const logLines = (s, size = wide) => lines(s, size).filter(l => /^│ /.test(l)).map(l => l.slice(2).replace(/ +[│█]$/, '')).filter(Boolean);
+// The rendered rows the chat views draw, its border/padding and SGR codes off — blanks are kept
+// out by filter(Boolean) so tests can pin the non-blank content; strip removes the SGR the new
+// renderer adds to bullets, gutter prefixes, prompts and turn-end lines.
+const logLines = (s, size = wide) => lines(s, size).filter(l => /^│ /.test(l)).map(l => strip(l.slice(2).replace(/ +[│█]$/, ''))).filter(Boolean);
 const agentReading = log => ({ ...handleKey(handleKey(initialState({ projects, workflows: [engine], assignments: [{ ...assignment('Daredevil', 'ABC-1'), 'start-time': '2026-10-01T13:43:00Z' }] }), key('a')), zKey, wide), agentLog: log });
-// `folding` drawn folded: its result one line, everything else as it was.
-const folded = ['> run the tests', '▶ Bash {"command":"npm test"}', '◀ pass 7 … (3 lines)', '■ turn ended (success) after 1.0s, $0.01 so far'];
+// `folding` drawn under the chat-look renderer (ASS-300): the sent prompt, the tool call as
+// Claude Code names it, the 3-line result under a ⎿ gutter at hang 5, the dim turn-end.
+const folded = ['> run the tests', '⏺ Bash(npm test)', '  ⎿  pass 7', '     fail 0', '     done', '■ turn ended (success) after 1.0s, $0.01 so far'];
 
-test('ctrl+o on an agent\'s session log shows the full output with the JSON event lines, and ctrl+o again folds it (ASS-299)', () => {
+test('ASS-300 AC5: ctrl+o on an agent\'s session log reveals the full result/thinking body and the raw JSON event lines; ctrl+o again collapses it', () => {
   const log = [...folding, '{"type":"tool_progress"}'];
   const reading = agentReading(log);
-  assert.deepEqual(logLines(reading), folded);
+  assert.deepEqual(logLines(reading), folded);                                // the chat-look render, event JSON hidden
   const showing = handleKey(reading, ctrl('o', '\x0f'), wide);
-  assert.deepEqual(logLines(showing), log);                                   // the whole output, the event lines with it
+  assert.ok(logLines(showing).some(l => l.includes('"type":"tool_progress"')), 'raw event line shows when expanded');
   assert.ok(lines(showing, wide).some(l => l.includes('ctrl+o hides events')));
   assert.deepEqual(logLines(handleKey(showing, ctrl('o', '\x0f'), wide)), folded);
 });
 
-test('a folded error result keeps its error: prefix', () => {
-  assert.deepEqual(logLines(agentReading(errorResult)), ['◀ error: no such file … (3 lines)']);
+test('ASS-300 AC5: a long log scrolls by rendered row; following the end stays with the last row as more arrive', () => {
+  const reading = agentReading(manyCalls);
+  assert.ok(logLines(reading).at(-1).includes('out 39'), logLines(reading).at(-1));   // opens on the last row
+  const up = press(reading, 'up');
+  assert.notEqual(logLines(up).at(-1), logLines(reading).at(-1));                     // back one rendered row
+  assert.equal(press(reading, ...Array(500).fill('up')).agentLogScroll, 0);           // no further than the first
+  assert.equal(press(reading, 'up', 'down').agentLogScroll, null);                    // following again
+  const grown = { ...reading, agentLog: [...manyCalls, '▶ Bash {"command":"echo 40"}', '◀ out 40'] };
+  assert.ok(logLines(grown).at(-1).includes('out 40'), logLines(grown).at(-1));       // follows the new end
 });
 
-test('a result whose first lines are blank is summarised by its first non-blank line', () => {
-  assert.deepEqual(logLines(agentReading(blankResult)), ['◀ real output … (4 lines)']);   // the count is the whole block, blanks in it
-});
-
-test('an empty result is drawn as it is', () => {
-  const out = lines(agentReading(emptyResult), wide);
-  assert.ok(out.some(l => /^│ ◀ +│$/.test(l)), out.join('\n'));
-  assert.ok(!out.some(l => l.includes('…')));
-});
-
-test('the fold stops at the next event line', () => {
-  assert.deepEqual(logLines(agentReading(afterResult)),
-    ['◀ pass 7 … (2 lines)', '▶ Bash {"command":"ls"}', '■ turn ended (success) after 1.0s, $0.01 so far', '(thinking) x', '> hi', 'said two']);
-});
-
-test('two results in a row each fold', () => {
-  assert.deepEqual(logLines(agentReading(twoResults)), ['◀ a … (2 lines)', '◀ c … (3 lines)']);
-});
-
-test('a result at the end of the log folds', () => {
-  assert.deepEqual(logLines(agentReading(resultAtEnd)), ['said one', '◀ pass 7 … (2 lines)']);
-});
-
-test('a JSON event line between a result and its continuation does not break the fold', () => {
-  const reading = agentReading(eventInResult);
-  assert.deepEqual(logLines(reading), ['◀ pass 7 … (2 lines)']);              // the event line is out before the fold, so it is not counted
-  assert.deepEqual(logLines(handleKey(reading, ctrl('o', '\x0f'), wide)), eventInResult);
-});
-
-test('an indented JSON line inside a result\'s output is part of the fold', () => {
-  assert.deepEqual(logLines(agentReading(indentedInResult)), ['◀ pass 7 … (3 lines)']);
-});
-
-test('a folded log scrolls and follows its end on the folded lines', () => {
-  const reading = agentReading(manyResults);
-  const shown = s => logLines(s).map(l => l.match(/^◀ result (\d+) … \(3 lines\)$/)?.[1] ?? l);
-  assert.equal(shown(reading).at(-1), '39');                                  // opens on the last fold
-  assert.equal(shown(press(reading, 'up')).at(-1), '38');                     // back exactly one folded line
-  assert.equal(press(reading, ...Array(100).fill('up')).agentLogScroll, 0);   // no further than the first
-  assert.equal(press(reading, 'up', 'down').agentLogScroll, null);            // at the end again: following
-  assert.equal(shown({ ...reading, agentLog: [...manyResults, '◀ result 40', '  more', '  and more'] }).at(-1), '40');
-});
-
-test('a folded line wider than the box wraps onto the next rows under the ◀ lead-in (ASS-63)', () => {
-  const rows = lines(agentReading(longResult), screen).filter(l => l.includes('xxx') || l.includes('(2 lines)'));
-  assert.equal(rows.length, 3);                                               // 300 x's and the count over a 116-column text width
-  assert.ok(rows.every(r => r.length === screen.columns && !r.endsWith('… │')), rows.join('\n'));
-  assert.ok(rows.slice(1).every(r => r.startsWith('│   ')));                 // hung under '◀ '
+test('ASS-300 AC5: a result line wider than the text wraps under the ⎿ gutter hang of 5, no clipping', () => {
+  const rows = lines(agentReading(longResult), screen).filter(l => l.includes('xxx'));
+  assert.ok(rows.length > 1, rows.join('\n'));                                      // the 300 x's wrap across rows
+  assert.ok(rows.every(r => !r.endsWith('… │')), rows.join('\n'));                  // no ellipsis clipping
+  assert.ok(rows.slice(1).every(r => strip(r).startsWith('│      ')), rows.join('\n'));   // continuation hung at 5 under '  ⎿  '
 });
 
 // A reply paragraph far wider than any of the boxes: logged as one line, read in full on screen (ASS-63).
@@ -1142,9 +1100,9 @@ const shownText = rows => rows.map(r => r.trim()).join(' ');
 test('the chat screen wraps a reply line wider than its box onto as many rows as it needs, no ellipsis; lines that fit look as they did (ASS-63)', () => {
   const rows = logLines(chatReading(['> hi', reply, '', 'short']));
   assert.equal(rows[0], '> hi');
-  assert.equal(shownText(rows.slice(1, -1)), reply);
+  assert.equal(shownText(rows.slice(1, -1)), `⏺ ${reply}`);                   // ASS-300: the message's first row carries the bullet
   assert.ok(rows.length > 3 && !rows.some(r => r.includes('…')), rows.join('\n'));
-  assert.equal(rows.at(-1), 'short');
+  assert.equal(rows.at(-1), '  short');                                        // the message's later rows hang at 2
 });
 
 test('the agents screen\'s session log wraps the same way, through the same box (ASS-63)', () => {
@@ -4083,31 +4041,29 @@ test('delete (or backspace) on a chat asks to confirm; y asks for it to be delet
 // A chat open on its log, holding `log` (ASS-40's fold draws it as the agents screen does).
 const chatReading = log => ({ ...press(chatting(), 'down', 'down', 'return'), chatLog: log });
 
-test('a chat\'s log draws each tool result as one line — its first line and how many lines the output has', () => {
+test('ASS-300 AC1: a chat\'s log renders through the chat-look renderer — tool calls as ⏺ Name(args), result under ⎿', () => {
   assert.deepEqual(logLines(chatReading(folding)), folded);
 });
 
-test('a one-line tool result is drawn as it is', () => {
-  assert.deepEqual(logLines(chatReading(oneLineResult)), oneLineResult);          // no …, no (1 lines)
-});
-
-test('a log with no tool result is unchanged', () => {
+test('ASS-300 AC1: a log with no tool result renders the same whether expand is on or off', () => {
   const reading = chatReading(noResult);
-  assert.deepEqual(logLines(reading), noResult);
-  assert.deepEqual(logLines(handleKey(reading, ctrl('o', '\x0f'), wide)), noResult);     // the same folded and unfolded
+  assert.ok(logLines(reading).some(l => l.includes('Hello!')), logLines(reading).join('\n'));
+  assert.deepEqual(logLines(handleKey(reading, ctrl('o', '\x0f'), wide)), logLines(reading));    // no event/thinking: same
 });
 
-test('the agents screen\'s session log folds tool results the same way the chat screen does', () => {
-  assert.deepEqual(logLines(agentReading(folding)), folded);
-  assert.deepEqual(logLines(agentReading(folding)).filter(l => l.startsWith('◀')),
-    logLines(chatReading(folding)).filter(l => l.startsWith('◀')));              // the two surfaces agree
+test('ASS-300 AC6: zoomed agent log, chat screen and ticket Chat tab render the same rows for one log', () => {
+  const agentRows = logLines(agentReading(folding));
+  const chatRows = logLines(chatReading(folding));
+  assert.deepEqual(chatRows, agentRows);                                            // shared chatLog + chatLines
+  assert.deepEqual(chatRows, folded);
 });
 
-test('ctrl+o on a chat\'s log unfolds it too (ASS-299)', () => {
-  const reading = chatReading(folding);
-  assert.deepEqual(logLines(reading), folded);
+test('ASS-300 AC5: ctrl+o on a chat\'s log flips chatEvents and reveals the raw/expanded body', () => {
+  const reading = chatReading([...folding, '{"type":"tool_progress"}']);
+  assert.deepEqual(logLines(reading), folded);                                       // collapsed: event line hidden
   const showing = handleKey(reading, ctrl('o', '\x0f'), wide);
-  assert.deepEqual(logLines(showing), folding);
+  assert.equal(showing.chatEvents, true);
+  assert.ok(logLines(showing).some(l => l.includes('"type":"tool_progress"')), 'raw event line shown');
   assert.deepEqual(logLines(handleKey(showing, ctrl('o', '\x0f'), wide)), folded);
 });
 
@@ -4150,7 +4106,7 @@ test('↑/↓ scroll the chat\'s log while it has focus, no further than its end
   assert.ok(!chatOf(lines(up, wide)).some(l => l.includes('line 60')));
   const top = press(chat, ...Array(100).fill('up'));
   assert.equal(top.ticketChatScroll, 0);
-  assert.ok(chatOf(lines(top, wide)).some(l => /^line 1$/.test(l)));
+  assert.ok(chatOf(lines(top, wide)).map(strip).some(l => /^⏺ line 1$/.test(l)));
   assert.equal(press(top, ...Array(100).fill('down')).ticketChatScroll, null);
   assert.equal(press(chat, 'up').ticketScroll, 0);                            // the details stay put
 });
@@ -4174,24 +4130,34 @@ test('the ticket chat wraps a long reply at its own narrower width, continuation
   assert.ok(rows.slice(1).every(r => r.startsWith('  ')) && !rows.some(r => r.includes('…')), rows.join('\n'));
 });
 
-test('the ticket chat folds tool results', () => {
-  const right = chatOf(lines(ticketReading(folding), wide));
-  assert.ok(right.some(l => l.includes('◀ pass 7 … (3 lines)')), right.join('\n'));
-  assert.ok(!right.some(l => l.includes('fail 0')));
+test('ASS-300 AC1: the ticket chat renders tool results through chat-look — ⏺ Name(args) above a ⎿ gutter', () => {
+  const right = chatOf(lines(ticketReading(folding), wide)).map(strip);
+  assert.ok(right.some(l => l.includes('⏺ Bash(npm test)')), right.join('\n'));
+  assert.ok(right.some(l => l.includes('⎿  pass 7')), right.join('\n'));
+  assert.ok(right.some(l => l.includes('fail 0')), right.join('\n'));            // 3-line result: all shown, no cap
 });
 
-test('the ticket chat has a ctrl+o fold toggle; tab still switches tabs, as everywhere on the screen (ASS-299)', () => {
-  const chat = ticketReading(folding);
+test('ASS-300 AC5: ctrl+o on the ticket chat flips ticketChatEvents; tab still switches tabs', () => {
+  const chat = ticketReading([...folding, '{"type":"tool_progress"}']);
   const moved = press(chat, 'tab');
   assert.equal(moved.ticketTab, 'actions');                                     // tab switches tabs, not events
   const showing = handleKey(chat, ctrl('o', '\x0f'), wide);
   assert.equal(showing.ticketChatEvents, true);
   assert.equal(showing.ticketTab, 'chat');                                      // ctrl+o did not switch tabs
-  const right = chatOf(lines(showing, wide));
-  assert.ok(!right.some(l => l.includes('… (3 lines)')), right.join('\n'));     // unfolded: no "…" line
-  assert.ok(right.some(l => l.includes('fail 0')), right.join('\n'));           // and the result's inner lines are shown
-  assert.equal(handleKey(showing, ctrl('o', '\x0f'), wide).ticketChatEvents, false);   // ctrl+o re-folds
+  const right = chatOf(lines(showing, wide)).map(strip);
+  assert.ok(right.some(l => l.includes('"type":"tool_progress"')), right.join('\n'));   // expanded: raw event line shown
+  assert.equal(handleKey(showing, ctrl('o', '\x0f'), wide).ticketChatEvents, false);   // ctrl+o re-collapses
   assert.ok(!lines(chat, wide).some(l => /tab (shows|hides) events/.test(l)));
+});
+
+test('ASS-300 AC5: ↑/↓ on the ticket Chat tab stops at the last rendered row — scrollLast width matches the pane\'s width', () => {
+  const log = Array.from({ length: 80 }, (_, i) => `line ${i}`);
+  const chat = { ...press(onGrid, 'return'), ticketChatLog: log };
+  const top = press(chat, ...Array(500).fill('up'));
+  assert.equal(top.ticketChatScroll, 0);                                         // clamped at the first row
+  const clamped = press(top, ...Array(500).fill('down'));
+  assert.equal(clamped.ticketChatScroll, null);                                  // following the end — no over-reach past the last row
+  assert.ok(chatOf(lines(clamped, wide)).some(l => l.includes('line 79')), 'the last line is in sight');
 });
 
 test('an empty or absent log still says so', () => {
@@ -4478,7 +4444,7 @@ test('the log box gives up a line to each draft row past the first, keeps follow
     for (const n of [2, 3, room]) {
       const s = rowsDrafted(p, i, n);
       assert.equal(logShown(s).length, room + 1 - n, `${p.name}: ${n} rows`);
-      assert.equal(logShown(s).at(-1), 'line 99', `${p.name}: still at the log's end`);
+      assert.equal(logShown(s).at(-1), '  line 99', `${p.name}: still at the log's end`);   // ASS-300: hung under the message's bullet
       assert.deepEqual(draftRows(s), Array.from({ length: n }, (_, k) => `${k ? '  ' : '> '}r${k + 1}${k === n - 1 ? '█' : ''}`), p.name);
     }
     const back = press(rowsDrafted(p, i, 3), 'backspace', 'backspace', 'backspace');   // 'r3' and its newline gone
@@ -4492,7 +4458,7 @@ test('past the room, the log box stays at one row and the prompt shows its last 
     const room = logShown(rowsDrafted(p, i, 1)).length;                        // the box's rows and the prompt's share room + 1 lines
     const one = rowsDrafted(p, i, room + 1);                                    // one row too many: the hint takes a line, so two are hidden
     assert.equal(logShown(one).length, 1, p.name);
-    assert.equal(logShown(one)[0], 'line 99', p.name);
+    assert.equal(logShown(one)[0], '  line 99', p.name);
     const rows = draftRows(one);
     assert.equal(rows.length, room, p.name);
     assert.equal(rows[0], '(2 more lines above)', p.name);
@@ -4886,7 +4852,7 @@ test('ASS-35, ASS-184 AC1: the Chat tab is the chat alone — its help line, its
   const chat = tabOf(lines({ ...press(blockable('code-review'), 'return'), ticketChatLog: ['> hi', 'Hi: ABC-5 is in code review.'] }, wide));
   assert.ok(chat[0].includes('ctrl+o shows events'), chat.join('\n'));                        // the shared help line (ASS-299)
   assert.equal(chat[1], '', chat.join('\n'));                                                 // the blank line between help and log (ASS-299, same layout as chat/zoom)
-  assert.deepEqual(chat.slice(2, 4), ['> hi', 'Hi: ABC-5 is in code review.']);
+  assert.deepEqual(chat.slice(2, 6), ['', '> hi', '', '⏺ Hi: ABC-5 is in code review.']);   // ASS-300: a blank row before each message, the reply under its bullet
   assert.ok(chat.at(-1).startsWith('> '), chat.join('\n'));
   assert.ok(!chat.some(l => /Block this ticket|Ticket number|States/.test(l)));
 });
@@ -5833,16 +5799,29 @@ test('ASS-189 AC3: an agent whose assignment is gone flips its queued mark to "n
   assert.ok(!queuedTile({ ...gone, assignments: queuedTeam }).includes('queued'));
 });
 
-test('ASS-188 AC2: under the header, the agent\'s latest log lines — event JSON hidden, tool results folded as on its log', () => {
-  const on = tail => tilesOf({ ...onAgents(queuedTeam), sessionTails: { Daredevil: tail } })[0].text.map(l => l.trim()).filter(Boolean);
+test('ASS-300 AC1/AC5: under the header, the agent\'s latest log lines — event JSON hidden, tool calls as ⏺ Name(args), result under a ⎿ gutter', () => {
+  const on = tail => tilesOf({ ...onAgents(queuedTeam), sessionTails: { Daredevil: tail } })[0].text.map(l => strip(l).trim()).filter(Boolean);
   const body = on(tileTail);
-  for (const line of ['said one', '▶ Bash {"command":"ls"}', '◀ out.txt', 'said two']) assert.ok(body.includes(line), line);
+  for (const needle of ['said one', '⏺ Bash(ls)', '⎿  out.txt', 'said two']) assert.ok(body.some(l => l.includes(needle)), `${needle} in ${body.join('\n')}`);
   assert.ok(!body.some(l => l.includes('"type"')));
-  assert.ok(on(folding).includes('◀ pass 7 … (3 lines)'));
-  assert.ok(!on(folding).includes('fail 0'));
+  const folded = on(folding);
+  assert.ok(folded.some(l => l.includes('⏺ Bash(npm test)')), folded.join('\n'));
+  assert.ok(folded.some(l => l.includes('⎿  pass 7')), folded.join('\n'));
   const many = on(Array.from({ length: 100 }, (_, i) => `line ${i}`));
   assert.ok(many.includes('line 99'));
   assert.ok(!many.includes('line 0'));
+});
+
+test('ASS-300 AC5: a narrow tile (18-20 cols) still renders the chat-look — bullet/gutter visible, every row fits inside the border', () => {
+  const narrow = { ...wide, columns: 76 };                                        // 2 tiles of 38 cols wide: inner 36, body rows after header ~ 4 cols
+  const fixture = ['hello', '▶ Bash {"command":"echo a long command line that must be cut to the tile width"}', '◀ ok'];
+  const s = { ...onAgents(teamOf(2)), sessionTails: { 'Agent-0': fixture } };
+  const t = tilesOf(s, narrow).find(x => x.name === 'Agent-0');
+  assert.ok(t, 'Agent-0 tile exists at narrow');
+  const inner = t.width - 2;
+  for (const row of t.text) assert.ok(visible(row) <= inner, `${visible(row)} > ${inner}: ${JSON.stringify(strip(row))}`);
+  const body = t.text.map(l => strip(l).trim()).filter(Boolean);
+  assert.ok(body.some(l => l.startsWith('⏺') && l.endsWith('…')), `argument summary cut with …: ${body.join('\n')}`);
 });
 
 test('ASS-299 AC3: a long log line wraps inside its tile across multiple rows, no ellipsis, never bleeding into its neighbour', () => {
@@ -6664,21 +6643,23 @@ test('ASS-307 AC4: the control DOWN box is unchanged — no provider, repo or ac
 // chat screen, ticket Chat tab, agents-grid tile) with one layout, ctrl+o
 // toggles events everywhere, tab toggles events nowhere.
 
-test('ASS-299 AC1: the zoomed agent log, the chat screen and the Chat tab show the same lines for the same log at the same size', () => {
+test('ASS-300 AC6: the zoomed agent log, the chat screen and the Chat tab show the same rendered rows for one log at one size', () => {
   const agent = logLines(agentReading(folding));
   const chat = logLines(chatReading(folding));
-  assert.deepEqual(chat, agent);                                                             // shared chatLog folds/filters the same way
-  const ticket = chatOf(lines(ticketReading(folding), wide)).map(l => l.trim()).filter(Boolean);
-  for (const line of folded) assert.ok(ticket.includes(line), `Chat tab missing: ${line} in ${ticket.join('\n')}`);
+  assert.deepEqual(chat, agent);                                                             // shared chatLog → chatLines renders the same
+  const ticket = chatOf(lines(ticketReading(folding), wide)).map(l => strip(l).trim()).filter(Boolean);
+  for (const line of folded) assert.ok(ticket.some(l => l.includes(line.trim())), `Chat tab missing: ${line} in ${ticket.join('\n')}`);
   assert.ok(!ticket.some(l => l.includes('"type"')), ticket.join('\n'));                      // event JSON hidden
-  assert.ok(!ticket.some(l => l.includes('fail 0')), ticket.join('\n'));                      // tool result folded
 });
 
-test('ASS-299 AC1: chatLog is exported from log.js — folds+filters when events=false, raw when events=true, [empty] when lines absent', () => {
+test('ASS-300 AC6: chatLog is exported from log.js — renders through chat-look when events=false, raw when events=true, [empty] when lines absent', () => {
   assert.ok(typeof logScreen.chatLog === 'function', 'chatLog not exported from src/tui/screens/log.js');
   const log = [...folding, '{"type":"tool_progress"}'];
-  assert.deepEqual(logScreen.chatLog(log, false, 'empty'), folded);                           // folded + event line filtered
-  assert.deepEqual(logScreen.chatLog(log, true, 'empty'), log);                               // raw: nothing dropped, nothing folded
+  const rendered = logScreen.chatLog(log, false, 'empty', { width: 80 }).map(strip).filter(Boolean);
+  for (const line of folded) assert.ok(rendered.some(l => l.includes(line.trim())), `chatLog(events=false) missing: ${line} in ${rendered.join('\n')}`);
+  assert.ok(!rendered.some(l => l.includes('"type"')), 'event lines filtered when events=false');
+  const raw = logScreen.chatLog(log, true, 'empty', { width: 80 }).map(strip).filter(Boolean);
+  assert.ok(raw.some(l => l.includes('"type":"tool_progress"')), 'event lines shown when events=true');
   assert.deepEqual(logScreen.chatLog(undefined, false, 'no log'), ['no log']);
   assert.deepEqual(logScreen.chatLog(null, false, 'no log'), ['no log']);
 });

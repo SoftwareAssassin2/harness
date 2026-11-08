@@ -3,6 +3,8 @@
   Pair: Spock reviews, Kaylee-Frye builds the results grid. Report status with agent.sh assignments:status-update.
 [session abc123 started on opus-5]
 (thinking) Start from the build plan, then the failing tests the test plan generated.
+▶ mcp__hindsight__recall {"query": "acme-shop search ranking decisions and the latency budget"}
+◀ 3 memories: the search.recency flag is at 100% rollout and stays default-on; the results grid reads SearchResult, so new score fields must be optional; the p95 search latency budget is 250ms on the enriched fixture set.
 ▶ Read {"file_path":"projects/acme-shop/tickets/ABC-1275/A/build-plan.md"}
 ◀ # ABC-1275.A build plan
   1. Add CitationWeightReranker behind the search.rerank flag
@@ -19,7 +21,7 @@ Plan read. Four steps; the latency budget is the hard constraint. Running the ge
 Three failing, as expected before any implementation. Starting with the reranker itself.
 ▶ Bash {"command":"agent.sh assignments:status-update Daredevil \"Writing the citation-weight reranker\""}
 ◀ ok
-▶ Write {"file_path":"src/search/rerank/citation-weight.ts","content":"\u2026"}
+▶ Write {"file_path": "src/search/rerank/citation-weight.ts", "content": "import { citations } from '../../citations/client';\nimport { levelOf } from '../../courts/levels';\nimport type { SearchResult } from '../types';\n\nconst COURT_FACTOR = {\n  federal: 1.4,\n  state: 1.1,\n  unknown: 1.0,\n};\n\nasync function weight(result: SearchResult): Promise<number> {\n  const n = await citations.citingCount(result.caseId);\n  const factor = COURT_FACTOR[levelOf(result.court)];\n  return Math.log1p(n) * factor;\n}"}
 ◀ File created successfully at: src/search/rerank/citation-weight.ts
 ▶ Bash {"command":"npm test -- search/rerank","description":"Run the re-ranker tests"}
 ◀ FAIL search/rerank/citation-weight.test.ts
@@ -83,6 +85,8 @@ Told Kaylee-Frye: `rerankScore?: number` on `SearchResult`, present only when th
       Expected p95 < 250ms, received 418ms
   Tests: 1 failed, 61 passed, 62 total
 Flag wiring passes; the only failure is still the latency budget, which is next.
+▶ TodoWrite {"todos":[{"content":"Add CitationWeightReranker behind search.rerank","status":"completed"},{"content":"Weight = log(1 + citing cases) * court-level factor","status":"completed"},{"content":"Expose rerank score to the results grid","status":"completed"},{"content":"Keep p95 search latency under 250ms","status":"in_progress"},{"content":"Address Spock's review findings","status":"pending"}]}
+◀ Todos have been modified successfully. Ensure that you continue to use the todo list to track your progress. Please proceed with the current tasks if applicable
 ▶ Bash {"command":"npx tsc --noEmit -p .","description":"Type-check the project"}
 ◀ error: src/search/rerank/citation-weight.ts:31:22 - error TS2345: Argument of type 'string | undefined' is not assignable to parameter of type 'string'.
   
@@ -103,7 +107,29 @@ Flag wiring passes; the only failure is still the latency budget, which is next.
 ◀ ok
 ■ turn ended (success) after 312.7s, $10.09 so far
 > Supervisor: heartbeat check — say what you are doing and what is left.
-Wired the citation-weight reranker behind `search.rerank` (off by default) and committed it as 9b07d11. Left: the p95 latency budget (418ms against 250ms), then Spock's review.
+## Status
+
+**Done:** the citation-weight reranker is wired behind `search.rerank` (off by default), committed as 9b07d11.
+
+*Left:* the p95 latency budget and Spock's review.
+
+- citing-case counts batched per page
+- court-level factor applied, *unverified* against `src/courts/levels.ts`
+- rerank score exposed to the grid as `rerankScore?: number`
+
+> Budget note from the test plan: keep p95 under 250ms.
+
+```text
+p95 before: 412ms
+p95 now:    418ms
+```
+
+| Step | Status |
+|---|---|
+| Reranker | done |
+| Flag wiring | done |
+| Latency budget | in progress |
+| Review | pending |
 ■ turn ended (success) after 6.4s, $10.20 so far
 > Before the latency work, confirm the test data: the latency test should run against the enriched fixture set from enrich-automated-test-data, not the 10-case smoke set.
 ▶ Read {"file_path":"src/search/rerank/citation-weight.test.ts","offset":1,"limit":25}
@@ -123,6 +149,11 @@ It's on the smoke set. Switching to the enriched set; the numbers will move.
 ◀ enriched-abc-1275/
   smoke/
   README.md
+▶ Glob {"pattern": "test/fixtures/enriched-abc-1275/*.json"}
+◀ test/fixtures/enriched-abc-1275/cases.json
+  test/fixtures/enriched-abc-1275/citations.json
+  test/fixtures/enriched-abc-1275/courts.json
+  test/fixtures/enriched-abc-1275/queries.json
 ▶ Bash {"command":"jq length test/fixtures/enriched-abc-1275/cases.json","description":"Count the enriched cases"}
 ◀ 4812
 ▶ Edit {"file_path":"src/search/rerank/citation-weight.test.ts","old_string":"const cases = loadFixtures('smoke');","new_string":"const cases = loadFixtures('enriched-abc-1275');"}
@@ -187,6 +218,9 @@ One thing: the court-level factor table in citation-weight.ts is a copy of the o
 ■ turn ended (success) after 96.2s, $15.57 so far
 > From Spock: two findings on citation-weight.ts — (1) the court-level factor table is duplicated from src/courts/levels.ts, import it; (2) a case with no citations gets weight 0 and sinks below unranked results, should be neutral (1.0).
 Both fair. Fixing them before going back to latency.
+▶ WebFetch {"url": "https://en.wikipedia.org/wiki/Okapi_BM25", "prompt": "How do ranking functions handle a document with a zero-valued feature?"}
+◀ Zero-valued features are smoothed rather than left at zero: a neutral prior (1, or the corpus mean) keeps the document in its unranked position instead of pushing it below every scored document.
+  Common choices are add-one (Laplace) smoothing, Dirichlet priors and Jelinek-Mercer interpolation.
 ▶ Edit {"file_path":"src/search/rerank/citation-weight.ts","old_string":"const COURT_FACTOR = {","new_string":"import { COURT_FACTOR } from '../../courts/levels';"}
 ◀ The file src/search/rerank/citation-weight.ts has been updated successfully.
 ▶ Edit {"file_path":"src/search/rerank/citation-weight.ts","old_string":"return Math.log1p(n) * factor;","new_string":"return n ? Math.log1p(n) * factor : 1;"}
@@ -220,3 +254,8 @@ Batching took p95 from 412ms to 263ms. 13ms over. Committing what works, then pr
     return 'unknown';
   }
 Working on the memoization now.
+▶ Edit {"file_path":"src/courts/levels.ts","old_string":"export function levelOf(court: string): CourtLevel {\n  const normalized = court.trim().toLowerCase().replace(/\\s+/g, ' ');","new_string":"const levelCache = new Map<string, CourtLevel>();\nexport function levelOf(court: string): CourtLevel {\n  const cached = levelCache.get(court);\n  if (cached) return cached;\n  const normalized = court.trim().toLowerCase().replace(/\\s+/g, ' ');"}
+◀ error: String to replace not found in file.
+  String: export function levelOf(court: string): CourtLevel {
+    const normalized = court.trim().toLowerCase().replace(/\s+/g, ' ');
+(thinking) The Read above folded consecutive blank output; the file must use a different line ending or extra whitespace. Reading again with exact bytes.
