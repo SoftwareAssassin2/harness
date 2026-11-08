@@ -11,7 +11,10 @@ set -euo pipefail
 # the ticket has none. --fast-track (ASS-83), anywhere after the title,
 # writes fast-track: true after that: a ticket the health check raises for
 # itself, joined to the sprint at once and ranked above everything (control's
-# rank.js, fast-track.js); nothing but the health check passes it. Prints
+# rank.js, fast-track.js); nothing but the health check passes it. The grouped
+# blocked flow's fix ticket is fast-tracked too (ASS-306), but after it is
+# created — ticket:mark-fast-track, run by agent.sh ticket:fast-track — the
+# create prompt it shares with other flows passing no --fast-track. Prints
 # { key, file }. Fails, writing nothing, when the
 # project is missing or has no off-board work source, the type is not Story,
 # Bug or Spike, the priority is not one of those names, or the body file is

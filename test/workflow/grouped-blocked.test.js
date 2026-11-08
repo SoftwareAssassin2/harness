@@ -89,7 +89,7 @@ test('the Blocked engines and the development engines using them are valid', () 
 
 test('AC1: Troubleshoot, then Classify — its structured output the issue (harness, project or environment) and its reasoning', () => {
   for (const name of BLOCKED) {
-    assert.deepEqual(steps(walk(name)), ['count-attempts', 'troubleshoot', 'classify', 'create-fix-ticket', 'wait-on', 'await-fix', 'done'], name);
+    assert.deepEqual(steps(walk(name)), ['count-attempts', 'troubleshoot', 'classify', 'create-fix-ticket', 'fast-track-fix', 'wait-on', 'await-fix', 'done'], name);
     assert.equal(stepOf(engines[name], 'troubleshoot-on-host').action.prompt, 'troubleshoot-block-on-host-grouped', 'its own copy: the current engines keep troubleshoot-block as it was');
     assert.equal(stepOf(engines[name], 'classify').action.prompt, 'classify-issue-grouped', 'its own copy (ASS-163): the current engines keep classify-issue as it was');
   }
@@ -107,7 +107,7 @@ test('AC2/AC3: a harness issue and a project issue each raise a fix ticket — t
     for (const [value, example] of [['harness', 'project harness — the harness project\'s backlog'], ['project', 'project example — its own ticket system']]) {
       const run = walk(name, issue(value));
       // A project issue is checked against the latest master first (ASS-163): here, failing there.
-      assert.deepEqual(steps(run).slice(2).filter(id => id !== 'check-on-master'), ['classify', 'create-fix-ticket', 'wait-on', 'await-fix', 'done'], `${name} ${value}`);
+      assert.deepEqual(steps(run).slice(2).filter(id => id !== 'check-on-master'), ['classify', 'create-fix-ticket', 'fast-track-fix', 'wait-on', 'await-fix', 'done'], `${name} ${value}`);
       resumes(name, run);
       assert.equal(raisedIn(run.output, 'example'), `Raise the fix ticket in: ${example}`, `${name} ${value}`);
       assert.equal(raisedIn(run.output, 'harness'), 'Raise the fix ticket in: project harness — the harness project\'s backlog', `${name} ${value} on the harness project`);
@@ -116,6 +116,26 @@ test('AC2/AC3: a harness issue and a project issue each raise a fix ticket — t
     assert.equal(stepOf(engines[name], 'wait-on').action.command, './agent.sh ticket:wait-on {project} {work-item} {variation} {ticket}');
     const wait = stepOf(engines[name], 'await-fix');
     assert.deepEqual([wait.action.command, wait.action.mode, wait['record-script-output']], ['./agent.sh ticket:fix-landed {project} {work-item} {variation}', 'timer', true]);
+  }
+});
+
+// ASS-306 AC1/AC2: the grouped blocked flow fast-tracks its fix ticket — a
+// host-side script step between create-fix-ticket and wait-on that marks the
+// fix ticket fast-track and joins it to the active sprint at committed, then
+// always reaches wait-on so the blocked ticket is recorded as before.
+test('ASS-306 AC1: fast-track-fix runs ticket:fast-track host-side between create-fix-ticket and wait-on, keeping {ticket} for wait-on, both exits to wait-on', () => {
+  for (const name of BLOCKED) {
+    const step = stepOf(engines[name], 'fast-track-fix');
+    assert.ok(step, `${name}: has a fast-track-fix step`);
+    assert.equal(step.action.type, 'script', name);
+    assert.equal(step.action.command, './agent.sh ticket:fast-track {project} {work-item} {ticket}', name);
+    assert.equal(step.vm, undefined, `${name}: host-side, runs no VM`);
+    assert.equal(step['run-location'], undefined, `${name}: host-side`);
+    assert.equal(step['record-script-output'], undefined, `${name}: no record-script-output, so the run's {ticket} is kept for wait-on`);
+    // create-fix-ticket now leads to it, and whatever it does it reaches wait-on.
+    assert.equal(stepOf(engines[name], 'create-fix-ticket')['exit-events'][0]['move-to-state'], 'fast-track-fix', name);
+    assert.deepEqual([0, 1].map(code => nextState(step, engines[name], { exitCode: code }, []).to), ['wait-on', 'wait-on'], `${name}: both exits reach wait-on`);
+    assert.deepEqual(validateStateEngine(engines[name], ROOT, undefined, EXAMPLE_ENGINES), [], name);
   }
 });
 
@@ -237,7 +257,7 @@ test('AC7: when no fix ticket can be raised or waited on, the ticket never resum
   for (const name of BLOCKED) {
     // No ticket raised: the run hands wait-on the blocked ticket's own key, which it refuses (exit 3).
     const none = walk(name, { 'create-fix-ticket': { structuredOutput: { key: '' } }, 'wait-on': { exitCode: 3, scriptOutput: { 'ai-feedback-short': 'No fix ticket was raised' } } });
-    assert.deepEqual(steps(none).slice(3), ['create-fix-ticket', 'wait-on', 'blocked-for-human'], name);
+    assert.deepEqual(steps(none).slice(3), ['create-fix-ticket', 'fast-track-fix', 'wait-on', 'blocked-for-human'], name);
     toHuman(name, none, /No fix ticket was raised/);
     const unclaimed = walk(name, { 'wait-on': { exitCode: 1, scriptOutput: { 'ai-feedback-short': 'The fix ticket cannot be waited on' } } });
     toHuman(name, unclaimed, /cannot be waited on/);
@@ -304,14 +324,14 @@ test('ASS-163 AC1: a cause in the project\'s own code is checked against the lat
 
 test('ASS-163 AC2: present on the latest master — a bug raised in the project\'s ticket system with the master evidence, the ticket waiting on it until it lands, then resuming', () => {
   const run = walk('grouped-blocked', project(ON_MASTER));
-  assert.deepEqual(run.trail.slice(-6), ['classify', 'check-on-master', 'create-fix-ticket', 'wait-on', 'await-fix', 'done']);
+  assert.deepEqual(run.trail.slice(-7), ['classify', 'check-on-master', 'create-fix-ticket', 'fast-track-fix', 'wait-on', 'await-fix', 'done']);
   resumes('grouped-blocked', run);
   const text = problem(run.output);
   assert.match(text, /^On the latest master: present — https:\/\/gitlab\.com\/example\/identity master: job test:keycloak failed — j, pipeline p at s$/m, 'the bug carries the evidence (create-ticket\'s {problem})');
   assert.match(text, /^Raise the fix ticket in: project example — its own ticket system$/m);
   // The harness project's project issues are its own backlog: not checked (exit 2), raised as before.
   const home = walk('grouped-blocked', project({ exitCode: 2, scriptOutput: { 'on-master': 'not-checked', 'master-evidence': 'harness project' } }));
-  assert.deepEqual(home.trail.slice(-5), ['check-on-master', 'create-fix-ticket', 'wait-on', 'await-fix', 'done']);
+  assert.deepEqual(home.trail.slice(-6), ['check-on-master', 'create-fix-ticket', 'fast-track-fix', 'wait-on', 'await-fix', 'done']);
 });
 
 test('ASS-163 AC3: absent on the latest master — nothing raised in the project; the ticket\'s plan grows by the local obstacle\'s fix (ticket:plan-obstacle-fix), Blocked\'s repair makes it (a missing repository added, the environment repaired, else the operator\'s step through Blocked for Human) and the ticket resumes its own work', () => {

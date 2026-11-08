@@ -1,7 +1,10 @@
 // Fast-tracked tickets (ASS-83): a ticket the health check raises for the
 // harness itself (ticket:create --fast-track, then ticket:join-sprint in the
-// same step) carries fast-track: true into the sprint, where it ranks above
-// everything (rank.js rankSprint) and pre-empts running work for a seat.
+// same step), and the fix ticket the grouped blocked flow raises for it
+// (ASS-306: ticket:mark-fast-track, then ticket:join-sprint, both in the
+// engine's Fast-Track the Fix step), carry fast-track: true into the sprint,
+// where they rank above everything (rank.js rankSprint) and pre-empt running
+// work for a seat.
 //
 // A seat is one of the three pools that can hold a ticket back, each capped
 // by harness.json and the project's own project.json: a planning or an
@@ -121,6 +124,6 @@ function note(ctx, project) {
   const backlog = new Set((project.backlog ?? []).filter(fast).map(t => t.key));   // loadState's: none in the sprint
   const was = seen.get(project.id);
   for (const key of sprint) if (was && !was.sprint.has(key)) ctx.log(PHASE, `fast-tracked ${key} joined the sprint`);
-  for (const key of backlog) if (!was?.backlog.has(key)) ctx.log(PHASE, `fast-tracked ${key} is in the backlog, not the sprint: its join failed; the health check tries again on its next run`);
+  for (const key of backlog) if (!was?.backlog.has(key)) ctx.log(PHASE, `fast-tracked ${key} is in the backlog, not the sprint: its join failed; join it by hand, or its source tries again on its next run`);
   seen.set(project.id, { sprint, backlog });
 }
