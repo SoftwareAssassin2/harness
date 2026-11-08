@@ -32,7 +32,7 @@ Mechanics:
 - An off-board work source, or the harness's off-board system: write the same headings as Markdown (H2 sections only, no title line) with your Write tool to a temp file, then:
   {harness-folder}/off-board.sh ticket:create <that project> <Story|Bug> "<title>" <that file>
   It prints the new ticket's key. The ticket starts at Backlog; the harness syncs it onto the dashboard.
-- Both create commands take the body as a file-path argument, never on stdin: write that file first, in a call of its own (your Write tool, or one Bash call that does nothing else), and name it in the create command by its full path, as you wrote it — /tmp/ticket-body.md, say.
+- Both create commands take the body as a file-path argument, never on stdin: write that file first, in a call of its own (your Write tool, or one Bash call that does nothing else), under a name unique to this run — /tmp/ticket-body-<the title, slugged>.md, say, since another write-ticket run may be staging its own — and name it in the create command by its full path, as you wrote it.
 - Run the create command alone, as a bare command line: nothing else on it — no pipe, redirect, heredoc, `&&`, `;`, `$(…)` and no `cd` before it. Anything else runs sandboxed, and the create fails on the ticket store's lock.
 - A failed create: report its error, as it printed it, in your final message, then run the same command once more, bare. Only if that fails too, finish with an empty key.
 
