@@ -188,6 +188,25 @@ test('ASS-114: test-grouped and take-screenshots-grouped leave every repository 
   for (const p of ['test', 'take-screenshots']) assert.doesNotMatch(readFileSync(join(ROOT, 'prompts', p, 'prompt.txt'), 'utf8'), /switch back to the branch/, p);
 });
 
+// ASS-304: test-grouped's prompt had no rule against ending the `claude -p`
+// turn while a command it started (e.g. a backgrounded `npm test`) was still
+// running. On ASS-303 visit 3 the agent started `npm test > log 2>&1 &`,
+// emitted its final JSON ~252s later with the suite still running, wrote no
+// test-results file, and burned the Test visit budget. The rule covers both
+// paths — foreground with a timeout long enough for the command, or
+// background polled to exit — since the full suite (~13-18 min) outlasts
+// Bash's 10-min foreground cap, so poll-to-exit is mandatory for it. The
+// flat test prompt has no test-plan/demo-plan machinery and is out of scope.
+const NO_BACKGROUND_AT_TURN_END = 'Never end your turn while a command you started is still running: run a long one (a full test suite, say) in the foreground with a timeout long enough for it, or, when it may outlast the tool\'s foreground limit, in the background, polling it until it exits — then write your results and finish.';
+test('ASS-304: test-grouped never ends its turn while a command it started is still running — foreground with a long enough timeout, or background polled until it exits; the flat engines\' test prompt is unchanged', () => {
+  const grouped = readFileSync(join(ROOT, 'prompts', 'test-grouped', 'prompt.txt'), 'utf8');
+  assert.ok(grouped.includes(NO_BACKGROUND_AT_TURN_END), grouped);
+  assert.match(grouped, /Never end your turn while a command you started is still running/);
+  assert.match(grouped, /in the foreground with a timeout/);
+  assert.match(grouped, /polling it until it exits/);
+  assert.doesNotMatch(readFileSync(join(ROOT, 'prompts', 'test', 'prompt.txt'), 'utf8'), /end your turn|still running/);
+});
+
 // Add Screenshots to Merge Request runs in the VM (ASS-115) and attaches the
 // screenshots Local Testing took to every Open merge request. GitLab takes an
 // image through its uploads API; GitHub has no API to attach one to a pull
