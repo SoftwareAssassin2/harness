@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 // Terminal shell for the dashboard: owns the whole screen, turns keypresses
-// into state, redraws. All behaviour lives in app.js.
+// into state, redraws. It lays out and handles keys at drawColumns(stdout.columns),
+// one column narrower than the terminal, so the rightmost column of the screen
+// stays blank (ASS-311). All behaviour lives in app.js.
 import { emitKeypressEvents } from 'node:readline';
 import { mkdirSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
