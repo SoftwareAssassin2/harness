@@ -42,7 +42,7 @@ const REMOVED = ['create-branch', 'create-worktree', 'create-merge-request'];
 const ENDS = ['done', 'blocked', 'blocked-for-human', 'rebuild', 'replan'];
 const CURRENT = { 'harness-development-grouped': 'harness-development', 'example-development-grouped': 'example-development' };
 const groupsOf = top => ({ ...GROUPS, release: RELEASE[top], ...(top.startsWith('example') ? { qa: ['qa-testing'] } : {}) });
-// A group's work: its steps but its done steps (ASS-228: grouped-review's write-test-plan and generate-solution, Human Review's return steps, are done steps).
+// A group's work: its steps but its done steps (ASS-228: grouped-review's write-test-plan and generate-solution are done steps — unreached since ASS-314 removed grouped-review's Human Review, kept because the parent Review step reads them).
 const work = name => engines[name].steps.filter(s => !ENDS.includes(s.id) && !s['is-done']);
 
 test('AC1: each grouped engine is the seq-0 exception states, Backlog and Committed, a step per high-level state in order, and Done', () => {
@@ -68,11 +68,9 @@ test('AC1: every step of the current engines is mirrored in its group — action
       if (now.length !== 1) continue;
       const [s] = now;
       const action = { ...old.action, ...(old.action.prompt && s.action.prompt !== old.action.prompt ? { prompt: `${old.action.prompt}-grouped` } : {}) };
-      // ASS-118: Human Review's instructions say what it now shows and gates.
-      const instructions = old.id === 'human-review' ? { instructions: s.action.instructions } : {};
       // ASS-255: Await the Restart's waiting-exit-code is the grouped engine's own; the flat one's stays as it was.
       const waits = old.id === 'await-restart' ? { 'waiting-exit-code': s.action['waiting-exit-code'] } : {};
-      assert.deepEqual(s.action, ['local-testing', 'steps-to-test'].includes(old.id) ? { ...action, engine: s.action.engine } : { ...action, ...instructions, ...waits }, old.id);
+      assert.deepEqual(s.action, ['local-testing', 'steps-to-test'].includes(old.id) ? { ...action, engine: s.action.engine } : { ...action, ...waits }, old.id);
       assert.equal(s['max-visits'], old['max-visits'], old.id);
       // ASS-118 AC4: Risk Assessment always goes on, its shortcut past the gate gone; ASS-314: on to the Token Expense Check, grouped-review's Human Review removed.
       if (old.id === 'risk-assessment') assert.deepEqual(s['exit-events'].map(e => [e.condition, e['move-to-state']]), [[{ 'turn-complete': true }, 'token-expense-check']]);

@@ -1,4 +1,4 @@
-// ASS-228: a Human Review rejection (grouped-review and v2-review) names the
+// ASS-228: a Human Review rejection (v2-review; ASS-314 removed grouped-review's) names the
 // step the ticket goes back to — Write Execution Plan (the default, today's
 // replan), Write Test Plan or Generate Solution — through the top-level
 // engine, as replan does; and every grouped/v2 prompt from the return step
