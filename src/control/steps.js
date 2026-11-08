@@ -1,7 +1,7 @@
 // Phase 3: the steps no agent works — `none`, `script` and `state-engine`
 // actions — of every sprint variation and every state engine run, each moved
 // on while its exits hold (backlog → committed → … in one tick).
-import { stepOf, engineSteps, nextState, pairedStatus, isManual, isDoneStep, isActive, answersGap } from './engine.js';
+import { stepOf, engineSteps, nextState, pairedStatus, isManual, isDoneStep, isActive, answersGap, clearedByFix, FIX_LANDED } from './engine.js';
 import { enginesFor } from './state.js';
 import { rankSprint, rankBacklog } from './rank.js';
 import { planFor, slotKind } from './plan.js';
@@ -218,7 +218,8 @@ async function runVariation(ctx, state, project, key, name) {
           await ctx.cli(['ticket:record-output', project.id, key, name, step['append-output-to'], JSON.stringify(kept), 'append']);
           ctx.log(PHASE, `${who}: its ${run['state-engine']} run kept in ${step['append-output-to']}`);
         }
-        if (!await move(next)) return;   // gated: the run stays until the human opens the gate, then goes as orphaned (runTransient)
+        // A block cleared by a landed fix (ASS-309) records the fix-landed cause, so the visit window restarts.
+        if (!await move(next, clearedByFix(facts) ? FIX_LANDED : undefined)) return;   // gated: the run stays until the human opens the gate, then goes as orphaned (runTransient)
         // Why it went there, when the run says (ai-feedback-short/-long in its output; ASS-75: Create VM's
         // out-of-disk reason, for Blocked for Human): the variation's health, set after the move, which clears it.
         const why = run['structured-output'];

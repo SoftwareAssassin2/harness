@@ -48,6 +48,28 @@ test('ticket:fix-landed: 0 once the fix is Done and merged, 3 when it was closed
   await fails(f.agent('ticket:fix-landed', 'p', 'ABC-3', 'B'), /ABC-3 B waits on no ticket/);
 });
 
+// ASS-309 AC1: under a grouped engine (harness-development-v2) the merge step lives in a
+// sub-engine (v2-release), so the fix ticket's own history has release → release with
+// merge-pull-request in its sub-state-change — a merge at any depth landed the fix (ASS-304
+// merged yet read as unmerged, sending Blocked's await-fix round again).
+test('ticket:fix-landed: a merge step nested in a sub-state-change, at any depth, landed the fix too (ASS-309)', async () => {
+  const f = waiting();
+  await f.agent('ticket:wait-on', 'p', 'ABC-3', 'A', 'Q-1');
+  const landed = () => exitOf(f.agent('ticket:fix-landed', 'p', 'ABC-3', 'A'));
+  const top = (from, to, sub) => ({ 'state-engine': 'harness-development-v2', 'from-state': from, 'to-state': to, 'agent-dispatch-log': [], ...(sub ? { 'sub-state-change': sub } : {}) });
+  const release = sub => [top('test', 'release'), top('release', 'release', sub), top('release', 'done')];
+  const done = changes => f.fix({ 'ticket-system-status': 'Done', variations: [{ name: 'A', 'harness-status': { state: 'done' }, 'state-changes': changes }] });
+  done(release({ 'state-engine': 'v2-release', 'from-state': 'merge-pull-request', 'to-state': 'update-workspace' }));
+  assert.equal(await landed(), 0);
+  assert.deepEqual(JSON.parse((await f.agent('ticket:fix-landed', 'p', 'ABC-3', 'A')).stdout), { 'waits-on': { project: 'q', ticket: 'Q-1' }, status: 'Done', landed: true });
+  // Nested deeper still, and ensure-auto-merge (a GitLab project's own engine) as well as merge-pull-request.
+  done(release({ 'state-engine': 'v2-release', 'from-state': 'raise-merge-request', 'to-state': 'await-checks', 'sub-state-change': { 'state-engine': 'merge-request', 'from-state': 'ensure-auto-merge', 'to-state': 'done' } }));
+  assert.equal(await landed(), 0);
+  // Nothing merged at any depth — it reached the merge step but never moved out of it: Done without its fix merged, as before.
+  done(release({ 'state-engine': 'v2-release', 'from-state': 'raise-pull-request', 'to-state': 'merge-pull-request' }));
+  assert.equal(await landed(), 3);
+});
+
 // ASS-107 AC6 (operator, 2026-10-24): as every state's, the count is per stay — it starts again each time the
 // ticket enters Blocked anew. Within one stay Blocked may make up to 3 fix attempts — a fix ticket raised and
 // waited on (its await-fix); one closed unmerged goes round Blocked again, the same stay (blocked → blocked).

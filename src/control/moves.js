@@ -167,7 +167,8 @@ export function gated(variation, engineName = variation['harness-status']?.['sta
 // logged, naming where it would go) and it stays for the human, whose
 // approval on the dashboard (ticket:approve-gate) makes that move. Each move of a sprint ticket is handed to ticket health
 // sampling (see triggers.js sampleHealth); a backlog ticket moves through its refinement engine the same way (ASS-144).
-// Given a `cause` (a move no human made at a human step: fast-track, ASS-151), it is
+// Given a `cause` (a move no human made at a human step: fast-track, ASS-151; or a block
+// cleared by a landed fix, FIX_LANDED, ASS-309, which restarts the step-visit window), it is
 // recorded on the change (MOVE_CAUSE, sprint.bash); SKIPPED's, a switched-off step passed
 // (ASS-192), is no gate's to hold, nor NO_CHOICE's, a pass with no human choice, unless the project holds those (ASS-220). Returns whether it moved.
 export async function moveTicket(ctx, phase, project, ticket, variation, to, why, startAt, cause) {
