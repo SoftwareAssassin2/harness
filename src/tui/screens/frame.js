@@ -114,14 +114,17 @@ export const headerLines = (state, columns, now) => (state.screen === 'S' || sta
 
 // The platform boxes above the legend, and a blank line under them: the
 // selected project's control process, one per local environment, then its
-// models. Each box is titled and lists its fields as "field: value"; control
-// trades start-time for its uptime, environments leave out type; control and
+// models. Each box is titled and lists its fields as "field: value";
+// environments leave out type; control and
 // environments add 🤖 to the title when an assignment has control true or a
-// local-environment naming them. A running control then shows where the
-// project's code goes — its repository provider, repository and push account
-// (forgeLines, ASS-307); the DOWN box does not. A control that has ended
-// (controlsDown) is a red "control DOWN" box with its exit code and the line
-// before it. Either
+// local-environment naming them. The control box is built from the control
+// the dashboard started (state.controls, ASS-310: status — Draining while it
+// drains, Restarting through a restart, else Online — its process id and its
+// uptime), so it shows for as long as that control runs; it then shows where
+// the project's code goes — its repository provider, repository and push
+// account (forgeLines, ASS-307); the DOWN box has neither. A control that
+// has ended (controlsDown) is a red "control DOWN" box with its exit code
+// and the line before it. Either
 // ends with the machine's lines and the project's Hindsight (machineLines,
 // ASS-292, ASS-293). The models
 // box, always there for a project, has a "model 🤖xN" line per model its
@@ -130,15 +133,16 @@ export const headerLines = (state, columns, now) => (state.screen === 'S' || sta
 export function platform(state, columns, now) {
   if (state.screen === 'S' || state.screen === 'B') return []; // the flow screens give the diagram the room (ASS-187)
   const project = state.projects[state.project];
-  const { control: { 'start-time': start, ...control } = {}, environments = [] } = project ?? {};
+  const { environments = [] } = project ?? {};
+  const control = state.controls?.[project?.id];
   const models = Map.groupBy(projectAssignments(state), a => a.model);
   const watched = new Set(projectAssignments(state).map(a => a['local-environment']));
   const box = (title, fields) => [title, ...Object.entries(fields).map(([field, value]) => `${field}: ${value}`)];
-  const uptime = start ? { uptime: since(start, now) } : {};
+  const status = state.draining?.[project?.id] != null ? 'Draining' : state.restart ? 'Restarting' : 'Online';
   const down = state.controlsDown?.[project?.id];
   const boxes = [
     ...(down ? [[red('control DOWN'), `exited: code ${down.code}`, `last: ${ellipsis(down.line, 60)}`, ...machineLines(state.disk, project, state.memoryHealth)]] : []),
-    ...(project?.control && !down ? [[...box(projectAssignments(state).some(a => a.control === true) ? 'control 🤖' : 'control', { ...control, ...uptime }), ...forgeLines(project), ...machineLines(state.disk, project, state.memoryHealth)]] : []),
+    ...(control && !down ? [[...box(projectAssignments(state).some(a => a.control === true) ? 'control 🤖' : 'control', { status, 'process-id': control.pid, uptime: since(control.startTime, now) }), ...forgeLines(project), ...machineLines(state.disk, project, state.memoryHealth)]] : []),
     ...environments.map(({ name, type, ...fields }) => box(watched.has(name) ? `${name} 🤖` : name, fields)),
     ...(project ? [['models', ...[...models]
       .toSorted(([a, x], [b, y]) => y.length - x.length || String(a).localeCompare(String(b)))

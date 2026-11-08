@@ -15,7 +15,7 @@ const AGENT = join(import.meta.dirname, '..', '..', 'agent.sh');
 function projects() {
   const dir = mkdtempSync(join(tmpdir(), 'ldd-'));
   mkdirSync(join(dir, 'p'));
-  writeFileSync(join(dir, 'p', 'project.json'), JSON.stringify({ name: 'P', control: { status: 'Online' } }, null, 4));
+  writeFileSync(join(dir, 'p', 'project.json'), JSON.stringify({ name: 'P' }, null, 4));
   return dir;
 }
 const set = (dir, ...args) => run(AGENT, ['project:set-last-data-download', ...args], { env: { ...process.env, PROJECTS_DIR: dir } });

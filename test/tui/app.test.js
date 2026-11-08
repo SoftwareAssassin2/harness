@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { initialState as flagged, handleKey, render, decided, fitRows, controlExited, controlDraining } from '../../src/tui/app.js';
+import * as app from '../../src/tui/app.js';   // controlStarted (ASS-310) by the namespace so the suite still loads before it is exported
 // The chat screen and the ticket screen's Chat tab on (ASS-262: off in
 // src/tui/features.json), so the tests from before their flags run as they
 // did; the ASS-262 tests turn them off (flagsOff).
@@ -1373,37 +1374,37 @@ test('the dashboard opens with the progress bar, full width', () => {
 
 test('above the bottom line, with a blank line between: a control box and one box per environment, each field as field: value, without control start-time or environment type', () => {
   const project = {
-    name: 'P', sprint: null,
-    control: { status: 'Online', 'start-time': '2026-10-01T15:51:00Z', 'process-id': 44704, model: 'opus-5' },
+    id: 'p', name: 'P', sprint: null,
     environments: [
       { name: 'local-pc', type: 'local-pc', folder: '/src/example', 'active-branch': 'master' },
       { name: 'dev-container', type: 'dev-container' },
     ],
   };
-  const out = lines(initialState({ projects: [project] }));
-  const boxes = out.slice(-12, -2);
+  // The box is built from the running control the dashboard started (state.controls), not project.json (ASS-310); no model line, no start-time.
+  const out = lines(initialState({ projects: [project], controls: { p: { pid: 44704, startTime: '2026-10-01T15:51:00Z' } } }));
+  const boxes = out.slice(-11, -2);
   assert.match(out.at(-1), /press \? for menu/);
   assert.equal(out.at(-2), '');
   assert.match(boxes[0], /^ +┌─+┐ {4}┌─+┐ {4}┌─+┐ {4}┌─+┐$/);                 // the models box last, always there
   assert.match(boxes[1], /│ control +│ {4}│ local-pc +│ {4}│ dev-container +│ {4}│ models +│$/);
   assert.match(boxes[2], /│ status: Online +│ {4}│ folder: \/src\/example +│ {4}│ +│ {4}│ session: — +│$/);
   assert.match(boxes[3], /│ process-id: 44704 +│ {4}│ active-branch: master +│ {4}│ +│ {4}│ weekly: — +│$/);
-  assert.match(boxes[4], /│ model: opus-5 +│ {4}│ +│ {4}│ +│ {4}│ account: — +│$/);
-  assert.match(boxes[5], /│ uptime: 13m +│ {4}│ +│ {4}│ +│ {4}│ +│$/);
-  assert.match(boxes[6], /│ disk free: unknown +│ {4}│ +│ {4}│ +│ {4}│ +│$/);   // ASS-292
-  assert.match(boxes[7], /│ golden image: none +│ {4}│ +│ {4}│ +│ {4}│ +│$/);
-  assert.match(boxes[8], /│ hindsight: none +│ {4}│ +│ {4}│ +│ {4}│ +│$/);   // ASS-293
-  assert.match(boxes[9], /^ +└─+┘ {4}└─+┘ {4}└─+┘ {4}└─+┘$/);
+  assert.match(boxes[4], /│ uptime: 13m +│ {4}│ +│ {4}│ +│ {4}│ account: — +│$/);
+  assert.match(boxes[5], /│ disk free: unknown +│ {4}│ +│ {4}│ +│ {4}│ +│$/);   // ASS-292
+  assert.match(boxes[6], /│ golden image: none +│ {4}│ +│ {4}│ +│ {4}│ +│$/);
+  assert.match(boxes[7], /│ hindsight: none +│ {4}│ +│ {4}│ +│ {4}│ +│$/);   // ASS-293
+  assert.match(boxes[8], /^ +└─+┘ {4}└─+┘ {4}└─+┘ {4}└─+┘$/);
   assert.ok(!boxes.join().includes('start-time'));
+  assert.ok(!boxes.join().includes('model:'));
   assert.ok(!boxes.join().includes('type'));
   assert.equal(boxes[0].length - boxes[0].trimStart().length, Math.floor((120 - boxes[0].trim().length) / 2));
 });
 
 test('after the other platform boxes, a models box: one line per model in use in this project, most agents first, with its robot count', () => {
-  const project = { id: 'p', name: 'P', sprint: null, control: { status: 'Online' }, environments: [{ name: 'local-pc', type: 'local-pc' }] };
+  const project = { id: 'p', name: 'P', sprint: null, environments: [{ name: 'local-pc', type: 'local-pc' }] };
   const agent = (model, projectId = 'p') => ({ project: projectId, model, 'agent-name': 'X', 'work-item': null });
   const team = [agent('opus-4.8'), agent('opus-5'), agent('opus-5'), agent('haiku-4'), agent('opus-5', 'other')];
-  const out = lines(initialState({ projects: [project], assignments: team }));
+  const out = lines(initialState({ projects: [project], assignments: team, controls: { p: { pid: 1, startTime: '2026-10-01T15:51:00Z' } } }));
   const top = out.findLastIndex(l => /^ +┌/.test(l));
   assert.match(out[top], /┐ {4}┌─+┐$/);
   assert.match(out[top + 1], /│ control +│ {4}│ local-pc +│ {4}│ models +│$/);
@@ -1489,16 +1490,17 @@ test('an environment box title carries a robot when one of this project\'s agent
 });
 
 test('the control box title carries a robot when one of this project\'s agents is assigned to control', () => {
-  const project = { id: 'p', name: 'P', sprint: null, control: { status: 'Online' }, environments: [] };
+  const project = { id: 'p', name: 'P', sprint: null, environments: [] };
   const agent = (control, projectId = 'p') => ({ project: projectId, model: 'm', 'agent-name': 'X', 'work-item': null, control });
-  const title = team => lines(initialState({ projects: [project], assignments: team })).find(l => l.includes('│ control'));
+  const title = team => lines(initialState({ projects: [project], assignments: team, controls: { p: { pid: 1, startTime: '2026-10-01T15:51:00Z' } } })).find(l => l.includes('│ control'));
   assert.match(title([agent(true)]), /│ control 🤖 +│/);
   assert.match(title([agent(false), agent(true, 'other')]), /│ control +│/);
 });
 
 test('a control exiting with 75 starts the restart, once; any other code, not while quitting, marks it down with its code and the line before its exit line (ASS-193)', () => {
-  const project = { id: 'p', name: 'P', sprint: null, control: { status: 'Online' }, environments: [] };
-  const logged = { ...initialState({ projects: [project] }), controlLog: [
+  const project = { id: 'p', name: 'P', sprint: null, environments: [] };
+  // The control was started (state.controls), not read from project.json (ASS-310).
+  const logged = { ...app.controlStarted(initialState({ projects: [project] }), 'p', { pid: 44704, startTime: '2026-10-01T15:51:00Z' }), controlLog: [
     { text: 'ticking', project: 'p' }, { text: 'boom: no such file', project: 'p' }, { text: 'downloader  idle' }, { text: 'control exited (code 1)', project: 'p' },
   ] };
   const down = controlExited(logged, 'p', 1);
@@ -1510,7 +1512,7 @@ test('a control exiting with 75 starts the restart, once; any other code, not wh
   assert.ok(box.some(l => /│ last: boom: no such file +│/.test(l)));
   assert.ok(render(down, screen).some(l => l.includes('\x1b[31mcontrol DOWN')));   // in red
   // Shown even once control's own record is gone, and the long line cut short.
-  const gone = controlExited({ ...logged, projects: [{ ...project, control: undefined }], controlLog: [{ text: 'x'.repeat(200), project: 'p' }, { text: 'control exited (code 1)', project: 'p' }] }, 'p', 1);
+  const gone = controlExited({ ...logged, controlLog: [{ text: 'x'.repeat(200), project: 'p' }, { text: 'control exited (code 1)', project: 'p' }] }, 'p', 1);
   assert.ok(lines(gone).some(l => /│ control DOWN +│/.test(l)));
   assert.ok(lines(gone).every(l => !l.includes('x'.repeat(61))));
   // 75: a restart, the dashboard shutting down to exit with it; nothing marked down.
@@ -1524,7 +1526,7 @@ test('a control exiting with 75 starts the restart, once; any other code, not wh
 });
 
 test('a restart drains: each control\'s "restart waiting for N agents" line shows on the bottom line as "restarting: waiting for N agents", summed; the dashboard quits for it only once no control it named still runs (ASS-200)', () => {
-  const projects = ['p', 'q'].map(id => ({ id, name: id.toUpperCase(), sprint: null, control: { status: 'Online' }, environments: [] }));
+  const projects = ['p', 'q'].map(id => ({ id, name: id.toUpperCase(), sprint: null, environments: [] }));
   const start = initialState({ projects });
   const bottom = state => render(state, screen).join('\n');
   assert.equal(controlDraining(start, 'p', '2026-10-27T20:00:00.000Z dispatch ABC-3 A plan'), start);             // any other line: nothing
@@ -1548,18 +1550,21 @@ test('a restart drains: each control\'s "restart waiting for N agents" line show
 });
 
 test('uptime is the time since control started, in its two largest units', () => {
-  const at = start => lines(initialState({ projects: [{ name: 'P', sprint: null, control: { 'start-time': start }, environments: [] }] }))
+  const at = start => lines(initialState({ projects: [{ id: 'p', name: 'P', sprint: null, environments: [] }], controls: { p: { pid: 1, startTime: start } } }))
     .find(l => l.includes('│ uptime: '));
   assert.match(at('2026-10-01T16:03:30Z'), /│ uptime: 0m /);
   assert.match(at('2026-09-30T16:43:00Z'), /│ uptime: 23h 21m /);
   assert.match(at('2024-06-06T00:00:00Z'), /│ uptime: 847d 16h /);
-  assert.ok(!lines(initialState({ projects: [{ name: 'P', sprint: null, control: { status: 'Online' }, environments: [] }] })).some(l => l.includes('uptime')));
+  // No running control (no state.controls entry): no control box at all — no uptime, no DOWN box (ASS-310 AC1).
+  const noControl = lines(initialState({ projects: [{ id: 'p', name: 'P', sprint: null, environments: [] }] }));
+  assert.ok(!noControl.some(l => l.includes('uptime')));
+  assert.ok(!noControl.some(l => l.includes('│ control')));   // no normal box and no DOWN box
 });
 
 test('the ticket table runs down to the platform boxes', () => {
   const many = Array.from({ length: 40 }, (_, i) => ({ key: `ABC-${100 + i}`, title: 'T', priority: i }));
-  const project = { name: 'P', sprint: { ...sprint, features: many, bugs: [], spikes: [] }, control: { status: 'Online' }, environments: [] };
-  const out = lines(initialState({ projects: [project] }), wide);
+  const project = { id: 'p', name: 'P', sprint: { ...sprint, features: many, bugs: [], spikes: [] }, environments: [] };
+  const out = lines(initialState({ projects: [project], controls: { p: { pid: 1, startTime: '2026-10-01T15:51:00Z' } } }), wide);
   const top = out.findIndex(l => l.includes('│ Priority │')) - 1, bottom = out.findIndex((l, i) => i > top && l.startsWith('└'));
   const boxes = out.findIndex(l => /^ +┌/.test(l));
   assert.ok(keyUnder(out, bottom) > 0);
@@ -6459,33 +6464,35 @@ test('ASS-288 AC4: below disk-free-hold-gb the header says "Disk nearly full —
 
 // ===== ASS-292: the disk's free space and the project's golden image in the control box =====
 const goldenBuilt = { name: 'golden-p', 'built-at': '2026-11-01T05:42:33Z' };
+// A running control the dashboard started (ASS-310: the box is built from state.controls, not project.json's control).
+const running = { p: { pid: 1, startTime: '2026-10-01T15:51:00Z' } };
 const controlBox = s => lines(s).filter(l => /│ (control|status|uptime|disk free|golden image|exited|last)/.test(l)).map(l => l.match(/│ ((control|status|uptime|disk free|golden image|exited|last)[^│]*?) +│/)?.[1]).filter(Boolean);
 
 test('ASS-292 AC1: the control box ends with the disk\'s free space and the project\'s golden image, its name and the day it was built (UTC, ASS-294)', () => {
-  const project = { id: 'p', name: 'P', sprint: null, control: { status: 'Online' }, environments: [], golden: goldenBuilt };
-  const box = controlBox(initialState({ projects: [project], disk: diskAt('ok', 120) }));
+  const project = { id: 'p', name: 'P', sprint: null, environments: [], golden: goldenBuilt };
+  const box = controlBox(initialState({ projects: [project], disk: diskAt('ok', 120), controls: running }));
   assert.deepEqual(box.slice(-2), ['disk free: 120.0 GiB', 'golden image: golden-p (built 2026-11-01 UTC)']);
   assert.equal(box[0], 'control');
 });
 
 test('ASS-292 AC1: below the warning level the disk free line is amber, as the low-disk line under the banner; at or above it, plain', () => {
-  const project = { id: 'p', name: 'P', sprint: null, control: { status: 'Online' }, environments: [], golden: goldenBuilt };
-  const at = disk => render(initialState({ projects: [project], disk }), screen).find(l => l.includes('disk free: '));
+  const project = { id: 'p', name: 'P', sprint: null, environments: [], golden: goldenBuilt };
+  const at = disk => render(initialState({ projects: [project], disk, controls: running }), screen).find(l => l.includes('disk free: '));
   assert.ok(at(diskAt('warn', 42)).includes('\x1b[38;2;255;176;0mdisk free: 42.0 GiB'), at(diskAt('warn', 42)));
   assert.ok(at(diskAt('hold', 12)).includes('\x1b[38;2;255;176;0mdisk free: 12.0 GiB'));
   assert.ok(!at(diskAt('ok', 120)).includes('\x1b[38;2;255;176;0m'));
 });
 
 test('ASS-292 AC1/AC3: a project without a golden image says none, one never built says so, and a disk control never read is unknown', () => {
-  const box = (golden, disk) => controlBox(initialState({ projects: [{ id: 'p', name: 'P', sprint: null, control: { status: 'Online' }, environments: [], golden }], disk })).slice(-2);
+  const box = (golden, disk) => controlBox(initialState({ projects: [{ id: 'p', name: 'P', sprint: null, environments: [], golden }], disk, controls: running })).slice(-2);
   assert.deepEqual(box(null, null), ['disk free: unknown', 'golden image: none']);
   assert.deepEqual(box(undefined, diskAt('ok', 99)), ['disk free: 99.0 GiB', 'golden image: none']);
   assert.deepEqual(box({ name: 'golden-p', 'built-at': null }, null), ['disk free: unknown', 'golden image: golden-p (not built)']);
 });
 
 test('ASS-292 AC2: the red control DOWN box shows the same two lines', () => {
-  const project = { id: 'p', name: 'P', sprint: null, control: { status: 'Online' }, environments: [], golden: goldenBuilt };
-  const logged = { ...initialState({ projects: [project], disk: diskAt('ok', 120) }), controlLog: [{ text: 'boom', project: 'p' }, { text: 'control exited (code 1)', project: 'p' }] };
+  const project = { id: 'p', name: 'P', sprint: null, environments: [], golden: goldenBuilt };
+  const logged = { ...initialState({ projects: [project], disk: diskAt('ok', 120), controls: running }), controlLog: [{ text: 'boom', project: 'p' }, { text: 'control exited (code 1)', project: 'p' }] };
   const box = controlBox(controlExited(logged, 'p', 1));
   assert.equal(box[0], 'control DOWN');
   assert.deepEqual(box.slice(-2), ['disk free: 120.0 GiB', 'golden image: golden-p (built 2026-11-01 UTC)']);
@@ -6493,14 +6500,14 @@ test('ASS-292 AC2: the red control DOWN box shows the same two lines', () => {
 
 // ===== ASS-293: the project's Hindsight, as the dashboard last checked it, in the control box =====
 // p with a Hindsight on 9077 (project.json's hindsight) and the dashboard's last check of it (memoryHealth, tui/memory.js memoryChecked).
-const withHindsight = { id: 'p', name: 'P', sprint: null, control: { status: 'Online' }, environments: [], golden: goldenBuilt, hindsight: { port: 9077 } };
+const withHindsight = { id: 'p', name: 'P', sprint: null, environments: [], golden: goldenBuilt, hindsight: { port: 9077 } };
 const checked = (healthy, extra = {}) => ({ p: { port: 9077, healthy, since: Date.parse('2026-10-01T15:58:00Z'), ...extra } });
 const memoryBox = s => lines(s).map(l => l.match(/│ ((control|status|uptime|disk free|golden image|hindsight|exited|last)[^│]*?) +│/)?.[1]).filter(Boolean);
 const hindsightLine = s => render(s, screen).find(l => strip(l).includes('hindsight: '));
 const since1558 = timestamp(new Date('2026-10-01T15:58:00Z'));
 
 test('ASS-293 AC2: after the golden image line the control box ends with the project\'s Hindsight: up with its port, down with its port and since when, checking before the first check', () => {
-  const box = memoryHealth => memoryBox({ ...initialState({ projects: [withHindsight] }), memoryHealth });
+  const box = memoryHealth => memoryBox({ ...initialState({ projects: [withHindsight], controls: running }), memoryHealth });
   assert.deepEqual(box(checked(true)).slice(-2), ['golden image: golden-p (built 2026-11-01 UTC)', 'hindsight: up (port 9077)']);
   assert.equal(box(checked(false)).at(-1), `hindsight: down (port 9077) since ${since1558}`);
   assert.equal(box(undefined).at(-1), 'hindsight: checking');
@@ -6509,7 +6516,7 @@ test('ASS-293 AC2: after the golden image line the control box ends with the pro
 });
 
 test('ASS-293 AC2: up is green, down red, checking and none plain', () => {
-  const line = (memoryHealth, project = withHindsight) => hindsightLine({ ...initialState({ projects: [project] }), memoryHealth });
+  const line = (memoryHealth, project = withHindsight) => hindsightLine({ ...initialState({ projects: [project], controls: running }), memoryHealth });
   assert.ok(line(checked(true)).includes('\x1b[32mhindsight: up (port 9077)'));
   assert.ok(line(checked(false)).includes(`\x1b[31mhindsight: down (port 9077) since ${since1558}`));
   assert.ok(!/\x1b\[(32|31)mhindsight/.test(line({})));
@@ -6517,7 +6524,7 @@ test('ASS-293 AC2: up is green, down red, checking and none plain', () => {
 });
 
 test('ASS-293 AC2: a project without a hindsight says none, whatever check is left', () => {
-  const box = (project, memoryHealth) => memoryBox({ ...initialState({ projects: [project] }), memoryHealth }).at(-1);
+  const box = (project, memoryHealth) => memoryBox({ ...initialState({ projects: [project], controls: running }), memoryHealth }).at(-1);
   assert.equal(box({ ...withHindsight, hindsight: null }, checked(true)), 'hindsight: none');
   assert.equal(box({ ...withHindsight, hindsight: undefined }, undefined), 'hindsight: none');
 });
@@ -6783,5 +6790,111 @@ test('ASS-299 AC5: the zoomed log reserves the same box+prompt rows as before th
     const chrome = headerLines(st, size.columns, size.now).length + frame.below(st) + platform(st, size.columns, size.now).length;
     const view = logScreen.logView(st, size, agentsScreen.AGENT_LOG);
     assert.equal(view.body.length + view.prompt.length, Math.max(4, rows - chrome - 3), `rows=${rows}`);
+  }
+});
+
+// ===== ASS-310: the footer control box is built from the running control the dashboard started (state.controls), not project.json's control =====
+// The leftmost footer box (box 0 = control) read cell by cell, from the box row's borders.
+const controlCells = (s, size = screen) => {
+  const out = lines(s, size);
+  const top = out.findLastIndex(l => /^ *┌/.test(l));
+  const bot = out.findLastIndex(l => /^ *└/.test(l));
+  return out.slice(top + 1, bot).map(l => l.split('│')[1].trim());
+};
+
+test('ASS-310 AC1: the control box is built from the running control the dashboard started (state.controls), not project.json — status Online, its pid and uptime, then the machine lines; no model, no start-time', () => {
+  const project = { id: 'p', name: 'P', sprint: null, environments: [], golden: goldenBuilt, hindsight: { port: 9077 } };
+  const state = app.controlStarted(initialState({ projects: [project], disk: diskAt('ok', 120) }), 'p', { pid: 44704, startTime: '2026-10-01T15:51:00Z' });
+  const cells = controlCells(state);
+  assert.deepEqual(cells, ['control', 'status: Online', 'process-id: 44704', 'uptime: 13m', 'disk free: 120.0 GiB', 'golden image: golden-p (built 2026-11-01 UTC)', 'hindsight: checking']);
+  assert.ok(!cells.join().includes('model'));
+  assert.ok(!cells.join().includes('start-time'));
+});
+
+test('ASS-310 AC1: controlStarted records a project\'s running control in state.controls by id, keeping other projects\' entries and not mutating the input', () => {
+  const start = { ...initialState({ projects: [] }), controls: { q: { pid: 2, startTime: '2026-10-01T00:00:00Z' } } };
+  const next = app.controlStarted(start, 'p', { pid: 44704, startTime: '2026-10-01T15:51:00Z' });
+  assert.deepEqual(next.controls, { q: { pid: 2, startTime: '2026-10-01T00:00:00Z' }, p: { pid: 44704, startTime: '2026-10-01T15:51:00Z' } });
+  assert.deepEqual(start.controls, { q: { pid: 2, startTime: '2026-10-01T00:00:00Z' } });   // input untouched
+});
+
+test('ASS-310 AC1: a Date start time (what main.js passes) renders the same uptime as the ISO string', () => {
+  const project = { id: 'p', name: 'P', sprint: null, environments: [] };
+  const up = startTime => controlCells(app.controlStarted(initialState({ projects: [project] }), 'p', { pid: 1, startTime })).find(l => l.startsWith('uptime:'));
+  assert.equal(up(new Date('2026-10-01T15:51:00Z')), 'uptime: 13m');
+  assert.equal(up('2026-10-01T15:51:00Z'), 'uptime: 13m');
+});
+
+test('ASS-310 AC1: only the selected project\'s control box shows — another project\'s state.controls entry renders no box for the selected one', () => {
+  const project = { id: 'p', name: 'P', sprint: null, environments: [] };
+  const out = lines(initialState({ projects: [project], controls: { q: { pid: 1, startTime: '2026-10-01T15:51:00Z' } } }));
+  assert.ok(!out.some(l => l.includes('│ control')));
+});
+
+test('ASS-310 AC2: once a control exits (not 75) its state.controls entry is dropped and only the red DOWN box shows — no Online status, no process-id', () => {
+  const project = { id: 'p', name: 'P', sprint: null, environments: [], golden: goldenBuilt };
+  const logged = { ...app.controlStarted(initialState({ projects: [project], disk: diskAt('ok', 120) }), 'p', { pid: 44704, startTime: '2026-10-01T15:51:00Z' }), controlLog: [{ text: 'boom', project: 'p' }, { text: 'control exited (code 1)', project: 'p' }] };
+  const down = controlExited(logged, 'p', 1);
+  assert.ok(!down.controls?.p);
+  const cells = controlCells(down);
+  assert.equal(cells[0], 'control DOWN');
+  assert.ok(!cells.some(l => l === 'status: Online' || l.startsWith('process-id:')));
+  assert.equal(lines(down).filter(l => /│ control/.test(l)).length, 1);   // exactly one box titled control*
+});
+
+test('ASS-310 AC2: a control killed by a signal (code null) drops its state.controls entry and shows the DOWN box too', () => {
+  const project = { id: 'p', name: 'P', sprint: null, environments: [] };
+  const logged = { ...app.controlStarted(initialState({ projects: [project] }), 'p', { pid: 1, startTime: '2026-10-01T15:51:00Z' }), controlLog: [{ text: 'boom', project: 'p' }, { text: 'control exited', project: 'p' }] };
+  const down = controlExited(logged, 'p', null);
+  assert.ok(!down.controls?.p);
+  assert.equal(controlCells(down)[0], 'control DOWN');
+});
+
+test('ASS-310 AC3: while a control drains (state.draining[id]) the box stays with its pid, uptime and machine lines, and the status says Draining', () => {
+  const project = { id: 'p', name: 'P', sprint: null, environments: [], golden: goldenBuilt };
+  const state = { ...app.controlStarted(initialState({ projects: [project], disk: diskAt('ok', 120) }), 'p', { pid: 44704, startTime: '2026-10-01T15:51:00Z' }), draining: { p: 2 } };
+  const cells = controlCells(state);
+  assert.equal(cells[0], 'control');
+  assert.equal(cells[1], 'status: Draining');
+  assert.ok(cells.includes('process-id: 44704'));
+  assert.ok(cells.some(l => l.startsWith('uptime:')));
+  assert.ok(cells.includes('disk free: 120.0 GiB'));   // machine lines stay
+});
+
+test('ASS-310 AC3: while the dashboard restarts (state.restart) a still-running control keeps its box, status Restarting, and no DOWN box', () => {
+  const projects = ['p', 'q'].map(id => ({ id, name: id.toUpperCase(), sprint: null, environments: [] }));
+  let state = app.controlStarted(initialState({ projects }), 'p', { pid: 44704, startTime: '2026-10-01T15:51:00Z' });
+  state = app.controlStarted(state, 'q', { pid: 5, startTime: '2026-10-01T15:51:00Z' });
+  const restarting = controlExited(state, 'q', 75, 1);   // q named and still waited for: restarting, not quitting
+  assert.equal(restarting.restart, true);
+  assert.ok(restarting.controls?.p);                      // p still running
+  const cells = controlCells(restarting);                 // p is the selected project (0)
+  assert.equal(cells[0], 'control');
+  assert.equal(cells[1], 'status: Restarting');
+  assert.ok(!lines(restarting).some(l => l.includes('control DOWN')));
+});
+
+test('ASS-310 AC3: draining takes precedence over restarting — a control both draining and in a restart shows Draining', () => {
+  const project = { id: 'p', name: 'P', sprint: null, environments: [] };
+  const state = { ...app.controlStarted(initialState({ projects: [project] }), 'p', { pid: 1, startTime: '2026-10-01T15:51:00Z' }), draining: { p: 2 }, restart: true };
+  assert.equal(controlCells(state)[1], 'status: Draining');
+});
+
+test('ASS-310 AC3: another project draining leaves the selected project Online', () => {
+  const project = { id: 'p', name: 'P', sprint: null, environments: [] };
+  const state = { ...app.controlStarted(initialState({ projects: [project] }), 'p', { pid: 1, startTime: '2026-10-01T15:51:00Z' }), draining: { q: 1 } };
+  assert.equal(controlCells(state)[1], 'status: Online');
+});
+
+test('ASS-310 AC4: the control box fits beside the environment and models boxes at every frame-test width (narrow included), nothing wrapped or clipped', () => {
+  const project = { id: 'p', name: 'P', sprint: null, environments: [{ name: 'local-pc', type: 'local-pc' }], golden: goldenBuilt, hindsight: { port: 9077 } };
+  const state = app.controlStarted(initialState({ projects: [project], disk: diskAt('ok', 120) }), 'p', { pid: 44704, startTime: '2026-10-01T15:51:00Z' });
+  for (const size of [at80, screen, wide]) {
+    const out = render(state, size);
+    const stripped = out.map(strip);
+    const top = stripped.findLastIndex(l => /^ *┌/.test(l));
+    assert.equal((stripped[top].match(/┌/g) || []).length, 3, `three boxes side by side at ${size.columns}`);   // control, local-pc, models
+    assert.match(stripped[top + 1], /│ control .*│ local-pc .*│ models /);
+    for (const l of out) assert.ok(visible(l) <= size.columns, `${size.columns}: ${strip(l)}`);
   }
 });

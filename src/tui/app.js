@@ -166,8 +166,11 @@ const pastDays = project => Object.keys(project?.days ?? {})
 // agentEvents: whether the log shows its JSON event lines. quitting: Q was
 // pressed, so main.js is shutting everything down (see src/tui/shutdown.js);
 // restart: a control asked for a restart, so it then exits with 75 (see
-// controlExited). controlsDown: each control that has ended on its own, by
-// project — { code, line (the one it logged before its exit line) }.
+// controlExited). controls: each control the dashboard has running, by
+// project — { pid, startTime } — which the footer's control box is built
+// from (ASS-310; see controlStarted). controlsDown: each control that has
+// ended on its own, by project — { code, line (the one it logged before its
+// exit line) }.
 // menuOpen: the ? menu (ASS-183) is drawn over the screen.
 // chats: chats.json's chats (ASS-33), every project's; chatsRunning: the ids
 // whose agent runs; chatsWritten: when each one's log was last written (ms),
@@ -189,14 +192,14 @@ const pastDays = project => Object.keys(project?.days ?? {})
 // chat; ticketChatLog, its log, which main.js reads; ticketChatScroll,
 // ticketChatDraft, ticketChatCursor, ticketChatMessage, as the agent's; ticketChatSend, a message
 // to send — { project, key, text } — which main.js runs and clears.
-export const initialState = ({ projects = [], workflows = [], assignments = [], transientEngines = [], pauses = {}, selfHealing = {}, menuHidden = false, chats = [], chatsRunning = [], chatsWritten = {}, agentsGrid = agents.AGENTS_GRID, features = {}, disk = null } = {}) => ({
+export const initialState = ({ projects = [], workflows = [], assignments = [], transientEngines = [], pauses = {}, selfHealing = {}, menuHidden = false, chats = [], chatsRunning = [], chatsWritten = {}, agentsGrid = agents.AGENTS_GRID, features = {}, disk = null, controls = {} } = {}) => ({
   screen: 's', features, disk, projects, project: 0, focus: menuHidden ? 'day' : 'menu', menuHidden, day: null,
   selected: null, scroll: null, repoSelected: 0, repoScroll: 0, workflows, assignments, transientEngines, pauses, selfHealing, quit: false,
   draft: null, submit: null, message: '',
   controlLog: [], flowchartView: 'metrics', flowchartScroll: 0, backlogFlowScroll: 0, backlogFlowView: 'tickets',
   updatesSince: null, updatesForm: null, updatesScroll: 0, updatesMessage: '',
   ticket: null, ...ticket.OPENED_TICKET, priorityDraft: null, reasonDraft: null, returnDraft: null, gatesDraft: null, decide: null, decideCloses: false, demoRun: null, demos: {},
-  backlogSelected: 0, backlogScroll: 0, subflowStart: 0, subflowScroll: 0, agentSelected: 0, agentScroll: 0, agentsGrid, agentsTable: false, agentPage: 0, agentTile: 0, sessionWritten: {}, sessionTails: {}, pending: {}, agent: null, agentLog: null, agentLogScroll: null, agentDraft: {}, agentCursor: {}, agentTyping: false, keyTail: null, agentPrompt: null, agentMessage: '', agentEvents: false, quitting: false, restart: false, draining: {}, controlsDown: {}, menuOpen: false,
+  backlogSelected: 0, backlogScroll: 0, subflowStart: 0, subflowScroll: 0, agentSelected: 0, agentScroll: 0, agentsGrid, agentsTable: false, agentPage: 0, agentTile: 0, sessionWritten: {}, sessionTails: {}, pending: {}, agent: null, agentLog: null, agentLogScroll: null, agentDraft: {}, agentCursor: {}, agentTyping: false, keyTail: null, agentPrompt: null, agentMessage: '', agentEvents: false, quitting: false, restart: false, controls, draining: {}, controlsDown: {}, menuOpen: false,
   chats, chatsRunning, chatsWritten, chatSelected: 0, chatScroll: 0, chat: null, chatLog: null, chatLogScroll: null, chatDraft: '', chatCursor: 0, chatMessage: '', chatEvents: false, chatSend: null, chatDelete: null, chatConfirm: null,
   memories: {}, memorySelected: 0, memoryScroll: 0, memoryConfirm: null, memoryDelete: null, memoryLoad: null, memoryMessage: '',
   ticketConfirm: null, ticketChatOpen: null, ticketChatLog: null, ticketChatScroll: null, ticketChatDraft: '', ticketChatCursor: 0, ticketChatMessage: '', ticketChatSend: null,
@@ -331,18 +334,29 @@ function over(lines, box) {
   });
 }
 
+// controlStarted(state, id, { pid, startTime }) — project id's control is
+// running, as main.js started it: its process id and when it started, which
+// the footer's control box shows (ASS-310, screens/frame.js platform). The
+// dashboard is control's supervisor, so it knows both without project.json.
+export function controlStarted(state, id, { pid, startTime }) {
+  return { ...state, controls: { ...state.controls, [id]: { pid, startTime } } };
+}
+
 // controlExited(state, id, code, waiting) — project id's control has ended
 // with code (null for a signal), as main.js hears it; `waiting` the controls
 // the restart request names that still run. While quitting, nothing: it was
 // stopped. 75 asks for a restart (ASS-193); once no named control still
 // runs — each drains its agents first (ASS-200) — it is quitting, so main.js
 // shuts everything down and exits with 75. Any other code marks it down, with
-// the line it logged before its exit line (startControl's, which comes last).
+// the line it logged before its exit line (startControl's, which comes
+// last), and drops its controls record so the DOWN box takes over; a 75
+// keeps it, so the box can show the restart (ASS-310).
 export function controlExited(state, id, code, waiting = 0) {
   if (state.quitting) return state;
   const { [id]: _, ...draining } = state.draining;
   const line = state.controlLog.filter(l => l.project === id).at(-2)?.text ?? '';
-  const next = code === 75 ? { ...state, restart: true, draining } : { ...state, draining, controlsDown: { ...state.controlsDown, [id]: { code, line } } };
+  const { [id]: __, ...controls } = state.controls;
+  const next = code === 75 ? { ...state, restart: true, draining } : { ...state, draining, controls, controlsDown: { ...state.controlsDown, [id]: { code, line } } };
   return next.restart && !waiting ? { ...next, quitting: true } : next;
 }
 
