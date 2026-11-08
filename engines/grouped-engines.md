@@ -27,10 +27,14 @@ on the host, every minute) checks each Open merge request's title against the
 project's format — project.json's `"merge-request-title"`: `"key-summary"`
 (`KEY: summary`, the default) or `"conventional"` (`type(scope): subject (KEY)`,
 what a CI mr-title job may require) — and that its description
-names every commit subject on its branch, and waits for its head pipeline's
-`.pre` jobs (none, or GitHub: no wait). A failure goes back to Update Merge
-Request Details with `merge-request-details-check-<variation>.md`, a failed
-job's log in it. The same format fills the prompt's `{merge-request-title}`.
+names every commit subject on its branch — on GitHub a subject over ~70
+characters is cut short in the commit's `.messageHeadline` and ended with
+"…", its remainder leading `.messageBody`: the full subject is rebuilt from
+both before the match, so a description naming the full subject verbatim
+passes (ASS-302) — and waits for its head pipeline's `.pre` jobs (none, or
+GitHub: no wait). A failure goes back to Update Merge Request Details with
+`merge-request-details-check-<variation>.md`, a failed job's log in it. The
+same format fills the prompt's `{merge-request-title}`.
 
 The Refresh steps (ASS-218; grouped/v2 Build only, `vm:refresh-repositories`,
 on the host) open Build and come before every Automated Testing. Each of
