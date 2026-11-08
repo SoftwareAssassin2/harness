@@ -13,7 +13,9 @@ set -euo pipefail
 # criteria from stdin ("-") or from the file whose path is given instead
 # (ASS-298: a confined host agent can't pipe or redirect into agent.sh without
 # re-sandboxing it, so it stages the JSON in a file of its own and passes the
-# path, the call a bare one) — the whole [{ criteria-number, description }] list,
+# path, the call a bare one; a third argument that is no file is the 4-arg
+# form with its file left off, and gets the usage line) — the whole
+# [{ criteria-number, description }] list,
 # each description a non-empty, single-line string. An off-board ticket (its
 # key carries the off-board key prefix): rewrites the `## Acceptance criteria`
 # section of the ticket file through off-board.sh ticket:replace-acceptance-criteria
@@ -34,7 +36,7 @@ if [[ $# -eq 3 ]]; then
   from=stdin
   if [[ "$3" != - ]]; then
     from="$3"
-    [[ -f "$from" ]] || { echo "$command: no file $from: nothing written" >&2; exit 1; }
+    [[ -f "$from" ]] || { echo "$command: no file $from: nothing written" >&2; echo "$usage" >&2; exit 1; }
     exec < "$from"
   fi
   input="$(cat; echo x)"; input="${input%x}"
