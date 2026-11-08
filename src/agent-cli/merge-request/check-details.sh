@@ -7,7 +7,10 @@ set -euo pipefail
 #   - its title, its draft prefix left off, is in the project's format
 #     (merge-request-title.bash: project.json's "merge-request-title");
 #   - its description names every commit on its branch: each subject, its
-#     trailing (KEY) left off, found in it case aside;
+#     trailing (KEY) left off, found in it case aside. On GitHub a subject
+#     over ~70 characters is cut short in .messageHeadline and ended with
+#     "…", its remainder leading .messageBody behind another "…": the full
+#     subject is rebuilt from both, each "…" left off, before the match;
 #   - on GitLab, its head pipeline's .pre jobs (e.g. an mr-title lint) have
 #     finished, none failed (but an allowed failure). No head pipeline, no
 #     .pre job, or GitHub: nothing to wait for.
@@ -33,7 +36,10 @@ for i in $(jq -r 'to_entries[] | select(.value.status == "Open" and .value.key !
   name="$(mr_name "$i")" jobs='[]'
   IFS=$'\t' read -r url iid _ < <(mr_at "$i")
   if on_github "$url"; then
-    mr="$(gh_run "$command" pr view "$iid" --repo "$(path_of "$url")" --json title,body,commits | jq -c '{ title, description: .body, commits: [.commits[].messageHeadline] }')"
+    mr="$(gh_run "$command" pr view "$iid" --repo "$(path_of "$url")" --json title,body,commits | jq -c 'def full_subject:
+      .messageHeadline as $h
+      | if ($h | test("…$")) then ($h | sub("…$"; "")) + (((.messageBody // "") | split("\n") | .[0] // "") | sub("^…"; "")) else $h end;
+      { title, description: .body, commits: [.commits[] | full_subject] }')"
   else
     mr="$(lab "$command" "$url" "/merge_requests/$iid" | jq -c '{ title, description, pipeline: .head_pipeline.id }')"
     mr="$(lab "$command" "$url" "/merge_requests/$iid/commits?per_page=100" | jq -c --argjson mr "$mr" '$mr + { commits: [.[].title] }')"
