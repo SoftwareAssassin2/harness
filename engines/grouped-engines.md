@@ -460,7 +460,9 @@ stay the reference to copy from.
   which has no image upload, the screenshots go to an orphan branch
   `screenshots/<ticket>-<variation>`, linked pinned to its commit).
   Review is filled (ASS-116, a pair per test run): Explain the Change, Risk
-  Assessment, Human Review, the AI Token Expense Check, the Payment Gate
+  Assessment, Human Review (v2-review's alone since ASS-314: grouped-review's
+  Risk Assessment goes straight to the expense check, so v2-review is
+  grouped-review but for it), the AI Token Expense Check, the Payment Gate
   (only when it says tokens will be spent), Variation Selection (passes on
   its own for a ticket with one variation); Rejected at the Payment Gate
   ends it at `replan`, back into Plan at Write Execution Plan, whose prompt
