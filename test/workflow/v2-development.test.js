@@ -1114,7 +1114,8 @@ test('ASS-197: Merge Pull Request merges in its turn — merge-request:merge-in-
   assert.equal(nextState(step, engine, { exitCode: 1 }).to, 'blocked');
   assert.equal(stepOf(engine, 'rebuild')['is-done'], true);
   const release = stepOf(engines[TOP], 'release');
-  assert.deepEqual(nextState(release, engines[TOP], { subEngineDone: true, subEngineState: 'rebuild' }).exit, { condition: { all: [{ 'is-done': true }, { 'sub-engine-ended-at': 'rebuild' }] }, 'move-to-state': 'build', 'start-sub-engine-at': 'generate-solution' });
+  // ASS-315: the exit names its own cause, so the move it makes restarts Build, Test, Document and Review's visit windows.
+  assert.deepEqual(nextState(release, engines[TOP], { subEngineDone: true, subEngineState: 'rebuild' }).exit, { condition: { all: [{ 'is-done': true }, { 'sub-engine-ended-at': 'rebuild' }] }, 'move-to-state': 'build', 'start-sub-engine-at': 'generate-solution', cause: 'merge-gate-red' });
   const trail = walk(TOP, { exitCode: at => (at === 'merge-pull-request' ? 2 : 0) }), at = trail.indexOf(`${TOP}/release`);
   assert.deepEqual(trail.slice(at, at + 5), [`${TOP}/release`, 'v2-release/merge-pull-request', 'v2-release/rebuild', `${TOP}/build`, 'v2-build/generate-solution']);
   assert.equal(trail.at(-1), `${TOP}/blocked`);                                                  // red every time: Build's visits run out

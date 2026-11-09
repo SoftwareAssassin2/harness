@@ -8,6 +8,7 @@ import {
   stepOf, evaluateCondition, firstExit, resolveTarget, visitsInto, nextState, sinceResolution,
   isDoneStep, pairedStatus, isPlanning, isBlockedState, isHumanStep, waitsOnHuman, engineSteps, statusOf, inPlanning, isOpenQuestion, blocksTicket, answersGap,
 } from '../../src/control/engine.js';
+import * as control from '../../src/control/engine.js';
 import { levelChanges } from '../../src/control/moves.js';
 
 const updated = { 'file-updated': { file: 'plan.md', since: 'turn-start' } };
@@ -351,6 +352,96 @@ test('nextState (ASS-309 AC2): after the clearing change\'s cause is recorded, t
   const changes = [...exhausted, change('blocked', 'build', { cause: 'fix-landed' })];
   assert.deepEqual(nextState(build, v2Engine, retried, changes), { to: 'test', exit: build['exit-events'].at(-1), reason: 'exit' });
   assert.equal(nextState(build, v2Engine, retried, exhausted).to, 'blocked');   // without the clear: Test is at its cap
+});
+
+// ASS-315: a merge-gate red — v2-release's merge-pull-request failing the gate (npm test red on
+// the rebased branch, or no clean rebase) ends its run at rebuild, and release's exit for it sends
+// the ticket back to Build. That return trip is no fault of Build, Test, Document or Review, so the
+// exit marks the move it makes (its own "cause": merge-gate-red, in the engine JSON) and the visit
+// window restarts there for them — never for release itself, whose max-visits (3) still bounds a
+// gate that never goes green (ASS-311: a green, cleanly rebased change sent to Blocked at Build's
+// exit because two reds had left Test at 3/3). ASS-311's shape is reconstructed here with change():
+// its real state-changes are not reachable from a ticket VM.
+const GATE_RED = 'merge-gate-red';
+const gateRed = () => change('release', 'build', { cause: GATE_RED });
+const rebuilt = { subEngineDone: true, subEngineState: 'rebuild' };
+const lastExit = step => step['exit-events'].at(-1);
+const rebuildExit = step => step['exit-events'].find(e => (e.condition.all ?? []).some(c => c['sub-engine-ended-at'] === 'rebuild'));
+// ASS-311's shape: a pass through Build and Test with `fails` Test→Build rebuilds (so Test is at
+// its max-visits with fails 2), then on through Document and Review to Release.
+const toRelease = (fails = 2) => [change('plan', 'build'),
+  ...Array.from({ length: fails }, () => [change('build', 'test'), change('test', 'build')]).flat(),
+  change('build', 'test'), change('test', 'document'), change('document', 'review'), change('review', 'release')];
+// A ticket at Review, having taken `reds` gate reds on the way (each red its own return to Build).
+const lap = [change('build', 'test'), change('test', 'document'), change('document', 'review')];
+const atReview = reds => [change('plan', 'build'), ...Array.from({ length: reds }, () => [...lap, change('review', 'release'), gateRed()]).flat(), ...lap];
+
+test('ASS-315 AC1: the real harness-development-v2 marks release\'s rebuild exit merge-gate-red; test\'s own rebuild exit is unmarked', () => {
+  const real = v2();
+  assert.equal(rebuildExit(stepOf(real, 'release')).cause, GATE_RED);
+  assert.equal(control.MERGE_GATE_RED?.cause, GATE_RED);                 // the JSON flag and the JS constant are the one string
+  assert.equal(rebuildExit(stepOf(real, 'test')).cause, undefined);      // a real test failure still spends a Test visit (AC3)
+});
+
+test('ASS-315 AC1: sinceResolution restarts the window at a merge-gate-red change for every step but the one it left (release)', () => {
+  const red = gateRed(), after = change('build', 'test');
+  const changes = [...toRelease(), red, after];
+  for (const target of ['build', 'test', 'document', 'review']) assert.deepEqual(sinceResolution(v2(), changes, target), [red, after], target);
+  assert.deepEqual(sinceResolution(v2(), changes, 'release'), changes);   // release's own visits keep accumulating across reds (AC2)
+  assert.deepEqual(sinceResolution(v2(), changes), [red, after]);         // no target named (the TUI's caller): restarts, as its counts always have
+  const resolved = change('blocked-for-human', 'test');                   // the latest boundary wins: a human's resolution after the red
+  assert.deepEqual(sinceResolution(v2(), [...changes, change('test', 'blocked-for-human'), resolved], 'test'), [resolved]);
+});
+
+test('ASS-315 AC1: ASS-311\'s shape — the gate red\'s return to Build moves Build\'s done exit on to Test, not to Blocked', () => {
+  const real = v2(), build = stepOf(real, 'build');
+  const changes = [...toRelease(), gateRed()];                            // Test stood at 3/3 when the gate went red
+  assert.equal(visitsInto(changes, 'test'), 3);
+  assert.deepEqual(nextState(build, real, retried, changes), { to: 'test', exit: lastExit(build), reason: 'exit' });
+  const unmarked = [...toRelease(), change('release', 'build')];          // the same history with no cause on the red: the bug ASS-311 hit
+  assert.deepEqual(nextState(build, real, retried, unmarked), { to: 'blocked', exit: lastExit(build), reason: 'max-visits' });
+});
+
+test('ASS-315 AC1: the gate-red move itself counts from none — the first red returns to Build though Build is at its max-visits', () => {
+  const real = v2(), release = stepOf(real, 'release');
+  const changes = toRelease(4);                                           // Build entered 5 times: its max-visits, and no gate-red change yet
+  assert.equal(visitsInto(changes, 'build'), 5);
+  assert.deepEqual(nextState(release, real, rebuilt, changes), { to: 'build', exit: rebuildExit(release), reason: 'exit' });
+});
+
+test('ASS-315 AC1: after a gate red the steps downstream of Build count afresh too — Test moves on to Document, Document on to Review', () => {
+  const real = v2(), laps = Array.from({ length: 3 }, () => [...lap, change('review', 'build')]).flat();
+  const before = [change('plan', 'build'), ...laps, ...lap, change('review', 'release')];
+  assert.equal(visitsInto(before, 'document'), 4);                        // both past their max-visits (3) when the gate went red
+  assert.equal(visitsInto(before, 'review'), 4);
+  const changes = [...before, gateRed(), change('build', 'test')];
+  assert.deepEqual(nextState(stepOf(real, 'test'), real, retried, changes), { to: 'document', exit: lastExit(stepOf(real, 'test')), reason: 'exit' });
+  const onward = [...changes, change('test', 'document')];
+  assert.deepEqual(nextState(stepOf(real, 'document'), real, retried, onward), { to: 'review', exit: lastExit(stepOf(real, 'document')), reason: 'exit' });
+});
+
+test('ASS-315 AC2: release\'s own visits count across gate reds — a third red still sends the ticket to Blocked, a second does not', () => {
+  const real = v2(), review = stepOf(real, 'review'), thrice = atReview(3);
+  assert.deepEqual(nextState(review, real, retried, atReview(2)), { to: 'release', exit: lastExit(review), reason: 'exit' });
+  assert.deepEqual(nextState(review, real, retried, thrice), { to: 'blocked', exit: lastExit(review), reason: 'max-visits' });
+  assert.equal(visitsInto(sinceResolution(real, thrice, 'release'), 'release'), 3);   // every red counted for release
+  assert.equal(visitsInto(sinceResolution(real, thrice, 'test'), 'test'), 1);         // for Test, only the pass since the last red
+});
+
+test('ASS-315 AC2: a human\'s resolution of Blocked for Human still counts release\'s visits afresh', () => {
+  const real = v2(), review = stepOf(real, 'review');
+  const resolved = [...atReview(3), change('review', 'blocked-for-human'), change('blocked-for-human', 'review')];
+  assert.deepEqual(nextState(review, real, retried, resolved), { to: 'release', exit: lastExit(review), reason: 'exit' });
+});
+
+test('ASS-315 AC3: a rebuild that is no gate red still spends its step\'s visit — Test\'s and Review\'s own returns to Build count as before', () => {
+  const real = v2(), build = stepOf(real, 'build');
+  const testFails = [change('plan', 'build'), ...Array.from({ length: 3 }, () => [change('build', 'test'), change('test', 'build')]).flat()];
+  assert.equal(visitsInto(testFails, 'test'), 3);
+  assert.deepEqual(nextState(build, real, retried, testFails), { to: 'blocked', exit: lastExit(build), reason: 'max-visits' });
+  const reviewFails = [change('plan', 'build'), ...Array.from({ length: 3 }, () => [...lap, change('review', 'build')]).flat()];
+  assert.equal(visitsInto(reviewFails, 'test'), 3);
+  assert.deepEqual(nextState(build, real, retried, reviewFails), { to: 'blocked', exit: lastExit(build), reason: 'max-visits' });
 });
 
 test('nextState: a ticket reopened from Done moves on without hitting max-visits; real repeated visits since still hit it (ASS-130)', () => {
