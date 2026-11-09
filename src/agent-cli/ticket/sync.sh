@@ -7,7 +7,7 @@ set -euo pipefail
 # "build-status", url, status, branch, ticket }… ] }, each <ticket> in the sprint's ticket shape
 # minus the harness's fields (key, title, description, url,
 # ticket-system-status, -priority, -assignment, points, issue-type,
-# dependencies, overlaps, sprint-tag — points left out when unread, ASS-152; and fast-track: true on a fast-tracked off-board
+# dependencies, overlaps, sprint-tag — points and dependencies left out when unread, ASS-152/ASS-322; and fast-track: true on a fast-tracked off-board
 # ticket, ASS-83, carried onto the sprint or backlog ticket, never taken off).
 # It is merged, in one locked write, into the
 # project's active sprint file (data/projects/<project>/sprints/sprint-<n>/
@@ -180,6 +180,12 @@ update_json "$json" --slurpfile in "$file" --arg target "$target" --arg state "$
     if ($t | has("points") | not) or ($t.points == null and $old["points-set-at"] != null and $old.points != null) then .points = $old.points
     elif $t.points != null then del(.["points-set-at"])
     else . end;
+  # Dependencies (ASS-322): fetched without the key (unread: acli could not
+  # read the issuelinks) the ticket keeps its own; a fetched list (including
+  # []) is taken, as system_fields already set it.
+  def dependencies_merged($old; $t):
+    if ($t | has("dependencies") | not) then .dependencies = ($old.dependencies // [])
+    else . end;
   def new_ticket($t; $priority; $mr): { key: $t.key } + system_fields($t) + {
       priority: $priority, (if $target == "sprint" then "manual-priority" else "manual-backlog-priority" end): null, qa: { status: null },
       variations: [{
@@ -267,6 +273,7 @@ update_json "$json" --slurpfile in "$file" --arg target "$target" --arg state "$
           | .updated[$key] = ($old.t + system_fields($t)
             | if status_kept($old.t) then .["ticket-system-status"] = $old.t["ticket-system-status"] else . end
             | points_merged($old.t; $t)
+            | dependencies_merged($old.t; $t)
             | if $target == "sprint" and $old.t.description != $t.description and ($manual | not) then .description = $old.t.description | held($t) else . end
             | if (.["dismissed-requirements-change"] // $t.description) != $t.description then del(.["dismissed-requirements-change"]) else . end
             | if $scan == [] then . else .variations |= (if . == null then . else scanned($key; $scan) end) end

@@ -510,6 +510,28 @@ test('ticket:sync keeps a local estimate while the ticket system shows null or i
   assert.equal(backlog(dir).tickets.find(t => t.key === 'ABC-77').points, null);                  // a new ticket unread: none yet
 });
 
+// ASS-322 AC3: a ticket whose links went unread (no dependencies key) keeps the
+// harness's dependencies; a fetched list, even [], is taken.
+test('ticket:sync keeps a ticket\'s dependencies when the fetched ticket left them unread, and takes a fetched list, [] included (ASS-322 AC3)', async () => {
+  const dir = projects();
+  const edit = change => { const b = backlog(dir); change(b.tickets[0]); writeFileSync(join(dir, 'p', 'backlog.json'), JSON.stringify(b)); };
+  const { dependencies: _, ...unread } = fetched('ABC-9');
+  const at = () => backlog(dir).tickets[0];
+  edit(t => { t.dependencies = ['ABC-2']; });
+  await sync(dir, 'p', 'backlog', file(dir, { tickets: [unread] }));
+  assert.deepEqual(at().dependencies, ['ABC-2']);                                                 // unread: kept
+  await sync(dir, 'p', 'backlog', file(dir, { tickets: [fetched('ABC-9', { dependencies: ['ABC-3'] })] }));
+  assert.deepEqual(at().dependencies, ['ABC-3']);                                                 // read: taken
+  await sync(dir, 'p', 'backlog', file(dir, { tickets: [fetched('ABC-9', { dependencies: [] })] }));
+  assert.deepEqual(at().dependencies, []);                                                        // cleared in the ticket system: taken
+  edit(t => { delete t.dependencies; });
+  await sync(dir, 'p', 'backlog', file(dir, { tickets: [unread] }));
+  assert.deepEqual(at().dependencies, []);                                                        // none before, unread: none
+  const { dependencies: __, ...unreadNew } = fetched('ABC-77');
+  await sync(dir, 'p', 'backlog', file(dir, { tickets: [unreadNew] }));
+  assert.deepEqual(backlog(dir).tickets.find(t => t.key === 'ABC-77').dependencies, []);          // a new ticket unread: none yet
+});
+
 // ASS-166: a ticket worked by hand (ticket:set-manual's worked-manually) has its data synced, and nothing held or moved.
 const MANUAL = { 'worked-manually': { by: 'alice', since: '2026-10-27T10:00:00Z', note: null } };
 
