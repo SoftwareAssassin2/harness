@@ -393,12 +393,21 @@
             "id": "create-fix-ticket",
             "sequence": 11,
             "name": "Create the Fix Ticket",
-            "description": "Where Classify said: the harness project's backlog, or the ticket's own project's ticket system (facts.js fixTicketIn)",
+            "description": "Where Classify said: the harness project's backlog, or the ticket's own project's ticket system (facts.js fixTicketIn). An empty key (ASS-316) skips fast-track-fix: there is no ticket to fast-track, and no reason to run it on the blocked ticket's own key",
             "action": {
                 "type": "state-engine",
                 "engine": "create-ticket-grouped"
             },
             "exit-events": [
+                {
+                    "condition": {
+                        "all": [
+                            { "is-done": true },
+                            { "structured-output": { "key": "" } }
+                        ]
+                    },
+                    "move-to-state": "wait-on"
+                },
                 {
                     "condition": {
                         "is-done": true
@@ -437,11 +446,11 @@
             "id": "wait-on",
             "sequence": 13,
             "name": "Wait on the Fix",
-            "description": "Record the fix ticket the blocked ticket waits on; none raised, or one no project claims, is Blocked for Human (AC7)",
+            "description": "Record the fix ticket the blocked ticket waits on; none raised, or one no project claims, is Blocked for Human (AC7), its ai-feedback naming why (ASS-316: no-ticket-reason/no-ticket-why from create-fix-ticket's output, - when none)",
             "record-script-output": true,
             "action": {
                 "type": "script",
-                "command": "./agent.sh ticket:wait-on {project} {work-item} {variation} {ticket}"
+                "command": "./agent.sh ticket:wait-on {project} {work-item} {variation} {ticket} {no-ticket-reason} {no-ticket-why}"
             },
             "exit-events": [
                 {

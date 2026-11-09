@@ -739,3 +739,41 @@ test('ASS-305 AC1/AC2/AC3: every prompt that writes or revises acceptance criter
   }
   assert.match(text('create-ticket'), /written as the operator's/);
 });
+
+// ASS-316 AC1: write-ticket's empty-key output must say why — analysis-did-not-hold
+// (the two cases in prompt.txt:5, :37) or create-failed (the create command's
+// error as printed) — each value named on its own sentence, so a value named
+// anywhere else cannot satisfy it (the two cases must not cross); plus a
+// one-line why, and the finish-JSON line carrying all three fields. The flat
+// create-ticket prompt is untouched.
+test('ASS-316 AC1: create-ticket-grouped\'s empty key carries no-ticket-reason and a one-line why; the flat create-ticket prompt is unchanged', () => {
+  const grouped = text('create-ticket-grouped');
+  const sentences = grouped.replace(/\n/g, ' ').split(/(?<=\.)\s+/);
+  const sentenceWith = re => sentences.find(s => re.test(s)) ?? '';
+  const analysisSentence = sentenceWith(/analysis is empty or doesn't hold/);
+  const failedSentence = sentenceWith(/failed create:/i);
+  assert.match(analysisSentence, /no-ticket-reason/, 'the analysis-empty/doesn\'t-hold case names the field');
+  assert.match(analysisSentence, /analysis-did-not-hold/, 'and its own value');
+  assert.doesNotMatch(analysisSentence, /create-failed/, 'not the other case\'s value');
+  assert.match(analysisSentence, /\bwhy\b/);
+  assert.match(failedSentence, /no-ticket-reason/, 'the failed-create case names the field');
+  assert.match(failedSentence, /create-failed/, 'and its own value');
+  assert.doesNotMatch(failedSentence, /analysis-did-not-hold/, 'not the other case\'s value');
+  assert.match(failedSentence, /\bwhy\b/);
+  assert.match(failedSentence, /error/i);
+  assert.match(failedSentence, /as it printed/i);
+
+  const finishBlock = grouped.slice(grouped.indexOf('Finish with JSON'));
+  assert.match(finishBlock, /"key"/);
+  assert.match(finishBlock, /"no-ticket-reason"/);
+  assert.match(finishBlock, /"why"/);
+  assert.match(finishBlock, /""/, 'the two are empty when a key was created');
+
+  const schema = JSON.parse(readFileSync(join(ROOT, 'prompts', 'create-ticket-grouped', 'prompt.json'), 'utf8')).output;
+  assert.deepEqual(schema.properties['no-ticket-reason']?.enum, ['', 'analysis-did-not-hold', 'create-failed']);
+  assert.equal(schema.properties.why?.type, 'string');
+  assert.deepEqual(schema.required, ['key', 'no-ticket-reason', 'why']);
+  assert.equal(schema.additionalProperties, false);
+
+  assert.doesNotMatch(text('create-ticket'), /no-ticket-reason/, 'the flat reference prompt is unchanged');
+});

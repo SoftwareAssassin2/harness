@@ -8,9 +8,13 @@
                 { "condition": { "all": [ { "turn-complete": true }, { "structured-output": { "exists": false } } ] }, "move-to-state": "write-ticket" }
             ]
         },
-        { "id": "write-ticket", "sequence": 2, "name": "Write Ticket", "description": "Creating the ticket from the template",
+        { "id": "write-ticket", "sequence": 2, "name": "Write Ticket", "description": "Creating the ticket from the template; an empty key with no-ticket-reason create-failed, or no reason given, retries once (ASS-316) — max-visits counts the check-existing to write-ticket move as visit 1",
             "action": { "type": "prompt", "prompt": "create-ticket-grouped", "agent-count": 1, "run-in-dev-container": false },
+            "max-visits": 2,
+            "on-max-visits": "done",
             "exit-events": [
+                { "condition": { "all": [ { "turn-complete": true }, { "structured-output": { "key": "", "no-ticket-reason": "analysis-did-not-hold" } } ] }, "move-to-state": "done" },
+                { "condition": { "all": [ { "turn-complete": true }, { "structured-output": { "key": "" } } ] }, "move-to-state": "write-ticket" },
                 { "condition": { "turn-complete": true }, "move-to-state": "done" }
             ]
         },

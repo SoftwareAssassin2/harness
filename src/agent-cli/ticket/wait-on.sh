@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Description: Record the fix ticket a ticket variation waits on, or - to stop waiting — ticket:wait-on <project> <ticket-key> <variation> <fix-ticket-key|->.
+# Description: Record the fix ticket a ticket variation waits on, or - to stop waiting — ticket:wait-on <project> <ticket-key> <variation> <fix-ticket-key|-> [<no-ticket-reason> <no-ticket-why>].
 set -euo pipefail
 
 # Writes the variation's "waits-on": { project, ticket } in the project's
@@ -14,19 +14,32 @@ set -euo pipefail
 # step's command its own work item when it has no fix key — (exit 3) or one
 # no project claims (exit 1). A fix key of - removes the variation's
 # waits-on, for a wait the operator abandons (ASS-253), printing waits-on null.
+# ASS-316: on the own-key refusal, optional 5th/6th arguments name why no fix
+# ticket was raised — no-ticket-reason (analysis-did-not-hold|create-failed)
+# and a one-line why — naming the reason in the feedback; - or an unknown
+# reason (no reason given) keeps the generic text. Ignored on every other path.
 here="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
 source "$here/../sprint.bash"
 source "$here/../ticket-system.bash"
 
-[[ $# -eq 4 ]] || { echo "usage: ticket:wait-on <project> <ticket-key> <variation> <fix-ticket-key|->" >&2; exit 1; }
+[[ $# -eq 4 || $# -eq 6 ]] || { echo "usage: ticket:wait-on <project> <ticket-key> <variation> <fix-ticket-key|-> [<no-ticket-reason> <no-ticket-why>]" >&2; exit 1; }
 fix="$(tr '[:lower:]' '[:upper:]' <<< "$4")"
+reason="${5:--}"
+no_ticket_why="${6:--}"
 has='if any(.variations // [] | .[]; .name == $name and (.["is-deleted"] | not)) then . else error("\($command): no \($key) variation \($name)") end'
 [[ "$fix" != - ]] || {
   update_whole_ticket ticket:wait-on "$1" "$2" --arg name "$3" "$has"' | .variations |= map(if .name == $name then del(.["waits-on"]) else . end)'
   jq -nc --arg t "$(tr '[:lower:]' '[:upper:]' <<< "$2")" --arg v "$3" '{ ticket: $t, variation: $v, "waits-on": null }'
   exit 0; }
 why() { jq -nc --arg s "$1" --arg l "$2" '{ "ai-feedback-short": $s, "ai-feedback-long": $l }'; echo "ticket:wait-on: $2" >&2; }
-[[ "$fix" != "$(tr '[:lower:]' '[:upper:]' <<< "$2")" ]] || { why "No fix ticket was raised" "No fix ticket was raised for $fix's block (the analysis did not hold, or creating it failed); it does not resume as if fixed."; exit 3; }
+if [[ "$fix" == "$(tr '[:lower:]' '[:upper:]' <<< "$2")" ]]; then
+  case "$reason" in
+    analysis-did-not-hold) why "No fix ticket: the analysis did not hold" "No fix ticket: the analysis did not hold - $no_ticket_why";;
+    create-failed) why "No fix ticket: ticket:create failed" "No fix ticket: ticket:create failed - $no_ticket_why";;
+    *) why "No fix ticket was raised" "No fix ticket was raised for $fix's block (the analysis did not hold, or creating it failed); it does not resume as if fixed.";;
+  esac
+  exit 3
+fi
 home="$(key_project ticket:wait-on "$fix")"
 [[ -n "$home" ]] || { why "The fix ticket cannot be waited on" "$fix names no project, so $2 cannot wait on it."; exit 1; }
 waits="$(jq -nc --arg p "$home" --arg t "$fix" '{ project: $p, ticket: $t }')"

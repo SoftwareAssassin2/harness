@@ -118,6 +118,61 @@ test('ticket:wait-on: no fix ticket raised (Blocked hands it the blocked ticket 
   assert.equal(f.variation('A')['waits-on'], undefined);
 });
 
+// ASS-316 AC3: wait-on takes the reason and why grouped-blocked's
+// create-fix-ticket ended with, as optional 5th/6th arguments, and names them
+// in the own-key refusal's ai-feedback instead of the generic text; "-" (the
+// runValues placeholder when the run has none) or an unknown reason keeps the
+// current generic text; the 4-arg form (every other caller, ASS-107 AC7
+// above) is unchanged.
+test('ASS-316 AC3: ticket:wait-on names why no fix ticket was raised, given the reason and why as its 5th and 6th arguments', async () => {
+  const f = waiting();
+  // A usage error on the current 4-arg-only script prints no JSON on stdout: parsed leniently, so a still-unimplemented
+  // 6-arg call fails these assertions cleanly instead of throwing out of JSON.parse.
+  const refused = async (...args) => {
+    const e = await f.agent('ticket:wait-on', ...args).then(() => assert.fail('accepted'), e => e);
+    let out; try { out = JSON.parse(e.stdout); } catch { out = {}; }
+    return [e.code, out];
+  };
+
+  const [failCode, failed] = await refused('p', 'ABC-3', 'A', 'abc-3', 'create-failed', 'ticket:create: the ticket store is locked by another run');
+  assert.equal(failCode, 3);
+  assert.equal(failed['ai-feedback-short'], 'No fix ticket: ticket:create failed');
+  assert.match(failed['ai-feedback-long'], /ticket:create: the ticket store is locked by another run/);
+  assert.equal(f.variation('A')['waits-on'], undefined, 'nothing written on refusal');
+
+  const [, notHeld] = await refused('p', 'ABC-3', 'A', 'abc-3', 'analysis-did-not-hold', 'the failing job passes on the latest master: nothing to raise');
+  assert.equal(notHeld['ai-feedback-short'], 'No fix ticket: the analysis did not hold');
+  assert.match(notHeld['ai-feedback-long'], /the failing job passes on the latest master: nothing to raise/);
+
+  for (const reason of ['-', 'something-unknown']) {
+    const [code, generic] = await refused('p', 'ABC-3', 'A', 'abc-3', reason, '-');
+    assert.equal(code, 3, reason);
+    assert.equal(generic['ai-feedback-short'], 'No fix ticket was raised', reason);
+  }
+
+  // A why with spaces, quotes and a $ survives into ai-feedback-long as given (jq --arg), one argv word (fillArgs).
+  const tricky = 'ticket:create: "the lock" is busy ($TMPDIR/ticket-body.md)';
+  const [, withTricky] = await refused('p', 'ABC-3', 'A', 'abc-3', 'create-failed', tricky);
+  assert.ok((withTricky['ai-feedback-long'] ?? '').includes(tricky), withTricky['ai-feedback-long']);
+
+  // A real fix key still records waits-on as before — the reason arguments are ignored on that path. The current
+  // 4-arg-only script rejects a 6-arg call (usage error), so this is parsed as leniently as `refused` above.
+  const succeeds = async (...args) => {
+    const r = await f.agent('ticket:wait-on', ...args).then(r => r, e => e);
+    let out; try { out = JSON.parse(r.stdout); } catch { out = {}; }
+    return out;
+  };
+  assert.deepEqual(await succeeds('p', 'ABC-3', 'A', 'Q-1', 'create-failed', 'ignored'), { ticket: 'ABC-3', variation: 'A', 'waits-on': { project: 'q', ticket: 'Q-1' } });
+  assert.deepEqual(f.variation('A')['waits-on'], { project: 'q', ticket: 'Q-1' });
+  // - as the fix key still removes waits-on, reason arguments ignored.
+  assert.deepEqual(await succeeds('p', 'ABC-3', 'A', '-', 'create-failed', 'ignored'), { ticket: 'ABC-3', variation: 'A', 'waits-on': null });
+
+  // 5 arguments: a usage error, nothing written.
+  const bad = await f.agent('ticket:wait-on', 'p', 'ABC-3', 'A', 'abc-3', 'create-failed').then(() => assert.fail('accepted'), e => e);
+  assert.equal(bad.code, 1);
+  assert.equal(f.variation('A')['waits-on'], undefined);
+});
+
 test('ticket:fix-landed: a variation waiting on nothing exits 4, why printed as ai-feedback', async () => {
   const f = waiting();
   const e = await f.agent('ticket:fix-landed', 'p', 'ABC-3', 'A').then(() => assert.fail('landed'), e => e);
