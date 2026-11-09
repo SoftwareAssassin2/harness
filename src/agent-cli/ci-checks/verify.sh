@@ -31,7 +31,9 @@ set -euo pipefail
 # HEAD and origin/<base> (the merge request on the branch checked out there, else
 # its first; base origin's default branch when none is recorded yet). A check
 # whose changes globs match none of the files changed since CI_CHECK_BASE
-# (committed, not committed, or new and untracked) is skipped.
+# (committed, not committed, or new and untracked) is skipped. An entry of the
+# merge-request array naming no repository — an id-less one ticket:sync found
+# on the forge — is in no repository, and is passed over (ASS-321).
 #
 # A check that fails is compared with its run on master, as
 # automated-tests:verify-success's are (ASS-99): the repository switched to
@@ -96,7 +98,7 @@ problem="$(jq -r --argjson repos "$(jq -c '[.repositories[]?.url | sub("\\.git$"
     end) // empty' "$declared")"
 [[ -z "$problem" ]] || fail "$declared: $problem"
 
-# The repositories the ticket changes that declare checks: each with its merge requests not Closed.
+# The repositories the ticket changes that declare checks: each with its merge requests not Closed; an entry naming no repository (ASS-321) is passed over.
 plan="$(variation_field '.["merge-request"] // []' "$command" "$project" "$key" "$variation")" || exit 3
 mapfile -t repos < <(jq -r --slurpfile d "$declared" '
   [.[] | select(.status != "Closed" and .repository != null) | .repository | sub("\\.git$"; "") | split("/") | last] | unique[]

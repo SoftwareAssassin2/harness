@@ -14,7 +14,9 @@ set -euo pipefail
 # and neither HEAD nor its local default branch has a commit origin's lacks.
 # Otherwise it is left as it is: changes not committed, commits of its own,
 # a fetch that failed. The ticket's own repositories are never touched, not
-# even fetched. Prints "<repository>: <what happened>" for each, and exits 0
+# even fetched; an entry of the plan naming no repository — an id-less one
+# ticket:sync found on the forge — is in none, and is passed over (ASS-321).
+# Prints "<repository>: <what happened>" for each, and exits 0
 # whatever any one repository did; fails (1) only with no running VM, or
 # when the VM cannot be reached.
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../vm.bash"

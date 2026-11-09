@@ -11,7 +11,9 @@ export const EACH = 'each';
 export const repositoryName = url => url.replace(/\.git$/, '').split('/').pop();
 
 // touchedRepositories(variation) — the names of the repositories the
-// variation's planned merge requests are in, each once, in plan order.
+// variation's planned merge requests are in, each once, in plan order; the
+// id-less entries of the array, which name no repository (ASS-321), are
+// passed over.
 export const touchedRepositories = variation => [...new Set((variation?.['merge-request'] ?? []).filter(m => m?.repository != null).map(m => repositoryName(m.repository)))];
 
 // visitOf(place) — one visit of a step, whose per-repository runs are counted

@@ -43,6 +43,9 @@ fetched and checked out on origin's default branch — a dirty one, one with
 commits origin's lacks, or one that cannot be fetched left as it is, a line
 saying so — so code compared with another repository's master (a parity
 check, say) is compared with CI's. The ticket's own repositories are untouched.
+A merge request with no repository — an id-less one `ticket:sync` found on the
+forge, matching no planned branch — is in none, and is passed over, here and
+by CI Checks below (ASS-321).
 Only a VM not running fails it: Blocked. Test's Rebuild enters Build at
 Generate Solution, past the first refresh; the second still runs.
 
