@@ -702,7 +702,9 @@ test('code:update-workspace fast-forwards the workspace to the default branch fr
   assert.deepEqual([git(f.ws, 'rev-parse', 'HEAD'), readFileSync(join(f.ws, 'README.md'), 'utf8')], [before, 'live data\n']);   // nothing changed
   git(f.ws, 'checkout', '--', 'README.md');
   git(f.ws, 'checkout', '-q', '-b', 'side');
+  const onSide = git(f.ws, 'rev-parse', 'HEAD');
   await fails(f.agent('code:update-workspace', 'p'), /on side, not master/);
+  assert.equal(git(f.ws, 'rev-parse', 'HEAD'), onSide);                                        // the branch guard runs before any fetch: HEAD unmoved
 });
 
 test('code:update-workspace never drops a local commit: with commits of its own not on origin, once origin has moved on it cannot fast-forward and is refused, the commit and its file kept', async () => {
@@ -719,6 +721,65 @@ test('code:update-workspace never drops a local commit: with commits of its own 
   const mine = git(f.ws, 'rev-parse', 'HEAD');
   await fails(f.agent('code:update-workspace', 'p'), /could not fast-forward/);
   assert.deepEqual([git(f.ws, 'rev-parse', 'HEAD'), readFileSync(join(f.ws, 'local.js'), 'utf8'), git(f.ws, 'status', '--porcelain')], [mine, 'mine\n', '']);
+});
+
+test('ASS-319 AC1: code:update-workspace survives a concurrent plain `git fetch origin` in the same workspace — 40 rounds, each exits 0 and lands that round\'s pushed SHA, so the shared-ref race no longer sends a merged ticket to Blocked', { timeout: 300_000 }, async () => {
+  const f = workspace();
+  git(f.ws, 'remote', 'set-url', 'origin', f.origin);                                         // fetchable here (as the two tests above)
+  const realGit = execFileSync('bash', ['-c', 'command -v git'], { encoding: 'utf8' }).trim();
+  // A `git` put first on the CLI's PATH: on the workspace fetch/pull the command
+  // is about to run, it first launches a plain `git fetch origin` in the
+  // background, so the CLI's own fetch and the "other ticket's" plain fetch hit
+  // the shared refs at the same instant (a naive start-both never races — the
+  // CLI's startup outlasts a plain fetch). Same alignment as the ASS-318 race
+  // test (merge-in-turn.test.js). The real git is called by absolute path, so
+  // the wrapper does not recurse; only fetch/pull triggers the background fetch.
+  const gitbin = join(f.tmp, 'gitbin');
+  mkdirSync(gitbin);
+  writeFileSync(join(gitbin, 'git'), `#!/usr/bin/env bash
+real=${JSON.stringify(realGit)}
+ws=${JSON.stringify(f.ws)}
+sub=
+for a in "$@"; do
+  if [ -n "\${skip:-}" ]; then skip=; continue; fi
+  case "$a" in
+    -C|-c|--git-dir|--work-tree|--namespace|--exec-path) skip=1 ;;
+    --*=*|-*) : ;;
+    *) sub="$a"; break ;;
+  esac
+done
+if [ "$sub" = fetch ] || [ "$sub" = pull ]; then "$real" -C "$ws" fetch --quiet origin >/dev/null 2>&1 & bg=$!; fi
+"$real" "$@"; code=$?
+[ -n "\${bg:-}" ] && wait "$bg" 2>/dev/null
+exit $code
+`);
+  chmodSync(join(gitbin, 'git'), 0o755);
+  const env = { ...f.env, PATH: `${gitbin}:${f.env.PATH}` };
+  const seed = join(f.tmp, 'seed');                                                            // a second clone that moves master every round
+  execFileSync('git', ['clone', '--quiet', f.origin, seed], { stdio: 'ignore' });
+  git(seed, 'config', 'user.email', 't@example.com'); git(seed, 'config', 'user.name', 'T');
+  const update = async () => {
+    try { await run(AGENT, ['code:update-workspace', 'p'], { env }); return { code: 0, err: '' }; }
+    catch (e) { return { code: e.code ?? 1, err: String(e.stderr || '').trim() }; }
+  };
+  const failures = [];
+  for (let round = 1; round <= 40; round++) {                                                  // a real ref move every round: a no-op fetch cannot race
+    writeFileSync(join(seed, 'f.txt'), `round ${round}\n`);
+    git(seed, 'add', '.'); git(seed, 'commit', '-q', '-m', `round ${round}`); git(seed, 'push', '-q', 'origin', 'master');
+    const pushed = git(seed, 'rev-parse', 'HEAD');
+    const r = await update();
+    if (r.code !== 0) { failures.push(`round ${round}: exit ${r.code}: ${r.err}`); continue; }
+    const head = git(f.ws, 'rev-parse', 'HEAD');
+    if (head !== pushed) failures.push(`round ${round}: HEAD ${head} !== pushed ${pushed}`);
+  }
+  assert.deepEqual(failures, [], `update-workspace failed in ${failures.length} of 40 rounds`);
+});
+
+test('code:update-workspace exits 1, changing nothing, when it cannot fetch the default branch from origin (origin unreachable)', async () => {
+  const f = workspace();                                                                       // origin left at the fixture's git@gitlab.com: url; the ssh stub makes it unreachable
+  const before = git(f.ws, 'rev-parse', 'HEAD');
+  await fails(f.agent('code:update-workspace', 'p'), /code:update-workspace:/);                // its own prefixed message, exit 1 (the new fetch-failure branch the fix adds)
+  assert.equal(git(f.ws, 'rev-parse', 'HEAD'), before);                                        // HEAD unmoved
 });
 
 test('on a GitHub origin, merge-request:check reads the pull request with gh — changes requested, a failed check, conflicts or behind its base — and :ensure-auto-merge sets gh\'s auto-merge when it is off', async () => {
