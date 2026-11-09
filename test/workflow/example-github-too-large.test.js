@@ -1,5 +1,5 @@
-// ASS-264: the family's backlog refinement on an estimate above its scale.
-// family's story-point scale is 1, 2, 3, 5 (off-board points the same), but
+// ASS-264: the example GitHub project's backlog refinement on an estimate above its scale.
+// example GitHub project's story-point scale is 1, 2, 3, 5 (off-board points the same), but
 // the shared estimate prompt may answer 8 or 13: those went back to Groom,
 // re-groomed and re-estimated with no bound. Now an 8 or a 13 is noted on the
 // ticket (ticket:note-too-large, at Note the Estimate) and rests at Too Large
@@ -21,27 +21,27 @@ import { engineDir, EXAMPLE_ENGINES } from '../support/engine-walk.js';
 
 const ROOT = join(import.meta.dirname, '..', '..');
 const engine = name => JSON.parse(readFileSync(join(engineDir(name), 'state-engine.json'), 'utf8'));
-const e = engine('family-backlog-refinement');
+const e = engine('example-github-backlog-refinement');
 const accepted = { questions: () => [{ status: 'Answer Accepted' }] };
 const next = (id, facts, changes) => nextState(stepOf(e, id), e, { ...accepted, ...facts }, changes);
 const to = (id, facts, changes) => next(id, facts, changes)?.to;
 const estimated = (output, changes) => next('estimate', { turnComplete: true, structuredOutput: output }, changes);
 const decided = decision => ({ humanReview: { state: 'too-large', decision } });
 
-// walk(moves) — a family ticket's history: each [from, to] a change, as ticket:change-state appends it.
-const walk = moves => moves.map(([from, toState], i) => ({ 'state-engine': 'family-backlog-refinement', 'from-state': from, 'to-state': toState, timestamp: `2026-10-30T10:${String(i).padStart(2, '0')}:00Z` }));
+// walk(moves) — an example GitHub ticket's history: each [from, to] a change, as ticket:change-state appends it.
+const walk = moves => moves.map(([from, toState], i) => ({ 'state-engine': 'example-github-backlog-refinement', 'from-state': from, 'to-state': toState, timestamp: `2026-10-30T10:${String(i).padStart(2, '0')}:00Z` }));
 // One pass from Groom to Estimate, and one back to Groom from Estimate's catch-all.
 const toEstimate = [['groom', 'check-answers'], ['check-answers', 'find-dependencies'], ['find-dependencies', 'estimate']];
 const regroomed = [...toEstimate, ['estimate', 'groom']];
 const upTo = [['groom', 'check-answers'], ['check-answers', 'find-dependencies']];
 
-test('ASS-264 AC1: family\'s refinement has Note the Estimate and Too Large between Estimate and Ready, and validates', () => {
-  // ASS-265: Too Large's Split, its own steps between Too Large and Ready, Superseded last (family-split.test.js).
+test('ASS-264 AC1: example GitHub project\'s refinement has Note the Estimate and Too Large between Estimate and Ready, and validates', () => {
+  // ASS-265: Too Large's Split, its own steps between Too Large and Ready, Superseded last (example-github-split.test.js).
   assert.deepEqual(e.steps.toSorted((a, b) => a.sequence - b.sequence).map(s => s.id), [
     'groom', 'awaiting-answers', 'check-answers', 'find-dependencies', 'estimate', 'note-estimate-8', 'note-estimate-13', 'too-large',
     'split', 'check-split-proposal', 'awaiting-split-decision', 'create-split-tickets', 'ready', 'superseded',
   ]);
-  assert.deepEqual(validateStateEngine(e, ROOT, 'family-backlog-refinement', EXAMPLE_ENGINES), []);
+  assert.deepEqual(validateStateEngine(e, ROOT, 'example-github-backlog-refinement', EXAMPLE_ENGINES), []);
   assert.ok(isHumanStep(e, 'too-large'));
   assert.equal(stepOf(e, 'too-large').name, 'Too Large');
   assert.ok(isDoneStep(e, 'ready'));
@@ -63,7 +63,7 @@ test('ASS-264 AC1: an estimate of 8 or 13 is noted and goes to Too Large, never 
 test('ASS-264 AC2: Too Large rests for the operator: Accept goes to Ready, Return asks for a note and goes to Groom; a question not accepted sends it to Groom', () => {
   const gate = stepOf(e, 'too-large');
   assert.deepEqual(gate['exit-events'].filter(x => x.condition['human-review']).map(x => [x.condition['human-review'], x['move-to-state'], x['asks-for-reason'] === true]), [
-    ['Accept', 'ready', false], ['Return', 'groom', true], ['Split', 'split', false],   // ASS-265: Split, family-split.test.js
+    ['Accept', 'ready', false], ['Return', 'groom', true], ['Split', 'split', false],   // ASS-265: Split, example-github-split.test.js
   ]);
   assert.equal(to('too-large', {}), undefined);                                         // rests for the operator
   assert.equal(to('too-large', decided('Accept')), 'ready');
@@ -98,7 +98,7 @@ test('ASS-264 AC2, AC3: the operator\'s choice at Too Large restarts the count, 
   assert.equal(after(regroomed, regroomed, regroomed), 'too-large');
 });
 
-test('ASS-264 AC5: a family ticket walked through 8, Return, 13 and Accept ends at Ready, never grooming but at the operator\'s word', () => {
+test('ASS-264 AC5: an example GitHub ticket walked through 8, Return, 13 and Accept ends at Ready, never grooming but at the operator\'s word', () => {
   const steps = [];
   let changes = [];
   const move = (from, facts) => { const target = to(from, facts, changes); changes = [...changes, ...walk([[from, target]])]; steps.push(target); return target; };

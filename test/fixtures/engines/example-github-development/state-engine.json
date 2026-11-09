@@ -608,14 +608,14 @@
         {
             "id": "release",
             "name": "Release",
-            "description": "Release: family-release — Merge Pull Request, then done: v2-release with no workspace update and no restart, the family project's merges reaching nothing that runs here",
+            "description": "Release: example-github-release — Merge Pull Request, then done: v2-release with no workspace update and no restart, the project's merges reaching nothing that runs here",
             "paired-ticket-system-status": "In Progress",
             "max-visits": 3,
             "on-max-visits": "blocked",
             "return-to-state": "release",
             "action": {
                 "type": "state-engine",
-                "engine": "family-release"
+                "engine": "example-github-release"
             },
             "exit-events": [
                 {
@@ -675,7 +675,7 @@
             "description": "Groom a backlog ticket until it is ready to build",
             "action": {
                 "type": "state-engine",
-                "engine": "family-backlog-refinement"
+                "engine": "example-github-backlog-refinement"
             },
             "exit-events": [
                 {

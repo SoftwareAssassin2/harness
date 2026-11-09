@@ -257,13 +257,13 @@ test('ready-tickets-join-sprint-at must be a string naming an existing step id, 
   assertError({ ...base(), 'ready-tickets-join-sprint-at': '' }, /ready-tickets-join-sprint-at/);
 });
 
-test('ready-tickets-join-sprint-at is only on engines/harness-development, its grouped copy (ASS-68), harness-development-v2 (ASS-110) and its family copy, naming "committed" (ASS-44)', () => {
+test('ready-tickets-join-sprint-at is only on engines/harness-development, its grouped copy (ASS-68), harness-development-v2 (ASS-110) and its example GitHub copy, naming "committed" (ASS-44)', () => {
   const carriers = {};
   for (const name of engineNames().filter(d => existsSync(join(engineDir(d), 'state-engine.json')))) {
     const value = JSON.parse(readFileSync(join(engineDir(name), 'state-engine.json'), 'utf8'))['ready-tickets-join-sprint-at'];
     if (value !== undefined) carriers[name] = value;
   }
-  assert.deepEqual(carriers, { 'harness-development': 'committed', 'harness-development-grouped': 'committed', 'harness-development-v2': 'committed', 'family-development': 'committed' });
+  assert.deepEqual(carriers, { 'harness-development': 'committed', 'harness-development-grouped': 'committed', 'harness-development-v2': 'committed', 'example-github-development': 'committed' });
 });
 
 // Every real engine passing: test/workflow/engines-work.test.js (ASS-258).

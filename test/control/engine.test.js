@@ -308,7 +308,7 @@ test('sinceResolution: the changes from the last move out of a done step — a t
   assert.deepEqual(sinceResolution(engine, [...run, reopened, change('plan', 'blocked-for-human'), resolved]), [resolved]);
 });
 
-// ASS-264: a step with restarts-visit-count (family's Too Large) — a move out of it counts afresh, as one out of Done does.
+// ASS-264: a step with restarts-visit-count (example GitHub project's Too Large) — a move out of it counts afresh, as one out of Done does.
 test('sinceResolution: the changes from the last move out of a step with restarts-visit-count (ASS-264)', () => {
   const restarting = { steps: [...engine.steps, { id: 'too-large', sequence: 9, action: { type: 'human' }, 'restarts-visit-count': true }] };
   const run = [change('committed', 'plan'), change('plan', 'build'), change('build', 'too-large')];

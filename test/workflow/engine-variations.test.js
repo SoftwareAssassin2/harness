@@ -18,20 +18,20 @@ const on = (name, answers) => Object.fromEntries(Object.entries(answers).map(([i
 // What a list of "<engine>/<step>" runs: any step's action naming `text` (a prompt, command or engine).
 const runs = (trail, text) => trail.some(p => { const [name, id] = p.split('/'); return JSON.stringify(stepOf(engines[name], id).action).includes(text); });
 
-// Backlog refinement without Split: example's and the family's. ASS-265: the family's splits only at the
-// operator's word — Split at Too Large (family-split.test.js) — so never on its way there.
+// Backlog refinement without Split: example's and the example GitHub project's. ASS-265: the example GitHub project's splits only at the
+// operator's word — Split at Too Large (example-github-split.test.js) — so never on its way there.
 const NO_SPLIT = ['split-ticket', 'ticket:propose-split', 'ticket:apply-split', 'ticket:keep-whole', 'ticket:kept-whole', 'estimate-with-split'];
-const REFINED_BY = { 'example-development': 'example-backlog-refinement', 'example-development-grouped': 'example-backlog-refinement', 'family-development': 'family-backlog-refinement' };
-const SPLIT_AT_OPERATOR = { 'family-backlog-refinement': ['split', 'check-split-proposal', 'awaiting-split-decision', 'create-split-tickets', 'superseded'] };
+const REFINED_BY = { 'example-development': 'example-backlog-refinement', 'example-development-grouped': 'example-backlog-refinement', 'example-github-development': 'example-github-backlog-refinement' };
+const SPLIT_AT_OPERATOR = { 'example-github-backlog-refinement': ['split', 'check-split-proposal', 'awaiting-split-decision', 'create-split-tickets', 'superseded'] };
 
-test('example\'s and the family\'s engines refine with their own refinement engines, which never split a ticket of their own accord', () => {
+test('example\'s and the example GitHub project\'s engines refine with their own refinement engines, which never split a ticket of their own accord', () => {
   for (const [top, refinement] of Object.entries(REFINED_BY)) {
     assert.ok(engines[top]['backlog-refinement-steps'].some(s => s.action.engine === refinement), top);
     const all = engines[refinement].steps.filter(s => !(SPLIT_AT_OPERATOR[refinement] ?? []).includes(s.id)).map(s => `${refinement}/${s.id}`);
     for (const text of NO_SPLIT) assert.ok(!runs(all, text), `${refinement} runs ${text}`);
   }
   for (const text of ['ticket:keep-whole', 'ticket:kept-whole', 'estimate-with-split'])
-    assert.ok(!runs(engines['family-backlog-refinement'].steps.map(s => `family-backlog-refinement/${s.id}`), text), text);
+    assert.ok(!runs(engines['example-github-backlog-refinement'].steps.map(s => `example-github-backlog-refinement/${s.id}`), text), text);
 });
 
 test('example\'s refinement: groomed ready and estimated — however large, 13 points too — it waits for the operator, who accepts it to Ready or rejects it to be groomed again; a ticket with points is not estimated', () => {
@@ -54,8 +54,8 @@ test('example\'s refinement: groomed ready and estimated — however large, 13 p
   assert.ok(!runs(pointed.trail, 'prompt":"estimate"'), 'a ticket with points is not estimated');
 });
 
-test('the family\'s refinement: groomed ready, its dependencies found and estimated on its scale (1, 2, 3, 5 or none), it goes straight to Ready — no operator, no Split', () => {
-  const R = 'family-backlog-refinement';
+test('the example GitHub project\'s refinement: groomed ready, its dependencies found and estimated on its scale (1, 2, 3, 5 or none), it goes straight to Ready — no operator, no Split', () => {
+  const R = 'example-github-backlog-refinement';
   for (const points of [1, 2, 3, 5, null]) {
     const r = walk(engines, R, { answers: on(R, { groom: { structuredOutput: { 'is-ready': true } }, estimate: { structuredOutput: { points, summary: 's' } } }) });
     assert.deepEqual([r.end, r.rests], ['ready', false], String(points));
@@ -68,10 +68,10 @@ test('the family\'s refinement: groomed ready, its dependencies found and estima
   assert.ok(inOrder(asked.trail, [`${R}/groom`, `${R}/awaiting-answers`, `${R}/groom`, `${R}/ready`]), asked.trail.join(' '));
 });
 
-// ASS-264: above the family's scale, 8 or 13, the estimate is noted and the ticket rests at Too Large for the
+// ASS-264: above the example GitHub project's scale, 8 or 13, the estimate is noted and the ticket rests at Too Large for the
 // operator: Accept to Ready, Return to be groomed again; an estimate that never matches is bounded there too.
-test('the family\'s refinement: estimated 8 or 13, it is noted and waits for the operator, who accepts it to Ready or returns it to be groomed again; Estimate is bounded', () => {
-  const R = 'family-backlog-refinement';
+test('the example GitHub project\'s refinement: estimated 8 or 13, it is noted and waits for the operator, who accepts it to Ready or returns it to be groomed again; Estimate is bounded', () => {
+  const R = 'example-github-backlog-refinement';
   const refine = answers => walk(engines, R, { answers: on(R, { groom: { structuredOutput: { 'is-ready': true } }, ...answers }) });
   for (const points of [8, 13]) {
     const r = refine({ estimate: { structuredOutput: { points, summary: 's' } } });
@@ -129,8 +129,8 @@ test('the flat engines send a rejected review back to be rebuilt and still reach
   }
 });
 
-test('family-development: Backlog to Done through every group — its Release merging the family\'s pull request and ending there, no harness update or restart', () => {
-  const name = 'family-development';
+test('example-github-development: Backlog to Done through every group — its Release merging the example GitHub project\'s pull request and ending there, no harness update or restart', () => {
+  const name = 'example-github-development';
   const r = walk(engines, name, { from: 'backlog', answers: { 'v2-local-testing/await-golden-build': { exitCode: 4 } } });
   reachesDone(name, r);
   assert.ok(inOrder(r.trail, ['backlog', 'committed', 'setup', 'plan', 'build', 'test', 'document', 'review', 'release', 'done'].map(id => `${name}/${id}`)), r.trail.join(' '));

@@ -15,7 +15,10 @@ import { firstStepId } from '../../src/control/moves.js';
 export const ROOT = join(import.meta.dirname, '..', '..');
 // The example project's own engines (ASS-277): a GitLab project's flat
 // example-development, its grouped example-development-grouped and
-// example-backlog-refinement, and grouped-release-example, its Release — kept
+// example-backlog-refinement, and grouped-release-example, its Release; and an
+// off-board GitHub project's example-github-development (harness-development-v2
+// without the restart), example-github-release and
+// example-github-backlog-refinement — kept
 // as a project keeps its own in data/projects/<project>/engines (ASS-276),
 // and read before engines/ for that project's work, as control reads them.
 export const EXAMPLE_ENGINES = join(import.meta.dirname, '..', 'fixtures', 'engines');

@@ -361,10 +361,10 @@ test('ASS-252 AC3: tick: Reject recorded at Awaiting Split Decision sends the ti
   });
 });
 
-// ASS-265: the family's Too Large rests until the operator chooses; Split there puts Split's agent on the ticket.
-test('ASS-265 AC2, AC4: tick: a family ticket at Too Large rests, no agent on it, until the operator\'s Split sends it to Split, its agent on it', async () => {
-  const FAMILY = 'family-backlog-refinement';
-  const f = refining([at('ABC-50', 'too-large', { 'last-refined': '2026-10-13T11:00:00Z' }, FAMILY)], { engine: FAMILY, harness: { 'max-tickets-in-grooming': 5 } });
+// ASS-265: the example GitHub project's Too Large rests until the operator chooses; Split there puts Split's agent on the ticket.
+test('ASS-265 AC2, AC4: tick: an example GitHub ticket at Too Large rests, no agent on it, until the operator\'s Split sends it to Split, its agent on it', async () => {
+  const GITHUB = 'example-github-backlog-refinement';
+  const f = refining([at('ABC-50', 'too-large', { 'last-refined': '2026-10-13T11:00:00Z' }, GITHUB)], { engine: GITHUB, harness: { 'max-tickets-in-grooming': 5 } });
   f.ctx.now = () => new Date('2026-10-13T12:00:00Z');
   await holding(f, async () => {
     await tick(f.ctx);

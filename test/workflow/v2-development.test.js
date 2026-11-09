@@ -1125,11 +1125,11 @@ test('ASS-197: Merge Pull Request merges in its turn — merge-request:merge-in-
 // Every engine a top-level engine runs, itself included.
 const reach = (name, seen = new Set()) => { if (seen.has(name)) return seen; seen.add(name); for (const s of engines[name].steps) if (s.action.type === 'state-engine') reach(s.action.engine, seen); return seen; };
 
-test('AC4: example is untouched — example-development and example-development-grouped run no v2 engine, and the v2 stubs are harness-development-v2\'s and its family copy\'s alone', () => {
+test('AC4: example is untouched — example-development and example-development-grouped run no v2 engine, and the v2 stubs are harness-development-v2\'s and its example GitHub copy\'s alone', () => {
   const stubs = GROUPS.map(g => `v2-${g}`);
   for (const name of ['example-development', 'example-development-grouped']) assert.deepEqual([...reach(name)].filter(n => n.includes('v2')), [], name);
   const users = Object.keys(engines).filter(n => engines[n].steps.some(s => stubs.includes(s.action.engine)));
-  assert.deepEqual(users, ['family-development', TOP]);
+  assert.deepEqual(users, ['example-github-development', TOP]);
 });
 
 test('AC1: project:set-execution-engine switches a harness project onto harness-development-v2 and back to harness-development — on a copy, never projects/harness', async () => {
@@ -1177,7 +1177,7 @@ test('ASS-81: in harness-development-v2, Generate Solution and every step after 
 });
 
 // ASS-149 AC1: the health check v2 runs is check-health plus the golden-image check, first; the flat engines keep check-health.
-test('ASS-149 AC1: check-health-v2 is check-health with Check Golden Images first — vm:raise-golden-rebuilds on the host, either exit going on to Check Harness — and only harness-development-v2 and its family copy run it', () => {
+test('ASS-149 AC1: check-health-v2 is check-health with Check Golden Images first — vm:raise-golden-rebuilds on the host, either exit going on to Check Harness — and only harness-development-v2 and its example GitHub copy run it', () => {
   const v2 = engines['check-health-v2'], flat = engines['check-health'];
   assert.equal(firstStepId(v2), 'check-golden-images');
   assert.deepEqual(working(stepOf(v2, 'check-golden-images')), { id: 'check-golden-images',
@@ -1187,7 +1187,7 @@ test('ASS-149 AC1: check-health-v2 is check-health with Check Golden Images firs
   assert.ok(inOrder(v2.steps.toSorted((a, b) => a.sequence - b.sequence).map(s => s.id), ['check-golden-images', 'check-harness']));
   assert.deepEqual(validateStateEngine(v2, ROOT, 'check-health-v2', EXAMPLE_ENGINES), []);
   const runs = name => JSON.stringify(engines[name]).includes('"engine":"check-health-v2"');
-  assert.deepEqual(Object.keys(engines).filter(runs), ['family-development', TOP]);
+  assert.deepEqual(Object.keys(engines).filter(runs), ['example-github-development', TOP]);
   for (const name of ['harness-development', 'harness-development-grouped']) assert.equal(engines[name]['check-health-steps'][0].action.engine, 'check-health', name);
 });
 

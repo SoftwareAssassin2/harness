@@ -299,19 +299,19 @@ test('an Estimate run on a example ticket: the one estimate prompt reads the har
   assert.equal(await exitOf(f.agent('ticket:has-points', 'p', 'ABC-50')), 0);
 });
 
-// ASS-264: the family's refinement, on an estimate above its scale (8 or 13), notes it on the ticket
+// ASS-264: the example GitHub project's refinement, on an estimate above its scale (8 or 13), notes it on the ticket
 // (ticket:note-too-large, at Note the Estimate) and rests at Too Large for the operator: Accept to Ready,
 // points none; Return, with a note, to Groom — the note the groomer reads as the rejection-reason.
-function inFamily(state = 'too-large', extra = {}) {
+function inGithub(state = 'too-large', extra = {}) {
   const f = inBacklog(state, extra);
-  mkdirSync(join(f.dir, 'engines', 'family-backlog-refinement'), { recursive: true });
-  copyFileSync(join(engineDir('family-backlog-refinement'), 'state-engine.json'), join(f.dir, 'engines', 'family-backlog-refinement', 'state-engine.json'));
-  edit(f.file, b => { b.tickets[0].variations[0]['harness-status']['state-engine'] = 'family-backlog-refinement'; });
+  mkdirSync(join(f.dir, 'engines', 'example-github-backlog-refinement'), { recursive: true });
+  copyFileSync(join(engineDir('example-github-backlog-refinement'), 'state-engine.json'), join(f.dir, 'engines', 'example-github-backlog-refinement', 'state-engine.json'));
+  edit(f.file, b => { b.tickets[0].variations[0]['harness-status']['state-engine'] = 'example-github-backlog-refinement'; });
   return f;
 }
 
 test('ASS-264 AC2: ticket:note-too-large keeps the estimate above the scale on the ticket and leaves it without points; a later estimate on the scale clears the note', async () => {
-  const f = inFamily('note-estimate-8', { points: 3, 'points-set-at': '2026-10-29T00:00:00Z' });
+  const f = inGithub('note-estimate-8', { points: 3, 'points-set-at': '2026-10-29T00:00:00Z' });
   const a = withAcli(f);
   const { stdout } = await run(AGENT, ['ticket:note-too-large', 'p', 'abc-50', '8'], { env: a.env });
   assert.deepEqual(JSON.parse(stdout), { ticket: 'ABC-50', 'too-large-estimate': 8 });
@@ -329,7 +329,7 @@ test('ASS-264 AC2: ticket:note-too-large keeps the estimate above the scale on t
 });
 
 test('ASS-264 AC2: ticket:note-too-large on an off-board ticket takes its points off the ticket\'s file too (none)', async () => {
-  const f = inFamily('note-estimate-13');
+  const f = inGithub('note-estimate-13');
   const a = withAcli(f);
   const offBoard = mkdtempSync(join(tmpdir(), 'off-board-'));
   const env = { ...a.env, OFF_BOARD_DIR: offBoard };
@@ -345,11 +345,11 @@ test('ASS-264 AC2: ticket:note-too-large on an off-board ticket takes its points
 });
 
 test('ASS-264 AC2: at Too Large, Accept moves the ticket to Ready with no points; Return keeps the operator\'s note as the rejection-reason the next groom reads and moves it to Groom', async () => {
-  const f = inFamily('too-large');
+  const f = inGithub('too-large');
   await f.agent('ticket:human-review', 'p', 'ABC-50', 'A', 'too-large', 'Return', 'groom', 'Cut it to AC1 and AC2; AC3 is its own ticket');
   const v = f.variation();
   assert.deepEqual([v['harness-status'], v['human-review'].decision, v['rejection-reason']],
-    [{ state: 'groom', 'state-engine': 'family-backlog-refinement' }, 'Return', 'Cut it to AC1 and AC2; AC3 is its own ticket']);
+    [{ state: 'groom', 'state-engine': 'example-github-backlog-refinement' }, 'Return', 'Cut it to AC1 and AC2; AC3 is its own ticket']);
   assert.deepEqual([v['state-changes'].at(-1).cause, v['state-changes'].at(-1).reason], ['operator', 'Cut it to AC1 and AC2; AC3 is its own ticket']);
   await f.agent('ticket:change-state', 'p', 'ABC-50', 'A', 'groom', 'too-large');
   await f.agent('ticket:human-review', 'p', 'ABC-50', 'A', 'too-large', 'Accept', 'ready');

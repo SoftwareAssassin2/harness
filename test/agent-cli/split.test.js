@@ -139,13 +139,13 @@ test('ASS-252 AC3: ticket:kept-whole exits 0 once the operator kept the ticket w
   await fails(f.agent(['ticket:kept-whole', 'h', 'HD-77']), /no ticket HD-77 in h/);
 });
 
-// ASS-265: the family's Split, at the operator's choice at Too Large, runs the
+// ASS-265: the example GitHub project's Split, at the operator's choice at Too Large, runs the
 // same prompt and the same ticket:propose-split; its Check the Proposal asks
 // ticket:split-proposed whether this visit to Split recorded one — a proposal
 // made since the ticket's last move to Split — so one Split did not write, or
 // one left from an earlier Split the operator rejected, sends the ticket back
 // to Too Large instead of to a gate showing nothing, or something stale.
-const toSplit = timestamp => ({ 'state-engine': 'family-backlog-refinement', 'from-state': 'too-large', 'to-state': 'split', timestamp, 'agent-dispatch-log': [], 'work-is-done': false });
+const toSplit = timestamp => ({ 'state-engine': 'example-github-backlog-refinement', 'from-state': 'too-large', 'to-state': 'split', timestamp, 'agent-dispatch-log': [], 'work-is-done': false });
 const movedToSplit = (f, timestamp) => {
   const backlog = JSON.parse(readFileSync(f.at('projects', 'h', 'backlog.json'), 'utf8'));
   backlog.tickets[0].variations[0]['state-changes'].push(toSplit(timestamp));
@@ -173,29 +173,29 @@ test('ASS-265 AC3: ticket:split-proposed takes any proposal when the ticket has 
   assert.equal((await f.json(['ticket:split-proposed', 'h', 'HD-1'])).proposed, true);
 });
 
-// The family's own project — FAM tickets off-board, its execution engine family-development — split as the
+// The example GitHub project's own project — GH tickets off-board, its execution engine example-github-development — split as the
 // harness's are: the tickets created at Backlog (the downloader starts each in refinement), the original marked split.
-test('ASS-265 AC3, AC5: a family ticket split at the operator\'s word — proposed, checked, then applied: its tickets created and the original marked split, Done, out of the backlog', async () => {
+test('ASS-265 AC3, AC5: an example GitHub ticket split at the operator\'s word — proposed, checked, then applied: its tickets created and the original marked split, Done, out of the backlog', async () => {
   const f = splitting();
   const put = (file, content) => { mkdirSync(join(file, '..'), { recursive: true }); writeFileSync(file, typeof content === 'string' ? content : JSON.stringify(content, null, 4)); };
-  put(f.at('projects', 'family', 'project.json'), { name: 'Family OS', 'execution-state-engine': 'family-development', 'uses-points': true, 'work-sources': [{ name: 'Family OS Ticket', type: 'off-board', folder: 'family', 'key-prefix': 'FAM' }] });
-  put(f.at('projects', 'family', 'sprints.json'), { list: [{ number: 1, 'is-active': true }] });
-  put(f.at('projects', 'family', 'sprints', 'sprint-1', 'sprint.json'), { number: 1, features: [], bugs: [], spikes: [] });
-  put(f.at('projects', 'family', 'backlog.json'), { tickets: [{ key: 'FAM-1', title: 'FAM-1 title', 'ticket-system-status': 'Backlog',
-    variations: [{ name: 'A', 'harness-status': { state: 'split', 'state-engine': 'family-backlog-refinement' }, 'state-changes': [toSplit('2020-01-01T00:00:00Z')] }] }] });
-  mkdirSync(f.at('projects', 'family', 'work', 'FAM-1'), { recursive: true });
-  put(f.at('off-board', 'family', 'FAM-1.md'), STORY('FAM-1'));
-  assert.equal(await exitOf(f.agent(['ticket:split-proposed', 'family', 'FAM-1'])), 1);   // Split's agent wrote nothing yet
-  await f.json(['ticket:propose-split', 'family', 'FAM-1', '-'], JSON.stringify(PROPOSAL));
-  assert.equal((await f.json(['ticket:split-proposed', 'family', 'FAM-1'])).proposed, true);
-  assert.deepEqual(await f.json(['ticket:apply-split', 'family', 'FAM-1']), { ticket: 'FAM-1', 'split-into': ['FAM-2', 'FAM-3'] });
-  const made = [await f.offBoard('ticket:get', 'family', 'FAM-2'), await f.offBoard('ticket:get', 'family', 'FAM-3')];
+  put(f.at('projects', 'github', 'project.json'), { name: 'Example GitHub', 'execution-state-engine': 'example-github-development', 'uses-points': true, 'work-sources': [{ name: 'Example GitHub Ticket', type: 'off-board', folder: 'github', 'key-prefix': 'GH' }] });
+  put(f.at('projects', 'github', 'sprints.json'), { list: [{ number: 1, 'is-active': true }] });
+  put(f.at('projects', 'github', 'sprints', 'sprint-1', 'sprint.json'), { number: 1, features: [], bugs: [], spikes: [] });
+  put(f.at('projects', 'github', 'backlog.json'), { tickets: [{ key: 'GH-1', title: 'GH-1 title', 'ticket-system-status': 'Backlog',
+    variations: [{ name: 'A', 'harness-status': { state: 'split', 'state-engine': 'example-github-backlog-refinement' }, 'state-changes': [toSplit('2020-01-01T00:00:00Z')] }] }] });
+  mkdirSync(f.at('projects', 'github', 'work', 'GH-1'), { recursive: true });
+  put(f.at('off-board', 'github', 'GH-1.md'), STORY('GH-1'));
+  assert.equal(await exitOf(f.agent(['ticket:split-proposed', 'github', 'GH-1'])), 1);   // Split's agent wrote nothing yet
+  await f.json(['ticket:propose-split', 'github', 'GH-1', '-'], JSON.stringify(PROPOSAL));
+  assert.equal((await f.json(['ticket:split-proposed', 'github', 'GH-1'])).proposed, true);
+  assert.deepEqual(await f.json(['ticket:apply-split', 'github', 'GH-1']), { ticket: 'GH-1', 'split-into': ['GH-2', 'GH-3'] });
+  const made = [await f.offBoard('ticket:get', 'github', 'GH-2'), await f.offBoard('ticket:get', 'github', 'GH-3')];
   assert.deepEqual(made.map(t => [t.title, t.status, t.points]), [['First piece', 'Backlog', 2], ['Second piece', 'Backlog', 3]]);
-  assert.deepEqual(made[1]['depends-on'], ['FAM-2']);
-  const original = await f.offBoard('ticket:get', 'family', 'FAM-1');
-  assert.deepEqual([original.status, original['split-into']], ['Done', ['FAM-2', 'FAM-3']]);
-  const [entry] = JSON.parse(readFileSync(f.at('projects', 'family', 'backlog.json'), 'utf8')).tickets;
-  assert.deepEqual([entry['ticket-system-status'], entry['split-into']], ['Done', ['FAM-2', 'FAM-3']]);
+  assert.deepEqual(made[1]['depends-on'], ['GH-2']);
+  const original = await f.offBoard('ticket:get', 'github', 'GH-1');
+  assert.deepEqual([original.status, original['split-into']], ['Done', ['GH-2', 'GH-3']]);
+  const [entry] = JSON.parse(readFileSync(f.at('projects', 'github', 'backlog.json'), 'utf8')).tickets;
+  assert.deepEqual([entry['ticket-system-status'], entry['split-into']], ['Done', ['GH-2', 'GH-3']]);
 });
 
 // ASS-266: a split that failed part way, tried again, never creates a ticket

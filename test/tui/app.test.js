@@ -3631,16 +3631,16 @@ test('ASS-252 AC2, AC3: a backlog ticket at Awaiting Split Decision shows the pr
   assert.ok(actionsOf(lines({ ...press(handleKey(none, key('b')), 'return'), ticketTab: 'actions' }, wide)).some(l => l.includes('no proposal recorded yet')));
 });
 
-// ASS-264: the family's refinement rests a ticket estimated above its scale at Too Large: the ticket
+// ASS-264: the example GitHub project's refinement rests a ticket estimated above its scale at Too Large: the ticket
 // screen offers its exits as example's Awaiting Approval's — Accept, and Return, which asks for the
 // operator's note — and its details and panel show the estimate noted (ticket:note-too-large).
-test('ASS-264 AC2: a family ticket at Too Large offers Accept, to Ready, and Return with a note, to Groom, and shows the estimate it was given', () => {
-  const loaded = JSON.parse(readFileSync(join(engineDir('family-backlog-refinement'), 'state-engine.json'), 'utf8'));
-  const familyRefinement = { name: 'family-backlog-refinement', steps: loaded.steps.toSorted((a, b) => a.sequence - b.sequence), lists: {} };
-  const familyRefining = { ...engine, lists: { 'backlog-refinement-steps': [{ id: 'backlog-refinement', sequence: 1, name: 'Backlog Refinement', action: { type: 'state-engine', engine: 'family-backlog-refinement' } }] } };
+test('ASS-264 AC2: an example GitHub ticket at Too Large offers Accept, to Ready, and Return with a note, to Groom, and shows the estimate it was given', () => {
+  const loaded = JSON.parse(readFileSync(join(engineDir('example-github-backlog-refinement'), 'state-engine.json'), 'utf8'));
+  const githubRefinement = { name: 'example-github-backlog-refinement', steps: loaded.steps.toSorted((a, b) => a.sequence - b.sequence), lists: {} };
+  const githubRefining = { ...engine, lists: { 'backlog-refinement-steps': [{ id: 'backlog-refinement', sequence: 1, name: 'Backlog Refinement', action: { type: 'state-engine', engine: 'example-github-backlog-refinement' } }] } };
   const ticket = { ...backlogTicket('ABC-62', 'too-large', { points: null, 'too-large-estimate': { points: 13, 'noted-at': '2026-10-30T10:00:00Z' } }),
-    variations: [{ name: 'A', 'harness-status': { state: 'too-large', 'state-engine': 'family-backlog-refinement' } }] };
-  const s = initialState({ projects: [{ ...projects[0], backlog: [ticket] }, projects[1]], workflows: [familyRefining, familyRefinement], assignments });
+    variations: [{ name: 'A', 'harness-status': { state: 'too-large', 'state-engine': 'example-github-backlog-refinement' } }] };
+  const s = initialState({ projects: [{ ...projects[0], backlog: [ticket] }, projects[1]], workflows: [githubRefining, githubRefinement], assignments });
   assert.match(lines(handleKey(s, key('b')), wide).find(l => l.includes('ABC-62')), / Too Large /);
   const opened = { ...press(handleKey(s, key('b')), 'return'), ticketTab: 'actions' };
   const out = actionsOf(lines(opened, { ...wide, rows: 80 }));
@@ -3657,20 +3657,20 @@ test('ASS-264 AC2: a family ticket at Too Large offers Accept, to Ready, and Ret
   assert.ok(panelOf(details).some(l => l === 'Estimated too large: 13'), panelOf(details).join('\n'));
 });
 
-// ASS-265: the family's Too Large offers Split too, asking for no note; Split's proposal then rests at the
-// family's Awaiting Split Decision, shown as ASS-252 shows the harness's, Accept applying it and Reject
+// ASS-265: the example GitHub project's Too Large offers Split too, asking for no note; Split's proposal then rests at the
+// example GitHub project's Awaiting Split Decision, shown as ASS-252 shows the harness's, Accept applying it and Reject
 // (asking why) going back to Too Large.
-test('ASS-265 AC1, AC2: a family ticket at Too Large offers Split beside Accept and Return; at Awaiting Split Decision it shows the proposal and offers Accept and Reject, back to Too Large', () => {
-  const loaded = JSON.parse(readFileSync(join(engineDir('family-backlog-refinement'), 'state-engine.json'), 'utf8'));
-  const familyRefinement = { name: 'family-backlog-refinement', steps: loaded.steps.toSorted((a, b) => a.sequence - b.sequence), lists: {} };
-  const familyRefining = { ...engine, lists: { 'backlog-refinement-steps': [{ id: 'backlog-refinement', sequence: 1, name: 'Backlog Refinement', action: { type: 'state-engine', engine: 'family-backlog-refinement' } }] } };
-  const at = state => ({ ...backlogTicket('ABC-62', state, { points: null }), variations: [{ name: 'A', 'harness-status': { state, 'state-engine': 'family-backlog-refinement' } }] });
+test('ASS-265 AC1, AC2: an example GitHub ticket at Too Large offers Split beside Accept and Return; at Awaiting Split Decision it shows the proposal and offers Accept and Reject, back to Too Large', () => {
+  const loaded = JSON.parse(readFileSync(join(engineDir('example-github-backlog-refinement'), 'state-engine.json'), 'utf8'));
+  const githubRefinement = { name: 'example-github-backlog-refinement', steps: loaded.steps.toSorted((a, b) => a.sequence - b.sequence), lists: {} };
+  const githubRefining = { ...engine, lists: { 'backlog-refinement-steps': [{ id: 'backlog-refinement', sequence: 1, name: 'Backlog Refinement', action: { type: 'state-engine', engine: 'example-github-backlog-refinement' } }] } };
+  const at = state => ({ ...backlogTicket('ABC-62', state, { points: null }), variations: [{ name: 'A', 'harness-status': { state, 'state-engine': 'example-github-backlog-refinement' } }] });
   const proposal = { ticket: 'ABC-62', summary: 'two halves', tickets: [
     { title: 'First half', type: 'Story', points: 2, 'user-story': 'As the operator, I want the first half.', context: 'c', 'acceptance-criteria': ['First works'], covers: [1], 'depends-on': [] },
     { title: 'Second half', type: 'Story', points: 3, 'user-story': 'As the operator, I want the second half.', context: 'c', 'acceptance-criteria': ['Second works'], covers: [2, 3], 'depends-on': [1] },
   ] };
   const open = (state, reviews = {}) => {
-    const s = initialState({ projects: [{ ...projects[0], backlog: [at(state)], reviews }, projects[1]], workflows: [familyRefining, familyRefinement], assignments });
+    const s = initialState({ projects: [{ ...projects[0], backlog: [at(state)], reviews }, projects[1]], workflows: [githubRefining, githubRefinement], assignments });
     return { ...press(handleKey(s, key('b')), 'return'), ticketTab: 'actions' };
   };
   // Too Large: Accept, Return, Split — Split at once, no note asked.

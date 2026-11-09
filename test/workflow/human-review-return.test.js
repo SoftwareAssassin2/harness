@@ -17,7 +17,7 @@ const read = (...path) => readFileSync(join(ROOT, ...path), 'utf8');
 const engine = name => JSON.parse(readFileSync(join(engineDir(name), 'state-engine.json'), 'utf8'));
 // The top-level engines whose Review group runs an engine with a Human Review to reject at — v2-review's.
 // ASS-314 took grouped-review's out, so harness-development-grouped and example-development-grouped have no return step to name.
-const TOPS = { 'harness-development-v2': 'v2-review', 'family-development': 'v2-review' };
+const TOPS = { 'harness-development-v2': 'v2-review', 'example-github-development': 'v2-review' };
 // Each return step: the done step the Review run ends at, the group the ticket re-enters and the step it starts there.
 const RETURNS = { 'write-execution-plan': ['replan', 'plan'], 'write-test-plan': ['write-test-plan', 'plan'], 'generate-solution': ['generate-solution', 'build'] };
 const rejected = returnTo => ({ humanReview: { state: 'human-review', decision: 'Rejected', reason: 'No', ...(returnTo !== undefined && { 'return-to': returnTo }) } });

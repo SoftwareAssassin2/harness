@@ -27,7 +27,7 @@ const leaves = (condition, out = []) => {
 // A step that rests for good by design, its ticket going nowhere after it — the reason why.
 const RESTS_FOR_GOOD = {
   'harness-backlog-refinement/superseded': 'the original of an accepted split: replaced by the new tickets, it never goes on to Ready',
-  'family-backlog-refinement/superseded': 'ASS-265: the original of a split the operator chose at Too Large and accepted, as the harness\'s',
+  'example-github-backlog-refinement/superseded': 'ASS-265: the original of a split the operator chose at Too Large and accepted, as the harness\'s',
 };
 
 test('every folder under engines/ holds a state engine that loads', () => {
