@@ -120,7 +120,8 @@ const pastDays = project => Object.keys(project?.days ?? {})
 // 'metrics' (see FLOWCHART_VIEWS); flowchartScroll: its first line shown.
 // backlogFlowScroll: the backlog flow's first line shown, its own;
 // backlogFlowView: what its stations show, as flowchartView, its own choice.
-// updatesSince: the moment the updates screen lists progress since (ms), or
+// updatesSince: the moment the updates screen lists progress since (ms) — set
+// to the last weekday's 04:00 UTC when it first opens (ASS-332) — or
 // ticket: the ticket open on the dashboard's ticket screen — { key, variation
 // (its name) } — or null; priorityDraft:
 // the manual priority being typed for it, or null; reasonDraft: the reason a
@@ -303,7 +304,9 @@ export function handleKey(state, key, size = {}) {
   if (!key.ctrl && shown(state, screenKey(key))) {
     // The updates, repos and agents screens open on their own component;
     // elsewhere the focus stays where it can, else goes to the menu (the day while it is hidden).
-    const next = screenKey(key) === 'h' ? memoryOpened({ ...state, screen: 'h' }) : { ...state, screen: screenKey(key) };
+    const next = screenKey(key) === 'h' ? memoryOpened({ ...state, screen: 'h' })
+      : screenKey(key) === 'u' ? updates.opened({ ...state, screen: 'u' }, new Date(size.now ?? Date.now()))   // ASS-332: the last weekday's 04:00 UTC by default
+      : { ...state, screen: screenKey(key) };
     const own = { u: 'updates', r: 'repos', a: 'agents', A: 'agents', b: 'backlog', B: 'backlogflow', f: 'subflows', x: 'chats', h: 'memories' }[next.screen];
     return { ...next, focus: own ?? (focusable(next).includes(state.focus) ? state.focus : focusable(next)[0]) };
   }

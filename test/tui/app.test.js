@@ -2752,8 +2752,9 @@ test('without a transient state engine for the selected project, control keeps t
   assert.match(out.find(l => l.startsWith('┌')), /^┌─ control \(times UTC\) ─+┐$/);
 });
 
-// A sprint with histories, and an engine whose last step is Done.
-const doneEngine = { name: 'example-development', steps: [...engine.steps, { id: 'done', name: 'Done', sequence: 31 }] };
+// A sprint with histories, and an engine whose last step is Done, each step paired with a board status (ASS-332).
+const PAIRED = { backlog: 'To Do', 'code-review': 'In Progress', done: 'Done' };
+const doneEngine = { name: 'example-development', steps: [...engine.steps, { id: 'done', name: 'Done', sequence: 31, 'is-done': true }].map(s => ({ ...s, 'paired-ticket-system-status': PAIRED[s.id] })) };
 const moves = (...list) => list.map(([from, to, timestamp]) => ({ 'from-state': from, 'to-state': to, timestamp, 'agent-dispatch-log': [] }));
 const progressing = { ...sprint, features: [
   { key: 'P-1', title: 'Shipped', priority: 1, ...single({ 'harness-status': hs('done'), 'state-changes': moves(['backlog', 'code-review', '2026-09-24T08:00:00Z'], ['code-review', 'done', '2026-09-25T10:00:00Z']) }) },
@@ -2761,19 +2762,33 @@ const progressing = { ...sprint, features: [
 ], bugs: [], spikes: [] };
 const updating = press(initialState({ projects: [{ ...projects[0], sprint: progressing }], workflows: [doneEngine] }), 'u');
 const typed = (s, text) => [...text].reduce((st, ch) => handleKey(st, { name: ch, sequence: ch }, wide), s);
-const setSince = (s, date, time) => press(typed(press(typed(press(s, 'return'), date), 'tab'), time), 'return');
+// Enter, then the date and the time typed over the ones the form opens with.
+const setSince = (s, date, time) => press(typed(press(typed(press(s, 'return', ...Array(10).fill('backspace')), date), 'tab', ...Array(5).fill('backspace')), time), 'return');
 
-test('u opens the updates screen focused, asking for a date and a time before it lists anything', () => {
+test('u opens the updates screen focused, already showing the progress since 04:00 UTC on the last weekday (ASS-332)', () => {
   assert.equal(updating.focus, 'updates');
+  assert.equal(updating.updatesSince, Date.parse('2026-09-30T04:00:00Z'));          // wide's now is a Thursday
   const out = lines(updating, wide);
-  assert.ok(out.some(l => /^Since +date YYYY-MM-DD +time HH:MM UTC/.test(l)));
-  assert.ok(out.some(l => l.includes('Set a date and time to see the progress made since then.')));
+  assert.ok(out.some(l => /^Since +date 2026-09-30 +time 04:00 UTC/.test(l)));
+  assert.ok(out.some(l => l.startsWith('- P-2: Reviewing')));
+  assert.ok(!out.some(l => l.includes('P-1')));                                    // done before then
   assert.ok(out.some(l => l.includes('enter sets the date and time')));
+  const monday = handleKey(initialState({ projects: [{ ...projects[0], sprint: progressing }], workflows: [doneEngine] }), key('u'), { ...wide, now: new Date('2026-10-05T10:00:00Z') });
+  assert.equal(monday.updatesSince, Date.parse('2026-10-02T04:00:00Z'));
 });
 
-test('enter opens the date and time; tab moves between them; enter shows the progress since then', () => {
-  const form = press(updating, 'return');
-  assert.deepEqual(form.updatesForm, { field: 'date', date: '', time: '' });
+test('a date and time set by hand stays for the session: reopening the screen does not reset it to the default (ASS-332)', () => {
+  const set = setSince(updating, '2026-09-25', '09:00');
+  const reopened = press(set, 's', 'u');
+  assert.equal(reopened.screen, 'u');
+  assert.equal(reopened.updatesSince, Date.parse('2026-09-25T09:00:00Z'));
+  assert.equal(press(press(updating, 's'), 'u').updatesSince, updating.updatesSince);
+});
+
+test('enter opens the date and time on show; tab moves between them; enter shows the progress since then', () => {
+  assert.deepEqual(press(updating, 'return').updatesForm, { field: 'date', date: '2026-09-30', time: '04:00' });
+  const form = press(updating, 'return', ...Array(10).fill('backspace'));
+  assert.deepEqual(form.updatesForm, { field: 'date', date: '', time: '04:00' });
   const dated = typed(form, '2026-09-25x');                                   // only digits, dashes and colons
   assert.equal(dated.updatesForm.date, '2026-09-25');
   assert.ok(render(dated, wide).some(l => l.includes('\x1b[7m2026-09-25█\x1b[0m')));
@@ -2784,16 +2799,16 @@ test('enter opens the date and time; tab moves between them; enter shows the pro
   const out = lines(set, wide);
   assert.ok(out.some(l => /^Since +date 2026-09-25 +time 09:00 UTC/.test(l)));
   const at = text => out.findIndex(l => l.startsWith(text));
-  assert.ok(at('2 tickets moved: 1 delivered, 1 moved forward') > 0);
-  assert.ok(at('Delivered') > at('2 tickets moved'));
-  assert.equal(out[at('Delivered') + 1], '• P-1: Shipped (Code Review → Done)');
-  assert.ok(at('Moved forward') > at('Delivered'));
+  assert.ok(at('Done (1).') > 0);
+  assert.equal(out[at('Done (1).') + 1], '- P-1: Shipped.');
+  assert.ok(at('In Progress: building (1).') > at('Done (1).'));
+  assert.ok(at('Net since Fri Sep 25, 09:00 UTC:') > at('In Progress: building'));
   assert.equal(press(set, 'return').updatesForm.date, '2026-09-25');                // reopening starts from what is set
 });
 
 test('a bullet too long for the screen wraps under its own text', () => {
   const out = lines(setSince(updating, '2026-09-25', '9:00'), { ...wide, columns: 80 });
-  const first = out.findIndex(l => l.startsWith('• P-2: Reviewing'));
+  const first = out.findIndex(l => l.startsWith('- P-2: Reviewing'));
   assert.ok(out[first].length <= 80);
   assert.match(out[first + 1], /^ {2}\S/);
 });
@@ -2802,19 +2817,19 @@ test('a date or time that is not real says so and keeps the form open; escape gi
   for (const [date, time] of [['2026-02-30', '09:00'], ['2026-9-25', '09:00'], ['2026-09-25', '25:00'], ['2026-09-25', '9']]) {
     const bad = setSince(updating, date, time);
     assert.notEqual(bad.updatesForm, null, `${date} ${time}`);
-    assert.equal(bad.updatesSince, null);
+    assert.equal(bad.updatesSince, updating.updatesSince);
     assert.ok(lines(bad, wide).some(l => l.includes('date as YYYY-MM-DD and time as HH:MM')), `${date} ${time}`);
   }
   const gaveUp = press(typed(press(updating, 'return'), '2026'), 'escape');
-  assert.deepEqual([gaveUp.updatesForm, gaveUp.updatesSince, gaveUp.screen], [null, null, 'u']);
+  assert.deepEqual([gaveUp.updatesForm, gaveUp.updatesSince, gaveUp.screen], [null, updating.updatesSince, 'u']);
 });
 
 test('up and down scroll a list longer than the screen, no further than its end', () => {
   const many = { ...progressing, features: Array.from({ length: 60 }, (_, i) => ({ key: `M-${i}`, title: 'T', priority: i, ...single({ 'harness-status': hs('code-review'), 'state-changes': moves(['backlog', 'code-review', '2026-09-25T11:00:00Z']) }) })) };
   const set = setSince(press(initialState({ projects: [{ ...projects[0], sprint: many }], workflows: [doneEngine] }), 'u'), '2026-09-25', '09:00');
-  const shown = s => lines(s, wide).filter(l => l.startsWith('• M-')).map(l => l.match(/M-\d+/)[0]);
+  const shown = s => lines(s, wide).filter(l => l.startsWith('- M-')).map(l => l.match(/M-\d+/)[0]);
   assert.equal(shown(set)[0], 'M-0');
-  assert.equal(shown(press(set, 'down'))[0], 'M-0');                              // the summary line scrolls off first
+  assert.equal(shown(press(set, 'down'))[0], 'M-0');                              // the heading scrolls off first
   const end = press(set, ...Array(200).fill('down'));
   assert.equal(shown(end).at(-1), 'M-59');
   assert.equal(press(end, 'down').updatesScroll, end.updatesScroll);
@@ -2823,7 +2838,7 @@ test('up and down scroll a list longer than the screen, no further than its end'
 
 test('on the updates screen, keys type into the form, not elsewhere', () => {
   const form = typed(press(updating, 'return'), 'dq');
-  assert.deepEqual([form.screen, form.updatesForm.date], ['u', '']);
+  assert.deepEqual([form.screen, form.updatesForm.date], ['u', '2026-09-30']);
 });
 
 test('a highlighted ticket\'s number is marked wherever it shows on the sprint, its flow, the ticket screen\'s questions, updates, control and agents screens', () => {
@@ -2837,7 +2852,7 @@ test('a highlighted ticket\'s number is marked wherever it shows on the sprint, 
   assert.ok(on('S', { flowchartView: 'tickets' }).some(l => l.includes('\x1b[48;2;255;255;0m\x1b[30mP-1\x1b[39;49m: Shipped')));
   const ticketScreen = render({ ...onQuestions, projects: [{ ...onQuestions.projects[0], highlights: highlighted.highlights }] }, wide);
   assert.ok(ticketScreen.some(l => l.includes(`on ${link(marked, 'http://t/ABC-1')}`)));  // the selected question's details, where it was asked, inside its link (ASS-86)
-  assert.ok(on('u', { updatesSince: Date.parse('2026-09-25T09:00:00Z') }).some(l => l.includes('• \x1b[48;2;255;255;0m\x1b[30mP-1\x1b[39;49m: Shipped')));
+  assert.ok(on('u', { updatesSince: Date.parse('2026-09-25T09:00:00Z') }).some(l => l.includes('- \x1b[48;2;255;255;0m\x1b[30mP-1\x1b[39;49m: Shipped')));
   assert.ok(on('c', { controlLog: [{ text: 'Hello ABC-1!', stream: 'stdout', at: new Date() }] }).some(l => l.includes(`Hello ${marked}!`)));
   const agents = render({ ...initialState({ projects: [highlighted], workflows: [doneEngine], assignments: [assignment('Daredevil', 'ABC-1')] }), screen: 'a', agentsTable: true }, wide);
   assert.ok(agents.some(l => l.startsWith('│ Daredevil ') && l.includes(marked)));       // the agent's Work Item cell

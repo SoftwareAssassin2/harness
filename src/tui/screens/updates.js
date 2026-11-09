@@ -1,5 +1,6 @@
-// The updates screen (u): the progress made since a date and time (ASS-201: moved from app.js).
-import { progressSince, progressLines } from '../updates.js';
+// The updates screen (u): the progress made since a date and time (ASS-201: moved from app.js),
+// written by the board's statuses, paste-ready (ASS-332).
+import { progressSince, progressLines, lastWeekdayMorning } from '../updates.js';
 import { below, headerLines, platform } from './frame.js';
 import { clamp, red, gray } from './shared.js';
 
@@ -19,10 +20,9 @@ function updatesView(state, { columns = 0, rows = Infinity, now = 0 }) {
   const keys = form ? 'type   tab next field   enter shows the progress since then   esc cancels'
     : state.focus === 'updates' ? 'enter sets the date and time   ↑/↓ scroll' : '';
   const project = state.projects[state.project];
-  const steps = state.workflows.find(w => w.name === project?.stateEngine)?.steps ?? [];
   const list = state.updatesSince == null
     ? ['Set a date and time to see the progress made since then.']
-    : progressLines(progressSince({ sprint: project?.sprint, steps, since: state.updatesSince }), columns);
+    : progressLines(progressSince({ sprint: project?.sprint, workflows: state.workflows, since: state.updatesSince }), columns);
   const bottom = below(state) + platform(state, columns, now).length;
   const height = Math.max(1, rows - headerLines(state, columns, now).length - bottom - 4);
   return { head: [fields, keys, state.updatesMessage ? red(state.updatesMessage) : '', ''], list, height };
@@ -50,6 +50,13 @@ export function editUpdates(state, key) {
   const text = key.sequence ?? '';
   return /^[0-9:-]$/.test(text) ? edit(form[form.field] + text) : state;
 }
+
+// opened(state, now) — the screen as it opens: the first time in a session,
+// with no date and time set yet, set to 04:00 UTC on the last weekday before
+// `now` (ASS-332), so it shows the progress since then with no input; one
+// already set, by hand or so, stays.
+export const opened = (state, now) => (state.updatesSince == null
+  ? { ...state, updatesSince: lastWeekdayMorning(now), updatesScroll: 0 } : state);
 
 export function view(state, size) {
   const { head, list, height } = updatesView(state, size);
