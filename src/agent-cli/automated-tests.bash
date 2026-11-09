@@ -12,6 +12,7 @@
 #   source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../automated-tests.bash"
 #   tests_setup <command> <project> <ticket-key> <variation>   # sets $tests (the JSON list), $where (the folder), $vm (the VM, or empty), $results (the results file)
 #   $NOT_RUNNABLE                 # an ERE: output that means the command never got as far as a test (below)
+#   runnable <exit code> <output file>  # whether the command got as far as a test (below)
 #
 # A file of exactly [] is a manual-only test plan (ASS-49): $tests is [] and
 # the callers pass with nothing to list or run — verify-exist-and-runnable
@@ -31,6 +32,18 @@ source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/code.bash"
 # client libraries say so when no credential is there to find. Shared with
 # ci-checks:verify (ASS-249), whose checks are judged the same way.
 NOT_RUNNABLE='ERR_PNPM_VERIFY_DEPS_BEFORE_RUN|ERR_PNPM_FETCH_|Cannot find module|MODULE_NOT_FOUND|command not found|Command "[^"]*" not found|No such container|is not running|Cannot connect to the Docker daemon|Could not load the default credentials|DefaultCredentialsError|Unable to locate credentials|NoCredentialsError'
+
+# A test runner's own result line — node's spec reporter (✔ ✖ ﹣ ▶) and TAP
+# (ok/not ok/# Subtest:), vitest's and jest's (✓ ×): a test's name, not the
+# environment's error, whatever words that name holds (ASS-320) — a passing
+# test "... whose VM is not running ..." is not a VM that is not running.
+TEST_RESULT='^[[:space:]]*((✔|✓|✖|×|﹣|▶) |(not )?ok [0-9]+ |# Subtest: )'
+
+# runnable <exit code> <output file> — whether the command got as far as a
+# test: no runner-missing exit code and no NOT_RUNNABLE output off a result
+# line. Not grep -qE on the pipe: -q exits early, SIGPIPEs the first grep and
+# pipefail would make a real error look runnable.
+runnable() { [[ $1 -ne 125 && $1 -ne 126 && $1 -ne 127 && -z "$(grep -vE "$TEST_RESULT" "$2" | grep -E "$NOT_RUNNABLE")" ]]; }
 
 tests_setup() {
   local command="$1" project="$2" key="$3" variation="$4" folder file
