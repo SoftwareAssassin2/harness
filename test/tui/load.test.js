@@ -42,9 +42,22 @@ test('projects come from project.json, sorted by name, each with its folder as i
   write(join(dir, 'a-dir', 'sprints', 'days', 'notes.json'), { ignored: true });
   mkdirSync(join(dir, 'not-a-project'));
   assert.deepEqual(loadProjects(dir), [
-    { id: 'z-dir', dir: join(dir, 'z-dir'), name: 'Alpha', stateEngine: undefined, switchedOffSteps: [], environments: [], repositories: [], sprint: null, backlog: [], backlogOfSprint: [], days: {}, questions: [], highlights: [], gcloudReauthentication: false, glabReauthentication: false, backgroundWorkOff: false, waitForDependencies: false, rateLimit: null, claudeUsage: null, pushAccount: null, accountHold: null, apiCapHold: null, hindsight: null, collaborations: {}, chatSpend: null, memorySpend: [], demoPlans: {}, reviews: {}, spendLimit: null, apiCost: null, golden: null },
-    { id: 'a-dir', dir: join(dir, 'a-dir'), name: 'Beta', stateEngine: 'example-development', switchedOffSteps: [], environments: [{ name: 'ws', type: 'local-pc' }], repositories: [{ url: 'https://gitlab.com/g/r' }], sprint: { number: 10, start: '2026-09-18', end: '2026-10-01', features: [{ key: 'ABC-2' }] }, backlog: [{ key: 'ABC-1' }], backlogOfSprint: [{ key: 'abc-2' }], days: { '2026-09-18': { number: 10, features: [] } }, questions: [], highlights: [{ ticket: 'ABC-1', color: '#ffff00' }], gcloudReauthentication: true, glabReauthentication: false, backgroundWorkOff: true, waitForDependencies: false, rateLimit: { since: '2026-10-11T12:00:00Z', type: 'five_hour', 'resets-at': '2026-10-11T13:00:00Z' }, claudeUsage: { email: 'me@example.com', session: { percent: 7, 'resets-at': '2026-10-11T13:00:00Z' }, 'as-of': '2026-10-11T12:00:00Z' }, pushAccount: { project: 'a-dir', provider: 'GitLab', account: 'ada', error: null, 'checked-at': '2026-10-11T12:00:00Z' }, accountHold: null, apiCapHold: null, hindsight: null, collaborations: {}, chatSpend: null, memorySpend: [], demoPlans: {}, reviews: {}, spendLimit: null, apiCost: null, golden: null },
+    { id: 'z-dir', dir: join(dir, 'z-dir'), name: 'Alpha', stateEngine: undefined, switchedOffSteps: [], environments: [], repositories: [], sprint: null, backlog: [], backlogOfSprint: [], days: {}, questions: [], highlights: [], gcloudReauthentication: false, glabReauthentication: false, backgroundWorkOff: false, waitForDependencies: false, rateLimit: null, claudeUsage: null, pushAccount: null, accountHold: null, apiCapHold: null, apiKey: false, hindsight: null, collaborations: {}, chatSpend: null, memorySpend: [], demoPlans: {}, reviews: {}, spendLimit: null, apiCost: null, golden: null },
+    { id: 'a-dir', dir: join(dir, 'a-dir'), name: 'Beta', stateEngine: 'example-development', switchedOffSteps: [], environments: [{ name: 'ws', type: 'local-pc' }], repositories: [{ url: 'https://gitlab.com/g/r' }], sprint: { number: 10, start: '2026-09-18', end: '2026-10-01', features: [{ key: 'ABC-2' }] }, backlog: [{ key: 'ABC-1' }], backlogOfSprint: [{ key: 'abc-2' }], days: { '2026-09-18': { number: 10, features: [] } }, questions: [], highlights: [{ ticket: 'ABC-1', color: '#ffff00' }], gcloudReauthentication: true, glabReauthentication: false, backgroundWorkOff: true, waitForDependencies: false, rateLimit: { since: '2026-10-11T12:00:00Z', type: 'five_hour', 'resets-at': '2026-10-11T13:00:00Z' }, claudeUsage: { email: 'me@example.com', session: { percent: 7, 'resets-at': '2026-10-11T13:00:00Z' }, 'as-of': '2026-10-11T12:00:00Z' }, pushAccount: { project: 'a-dir', provider: 'GitLab', account: 'ada', error: null, 'checked-at': '2026-10-11T12:00:00Z' }, accountHold: null, apiCapHold: null, apiKey: false, hindsight: null, collaborations: {}, chatSpend: null, memorySpend: [], demoPlans: {}, reviews: {}, spendLimit: null, apiCost: null, golden: null },
   ]);
+});
+
+test('ASS-333 AC3: a project\'s apiKey — whether it has an API key to fall back to, as control\'s paymentFor reads it — is true with its .claude-api folder (a host step\'s, dispatch.js configDir) or a VM in its vms.json recording credential-kind both (a VM step\'s, credentialKindOf); false otherwise', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'tui-'));
+  write(join(dir, 'host', 'project.json'), { name: 'Host' });
+  mkdirSync(join(dir, 'host', '.claude-api'));
+  write(join(dir, 'vm', 'project.json'), { name: 'Vm' });
+  write(join(dir, 'vm', 'vms.json'), { 'vm-1': { 'credential-kind': 'claude' }, 'vm-2': { 'credential-kind': 'both' } });
+  write(join(dir, 'one', 'project.json'), { name: 'One' });
+  write(join(dir, 'one', 'vms.json'), { 'vm-1': { 'credential-kind': 'claude' }, 'vm-2': { 'credential-kind': 'anthropic' }, 'vm-3': {} });
+  mkdirSync(join(dir, 'one', '.claude'));   // the subscription's own login is no API key
+  write(join(dir, 'none', 'project.json'), { name: 'None' });
+  assert.deepEqual(loadProjects(dir).map(p => [p.id, p.apiKey]), [['host', true], ['none', false], ['one', false], ['vm', true]]);
 });
 
 test('ASS-191 AC1, AC5: a project\'s spendLimit is its project.json\'s max-spend-per-ticket-usd, else the data folder\'s harness.json\'s, else null', () => {
@@ -263,7 +276,7 @@ test('loadChats reads chats.json\'s chats (ASS-33); none without the file', () =
   assert.deepEqual(loadChats(join(dir, 'chats.json')).map(c => c.id), ['c1']);
 });
 
-test('dataFiles: every file the dashboard reads (ASS-307: push-account.json too), with one sprint file — the selected project\'s active sprint.json, or the snapshot of the past day on show', () => {
+test('dataFiles: every file the dashboard reads (ASS-307: push-account.json too; ASS-333: vms.json), with one sprint file — the selected project\'s active sprint.json, or the snapshot of the past day on show', () => {
   const root = mkdtempSync(join(tmpdir(), 'tui-'));
   const p = name => join(root, 'data', 'projects', name);
   write(join(p('a'), 'sprints.json'), { list: [{ number: 9 }, { number: 10, 'is-active': true }] });
@@ -272,8 +285,8 @@ test('dataFiles: every file the dashboard reads (ASS-307: push-account.json too)
   const state = { projects: [{ id: 'a' }, { id: 'b' }], workflows: [{ name: 'standard' }], project: 0, day: null };
   const common = [
     join(root, 'data', 'assignments.json'), join(root, 'data', 'chats.json'), join(root, 'data', 'api-cost.json'), join(root, 'data', 'context-windows.json'), join(root, 'data', 'harness.json'), join(root, 'data', 'disk-space.json'), join(root, 'engines', 'standard', 'state-engine.json'),
-    join(p('a'), 'project.json'), join(p('a'), 'gcloud-requires-reauthentication'), join(p('a'), 'glab-requires-reauthentication'), join(p('a'), 'rate-limit.json'), join(p('a'), 'claude-usage.json'), join(p('a'), 'push-account.json'), join(p('a'), 'api-cost.json'), join(p('a'), 'memory-spend.json'), join(p('a'), 'sprints.json'), join(p('a'), 'backlog.json'), join(p('a'), 'global-questions-and-answers.json'), join(p('a'), 'chat-spend.json'), join(p('a'), 'work', 'abc-1', 'questions-and-answers.json'), join(p('a'), 'work', 'abc-1', 'collaboration.json'),
-    join(p('b'), 'project.json'), join(p('b'), 'gcloud-requires-reauthentication'), join(p('b'), 'glab-requires-reauthentication'), join(p('b'), 'rate-limit.json'), join(p('b'), 'claude-usage.json'), join(p('b'), 'push-account.json'), join(p('b'), 'api-cost.json'), join(p('b'), 'memory-spend.json'), join(p('b'), 'sprints.json'), join(p('b'), 'backlog.json'), join(p('b'), 'global-questions-and-answers.json'), join(p('b'), 'chat-spend.json'),
+    join(p('a'), 'project.json'), join(p('a'), 'gcloud-requires-reauthentication'), join(p('a'), 'glab-requires-reauthentication'), join(p('a'), 'rate-limit.json'), join(p('a'), 'claude-usage.json'), join(p('a'), 'push-account.json'), join(p('a'), 'api-cost.json'), join(p('a'), 'memory-spend.json'), join(p('a'), 'sprints.json'), join(p('a'), 'backlog.json'), join(p('a'), 'global-questions-and-answers.json'), join(p('a'), 'chat-spend.json'), join(p('a'), 'vms.json'), join(p('a'), 'work', 'abc-1', 'questions-and-answers.json'), join(p('a'), 'work', 'abc-1', 'collaboration.json'),
+    join(p('b'), 'project.json'), join(p('b'), 'gcloud-requires-reauthentication'), join(p('b'), 'glab-requires-reauthentication'), join(p('b'), 'rate-limit.json'), join(p('b'), 'claude-usage.json'), join(p('b'), 'push-account.json'), join(p('b'), 'api-cost.json'), join(p('b'), 'memory-spend.json'), join(p('b'), 'sprints.json'), join(p('b'), 'backlog.json'), join(p('b'), 'global-questions-and-answers.json'), join(p('b'), 'chat-spend.json'), join(p('b'), 'vms.json'),
   ];
   assert.deepEqual(dataFiles(root, state), [...common, join(p('a'), 'sprints', 'sprint-10', 'sprint.json')]);
   assert.deepEqual(dataFiles(root, { ...state, day: '2026-09-20' }), [...common, join(p('a'), 'sprints', 'days', '2026-09-20.json')]);

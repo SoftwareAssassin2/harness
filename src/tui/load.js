@@ -72,7 +72,8 @@ const asShown = sprint => sprint && Object.fromEntries(Object.entries(sprint).ma
 // background work is switched off (background-work false, ASS-127);
 // waitForDependencies whether a ticket of its waits at Committed for the
 // tickets it depends on (wait-for-dependencies, ASS-195);
-// rateLimit its rate-limit.json (one entry per credential kind, ASS-215), or null (ASS-94); claudeUsage its
+// rateLimit its rate-limit.json (one entry per credential kind, ASS-215), or null (ASS-94); apiKey
+// whether it has an API key to fall back to (hasApiKey, ASS-333); claudeUsage its
 // claude-usage.json — its login's session and weekly (ASS-65) usage and account, as control last
 // read them — or null (ASS-47); pushAccount its push-account.json — the
 // account its VM token for its repositories' forge pushes as, as control last
@@ -116,6 +117,7 @@ export const loadProjects = (dir, lima = limaHome()) => readdirSync(dir)
       pushAccount: existsSync(join(dir, name, 'push-account.json')) ? readJson(join(dir, name, 'push-account.json')) : null,   // ASS-307: control's last push-account check
       accountHold: project['account-hold'] ?? null,
       apiCapHold: project['api-cap-hold'] ?? null,   // ASS-217: the API cap holding its fallback, control's
+      apiKey: hasApiKey(join(dir, name)),   // ASS-333: whether its agents can fall back to an API key (see hasApiKey)
       hindsight: project.hindsight ?? null,   // its memory's server, for the memory screen (ASS-62)
       collaborations: loadCollaborations(join(dir, name), readJson),
       chatSpend: loadChatSpend(join(dir, name), readJson),   // ASS-271: the chat screen's turns, for the spend tiles
@@ -128,6 +130,16 @@ export const loadProjects = (dir, lima = limaHome()) => readdirSync(dir)
     };
   })
   .toSorted((a, b) => a.name.localeCompare(b.name));
+
+// hasApiKey(folder) — whether the project in `folder` has an API key to fall
+// back to while its subscription is rate limited (ASS-333), as control's
+// paymentFor (dispatch.js) reads "both": a host step's by its .claude-api
+// (configDir), a VM step's by its VM's vms.json row recording credential-kind
+// `both` (vm-lifecycle.js credentialKindOf). Read here, not by those helpers:
+// they would pull control's dispatch into the dashboard. For the project, not
+// a step, so any of them having one is enough.
+const hasApiKey = folder => existsSync(join(folder, '.claude-api'))
+  || (existsSync(join(folder, 'vms.json')) && Object.values(readJson(join(folder, 'vms.json'))).some(vm => vm?.['credential-kind'] === 'both'));
 
 // apiCostOf(dir, id, project) — a project's org's API spend, as control last
 // read it (ASS-221): the harness project's is the data folder's (loadApiCost,
@@ -346,7 +358,7 @@ export function dataFiles(root, { projects, workflows, project, day }, lima = li
     join(dataDir(root), 'disk-space.json'),
     ...workflows.map(w => w.file ?? join(root, 'engines', w.name, 'state-engine.json')),   // a project's own at its file (ASS-277)
     ...projects.flatMap(({ id }) => [
-      join(dir(id), 'project.json'), join(dir(id), 'gcloud-requires-reauthentication'), join(dir(id), 'glab-requires-reauthentication'), join(dir(id), 'rate-limit.json'), join(dir(id), 'claude-usage.json'), join(dir(id), 'push-account.json'), join(dir(id), 'api-cost.json'), join(dir(id), 'memory-spend.json'), join(dir(id), 'sprints.json'), join(dir(id), 'backlog.json'), join(dir(id), 'global-questions-and-answers.json'), join(dir(id), 'chat-spend.json'),
+      join(dir(id), 'project.json'), join(dir(id), 'gcloud-requires-reauthentication'), join(dir(id), 'glab-requires-reauthentication'), join(dir(id), 'rate-limit.json'), join(dir(id), 'claude-usage.json'), join(dir(id), 'push-account.json'), join(dir(id), 'api-cost.json'), join(dir(id), 'memory-spend.json'), join(dir(id), 'sprints.json'), join(dir(id), 'backlog.json'), join(dir(id), 'global-questions-and-answers.json'), join(dir(id), 'chat-spend.json'), join(dir(id), 'vms.json'),   // vms.json: its VMs' credential kinds (ASS-333, hasApiKey)
       ...(existsSync(work(id)) ? readdirSync(work(id)).toSorted() : []).flatMap(ticket => ['questions-and-answers.json', 'collaboration.json'].map(file => join(work(id), ticket, file))),
     ]),
     ...(shown ? [shown] : []),

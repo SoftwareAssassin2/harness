@@ -79,7 +79,7 @@ function compactHeader(state, columns, now) {
   const dayOf = sprint ? `day ${today - sprintDay(sprint.start) + 1} of ${sprintDay(sprint.end) - sprintDay(sprint.start) + 1}` : '';
   const ends = left === 0 ? 'sprint ends today' : left > 0 ? `sprint ends in ${left} day${left > 1 ? 's' : ''}` : 'sprint ended';
   const name = project?.name ?? 'this project';
-  const chips = heldTitles(holding(state), healingFor(state), limitFor(project), project?.accountHold ?? null)
+  const chips = heldTitles(holding(state), healingFor(state), limitFor(project, now).limit, project?.accountHold ?? null)
     .map(title => color('41;97')(` ${title} `)).join(' ');
   const info = sprint
     ? `${name} — sprint ${sprint.number} — ${state.focus === 'day' ? `\x1b[7m${dayOf}\x1b[0m` : dayOf} — ${ends}`
@@ -99,7 +99,7 @@ function compactHeader(state, columns, now) {
 // beside its day box and its metric tiles at the right. The flow screens take
 // the compact header above instead.
 export const headerLines = (state, columns, now) => (state.screen === 'S' || state.screen === 'B' ? compactHeader(state, columns, now) : [
-  ...banner(holding(state), healingFor(state), limitFor(state.projects[state.project]), columns, PAUSABLE.has(state.screen), now, state.projects[state.project]?.accountHold ?? null),
+  ...banner(holding(state), healingFor(state), limitFor(state.projects[state.project], now), columns, PAUSABLE.has(state.screen), now, state.projects[state.project]?.accountHold ?? null),
   ...diskLines(state.disk, columns),
   ...state.assignments.filter(a => a['health-check'] === true)
     .map(a => center(agentLine(a), columns)),
@@ -272,18 +272,41 @@ function apiCostLines(apiCost, now) {
 // resets, counting down; for self-healing what is being fixed, the ticket
 // (linked) and the tickets it paused, else for an AI's pause why; an AI's ETA; and where space works
 // (`pausable`), what it does — it holds and releases the human's pause alone.
-// The paused banner keeps its height either way.
+// The paused banner keeps its height either way. Running while its API key
+// stands in for its rate-limited subscription (limitFor's onApiKey), a line
+// beneath says so, with when the subscription's limit resets (ASS-333).
 const WINDOWS = { five_hour: '5-hour window', seven_day: '7-day window' };
-// limitFor(project) — the project's rate limit for the banner (ASS-215: its
-// rate-limit.json holds one per credential kind): the entry resetting last,
-// { since, type, resets-at }, with kinds (every kind held, sorted) and cap (its api-cap-hold, ASS-217, or null); null when
-// it holds none.
-function limitFor(project) {
-  const entries = Object.entries(project?.rateLimit ?? {}).filter(([, e]) => e?.['resets-at']);
-  if (!entries.length) return null;
-  const [, latest] = entries.reduce((a, b) => (Date.parse(b[1]['resets-at']) > Date.parse(a[1]['resets-at']) ? b : a));
-  return { ...latest, kinds: entries.map(([kind]) => kind).toSorted(), cap: project.apiCapHold ?? null };
+// limitFor(project, now) — the project's rate limits for the banner and the
+// chips (ASS-215: its rate-limit.json holds one per credential kind), as
+// { limit, onApiKey }, read as control's paymentFor (dispatch.js) reads them
+// (ASS-333). limit: whether its agents are held — with no API key to fall back
+// to (apiKey, load.js hasApiKey) while any kind is; with one, while its claude
+// kind is and its anthropic kind is too or an API cap holds (api-cap-hold,
+// ASS-217) — as the entry that lifts the hold first, { since, type, resets-at },
+// with kinds (every kind held, sorted) and cap (the api-cap-hold, or null);
+// else null. onApiKey: the claude kind's entry while the API key carries the
+// work in its place, else null.
+function limitFor(project, now) {
+  const limits = Object.fromEntries(Object.entries(project?.rateLimit ?? {}).filter(([, e]) => e?.['resets-at']));
+  const kinds = Object.keys(limits).toSorted(), cap = project?.apiCapHold ?? null, { claude, anthropic } = limits;
+  // When an entry lifts: its reset; never for one without (a sprint's cap, till the next sprint).
+  const lifts = entry => (entry['resets-at'] ? Date.parse(entry['resets-at']) : Infinity);
+  const held = entry => ({ limit: { ...entry, kinds, cap }, onApiKey: null });
+  if (!kinds.length || (project.apiKey && !claude)) return { limit: null, onApiKey: null };
+  if (!project.apiKey) return held(Object.values(limits).reduce((a, b) => (lifts(b) < lifts(a) ? b : a)));
+  if (!anthropic && !cap) return { limit: null, onApiKey: claude };
+  // Held on both: the subscription frees it at its reset, the API key once its
+  // kind resets and its cap lifts — a day's at the next midnight UTC, as
+  // spend.js daySpend counts the day — whichever comes first.
+  const day = new Date(now), midnight = new Date(Date.UTC(day.getUTCFullYear(), day.getUTCMonth(), day.getUTCDate() + 1)).toISOString();
+  const api = [anthropic, cap && { ...claude, 'resets-at': cap.cap === 'day' ? midnight : null }].filter(Boolean).reduce((a, b) => (lifts(b) > lifts(a) ? b : a));
+  return held(lifts(api) < lifts(claude) ? api : claude);
 }
+// resetText(at, now) — when a limit resets, counting down: "<time> — in 2h 0m", or "— 1m 0s ago" once past.
+const resetText = (at, now) => {
+  const left = Date.parse(at) - now;
+  return `${timestamp(new Date(at))} — ${left >= 0 ? `in ${duration(left)}` : `${duration(-left)} ago`}`;
+};
 // capText(cap) — the API cap holding the project's fallback to its API key
 // (ASS-217: project.json api-cap-hold), as the Limit line ends with it; '' for none.
 const capText = cap => (cap ? ` — no agent starts on the API key: its ${cap.cap} cap is reached (${spendText(cap['spend-usd'], cap['limit-usd'])})` : '');
@@ -318,14 +341,17 @@ function healingFor(state) {
 export const heldTitles = ({ human, ai }, healing, limit, account) =>
   [limit && 'RATE LIMITED', account && 'SIGN IN', healing ? 'SELF HEALING' : ai && 'PAUSED BY AI', human && 'PAUSED BY HUMAN'].filter(Boolean);
 
-function banner({ human, ai, humanHolds, aiHolds, name, mine, everyone }, healing, limit, columns, pausable, now, account = null) {
+function banner({ human, ai, humanHolds, aiHolds, name, mine, everyone }, healing, { limit, onApiKey }, columns, pausable, now, account = null) {
   const keys = held => `press space to ${mine ? 'release' : 'pause'} ${name}${!mine && held ? ' too' : ''} — ! to ${everyone ? 'release' : 'pause'} every project`;
-  if (!human && !ai && !healing && !limit && !account) return [center(`${green('RUNNING')}  agents are working${pausable ? ` — ${keys(false)}` : ''}`, columns)];
+  if (!human && !ai && !healing && !limit && !account) return [
+    center(`${green('RUNNING')}  agents are working${pausable ? ` — ${keys(false)}` : ''}`, columns),
+    // ASS-333: the subscription limited, its API key carrying the work.
+    ...(onApiKey ? [center(`Subscription rate limited — agents are on the API key until it resets ${resetText(onApiKey['resets-at'], now)}`, columns)] : []),
+  ];
   const [title, ...also] = heldTitles({ human, ai }, healing, limit, account);
   const block = blockText(title);
   const pad = indent(block[0].length, columns);
   const left = Date.parse(ai?.eta) - now;
-  const reset = Date.parse(limit?.['resets-at']) - now;
   const hint = `${keys(Boolean(human || ai || limit))}${limit ? ' — the limit lifts on its own' : ai ? ' — only the AI can release its pause' : ''}`;
   return [
     ...block.map((line, i) => (also[i] ? `${pad}${red(line)}  ${red(`+ ${also[i]}`)}` : pad + red(line.trimEnd()))),
@@ -334,7 +360,7 @@ function banner({ human, ai, humanHolds, aiHolds, name, mine, everyone }, healin
     ...(title === 'SIGN IN' ? [center(`Sign in: ${account['config-dir'] ? `CLAUDE_CONFIG_DIR=${account['config-dir']} ` : ''}claude, then /login as ${account.expected}`, columns)] : []),
     ...(limit ? [
       center(`Limit: ${WINDOWS[limit.type] ?? limit.type}${capText(limit.cap)}`, columns),
-      center(`Resets: ${timestamp(new Date(limit['resets-at']))} — ${reset >= 0 ? `in ${duration(reset)}` : `${duration(-reset)} ago`}`, columns),
+      center(`Resets: ${resetText(limit['resets-at'], now)}`, columns),
     ] : []),
     ...(healing ? [
       center(`Fixing: ${healing.summary}`, columns),

@@ -324,11 +324,12 @@ test('rate limited: RATE LIMITED in block letters, the limit\'s window and when 
   const later = lines(limited(state), { ...screen, now: new Date('2026-10-01T18:05:00Z') });
   centered(later[8], 'Resets: Thu Oct 1 @ 6:04 PM UTC — 1m 0s ago');
   centered(lines(limited(state, { claude: { ...LIMIT.claude, type: 'monthly' } }))[7], 'Limit: monthly');
-  // ASS-215: two kinds held — the banner names both; Limit and Resets are the latest entry's.
+  // ASS-215: two kinds held — the banner names both; Limit and Resets are the
+  // entry resetting first, which lifts the hold first (ASS-333).
   const kinds = lines(limited(state, { ...LIMIT, anthropic: { since: '2026-10-01T17:00:00Z', type: 'seven_day', 'resets-at': '2026-10-01T19:04:00Z' } }));
   centered(kinds[6], 'RATE LIMITED — control sends its anthropic and claude agents nothing until it resets');
-  centered(kinds[7], 'Limit: 7-day window');
-  centered(kinds[8], 'Resets: Thu Oct 1 @ 7:04 PM UTC — in 3h 0m');
+  centered(kinds[7], 'Limit: 5-hour window');
+  centered(kinds[8], 'Resets: Thu Oct 1 @ 6:04 PM UTC — in 2h 0m');
   assert.match(lines(limited(state, {}))[0], /RUNNING/);   // an empty map holds nothing
   // ASS-217 AC4: an API cap holding the project's fallback is named on the Limit line.
   const capped = s => ({ ...s, projects: [{ ...s.projects[0], apiCapHold: { since: '2026-10-01T17:00:00Z', cap: 'day', 'spend-usd': 10.4, 'limit-usd': 10 } }, ...s.projects.slice(1)] });
@@ -742,6 +743,43 @@ test('heldTitles: the held states strongest first, SELF HEALING in place of PAUS
   assert.deepEqual(frame.heldTitles({ human: 1, ai: 1 }, false, 1, 1), ['RATE LIMITED', 'SIGN IN', 'PAUSED BY AI', 'PAUSED BY HUMAN']);
   assert.deepEqual(frame.heldTitles({ human: 1, ai: 1 }, true, 1, 1), ['RATE LIMITED', 'SIGN IN', 'SELF HEALING', 'PAUSED BY HUMAN']);
   assert.deepEqual(frame.heldTitles({ human: null, ai: null }, false, null, null), []);
+});
+
+// ASS-333: a project with an API key to fall back to (loadProjects' apiKey),
+// rate limited as given, with an API cap held or not.
+const withKey = (s, rateLimit, apiCapHold = null, apiKey = true) => ({ ...s, projects: [{ ...s.projects[0], rateLimit, apiCapHold, apiKey }, ...s.projects.slice(1)] });
+const ANTHROPIC = { since: '2026-10-01T17:00:00Z', type: 'seven_day', 'resets-at': '2026-10-01T19:04:00Z' };
+const DAY_CAP = { since: '2026-10-01T17:00:00Z', cap: 'day', 'spend-usd': 10.4, 'limit-usd': 10 };
+
+test('ASS-333 AC1: a project with an API key whose subscription alone is rate limited shows RUNNING, with a line saying its agents are on the API key until the subscription\'s limit resets — no RATE LIMITED banner or chip', () => {
+  const out = lines(withKey(state, LIMIT));
+  assert.match(out[0], /RUNNING/);
+  centered(out[1], 'Subscription rate limited — agents are on the API key until it resets Thu Oct 1 @ 6:04 PM UTC — in 2h 0m');
+  assert.ok(!out.some(l => l.includes('RATE LIMITED')), out.join('\n'));
+  for (const flow of FLOWS) assert.ok(!infoOf(withKey({ ...state, screen: flow }, LIMIT)).raw.includes(chip('RATE LIMITED')), flow);
+  // Its API key alone limited, the subscription carries the work: running, as control dispatches it.
+  assert.ok(!lines(withKey(state, { anthropic: ANTHROPIC })).some(l => l.includes('RATE LIMITED') || l.includes('Subscription rate limited')));
+});
+
+test('ASS-333 AC2: RATE LIMITED still shows with no API key to fall back to, with the API key limited too, or with an API cap held — its reset the one that lifts the hold first', () => {
+  const later = { claude: { ...LIMIT.claude, 'resets-at': '2026-10-02T03:00:00Z' } };
+  for (const [name, held_, limit, resets] of [
+    // No API key: any kind held holds it; the earliest reset lifts it.
+    ['no key', withKey(state, { ...LIMIT, anthropic: ANTHROPIC }, null, false), 'Limit: 5-hour window', 'Resets: Thu Oct 1 @ 6:04 PM UTC — in 2h 0m'],
+    // Both kinds held: the earlier reset frees one of them.
+    ['key limited too', withKey(state, { ...LIMIT, anthropic: ANTHROPIC }), 'Limit: 5-hour window', 'Resets: Thu Oct 1 @ 6:04 PM UTC — in 2h 0m'],
+    ['key limited first', withKey(state, { ...later, anthropic: ANTHROPIC }), 'Limit: 7-day window', 'Resets: Thu Oct 1 @ 7:04 PM UTC — in 3h 0m'],
+    // An API cap held: the subscription's reset, or the day cap's next midnight UTC when that comes first.
+    ['day cap', withKey(state, LIMIT, DAY_CAP), 'Limit: 5-hour window — no agent starts on the API key: its day cap is reached ($10.40 of $10)', 'Resets: Thu Oct 1 @ 6:04 PM UTC — in 2h 0m'],
+    ['day cap first', withKey(state, later, DAY_CAP), 'Limit: 5-hour window — no agent starts on the API key: its day cap is reached ($10.40 of $10)', 'Resets: Fri Oct 2 @ 12:00 AM UTC — in 7h 56m'],
+    ['sprint cap', withKey(state, later, { ...DAY_CAP, cap: 'sprint' }), 'Limit: 5-hour window — no agent starts on the API key: its sprint cap is reached ($10.40 of $10)', 'Resets: Fri Oct 2 @ 3:00 AM UTC — in 10h 56m'],
+  ]) {
+    const out = lines(held_);
+    assert.equal(out[0].trim(), '█████ █████ █████ █████   █     █████ █   █ █████ █████ █████ ████', name);
+    centered(out[7], limit);
+    centered(out[8], resets);
+    for (const flow of FLOWS) assert.ok(infoOf({ ...held_, screen: flow }).raw.includes(chip('RATE LIMITED')), `${name} ${flow}`);
+  }
 });
 
 test('S and B: the diagram gains the freed lines (ASS-187)', () => {
