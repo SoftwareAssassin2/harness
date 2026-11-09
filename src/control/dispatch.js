@@ -28,6 +28,29 @@ import { overSpent, runningOn } from './spend.js';
 
 const PHASE = 'dispatch';
 
+// hasPendingTool(event) — an assistant turn that left background work still
+// running (ASS-334): a `tool_use` of a tool the SDK runs in the background, so
+// finish.js holds the agent instead of killing it mid-wait. The five shapes
+// the SDK actually backgrounds, each with the input that makes it so:
+// - Bash with run_in_background: true (a detached command),
+// - Agent not run_in_background: false (sub-agents background by default),
+// - ScheduleWakeup not stop: true (arming, not cancelling, a wakeup),
+// - Monitor (always runs until its condition or timeout),
+// - Workflow (runs in the background by contract).
+// A tool not listed is the status quo (no hold), not a regression. Mirrors
+// session.js's `content.flatMap(c => c.type === 'tool_use' ? …)` shape.
+const PENDING_TOOLS = {
+  Bash: input => input?.run_in_background === true,
+  Agent: input => input?.run_in_background !== false,
+  ScheduleWakeup: input => input?.stop !== true,
+  Monitor: () => true,
+  Workflow: () => true,
+};
+function hasPendingTool(event) {
+  if (event.type !== 'assistant') return false;
+  return [event.message?.content ?? []].flat().some(c => c.type === 'tool_use' && PENDING_TOOLS[c.name]?.(c.input));
+}
+
 // outputSchema(promptsDir, prompt) — prompts/<prompt>/prompt.json's `output`
 // when it is an object with properties, else undefined: the agent command
 // gets it as --json-schema, and finish.js reads `structured_output` from the
@@ -320,7 +343,7 @@ async function startFor(ctx, state, project, record, vm, repository, step, payme
   // In a VM its ticket folder is the mount and agent.sh the VM's own: what the prompt's commands run.
   const vmArgs = vm ? [`ticket-folder=${TICKET_FOLDER}`, 'agent-sh=agent.sh'] : [];
   await ctx.cli(['agent:dispatch', name, `folder=${folder}`, `where=${vm ? vmWhereText(project, vm, repository) : confined ? confinedWhereText(folder, codeAt) : whereText(ctx, folder, container, containerFolder, repository)}`, `project-code-folder=${codeFolder(project, vm, codeAt, repository)}`, ...vmArgs, ...aboutArgs]);
-  const live = { name, project: project.id, record, repository, startedAt: ctx.now(), result: null, exited: null, cost: 0, tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, sessionRecorded: false, rateLimit: null,
+  const live = { name, project: project.id, record, repository, startedAt: ctx.now(), result: null, exited: null, cost: 0, tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, sessionRecorded: false, rateLimit: null, pending: null, pendingThisTurn: false,
     vm: vm ?? null, payment, kind: payment ? (payment === 'api' ? 'anthropic' : 'claude') : vm ? credentialKindOf(ctx, project.id, vm) : kindOfAccount(account) };
   live.agent = startAgent({
     name, root: dirname(ctx.paths.agents), cwd: folder, vm: vm ?? undefined, model: record.model,
@@ -330,9 +353,19 @@ async function startFor(ctx, state, project, record, vm, repository, step, payme
     usage: { prices: state.harness['model-prices'] ?? {}, windows: mergedWindows(state.harness, state.contextWindows) },
     // limactl shell passes no environment into the VM: its own (vm:credentials) is the agent's there.
     env: vm ? ctx.env : dir ? { ...process.env, CLAUDE_CONFIG_DIR: dir } : process.env,
-    onEvent: event => { if (event.type === 'rate_limit_event' && event.rate_limit_info?.status === 'rejected') live.rateLimit = event.rate_limit_info; },
+    onEvent: event => {
+      if (event.type === 'rate_limit_event' && event.rate_limit_info?.status === 'rejected') live.rateLimit = event.rate_limit_info;
+      if (hasPendingTool(event)) live.pendingThisTurn = true;
+    },
     onResult: event => {
       live.result = event;
+      // The turn ended with a backgrounded task or a scheduled wakeup still
+      // pending (ASS-334): hold finishing it (finish.js). Reset on every
+      // result, so a later turn with nothing pending clears the hold and each
+      // pending turn restarts the clock (an agent making progress is never
+      // timed out).
+      live.pending = live.pendingThisTurn ? { at: ctx.now().getTime() } : null;
+      live.pendingThisTurn = false;
       live.cost += (event.total_cost_usd ?? 0) - live.agent.lastTotalCost;
       const usage = event.usage ?? {};
       live.tokens.input += usage.input_tokens ?? 0;

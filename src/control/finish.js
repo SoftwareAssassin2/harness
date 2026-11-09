@@ -16,6 +16,14 @@ import { readUsage } from '../agents/session-usage.js';
 
 const PHASE = 'finish';
 
+// pendingWaitMs(state) — how long finish holds an agent whose turn ended with
+// background work still pending (ASS-334), in ms: harness.json's
+// agent-pending-work-wait-seconds, 30 minutes by default. The bound releases an
+// agent whose work never completes. Same `state.harness[...] ?? default`
+// pattern as supervise.js's agent-graceful-shut-down-delay-in-seconds; no entry
+// in data/harness.json is needed for the default to apply.
+const pendingWaitMs = state => (state.harness['agent-pending-work-wait-seconds'] ?? 1800) * 1000;
+
 // turnComplete(group, pen) — a step's turn is complete when the pen-holder's
 // turn has ended and every other agent of the assignment has approved:
 // `group` the assignment's records, `pen` the pen-holder's, whose turn is
@@ -102,6 +110,9 @@ async function endAgent(ctx, live) {
   } finally {
     live.agent.stop();
     ctx.agents.delete(live.name);
+    // The pending-work warned keys (ASS-334) are per span; drop this agent's
+    // once it is gone, so ctx.memory.warned does not keep one for every span.
+    for (const key of ctx.memory.warned) if (key.startsWith(`pending/${live.name}/`)) ctx.memory.warned.delete(key);
   }
 }
 
@@ -209,6 +220,25 @@ async function finishOne(ctx, state, live) {
     for (const l of lives) await endAgent(ctx, l);
     return;
   }
+  // Hold the whole group while any live member's last turn left background work
+  // pending, bounded by pendingWaitMs (ASS-334). Checked over `lives`, not the
+  // single `live` whose result triggered finishOne: finishOne ends every member
+  // once turnComplete, so a per-live check would SIGTERM a paired agent still
+  // waiting on its own pending work. Past the bound, finish anyway and log a
+  // timeout, so work that never completes still releases the agent.
+  const wait = pendingWaitMs(state), now = ctx.now().getTime();
+  const pending = lives.filter(l => l.pending && l.result && !l.exited);
+  const within = pending.filter(l => now - l.pending.at < wait);
+  if (within.length) {
+    for (const l of within) {
+      const key = `pending/${l.name}/${l.pending.at}`;
+      if (ctx.memory.warned.has(key)) continue;
+      ctx.memory.warned.add(key);
+      ctx.log(PHASE, `${l.name}: turn ended with pending background work; waiting up to ${held(wait)} before finishing`);
+    }
+    return;
+  }
+  for (const l of pending) ctx.log(PHASE, `${l.name}: pending background work still outstanding after ${held(wait)}; finishing anyway (timeout)`);
   const pen = group.find(a => a['agent-name'] === a['pen-holder']) ?? group[0];
   const penLive = ctx.agents.get(pen['agent-name']);
   if (!penLive?.result || !turnComplete(group, pen)) return;   // a pair agent done, or approvals still to come
