@@ -45,7 +45,7 @@
     "harness-project": "harness",
     "max-tickets-in-grooming": 5,
     "forwarder-port": 7787,
-    "vm-disk-limit-gb": 120,
+    "vm-disk-limit-gb": 320,
     "disk-free-warn-gb": 50,
     "disk-free-hold-gb": 15,
     "api-monthly-budget-usd": 50,
