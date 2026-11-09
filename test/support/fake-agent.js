@@ -24,7 +24,10 @@
 // FAKE_SUBAGENT_USAGE (a JSON { input_tokens, ... }) a sub-agent assistant
 // event (parent_tool_use_id: "sub1") with that usage comes first. With
 // FAKE_CONTEXT_WINDOW (a token count) the result event's modelUsage names it
-// for the turn's model. With FAKE_NO_START it cannot start (ASS-167): says
+// for the turn's model. With FAKE_PENDING (a keyword of PENDING_TOOLS, below,
+// ASS-334) a turn first says a tool_use of a tool that works in the background,
+// so its turn ends with work pending; FAKE_PENDING_UNTIL (a turn number) limits
+// that to that turn and the ones before it. With FAKE_NO_START it cannot start (ASS-167): says
 // "claude: command not found" on stderr and exits 127, no init event. With
 // FAKE_API_KEY_SOURCE the init event names it as its apiKeySource (ASS-216):
 // "none" is a subscription login. With FAKE_UNFINISHED (a turn number, ASS-268)
@@ -45,6 +48,19 @@ if (process.argv[2] === 'auth' && process.argv[3] === 'status') {
 if (process.env.FAKE_NO_START) { process.stderr.write('claude: command not found\n'); process.exit(127); }
 const say = event => process.stdout.write(`${JSON.stringify(event)}\n`);
 const model = process.env.FAKE_MODEL ?? 'fake-model';
+// What FAKE_PENDING names (ASS-334), said as a tool_use assistant block before
+// the turn's result: the five shapes that leave work pending — bash, schedule,
+// monitor, workflow, agent — and two that do not, schedule-stop (a wakeup
+// cancelled) and agent-foreground (a sub-agent run in the foreground).
+const PENDING_TOOLS = {
+  bash: { name: 'Bash', input: { command: 'sleep 1', run_in_background: true } },
+  schedule: { name: 'ScheduleWakeup', input: { delaySeconds: 60 } },
+  monitor: { name: 'Monitor', input: { until: 'done', timeoutSeconds: 60 } },
+  workflow: { name: 'Workflow', input: { script: 'export const meta = {}' } },
+  agent: { name: 'Agent', input: { prompt: 'go' } },
+  'schedule-stop': { name: 'ScheduleWakeup', input: { stop: true } },
+  'agent-foreground': { name: 'Agent', input: { prompt: 'go', run_in_background: false } },
+};
 let turns = 0, buffer = '';
 say({ type: 'system', subtype: 'init', session_id: 'fake-session', model: 'fake', ...(process.env.FAKE_API_KEY_SOURCE ? { apiKeySource: process.env.FAKE_API_KEY_SOURCE } : {}) });
 say({ type: 'assistant', message: { content: [{ type: 'text', text: `args ${process.argv.slice(2).join(' ')}` }] } });
@@ -79,6 +95,9 @@ async function answer(lines) {
     const text = JSON.parse(line).message.content;
     turns++;
     if (process.env.FAKE_MEMORY) await remember();
+    if (process.env.FAKE_PENDING && (!process.env.FAKE_PENDING_UNTIL || turns <= Number(process.env.FAKE_PENDING_UNTIL))) {
+      say({ type: 'assistant', parent_tool_use_id: null, message: { model, content: [{ type: 'tool_use', id: `p${turns}`, ...PENDING_TOOLS[process.env.FAKE_PENDING] }] } });
+    }
     if (process.env.FAKE_EXIT) process.exit(1);
     if (process.env.FAKE_ERROR) {
       say({ type: 'result', subtype: 'error_during_execution', is_error: true, duration_ms: 500, total_cost_usd: turns * 0.5, usage: { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } });
