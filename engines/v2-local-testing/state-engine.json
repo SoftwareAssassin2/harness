@@ -37,6 +37,8 @@
             "sequence": 2,
             "name": "Test",
             "description": "Testing the solution locally against the acceptance criteria",
+            "max-visits": 3,
+            "on-max-visits": "done",
             "action": {
                 "type": "prompt",
                 "prompt": "test-grouped",
@@ -44,6 +46,21 @@
                 "run-in-dev-container": true
             },
             "exit-events": [
+                {
+                    "condition": {
+                        "all": [
+                            {
+                                "turn-complete": true
+                            },
+                            {
+                                "structured-output": {
+                                    "did-not-finish": true
+                                }
+                            }
+                        ]
+                    },
+                    "move-to-state": "test"
+                },
                 {
                     "condition": {
                         "all": [

@@ -32,6 +32,10 @@
                 "type": "boolean",
                 "description": "true when every acceptance criterion passed; false sends the ticket back to build"
             },
+            "did-not-finish": {
+                "type": "boolean",
+                "description": "true when the testing itself did not complete within the turn (a suite cut short, say), so the verdict is no judgement of the change: the v2 engines re-run Test instead of sending the ticket back to build. Give it on every verdict, false when the testing did finish"
+            },
             "summary": {
                 "type": "string",
                 "description": "One line: what passed, or what failed"

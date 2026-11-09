@@ -207,6 +207,22 @@ test('ASS-304: test-grouped never ends its turn while a command it started is st
   assert.doesNotMatch(readFileSync(join(ROOT, 'prompts', 'test', 'prompt.txt'), 'utf8'), /end your turn|still running/);
 });
 
+// ASS-317: an unfinished test run (the suite cut short within the turn) read
+// as a rejection and cost a Build round and a Test visit. test-grouped's
+// output gains a third verdict, did-not-finish, on which v2's Test re-runs;
+// optional, so every caller of the shared shape stays valid, and the flat
+// test prompt's output kept the same (the deep-equal above).
+test('ASS-317 AC1: test-grouped\'s output has did-not-finish, a boolean, not required, no other field allowed, the flat test prompt\'s the same; its prompt says when to set it', () => {
+  for (const name of ['test-grouped', 'test']) {
+    const { output } = JSON.parse(readFileSync(join(ROOT, 'prompts', name, 'prompt.json'), 'utf8'));
+    assert.equal(output.properties['did-not-finish']?.type, 'boolean', name);
+    assert.ok(!output.required.includes('did-not-finish'), name);
+    assert.deepEqual(output.required, ['is-approved', 'summary'], name);
+    assert.equal(output.additionalProperties, false, name);
+  }
+  assert.match(readFileSync(join(ROOT, 'prompts', 'test-grouped', 'prompt.txt'), 'utf8'), /did-not-finish/);
+});
+
 // Add Screenshots to Merge Request runs in the VM (ASS-115) and attaches the
 // screenshots Local Testing took to every Open merge request. GitLab takes an
 // image through its uploads API; GitHub has no API to attach one to a pull

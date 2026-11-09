@@ -20,7 +20,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readdirSync, readFileSync, existsSync, cpSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { stepOf, nextState } from '../../src/control/engine.js';
+import { stepOf, nextState, visitsInto } from '../../src/control/engine.js';
 import { firstStepId } from '../../src/control/moves.js';
 import { validateStateEngine } from '../../src/workflow/validate.js';
 import { working, sameShared, inOrder, engineDir, engineNames, EXAMPLE_ENGINES } from '../support/engine-walk.js';
@@ -61,6 +61,13 @@ const beforeQueue = engine => ({ ...engine, steps: engine.steps.filter(s => !(s.
     : s.id === 'release' && engine === engines[TOP] ? { ...s, 'exit-events': s['exit-events'].filter(e => e['move-to-state'] !== 'build') } : s)) });
 // An engine with its v2-* sub-engines named as their grouped-* references (switchedOn).
 const asGrouped = engine => ({ ...engine, steps: engine.steps.map(switchedOn).map(s => s.action.type === 'state-engine' ? { ...s, action: { ...s.action, engine: s.action.engine.replace(/^v2-/, 'grouped-') } } : s) });
+// ASS-317: v2's Test re-runs on an unfinished verdict (did-not-finish), the grouped engines' not — a step read without that
+// re-run exit (withoutReRun), and v2-local-testing's Test without the visit cap its self-loop needs too (withoutTestReRun).
+const reRuns = exit => JSON.stringify(exit.condition).includes('"did-not-finish":true');
+const withoutReRun = step => (step['exit-events'] ? { ...step, 'exit-events': step['exit-events'].filter(e => !reRuns(e)) } : step);
+const withoutTestReRun = step => { if (step.id !== 'test') return step; const { 'max-visits': _, 'on-max-visits': __, ...rest } = withoutReRun(step); return rest; };
+// The step's exit into `to`.
+const exitTo = (step, to) => step['exit-events'].find(e => e['move-to-state'] === to);
 
 test('AC1: harness-development-v2 is the exception states, Backlog, Committed, the seven groups in order and Done, each group a sub-engine of its own — the steps added back so far (ASS-111), then Pass Through straight to done, or once filled its grouped-* engine exactly; validate.js accepts them all', () => {
   hasInOrder(ids(TOP), [...EXCEPTIONS, 'backlog', 'committed', ...GROUPS, 'done']);
@@ -69,7 +76,7 @@ test('AC1: harness-development-v2 is the exception states, Backlog, Committed, t
     assert.deepEqual(action, { type: 'state-engine', engine: `v2-${group}` }, group);
     // Filled, it is the engine harness-development-grouped's group step runs (Release's grouped-release-harness).
     // Build's is grouped-build as it was before ASS-249's CI Checks (groupedBuild).
-    if (FILLED.includes(group)) { const grouped = stepOf(engines['harness-development-grouped'], group).action.engine; sameShared(asGrouped(beforeQueue(engines[action.engine])), grouped === 'grouped-build' ? groupedBuild : engines[grouped], { message: group }); continue; }
+    if (FILLED.includes(group)) { const grouped = stepOf(engines['harness-development-grouped'], group).action.engine; sameShared(asGrouped(beforeQueue(engines[action.engine])), grouped === 'grouped-build' ? groupedBuild : engines[grouped], { message: group, as: withoutReRun }); continue; }
     const stub = engines[action.engine], through = stepOf(stub, 'pass-through');
     hasInOrder(ids(action.engine), [...(ADDED[group] ?? []), 'pass-through', 'done', 'blocked', ...(ENDS[group] ?? [])], group);
     assert.deepEqual(stub.steps.map(s => s.sequence), stub.steps.map((_, i) => i + 1), group);
@@ -556,19 +563,38 @@ const tested = given => { const trail = walk(TOP, given), at = trail.indexOf(`${
 const LOCAL = [`${TOP}/test`, 'v2-test/local-testing', 'v2-local-testing/await-golden-build', 'v2-local-testing/test'];
 // The test prompt's verdict `approved`, every other step's approved.
 const testVerdict = approved => at => ({ 'is-approved': at === 'test' ? approved : true });
+// ASS-317: the test prompt's third verdict — the suite did not finish within
+// the turn (did-not-finish), which is no rejection but a re-run. An unfinished
+// run carries is-approved false too, so a verdict is given whole, the field
+// false on a finished one, as the agent returns it: a run's output is merged
+// visit by visit, so a field left out of a later verdict keeps the earlier
+// one's true and the step would re-run for ever.
+const UNFINISHED = { 'is-approved': false, 'did-not-finish': true, summary: 'npm test still running' };
+const FINISHED = approved => ({ 'is-approved': approved, 'did-not-finish': false, summary: 'x' });
+// The test prompt's verdicts by visit (the last repeated, as the shared walk()'s
+// answers are), every other step's approved — a fresh count for each call.
+const testVerdicts = (...verdicts) => { let n = 0; return at => (at === 'test' ? verdicts[Math.min(n++, verdicts.length - 1)] : { 'is-approved': true }); };
+// ASS-317: a Test re-run as control records it — the variation stays in the
+// top-level step, the move itself a sub-state-change, one level per engine
+// below it (as nest() in test/control/engine.test.js): reRun(['v2-test',
+// 'local-testing']) is the outer step's re-run, reRun(['v2-test',
+// 'local-testing'], ['v2-local-testing', 'test']) the inner one's inside it.
+// visitsInto counts no such change as a visit (src/control/engine.js:129).
+const nested = ([[engine, step], ...rest]) => ({ 'state-engine': engine, 'from-state': step, 'to-state': step, ...(rest.length ? { 'sub-state-change': nested(rest) } : {}) });
+const reRun = (...levels) => ({ 'from-state': 'test', 'to-state': 'test', 'sub-state-change': nested(levels) });
 
 test('ASS-114 AC1 (pair 1): v2-test\'s first step is grouped-test\'s Local Testing, running v2-local-testing — grouped-local-testing field for field (Test, then Take Screenshots, then done) after ASS-157\'s Await the Golden Build, but for Test\'s prompt, test-grouped, the grouped copy of the flat engines\' test — its approval going on to Steps to Test since pair 2 (so the step is grouped-test\'s but for its sub-engine\'s name), its rejection to the Rebuild done step; the Test group step takes grouped\'s exits (Rebuild back into Build at Generate Solution) and records the run\'s verdict as local-testing; validate.js accepts them', () => {
   const engine = engines['v2-test'], ref = stepOf(engines['grouped-test'], 'local-testing');
   assert.equal(firstStepId(engine), 'local-testing');
   const local = stepOf(engine, 'local-testing');
-  same(local, { ...ref, action: { type: 'state-engine', engine: 'v2-local-testing' } });
+  same(withoutReRun(local), { ...ref, action: { type: 'state-engine', engine: 'v2-local-testing' } });
   assert.deepEqual([ref.action.engine, ref['exit-events'][0]['move-to-state'], ref['exit-events'][1]['move-to-state']], ['grouped-local-testing', 'steps-to-test', 'rebuild']);
   assert.deepEqual([local['max-visits'], local['on-max-visits']], [3, 'blocked']);
   same({ ...stepOf(engine, 'rebuild'), sequence: 0 }, { ...stepOf(engines['grouped-test'], 'rebuild'), sequence: 0 });
   const sub = engines['v2-local-testing'], reference = engines['grouped-local-testing'];
   // ASS-157: v2's alone first awaits a golden rebuild's image build (Await the Golden Build), its steps after it a sequence on.
   hasInOrder(ids('v2-local-testing'), ['await-golden-build', 'test', 'take-screenshots', 'done']);
-  sameShared(sub, { ...reference, steps: reference.steps.map(s => s.id === 'test' ? { ...s, action: { ...s.action, prompt: 'test-grouped' } } : s) });
+  sameShared(sub, { ...reference, steps: reference.steps.map(s => s.id === 'test' ? { ...s, action: { ...s.action, prompt: 'test-grouped' } } : s) }, { as: withoutTestReRun });
   for (const [id, prompt] of [['test', 'test-grouped'], ['take-screenshots', 'take-screenshots-grouped']]) {
     const step = stepOf(sub, id);
     assert.deepEqual([step.action.type, step.action.prompt, step['run-location']], ['prompt', prompt, 'vm'], id);
@@ -596,8 +622,8 @@ test('ASS-157: Await the Golden Build — v2-local-testing\'s first step, a time
 test('ASS-114 AC2 (pair 1): Test — its turn done and every criterion passed goes to Take Screenshots; any failed ends Local Testing at done with the verdict, skipping the screenshots; no verdict (or the turn not done) matches no exit', () => {
   const engine = engines['v2-local-testing'], step = stepOf(engine, 'test');
   const verdict = approved => ({ turnComplete: true, structuredOutput: { 'is-approved': approved, summary: 'x' } });
-  assert.deepEqual(nextState(step, engine, verdict(true)), { to: 'take-screenshots', exit: step['exit-events'][0], reason: 'exit' });
-  assert.deepEqual(nextState(step, engine, verdict(false)), { to: 'done', exit: step['exit-events'][1], reason: 'exit' });
+  assert.deepEqual(nextState(step, engine, verdict(true)), { to: 'take-screenshots', exit: exitTo(step, 'take-screenshots'), reason: 'exit' });
+  assert.deepEqual(nextState(step, engine, verdict(false)), { to: 'done', exit: exitTo(step, 'done'), reason: 'exit' });
   assert.equal(nextState(step, engine, { turnComplete: true, structuredOutput: {} }), null);
   assert.equal(nextState(step, engine, { ...verdict(true), turnComplete: false }), null);
 });
@@ -611,14 +637,13 @@ test('ASS-114 AC2 (pair 1): Take Screenshots — its turn done goes to done, wha
   assert.deepEqual(walk(TOP), trailThrough(['check-setup-complete']));
 });
 
-test('ASS-114 AC2 (pair 1): Local Testing — Test failing a criterion ends v2-test at Rebuild, and the Test group step sends the ticket back into Build at Generate Solution (not its first step), then through Build and Test again; no step re-enters Local Testing within a run (its max-visits is grouped\'s, unreachable); always failing, the Test group step\'s fourth entry ends the ticket at the top level\'s Blocked', () => {
+test('ASS-114 AC2 (pair 1): Local Testing — Test failing a criterion ends v2-test at Rebuild, and the Test group step sends the ticket back into Build at Generate Solution (not its first step), then through Build and Test again; only an unfinished Test re-enters Local Testing within a run (ASS-317); always failing, the Test group step\'s fourth entry ends the ticket at the top level\'s Blocked', () => {
   const engine = engines['v2-test'], step = stepOf(engine, 'local-testing');
   const ended = (approved, at = 'done') => ({ subEngineDone: true, subEngineState: at, structuredOutput: { 'is-approved': approved } });
-  assert.deepEqual(nextState(step, engine, ended(true)), { to: 'steps-to-test', exit: step['exit-events'][0], reason: 'exit' });
-  assert.deepEqual(nextState(step, engine, ended(false)), { to: 'rebuild', exit: step['exit-events'][1], reason: 'exit' });
+  assert.deepEqual(nextState(step, engine, ended(true)), { to: 'steps-to-test', exit: exitTo(step, 'steps-to-test'), reason: 'exit' });
+  assert.deepEqual(nextState(step, engine, ended(false)), { to: 'rebuild', exit: exitTo(step, 'rebuild'), reason: 'exit' });
   assert.equal(nextState(step, engine, { subEngineDone: false, structuredOutput: { 'is-approved': true } }), null);
-  // Its max-visits (3, then Blocked, as grouped's) counts exits into it, and no step of v2-test exits into it: each Test is a new run that starts there, so the bound on rebuilds is the Test group step's own.
-  assert.deepEqual(engine.steps.flatMap(s => (s['exit-events'] ?? []).map(e => e['move-to-state'])).filter(to => to === 'local-testing'), []);
+  // Each Test is a new run that starts there, so the bound on rebuilds is the Test group step's own; its max-visits (3, then Blocked, as grouped's) bounds an unfinished Test's re-runs alone (ASS-317 AC2).
   const top = stepOf(engines[TOP], 'test');
   assert.deepEqual(nextState(top, engines[TOP], ended(false, 'rebuild')), { to: 'build', exit: top['exit-events'][1], reason: 'exit' });
   assert.deepEqual(nextState(top, engines[TOP], ended(true, 'blocked')).to, 'blocked');
@@ -635,6 +660,66 @@ test('ASS-114 AC2 (pair 1): Local Testing — Test failing a criterion ends v2-t
   const failing = walk(TOP, { structuredOutput: testVerdict(false) });
   assert.deepEqual(failing.filter(p => p.startsWith(`${TOP}/`)).slice(-9), ['plan', 'build', 'test', 'build', 'test', 'build', 'test', 'build', 'blocked'].map(s => `${TOP}/${s}`));
   assert.equal(failing.filter(p => p === 'v2-build/generate-automated-tests').length, 1, 'a rebuild skips Generate Automated Tests');
+});
+
+test('ASS-317 AC1: Test — an unfinished verdict (did-not-finish, the suite cut short within the turn) re-runs Test, neither done nor Take Screenshots, even saying approved; a finished one (the field false or absent) goes as before; the turn not done matches no exit; the re-run is bounded — a fourth entry into Test goes to done', () => {
+  const engine = engines['v2-local-testing'], step = stepOf(engine, 'test');
+  const facts = output => ({ turnComplete: true, structuredOutput: output });
+  assert.deepEqual(nextState(step, engine, facts(UNFINISHED)), { to: 'test', exit: exitTo(step, 'test'), reason: 'exit' });
+  assert.ok(reRuns(exitTo(step, 'test')), 'the re-run exit reads did-not-finish');
+  assert.equal(nextState(step, engine, facts({ ...UNFINISHED, 'is-approved': true }))?.to, 'test', 'a re-run wins over an untrustworthy approval');
+  assert.equal(nextState(step, engine, facts(FINISHED(false)))?.to, 'done');
+  assert.equal(nextState(step, engine, facts({ 'is-approved': false, summary: 'x' }))?.to, 'done');
+  assert.equal(nextState(step, engine, facts(FINISHED(true)))?.to, 'take-screenshots');
+  assert.equal(nextState(step, engine, { turnComplete: false, structuredOutput: UNFINISHED }), null);
+  assert.deepEqual([step['max-visits'], step['on-max-visits']], [3, 'done']);
+  assert.deepEqual(nextState(step, engine, facts(UNFINISHED), thrice('test', ['await-golden-build', 'test'])), { to: 'test', exit: exitTo(step, 'test'), reason: 'exit' });
+  assert.deepEqual(nextState(step, engine, facts(UNFINISHED), thrice('test', ['await-golden-build', 'test', 'test'])), { to: 'done', exit: exitTo(step, 'test'), reason: 'max-visits' });
+  assert.deepEqual(validateStateEngine(engine, ROOT, 'v2-local-testing', EXAMPLE_ENGINES), []);
+});
+
+test('ASS-317 AC2: Local Testing — an unfinished run (did-not-finish) re-runs Local Testing, not Rebuild; a genuine rejection (the field false or absent) still ends v2-test at Rebuild, the only exit there; a fourth entry ends v2-test at Blocked, not Rebuild', () => {
+  const engine = engines['v2-test'], step = stepOf(engine, 'local-testing');
+  const ended = output => ({ subEngineDone: true, subEngineState: 'done', structuredOutput: output });
+  assert.deepEqual(nextState(step, engine, ended(UNFINISHED)), { to: 'local-testing', exit: exitTo(step, 'local-testing'), reason: 'exit' });
+  assert.equal(nextState(step, engine, ended(FINISHED(false)))?.to, 'rebuild');
+  assert.equal(nextState(step, engine, ended({ 'is-approved': false }))?.to, 'rebuild');
+  assert.equal(nextState(step, engine, ended(FINISHED(true)))?.to, 'steps-to-test');
+  assert.equal(nextState(step, engine, { subEngineDone: false, structuredOutput: UNFINISHED }), null);
+  const into = to => engine.steps.flatMap(s => s['exit-events'] ?? []).filter(e => e['move-to-state'] === to);
+  assert.equal(into('local-testing').length, 1);
+  assert.ok(reRuns(into('local-testing')[0]), 'the one exit into Local Testing reads did-not-finish');
+  assert.equal(into('rebuild').length, 1);
+  assert.ok(!JSON.stringify(into('rebuild')[0].condition).includes('did-not-finish'), 'Rebuild is the genuine rejection alone');
+  assert.ok(JSON.stringify(into('rebuild')[0].condition).includes('"is-approved":false'));
+  assert.deepEqual([step['max-visits'], step['on-max-visits']], [3, 'blocked']);
+  assert.deepEqual(nextState(step, engine, ended(UNFINISHED), thrice('local-testing', Array(3).fill('local-testing'))), { to: 'blocked', exit: exitTo(step, 'local-testing'), reason: 'max-visits' });
+  assert.deepEqual(validateStateEngine(engine, ROOT, 'v2-test', EXAMPLE_ENGINES), []);
+});
+
+test('ASS-317 AC3: an unfinished Test verdict neither enters Build nor spends a harness-development-v2 Test visit — its re-runs are sub-state-changes visitsInto leaves out, so Build\'s done still goes to Test after two real Test visits; once unfinished then passing: Test re-run, then on to Document; always unfinished: bounded (3 × 3 runs), Blocked, never Build or Rebuild; unfinished then genuinely rejected: Rebuild and Build, as before', () => {
+  const real = [{ 'from-state': 'plan', 'to-state': 'build' }, { 'from-state': 'build', 'to-state': 'test' }, { 'from-state': 'test', 'to-state': 'build' }, { 'from-state': 'build', 'to-state': 'test' }];
+  const withReRuns = [...real.slice(0, 2), reRun(['v2-test', 'local-testing'], ['v2-local-testing', 'test']), reRun(['v2-test', 'local-testing']), ...real.slice(2), reRun(['v2-test', 'local-testing'], ['v2-local-testing', 'test']), reRun(['v2-test', 'local-testing'], ['v2-local-testing', 'test']), reRun(['v2-test', 'local-testing'])];
+  assert.equal(visitsInto(withReRuns, 'test'), visitsInto(real, 'test'));
+  assert.equal(visitsInto(withReRuns, 'test'), 2);
+  const build = stepOf(engines[TOP], 'build');
+  assert.deepEqual(nextState(build, engines[TOP], { subEngineDone: true, subEngineState: 'done' }, [...withReRuns, { 'from-state': 'test', 'to-state': 'build' }]), { to: 'test', exit: exitTo(build, 'test'), reason: 'exit' });
+  // Unfinished once, then passing: Test again within the run, then Take Screenshots on to Document; the top-level Test entered once, Build never after it.
+  const once = walk(TOP, { structuredOutput: testVerdicts(UNFINISHED, FINISHED(true)) }), first = once.indexOf(`${TOP}/test`);
+  assert.deepEqual(once.slice(first, once.indexOf(`${TOP}/document`) + 1), [...LOCAL, 'v2-local-testing/test', 'v2-local-testing/take-screenshots', 'v2-local-testing/done', 'v2-test/steps-to-test', 'v2-steps-to-test/write-steps-to-test', 'v2-steps-to-test/done', 'v2-test/done', `${TOP}/document`]);
+  assert.equal(once.filter(p => p === `${TOP}/test`).length, 1);
+  assert.ok(!once.slice(first).includes(`${TOP}/build`), 'no Build after Test');
+  // Always unfinished: Test's own cap (3) ends each run at done, Local Testing's (3) then v2-test at Blocked — the ticket at the top level's Blocked, never Build.
+  const always = walk(TOP, { structuredOutput: testVerdicts(UNFINISHED) }), at = always.indexOf(`${TOP}/test`);
+  assert.equal(always.at(-1), `${TOP}/blocked`);
+  assert.deepEqual(always.filter(p => p.startsWith(`${TOP}/`)).slice(-2), [`${TOP}/test`, `${TOP}/blocked`]);
+  assert.ok(!always.slice(at).includes(`${TOP}/build`), 'no Build after Test');
+  assert.ok(!always.includes('v2-test/rebuild'), 'never Rebuild');
+  assert.ok(always.includes('v2-test/blocked'), 'v2-test ends at Blocked');
+  assert.equal(always.filter(p => p === 'v2-local-testing/test').length, 9, 'Test\'s cap times Local Testing\'s');
+  // Unfinished, then genuinely rejected: the re-run, then Rebuild and Build — an unfinished run masks no real failure.
+  const mixed = walk(TOP, { structuredOutput: testVerdicts(UNFINISHED, FINISHED(false)) }), from = mixed.indexOf(`${TOP}/test`);
+  assert.deepEqual(mixed.slice(from, mixed.indexOf(`${TOP}/build`, from) + 1), [...LOCAL, 'v2-local-testing/test', 'v2-local-testing/done', 'v2-test/rebuild', `${TOP}/build`]);
 });
 
 const DOCUMENTING = [`${TOP}/document`, 'v2-document/update-documentation'];
@@ -682,7 +767,7 @@ test('ASS-114 AC1 (pair 2): v2-test\'s last step is grouped-test\'s Steps to Tes
   assert.deepEqual([write.action.type, write.action.prompt, write['run-location']], ['prompt', 'write-steps-to-test-grouped', 'vm']);   // ASS-182: its own copy, posting on stdin
   assert.ok(existsSync(join(ROOT, 'prompts', 'write-steps-to-test-grouped', 'prompt.txt')));
   hasInOrder(ids('v2-test'), ['local-testing', 'steps-to-test', 'done', 'blocked', 'rebuild']);
-  sameShared(asGrouped(engine), engines['grouped-test']);
+  sameShared(asGrouped(engine), engines['grouped-test'], { as: withoutReRun });
   for (const name of ['v2-steps-to-test', 'v2-test', TOP]) assert.deepEqual(validateStateEngine(engines[name], ROOT, name, EXAMPLE_ENGINES), [], name);
 });
 

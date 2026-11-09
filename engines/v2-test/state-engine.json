@@ -20,6 +20,21 @@
                             },
                             {
                                 "structured-output": {
+                                    "did-not-finish": true
+                                }
+                            }
+                        ]
+                    },
+                    "move-to-state": "local-testing"
+                },
+                {
+                    "condition": {
+                        "all": [
+                            {
+                                "is-done": true
+                            },
+                            {
+                                "structured-output": {
                                     "is-approved": true
                                 }
                             }
