@@ -46,12 +46,14 @@ test('fetchSprintTickets flattens an ADF description, reads the site\'s story-po
     { type: 'paragraph', content: [{ type: 'text', text: 'First ' }, { type: 'text', text: 'line.' }] },
     { type: 'bulletList', content: [{ type: 'listItem', content: [{ type: 'paragraph', content: [{ type: 'text', text: 'Item' }] }] }] },
   ] };
-  const fake = acli([
+  const issues = [
     issue('EX-2', { description: adf, issuetype: { name: 'Bug' }, customfield_10016: null, customfield_10028: 3, assignee: null, priority: null, sprint: [{ name: 'Sprint 9' }, { name: 'Sprint 10' }] }),
     issue('EX-3', { description: null, issuetype: { name: 'Task' }, customfield_10028: undefined, sprint: null, issuelinks: undefined }),
-    issue('EX-4', { issuetype: { name: 'Spike' } }),
-  ]);
+    issue('EX-4', { issuetype: { name: 'Spike' }, customfield_10028: null }),
+  ];
+  const fake = { calls: [], run: async (cmd, args) => { fake.calls.push([cmd, ...args]); return args[2] === 'search' ? JSON.stringify(issues) : JSON.stringify({ key: args[3], fields: {} }); } };
   const tickets = await fetchSprintTickets({ ...board, sprintId: 10, storyPointsField: 'customfield_10028' }, fake.run);
+  assert.deepEqual(fake.calls.slice(1), [['acli', 'jira', 'workitem', 'view', 'EX-3', '--fields', 'customfield_10028,issuelinks', '--json']]);   // EX-2, EX-4 carried both fields: no view (ASS-322)
   assert.doesNotMatch(fake.calls[0].join(' '), /customfield/);   // acli's search takes no custom field; the value is read when it comes anyway
   assert.doesNotMatch(fake.calls[0].join(' '), /customfield_10016/);
   assert.deepEqual(tickets.map(t => [t.key, t.description, t['issue-type'], t.points, t['ticket-system-assignment'], t['ticket-system-priority'], t['sprint-tag'], t.dependencies]), [
@@ -109,26 +111,75 @@ test('a ticket whose search result lacks the story-points field has it read with
   const calls = [];
   const run = async (cmd, args) => {
     calls.push([cmd, ...args]);
-    if (args[2] === 'search') return JSON.stringify([issue('EX-1201', { customfield_10016: undefined }), issue('EX-2368', { customfield_10016: undefined }), issue('EX-7', { customfield_10024: 2 })]);
-    const points = { 'EX-1201': 8, 'EX-2368': null }[args[3]];
-    return JSON.stringify({ key: args[3], fields: { customfield_10024: points } });
+    if (args[2] === 'search') return JSON.stringify([issue('EX-1201', { customfield_10016: undefined, issuelinks: undefined }), issue('EX-2368', { customfield_10016: undefined, issuelinks: undefined }), issue('EX-7', { customfield_10024: 2, issuelinks: undefined })]);
+    const points = { 'EX-1201': 8, 'EX-2368': null, 'EX-7': 9 }[args[3]];
+    return JSON.stringify({ key: args[3], fields: { customfield_10024: points, issuelinks: [] } });
   };
   const tickets = await fetchBacklogTickets({ ...board, storyPointsField: 'customfield_10024' }, run);
   assert.deepEqual(calls.slice(1), [
-    ['acli', 'jira', 'workitem', 'view', 'EX-1201', '--fields', 'customfield_10024', '--json'],
-    ['acli', 'jira', 'workitem', 'view', 'EX-2368', '--fields', 'customfield_10024', '--json'],
-  ]);   // EX-7's search result carried the field: no view
-  assert.deepEqual(tickets.map(t => [t.key, t.points]), [['EX-1201', 8], ['EX-2368', null], ['EX-7', 2]]);
+    ['acli', 'jira', 'workitem', 'view', 'EX-1201', '--fields', 'customfield_10024,issuelinks', '--json'],
+    ['acli', 'jira', 'workitem', 'view', 'EX-2368', '--fields', 'customfield_10024,issuelinks', '--json'],
+    ['acli', 'jira', 'workitem', 'view', 'EX-7', '--fields', 'customfield_10024,issuelinks', '--json'],
+  ]);   // EX-7's search result carried the points but not the links: viewed for the links (ASS-322)
+  assert.deepEqual(tickets.map(t => [t.key, t.points, t.dependencies]), [['EX-1201', 8, []], ['EX-2368', null, []], ['EX-7', 2, []]]);   // the search's points kept, not the view's
 });
 
 test('a view that fails leaves the ticket\'s points out — unread, not null — so sync keeps what the harness has (ASS-152 AC1, AC3)', async () => {
   const run = async (cmd, args) => {
-    if (args[2] === 'search') return JSON.stringify([issue('EX-1', { customfield_10016: undefined })]);
+    if (args[2] === 'search') return JSON.stringify([issue('EX-1', { customfield_10016: undefined, issuelinks: undefined })]);
     throw new Error('acli: 503');
   };
   const [ticket] = await fetchSprintTickets({ ...board, sprintId: 1 }, run);
   assert.equal('points' in ticket, false);
+  assert.equal('dependencies' in ticket, false);   // ASS-322 AC3: links unread too
   assert.equal(ticket.key, 'EX-1');
+});
+
+// ASS-322: acli's search returns no issuelinks, so a ticket's "is blocked by"
+// links are read in the same per-ticket view as its story points.
+const LINKS = [
+  { type: { name: 'Blocks', inward: 'is blocked by', outward: 'blocks' }, inwardIssue: { key: 'EX-7' } },
+  { type: { name: 'Blocks', inward: 'is blocked by', outward: 'blocks' }, outwardIssue: { key: 'EX-8' } },
+  { type: { name: 'Relates', inward: 'relates to', outward: 'relates to' }, inwardIssue: { key: 'EX-9' } },
+];
+
+test('a ticket whose search result lacks issuelinks has its inward "is blocked by" links read as dependencies, in the one view that reads its points (ASS-322 AC1, AC2)', async () => {
+  const calls = [];
+  const run = async (cmd, args) => {
+    calls.push([cmd, ...args]);
+    if (args[2] === 'search') return JSON.stringify([issue('EX-1', { customfield_10016: undefined, issuelinks: undefined })]);
+    return JSON.stringify({ key: args[3], fields: { customfield_10016: 5, issuelinks: LINKS } });
+  };
+  const [ticket] = await fetchSprintTickets({ ...board, sprintId: 1 }, run);
+  assert.deepEqual(calls.slice(1), [['acli', 'jira', 'workitem', 'view', 'EX-1', '--fields', 'customfield_10016,issuelinks', '--json']]);   // one view, both fields
+  assert.deepEqual(ticket.dependencies, ['EX-7']);   // not outward "blocks", not "relates to"
+  assert.equal(ticket.points, 5);
+});
+
+test('a ticket whose search result carries both the story-points field and issuelinks is not viewed (ASS-322 AC2)', async () => {
+  const fake = acli([issue('EX-1', { issuelinks: [{ type: { inward: 'is blocked by' }, inwardIssue: { key: 'EX-9' } }] })]);
+  const [ticket] = await fetchSprintTickets({ ...board, sprintId: 1 }, fake.run);
+  assert.equal(fake.calls.length, 1);   // the search only
+  assert.deepEqual([ticket.dependencies, ticket.points], [['EX-9'], 5]);
+});
+
+for (const [what, out] of [['prints nothing', ''], ['prints no JSON', 'not json']]) {
+  test(`a view that ${what} leaves the ticket's points and dependencies out — unread (ASS-322 AC3)`, async () => {
+    const run = async (cmd, args) => args[2] === 'search' ? JSON.stringify([issue('EX-1', { customfield_10016: undefined, issuelinks: undefined })]) : out;
+    const [ticket] = await fetchSprintTickets({ ...board, sprintId: 1 }, run);
+    assert.equal('points' in ticket, false);
+    assert.equal('dependencies' in ticket, false);
+  });
+}
+
+test('a view that fails leaves out only what the search lacked: links the search carried are kept (ASS-322 AC3)', async () => {
+  const run = async (cmd, args) => {
+    if (args[2] === 'search') return JSON.stringify([issue('EX-1', { customfield_10016: undefined, issuelinks: [{ type: { inward: 'is blocked by' }, inwardIssue: { key: 'EX-9' } }] })]);
+    throw new Error('acli: 503');
+  };
+  const [ticket] = await fetchSprintTickets({ ...board, sprintId: 1 }, run);
+  assert.equal('points' in ticket, false);
+  assert.deepEqual(ticket.dependencies, ['EX-9']);
 });
 
 test('fetchActiveSprints lists the board\'s active sprints with acli as { id, name, start, end }, the dates Jira\'s startDate and endDate as YYYY-MM-DD (UTC); an empty answer is none (ASS-165)', async () => {

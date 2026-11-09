@@ -8,14 +8,19 @@
 // search shape, an array of issues with key + fields):
 //   acli jira workitem search --jql "<jql>" --fields <list> --paginate --json
 // acli's search allows only a fixed field list — no sprint, issuelinks,
-// custom (story-points) or date fields — so dependencies are empty unless a
-// site's acli returns them, and the sprint tag comes from the sprint name the
-// caller gives. Points (ASS-152): a ticket whose search result lacks the
+// custom (story-points) or date fields — so dependencies and points come from
+// the per-ticket view below unless a site's acli returns them, and the sprint
+// tag comes from the sprint name the caller gives. Points (ASS-152): a ticket whose search result lacks the
 // story-points field has it read on its own, one call a ticket, in turn
 // (verified live 2026-10-26, a site whose field is customfield_10024):
 //   acli jira workitem view <KEY> --fields <field> --json
 // A view that fails leaves the ticket's points out (unread, not null), so
-// ticket:sync keeps the points the harness has.
+// ticket:sync keeps the points the harness has. The same per-ticket view also
+// reads issuelinks (one call, both fields), so a ticket's "is blocked by"
+// dependencies — which acli's search never returns — come from it too; a view
+// that fails (throws, or prints no JSON) leaves both out, unread (ASS-322).
+// (Open: acli's `view --fields a,b` multi-field list and its --json issuelinks
+// shape are verified for search/single-field, not for this combined view.)
 
 const FIELDS = ['key', 'summary', 'description', 'status', 'priority', 'assignee', 'issuetype'];
 const DEFAULT_STORY_POINTS_FIELD = 'customfield_10016';
@@ -84,26 +89,46 @@ async function search({ site, storyPointsField = DEFAULT_STORY_POINTS_FIELD, spr
   const tickets = [];
   for (const issue of listed(out, 'issues')) {
     const t = ticket(issue, site, storyPointsField, sprintName);
-    if (!(storyPointsField in (issue.fields ?? {}))) {
-      const points = await viewPoints(issue.key, storyPointsField, run);
-      if (points === undefined) delete t.points; else t.points = points;
+    const f = issue.fields ?? {};
+    const needPoints = f[storyPointsField] === undefined;
+    const needLinks = f.issuelinks === undefined;
+    if (needPoints || needLinks) {
+      const fields = await viewFields(issue.key, storyPointsField, run);
+      if (fields === undefined) {
+        if (needPoints) delete t.points;
+        if (needLinks) delete t.dependencies;
+      } else {
+        if (needPoints) t.points = typeof fields[storyPointsField] === 'number' ? fields[storyPointsField] : null;
+        if (needLinks) t.dependencies = dependenciesOf(fields.issuelinks);
+      }
     }
     tickets.push(t);
   }
   return tickets;
 }
 
-// viewPoints(key, field, run) → the ticket's story points as acli's view
-// prints them (the REST shape, key + fields; or a list holding it): a number,
-// else null; undefined when the view fails or prints no JSON.
-async function viewPoints(key, field, run) {
+// viewFields(key, field, run) → the ticket's `fields` object as acli's view
+// prints it (the REST shape, key + fields; or a list holding it), carrying the
+// story-points field and issuelinks (one call). `{}` when the view prints a
+// value without those fields; undefined when the view fails or prints no JSON,
+// so the caller leaves the missing fields unread.
+async function viewFields(key, field, run) {
   try {
-    const [data] = jsonValues(await run('acli', ['jira', 'workitem', 'view', key, '--fields', field, '--json']));
+    const values = jsonValues(await run('acli', ['jira', 'workitem', 'view', key, '--fields', `${field},issuelinks`, '--json']));
+    if (values.length === 0) return undefined;   // empty / no JSON: unread, not {}
+    const [data] = values;
     const issue = Array.isArray(data) ? data.find(i => i?.key === key) : data;
-    return typeof issue?.fields?.[field] === 'number' ? issue.fields[field] : null;
+    return issue?.fields ?? {};
   } catch {
     return undefined;
   }
+}
+
+// dependenciesOf(links) → the keys an inward "is blocked by" link points at,
+// from acli's REST issuelinks shape; outward "blocks" and other link types
+// (e.g. "relates to") are not dependencies.
+function dependenciesOf(links) {
+  return (links ?? []).filter(l => l.inwardIssue && l.type?.inward === 'is blocked by').map(l => l.inwardIssue.key);
 }
 
 // The items in acli's output: an array, or { <field> }, or nothing at all.
@@ -157,7 +182,7 @@ function ticket({ key, fields: f = {} }, site, storyPointsField, sprintName) {
     'ticket-system-assignment': f.assignee?.displayName ?? null,
     points: typeof f[storyPointsField] === 'number' ? f[storyPointsField] : null,
     'issue-type': TYPES[f.issuetype?.name] ?? 'Story',
-    dependencies: (f.issuelinks ?? []).filter(l => l.inwardIssue && l.type?.inward === 'is blocked by').map(l => l.inwardIssue.key),
+    dependencies: dependenciesOf(f.issuelinks),
     'sprint-tag': sprint?.name ?? sprintName,
   };
 }
