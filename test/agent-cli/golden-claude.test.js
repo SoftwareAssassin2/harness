@@ -11,8 +11,8 @@ import { join } from 'node:path';
 const PROJECTS = join(import.meta.dirname, '..', '..', 'data', 'projects');
 
 test('every project golden image installs the Claude Code CLI and checks its version', () => {
-  const images = readdirSync(PROJECTS).map(p => join(PROJECTS, p, 'golden-image', 'provision.sh')).filter(existsSync);
-  assert.ok(images.length >= 1, images.join(', '));   // the harness's own, tracked; any other project's on the operator's disk (ASS-277)
+  const images = (existsSync(PROJECTS) ? readdirSync(PROJECTS) : []).map(p => join(PROJECTS, p, 'golden-image', 'provision.sh')).filter(existsSync);
+  // Every project's image is on the operator's disk, none in git (ASS-277): a fresh clone has none to check.
   for (const file of images) {
     const text = readFileSync(file, 'utf8');
     assert.match(text, /npm install -g [^\n]*@anthropic-ai\/claude-code/, file);

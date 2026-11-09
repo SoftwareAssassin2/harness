@@ -115,7 +115,7 @@ for (const tool of ['gcloud', 'glab']) test(`project:set-${tool}-reauthenticatio
   assert.deepEqual(readdirSync(join(dir, 'p')).toSorted(), [`${tool}-requires-reauthentication`, 'project.json']);   // no temp file left beside it
 });
 
-test('the live files leave the harness checkout clean: set and clear a rate limit and the gcloud and glab flags, and git status --porcelain data/projects/ stays empty under the repo\'s own .gitignore, each file ignored by its own line (ASS-58, ASS-94)', async () => {
+test('the live files leave the harness checkout clean: set and clear a rate limit and the gcloud and glab flags, and git status --porcelain data/projects/ stays empty under the repo\'s own .gitignore, each file ignored by its data/ rule (ASS-58, ASS-94)', async () => {
   const repo = mkdtempSync(join(tmpdir(), 'gi-'));
   const git = (...args) => execFileSync('git', ['-C', repo, ...args], { encoding: 'utf8' });
   git('init', '-q');
@@ -131,7 +131,7 @@ test('the live files leave the harness checkout clean: set and clear a rate limi
   await cli(dir, 'project:set-glab-reauthentication', 'p', 'true');
   clean();
   for (const file of ['rate-limit.json', 'gcloud-requires-reauthentication', 'glab-requires-reauthentication']) {
-    assert.match(git('check-ignore', '-v', `data/projects/p/${file}`), new RegExp(`^\\.gitignore:\\d+:/data/projects/\\*/${file.replace('.', '\\.')}\\t`));
+    assert.match(git('check-ignore', '-v', `data/projects/p/${file}`), /^\.gitignore:\d+:\/data\/\*\t/);
   }
   await cli(dir, 'project:clear-rate-limit', 'p', 'claude');
   await cli(dir, 'project:set-gcloud-reauthentication', 'p', 'false');

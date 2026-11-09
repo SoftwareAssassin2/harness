@@ -9,7 +9,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { mkdtempSync, writeFileSync, readFileSync, chmodSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, readFileSync, chmodSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -25,8 +25,9 @@ function fakes() {
   return { env: { ...process.env, PATH: `${bin}:${process.env.PATH}` }, log: () => readFileSync(log, 'utf8').trim().split('\n') };
 }
 
+// The harness project's provision.sh is on the operator's disk, not in git (ASS-277): checked when present.
 for (const script of ['data/projects/harness/golden-image/provision.sh', 'src/agent-cli/vm/golden-image/git.sh']) {
-  test(`${script} runs apt-get with debconf prompts off, through sudo, and fails with apt's own output`, async () => {
+  test(`${script} runs apt-get with debconf prompts off, through sudo, and fails with apt's own output`, { skip: !existsSync(join(ROOT, script)) && 'not on this disk' }, async () => {
     const f = fakes();
     await assert.rejects(run('bash', ['-c', readFileSync(join(ROOT, script), 'utf8'), script.split('/').pop()], { env: f.env }), e => {
       assert.match(e.stderr, new RegExp(`${script.split('/').pop()}: apt-get \\w+ failed:\\nReading package lists\\.\\.\\.\\nE: Unable to locate package`));

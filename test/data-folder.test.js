@@ -34,12 +34,9 @@ test('no code, comment, prompt or persona resolves a moved file at the repo root
   assert.deepEqual(hits, []);
 });
 
-test('the tracked data is under data/: agent-names.json, harness.json, the sample session logs and the harness project\'s golden image — no other project\'s files (ASS-277: they are its own, on disk); none at the root', () => {
+test('the tracked data is under data/: agent-names.json and harness.json only — no session log or project\'s files (ASS-277: they are its own, on disk); none at the root', () => {
   const tracked = execFileSync('git', ['-C', ROOT, 'ls-files'], { encoding: 'utf8' }).split('\n');
-  for (const f of ['data/agent-names.json', 'data/harness.json', 'data/projects/harness/golden-image/template.yaml'])
-    assert.ok(tracked.includes(f), f);
-  assert.deepEqual(tracked.filter(f => f.startsWith('data/projects/') && !f.startsWith('data/projects/harness/golden-image/')), []);
-  assert.ok(tracked.some(f => f.startsWith('data/agents/')));
+  assert.deepEqual(tracked.filter(f => f.startsWith('data/')).toSorted(), ['data/agent-names.json', 'data/harness.json']);
   assert.deepEqual(tracked.filter(f => /^(projects|agents|chats)\/|^(agent-names|harness|assignments|chats)\.json$/.test(f)), []);
   for (const f of ['agent-names.json', 'harness.json', 'projects', 'agents']) assert.equal(existsSync(join(ROOT, f)), false, f);
 });

@@ -1,54 +1,20 @@
 .DS_Store
 node_modules/
 *.lock
-# Agents' session logs (see src/agents/session.js)
-/data/agents/
 .data/
 # Worktrees for branch work, kept out of the live checkout
 /.worktrees/
-# Live data, written by control and the TUI, all under data/ (ASS-55) and
-# kept out of git (ASS-32). A project's folder is its own — its project.json
-# (Hindsight's llm-api-key among it), .claude/ (the project's Claude login,
-# CLAUDE_CONFIG_DIR, credentials), merge-request notes, golden image, own
-# engines (ASS-276) and work — kept on disk and shared as a preset bundle
-# (harness:export-project, ASS-274), never in git (ASS-277). The harness's
-# own project tracks only its golden VM image definition (ASS-72).
-/data/projects/*/*
-!/data/projects/harness/golden-image/
-/data/assignments.json
-/data/agent-names-last-used.json
-# The chat screen's chats and their logs (ASS-33)
-/data/chats.json
-/data/chats/
+# Live data, written by control and the TUI, all under data/ (ASS-55), is
+# kept out of git (ASS-32): agents' session logs, chats, assignments, and every
+# project's folder (project.json, .claude/, golden image, engines, work), shared
+# as a preset bundle (harness:export-project), never in git (ASS-277). Only the
+# agent names and the harness's shared settings are tracked.
+/data/*
+!/data/agent-names.json
+!/data/harness.json
 /archive/
 # Off-board data, kept out of git
 /src/off-board/
-# The model assignments:create last handed out
-/data/last-model-used
-# When the downloader last finished a cycle, per project
-/data/projects/*/last-data-download
-# Whether a project's gcloud or glab login has expired, kept by control (ASS-58)
-/data/projects/*/gcloud-requires-reauthentication
-/data/projects/*/glab-requires-reauthentication
-# A project's rate-limit hold and its lock, kept by control (ASS-94)
-/data/projects/*/rate-limit.json
-/data/projects/*/rate-limit.json.lock
-# A project's Hindsight memory: its database, models and logs, kept by memory:up (ASS-62)
-/data/projects/*/hindsight/
-# A project's Claude session usage and account, kept by control (ASS-47)
-/data/projects/*/claude-usage.json
-/data/projects/*/claude-usage.json.lock
-# A project's push account, as control last checked it (ASS-307)
-/data/projects/*/push-account.json
-/data/projects/*/push-account.json.lock
-# The Anthropic API organization's month-to-date spend, kept by control (ASS-153)
-/data/api-cost.json
-/data/api-cost.json.lock
-/data/context-windows.json
-# The disk's free space as control last read it (ASS-288)
-/data/disk-space.json
-# A machine's own settings, harness.json's shape (lima-home): never committed (ASS-281)
-/data/harness.local.json
 # Local Claude Code state (worktrees, locks, writes); the repo's skills are tracked (ASS-277)
 /.claude/*
 !/.claude/skills/
