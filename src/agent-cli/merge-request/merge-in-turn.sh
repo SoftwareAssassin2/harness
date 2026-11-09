@@ -72,18 +72,25 @@ if [[ $gate -eq 1 ]]; then
   [[ -n "$branch" ]] || branch="$(build_of "$command" "$project" "$key" "$variation" | jq -r '.branch // empty')"
   [[ -n "$branch" ]] || branch="$(branch_name "$key" "$variation")"
   main="$(default_branch "$workspace")"
-  git -C "$workspace" fetch --quiet origin "+refs/heads/$main:refs/remotes/origin/$main" "+refs/heads/$branch:refs/remotes/origin/$branch" 6>&- \
+  # Fetch into a private refs/merge-gate/* namespace, not the shared
+  # refs/remotes/origin/*, so a concurrent plain `git fetch origin` in the same
+  # workspace (e.g. code/create-branch.sh for another ticket) cannot race the
+  # tracking refs and lock us out ("cannot lock ref ... is at X but expected
+  # Y"). --refmap= is required: without it `git fetch origin` would also update
+  # the matching refs/remotes/origin/* opportunistically from its remote's
+  # refmap, which races just the same.
+  git -C "$workspace" fetch --quiet --refmap= origin "+refs/heads/$main:refs/merge-gate/$main" "+refs/heads/$branch:refs/merge-gate/$branch" 6>&- \
     || ends failed "could not fetch $main and $branch from origin"
-  before="$(git -C "$workspace" rev-parse "origin/$branch")"
+  before="$(git -C "$workspace" rev-parse "refs/merge-gate/$branch")"
   git -C "$workspace" worktree add --quiet --detach "$scratch/gate" "$before" 6>&- || ends failed "could not check out $branch"
-  if ! git -C "$scratch/gate" rebase --quiet "origin/$main" >/dev/null 2>&1 6>&-; then
+  if ! git -C "$scratch/gate" rebase --quiet "refs/merge-gate/$main" >/dev/null 2>&1 6>&-; then
     conflicts="$(git -C "$scratch/gate" diff --name-only --diff-filter=U | paste -sd, - | sed 's/,/, /g')"
     git -C "$scratch/gate" rebase --abort 2>/dev/null || true
     ends red "$branch does not rebase onto $main: conflicts in ${conflicts:-its changes}; bring $main into the branch and resolve them"
   fi
   tested="$(git -C "$scratch/gate" rev-parse HEAD)"
   (cd "$scratch/gate" && "$@") 6>&- \
-    || ends red "$* fails on $branch rebased onto $main ($(git -C "$workspace" rev-parse --short "origin/$main")) — its output: $log; bring $main into the branch and make it pass"
+    || ends red "$* fails on $branch rebased onto $main ($(git -C "$workspace" rev-parse --short "refs/merge-gate/$main")) — its output: $log; bring $main into the branch and make it pass"
   if [[ "$tested" != "$before" ]]; then
     git -C "$scratch/gate" push --quiet --force-with-lease="refs/heads/$branch:$before" origin "HEAD:refs/heads/$branch" 6>&- \
       || ends failed "could not push $branch rebased onto $main"
