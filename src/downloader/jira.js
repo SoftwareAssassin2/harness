@@ -8,9 +8,9 @@
 // search shape, an array of issues with key + fields):
 //   acli jira workitem search --jql "<jql>" --fields <list> --paginate --json
 // acli's search allows only a fixed field list — no sprint, issuelinks,
-// custom (story-points) or date fields — so dependencies are empty unless a
-// site's acli returns them, and the sprint tag comes from the sprint name the
-// caller gives. Points (ASS-152): a ticket whose search result lacks the
+// custom (story-points) or date fields — so dependencies and points come from
+// the per-ticket view below unless a site's acli returns them, and the sprint
+// tag comes from the sprint name the caller gives. Points (ASS-152): a ticket whose search result lacks the
 // story-points field has it read on its own, one call a ticket, in turn
 // (verified live 2026-10-26, a site whose field is customfield_10024):
 //   acli jira workitem view <KEY> --fields <field> --json
