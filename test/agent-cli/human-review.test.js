@@ -91,7 +91,7 @@ test('ASS-118: ticket:human-review given a reason keeps it on the variation as i
   const dir = projects();
   const file = sprintFile(dir);
   const data = JSON.parse(readFileSync(file, 'utf8'));
-  data.bugs[0].variations[0]['harness-status'] = { ...hs('review'), 'sub-status': { state: 'human-review', 'state-engine': 'grouped-review' } };
+  data.bugs[0].variations[0]['harness-status'] = { ...hs('review'), 'sub-status': { state: 'human-review', 'state-engine': 'v2-review' } };
   writeFileSync(file, JSON.stringify(data, null, 4));
   await decide(dir, 'p', 'ABC-7', 'A', 'human-review', 'Rejected', '', 'The summary hides the migration');
   const [a] = variations(dir);
@@ -110,7 +110,7 @@ test('ASS-118: ticket:human-review given a reason keeps it on the variation as i
 const inReview = dir => {
   const file = sprintFile(dir);
   const data = JSON.parse(readFileSync(file, 'utf8'));
-  data.bugs[0].variations[0]['harness-status'] = { ...hs('review'), 'sub-status': { state: 'human-review', 'state-engine': 'grouped-review' } };
+  data.bugs[0].variations[0]['harness-status'] = { ...hs('review'), 'sub-status': { state: 'human-review', 'state-engine': 'v2-review' } };
   writeFileSync(file, JSON.stringify(data, null, 4));
   mkdirSync(join(dir, 'p', 'work', 'ABC-7'), { recursive: true });
   return join(dir, 'p', 'work', 'ABC-7', 'operator-review-A.md');

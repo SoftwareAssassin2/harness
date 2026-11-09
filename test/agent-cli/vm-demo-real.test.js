@@ -38,7 +38,7 @@ test('vm:demo in a real VM: up with a display, the setup run, the ready-check pa
   mkdirSync(join(p, 'sprints', 'sprint-1'), { recursive: true });
   writeFileSync(join(p, 'project.json'), JSON.stringify(project));
   writeFileSync(join(p, 'sprints.json'), JSON.stringify({ list: [{ number: 1, 'is-active': true }] }));
-  writeFileSync(join(p, 'sprints', 'sprint-1', 'sprint.json'), JSON.stringify({ number: 1, features: [{ key: 'DEMO-1', variations: [{ name: 'A', 'harness-status': { state: 'review', 'state-engine': 'harness-development-grouped', 'sub-status': { state: 'human-review', 'state-engine': 'grouped-review' } } }] }] }));
+  writeFileSync(join(p, 'sprints', 'sprint-1', 'sprint.json'), JSON.stringify({ number: 1, features: [{ key: 'DEMO-1', variations: [{ name: 'A', 'harness-status': { state: 'review', 'state-engine': 'harness-development-v2', 'sub-status': { state: 'human-review', 'state-engine': 'v2-review' } } }] }] }));
   writeFileSync(join(dir, 'harness.json'), JSON.stringify({ 'forwarder-port': 7799, 'vm-disk-limit-gb': 1000 }));
   writeFileSync(join(dir, 'assignments.json'), JSON.stringify({ assignments: [] }));
   const env = { ...LIMA, PROJECTS_DIR: join(dir, 'projects'), HARNESS_FILE: join(dir, 'harness.json'), ASSIGNMENTS_FILE: join(dir, 'assignments.json'), HARNESS_HOME: join(dir, 'home'), ACLI_DISABLED: '1' };

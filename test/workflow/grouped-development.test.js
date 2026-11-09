@@ -29,7 +29,7 @@ const GROUPS = {
   build: ['refresh-repositories', 'generate-automated-tests', 'generate-solution', 'refresh-before-testing', 'automated-testing', 'ci-checks', 'code-review', 'security-review'],
   test: ['local-testing', 'steps-to-test'],
   document: ['update-documentation', 'update-merge-request-details', 'check-merge-request-details', 'add-screenshots-to-merge-request'],
-  review: ['explain-the-change', 'risk-assessment', 'human-review', 'token-expense-check', 'payment-gate', 'variation-selection'],
+  review: ['explain-the-change', 'risk-assessment', 'token-expense-check', 'payment-gate', 'variation-selection'],   // ASS-314: Human Review gone, risk-assessment straight on to the token expense check
 };
 const RELEASE = {
   'harness-development-grouped': ['merge-pull-request', 'update-workspace', 'request-restart', 'await-restart'],
@@ -42,7 +42,7 @@ const REMOVED = ['create-branch', 'create-worktree', 'create-merge-request'];
 const ENDS = ['done', 'blocked', 'blocked-for-human', 'rebuild', 'replan'];
 const CURRENT = { 'harness-development-grouped': 'harness-development', 'example-development-grouped': 'example-development' };
 const groupsOf = top => ({ ...GROUPS, release: RELEASE[top], ...(top.startsWith('example') ? { qa: ['qa-testing'] } : {}) });
-// A group's work: its steps but its done steps (ASS-228: grouped-review's write-test-plan and generate-solution, Human Review's return steps, are done steps).
+// A group's work: its steps but its done steps (ASS-228: grouped-review's write-test-plan and generate-solution are done steps — unreached since ASS-314 removed grouped-review's Human Review, kept because the parent Review step reads them).
 const work = name => engines[name].steps.filter(s => !ENDS.includes(s.id) && !s['is-done']);
 
 test('AC1: each grouped engine is the seq-0 exception states, Backlog and Committed, a step per high-level state in order, and Done', () => {
@@ -68,14 +68,12 @@ test('AC1: every step of the current engines is mirrored in its group — action
       if (now.length !== 1) continue;
       const [s] = now;
       const action = { ...old.action, ...(old.action.prompt && s.action.prompt !== old.action.prompt ? { prompt: `${old.action.prompt}-grouped` } : {}) };
-      // ASS-118: Human Review's instructions say what it now shows and gates.
-      const instructions = old.id === 'human-review' ? { instructions: s.action.instructions } : {};
       // ASS-255: Await the Restart's waiting-exit-code is the grouped engine's own; the flat one's stays as it was.
       const waits = old.id === 'await-restart' ? { 'waiting-exit-code': s.action['waiting-exit-code'] } : {};
-      assert.deepEqual(s.action, ['local-testing', 'steps-to-test'].includes(old.id) ? { ...action, engine: s.action.engine } : { ...action, ...instructions, ...waits }, old.id);
+      assert.deepEqual(s.action, ['local-testing', 'steps-to-test'].includes(old.id) ? { ...action, engine: s.action.engine } : { ...action, ...waits }, old.id);
       assert.equal(s['max-visits'], old['max-visits'], old.id);
-      // ASS-118 AC4: Risk Assessment always goes on to Human Review, its shortcut past it gone.
-      if (old.id === 'risk-assessment') assert.deepEqual(s['exit-events'].map(e => [e.condition, e['move-to-state']]), [[{ 'turn-complete': true }, 'human-review']]);
+      // ASS-118 AC4: Risk Assessment always goes on, its shortcut past the gate gone; ASS-314: on to the Token Expense Check, grouped-review's Human Review removed.
+      if (old.id === 'risk-assessment') assert.deepEqual(s['exit-events'].map(e => [e.condition, e['move-to-state']]), [[{ 'turn-complete': true }, 'token-expense-check']]);
       // ASS-151: a human step's fast-tracked exit is the grouped engines' own; ASS-162: so is Automated Testing's exit 4 (the tests list missing) back to Generate Automated Tests; ASS-224: so is Team Code Review's merged one; ASS-282: so is QA Testing's to blocked on a status QA parks the ticket at.
       else assert.deepEqual(s['exit-events'].filter(e => !Object.hasOwn(e.condition, 'fast-tracked') && !(old.id === 'automated-testing' && e.condition['exit-code'] === 4) && !(old.id === 'team-code-review' && JSON.stringify(e.condition).includes('"merged"')) && !(old.id === 'qa-testing' && e['move-to-state'] === 'blocked')).map(e => e.condition), old['exit-events'].map(e => e.condition), old.id);
       assert.equal(s['paired-ticket-system-status'], undefined, `${old.id}: only the top level pairs (ASS-67)`);
@@ -171,7 +169,7 @@ test('AC1: a ticket goes through every group in order — harness-development-gr
   assert.deepEqual(trail.slice(2, 7), ['grouped-setup/check-setup-complete', 'grouped-setup/create-vm', 'grouped-setup/mark-setup-complete', 'grouped-setup/done', 'harness-development-grouped/plan']);
   for (const [group, steps] of Object.entries(groupsOf('harness-development-grouped'))) {
     const name = subEngineOf('harness-development-grouped', group);
-    if (group === 'review') assert.deepEqual(trail.filter(p => p.startsWith(`${name}/`)), ['explain-the-change', 'risk-assessment', 'human-review', 'token-expense-check', 'variation-selection', 'done'].map(s => `${name}/${s}`));   // the Payment Gate only when it will spend tokens
+    if (group === 'review') assert.deepEqual(trail.filter(p => p.startsWith(`${name}/`)), ['explain-the-change', 'risk-assessment', 'token-expense-check', 'variation-selection', 'done'].map(s => `${name}/${s}`));   // the Payment Gate only when it will spend tokens; no Human Review (ASS-314)
     else assert.deepEqual(trail.filter(p => p.startsWith(`${name}/`)), [...steps, 'done'].map(s => `${name}/${s}`), group);
   }
   assert.ok(trail.includes('grouped-local-testing/take-screenshots') && trail.includes('grouped-steps-to-test/write-steps-to-test'), 'Test\'s sub-engines run inside it');
@@ -185,12 +183,13 @@ test('AC1: example goes on from Review to its own Release — out of draft, team
   assert.deepEqual(trail.filter(p => p.startsWith('grouped-release-example/')).map(p => p.split('/')[1]), ['take-out-of-draft-mode', 'team-code-review', 'address-merge-request-feedback', 'team-code-review', 'done']);
 });
 
-test('AC3: Human Review\'s and the Payment Gate\'s Rejected re-enter Plan at Write Execution Plan', () => {
-  for (const [gate, extra] of [['human-review', { 'grouped-review/risk-assessment': [{ structuredOutput: { 'flagged-for-human-review': true } }, {}] }], ['payment-gate', { 'grouped-review/token-expense-check': [{ structuredOutput: { 'will-spend-tokens': true } }, {}] }]]) {
-    const trail = walk('harness-development-grouped', { ...extra, [`grouped-review/${gate}`]: [{ humanReview: { state: gate, decision: 'Rejected' } }, {}] });
-    assert.deepEqual(after(trail, `grouped-review/${gate}`).slice(0, 3), ['grouped-review/replan', 'harness-development-grouped/plan', 'grouped-plan/write-execution-plan'], gate);
-    assert.equal(tops(trail).at(-1), 'done', gate);
-  }
+// ASS-314: Human Review's half of this is v2-review's own now (test/workflow/v2-development.test.js, ASS-116 AC2 pair 2): grouped-review has no such gate to reject at.
+test('AC3: the Payment Gate\'s Rejected re-enters Plan at Write Execution Plan', () => {
+  const trail = walk('harness-development-grouped', {
+    'grouped-review/token-expense-check': [{ structuredOutput: { 'will-spend-tokens': true } }, {}],
+    'grouped-review/payment-gate': [{ humanReview: { state: 'payment-gate', decision: 'Rejected' } }, {}] });
+  assert.deepEqual(after(trail, 'grouped-review/payment-gate').slice(0, 3), ['grouped-review/replan', 'harness-development-grouped/plan', 'grouped-plan/write-execution-plan']);
+  assert.equal(tops(trail).at(-1), 'done');
 });
 
 test('AC3: Local Testing\'s Rejected re-enters Build at Generate Solution; in example so does Team Code Review sending the ticket back In Progress', () => {
@@ -366,11 +365,12 @@ test('ASS-81: the merge-request commands Generate Solution calls from the VM are
   for (const command of ['merge-request:check', 'merge-request:create']) assert.deepEqual(allow[command], { project: 0, ticket: 1, variation: 2 }, command);
 });
 
-// ASS-118: before Human Review a step explains the change in plain words, per variation, and posts it as each MR's Summary.
-const humanReviewed = top => walk(top, top.startsWith('example') ? {
+// ASS-118: Review opens with a step that explains the change in plain words, per variation, and posts it as each MR's Summary.
+// walked(top) — a plain walk of the engine, through Review and on (ASS-314: no Human Review to answer on the way).
+const walked = top => walk(top, top.startsWith('example') ? {
   'grouped-release-example/team-code-review': MERGED, 'grouped-qa/qa-testing': { ticketSystemStatus: 'Done' } } : {});
 
-test('ASS-118 AC1/AC5: Review opens with Explain the Change, in the VM, before Risk Assessment and Human Review; it goes on only once it has written explanation-<variation>.md in the ticket\'s folder, else writes it again', () => {
+test('ASS-118 AC1/AC5: Review opens with Explain the Change, in the VM, before Risk Assessment; it goes on only once it has written explanation-<variation>.md in the ticket\'s folder, else writes it again', () => {
   const review = engines['grouped-review'];
   assert.equal(firstStepId(review), 'explain-the-change');
   const explain = stepOf(review, 'explain-the-change');
@@ -383,56 +383,60 @@ test('ASS-118 AC1/AC5: Review opens with Explain the Change, in the VM, before R
   assert.deepEqual(unwritten.slice(-5), ['grouped-review/explain-the-change', 'grouped-review/explain-the-change', 'grouped-review/explain-the-change', 'grouped-review/blocked', 'harness-development-grouped/blocked']);
 });
 
-test('ASS-118 AC5: in both grouped engines the order is the MRs\' details and screenshots, the explanation, the risk profile, then Human Review, then out of draft (example) or merged (harness)', () => {
-  const ORDER = ['grouped-document/update-merge-request-details', 'grouped-document/add-screenshots-to-merge-request', 'grouped-review/explain-the-change', 'grouped-review/risk-assessment', 'grouped-review/human-review'];
+test('ASS-118 AC5: in both grouped engines the order is the MRs\' details and screenshots, the explanation, the risk profile, then out of draft (example) or merged (harness) — with no Human Review between the risk profile and Release (ASS-314)', () => {
+  const ORDER = ['grouped-document/update-merge-request-details', 'grouped-document/add-screenshots-to-merge-request', 'grouped-review/explain-the-change', 'grouped-review/risk-assessment'];
   for (const [top, release] of [['harness-development-grouped', 'grouped-release-harness/merge-pull-request'], ['example-development-grouped', 'grouped-release-example/take-out-of-draft-mode']]) {
-    const trail = humanReviewed(top);
+    const trail = walked(top);
     assert.deepEqual(trail.filter(p => [...ORDER, release].includes(p)), [...ORDER, release], top);
     assert.equal(tops(trail).at(-1), 'done', top);
   }
 });
 
-test('ASS-118 AC1: a rejection at Human Review sends the ticket round again, and the next pass explains it anew', () => {
-  const trail = walk('harness-development-grouped', { 'grouped-review/human-review': [{ humanReview: { state: 'human-review', decision: 'Rejected' } }, {}] });
-  assert.equal(trail.filter(p => p === 'grouped-review/explain-the-change').length, 2);
-  assert.ok(trail.indexOf('grouped-plan/write-execution-plan', trail.indexOf('grouped-review/replan')) < trail.lastIndexOf('grouped-review/explain-the-change'));
+// ASS-314: case-law's Review no longer stops at the Human Review gate. The
+// shared grouped-review has no such step: Risk Assessment's finished turn goes
+// straight on to the AI Token Expense Check, whether or not it flagged the
+// change (the flag was never read by its exits), and nothing in grouped-review
+// or the engines that run it sends a ticket to a human-review step any more.
+// v2-review's Human Review (harness, software-assassin) is untouched: test/workflow/v2-development.test.js.
+test('ASS-314 AC1/AC2: grouped-review has no Human Review — Risk Assessment goes on to the AI Token Expense Check, and a variation walked through Review passes from one straight to the other, flagged or not', () => {
+  const review = engines['grouped-review'];
+  assert.equal(stepOf(review, 'human-review'), undefined, 'grouped-review still has a Human Review step');
+  assert.deepEqual(stepOf(review, 'risk-assessment')['exit-events'].map(e => [e.condition, e['move-to-state']]), [[{ 'turn-complete': true }, 'token-expense-check']]);
+  // Nor does any exit of grouped-review, or of the engines that run it, still name one as its target.
+  for (const name of ['grouped-review', ...Object.keys(CURRENT)]) {
+    const targets = Object.values(engines[name]).filter(Array.isArray).flat().flatMap(s => (s['exit-events'] ?? []).map(e => e['move-to-state']));
+    assert.ok(!targets.includes('human-review'), `${name} still moves a ticket to human-review`);
+  }
+  for (const flagged of [true, false]) {
+    const trail = walk('harness-development-grouped', { 'grouped-review/risk-assessment': { structuredOutput: { 'flagged-for-human-review': flagged } } });
+    assert.equal(after(trail, 'grouped-review/risk-assessment')[0], 'grouped-review/token-expense-check', `flagged ${flagged}`);
+    assert.ok(!trail.includes('grouped-review/human-review'), `flagged ${flagged}: the ticket waited at Human Review`);
+    assert.equal(tops(trail).at(-1), 'done', `flagged ${flagged}`);
+  }
 });
+
+// ASS-314: a rejection at Human Review sending the ticket round again is v2-review's
+// alone now (test/workflow/v2-development.test.js, ASS-116 AC2 pair 2); grouped-review has no such gate.
 
 // Every step that takes a merge request out of draft or merges one: its action names the command.
 const RELEASING = /merge-request:merge|merge-request:ensure-auto-merge|take-out-of-draft-mode/;
 const releasing = name => engines[name].steps.filter(s => RELEASING.test(s.action.command ?? '')).map(s => s.id);
 
-test('ASS-118 AC4: no merge request leaves draft and nothing merges until the operator approves at Human Review — however low the risk', () => {
+test('ASS-118 AC4: no merge request leaves draft and nothing merges before Release — however low the risk; and Release is entered from Review alone (ASS-314: no Human Review waits in between)', () => {
   // The only steps that ready or merge one are in Release.
   const reach = (name, seen = new Set()) => { if (seen.has(name)) return seen; seen.add(name); for (const s of engines[name].steps) if (s.action.type === 'state-engine') reach(s.action.engine, seen); return seen; };
   for (const top of Object.keys(CURRENT)) {
     const found = [...reach(top)].filter(n => releasing(n).length).toSorted();
     assert.deepEqual(found, [subEngineOf(top, 'release')], top);
   }
-  // Review ends at done — so Release follows — only through Human Review's Approved: without it, done is out of reach.
-  const review = engines['grouped-review'];
-  const reachable = (engine, from, cut) => {
-    const seen = new Set(), queue = [from];
-    while (queue.length) {
-      const id = queue.shift();
-      if (seen.has(id)) continue;
-      seen.add(id);
-      const step = stepOf(engine, id);
-      for (const e of step['exit-events'] ?? []) if (!cut(step, e)) queue.push(e['move-to-state']);
-    }
-    return seen;
-  };
-  // …or, for a fast-tracked ticket, its own pass of Human Review (ASS-151: human steps pass themselves for one).
-  const approved = (step, e) => step.id === 'human-review' && (e.condition?.['human-review'] === 'Approved' || e.condition?.['fast-tracked'] === true);
-  assert.ok(reachable(review, firstStepId(review), () => false).has('done'));
-  assert.ok(!reachable(review, firstStepId(review), approved).has('done'), 'Review reaches done without Human Review\'s approval');
   // At the top level Release is entered from Review alone, once it is done (and from Blocked, returning a ticket already there).
   for (const top of Object.keys(CURRENT)) {
     const into = engines[top].steps.filter(s => s.id !== 'release' && (s['exit-events'] ?? []).some(e => e['move-to-state'] === 'release')).map(s => s.id);
     assert.deepEqual(into, ['review'], top);
-    // Walked with the risk not flagged, the ticket still waits at Human Review before Release.
-    const trail = humanReviewed(top);
-    assert.ok(trail.indexOf('grouped-review/human-review') < trail.indexOf(`${top}/release`), top);
+    // Walked with the risk not flagged, the ticket still goes through the whole of Review before Release.
+    const trail = walked(top);
+    assert.ok(trail.includes('grouped-review/variation-selection') && trail.includes(`${top}/release`), top);
+    assert.ok(trail.indexOf('grouped-review/variation-selection') < trail.indexOf(`${top}/release`), top);
   }
 });
 

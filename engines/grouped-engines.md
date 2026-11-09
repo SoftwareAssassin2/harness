@@ -16,7 +16,7 @@ rollback.
 | Build | `grouped-build` | Refresh the Reference Repositories, Generate Automated Tests, Generate Solution, Refresh the Reference Repositories Before Testing, Automated Testing, CI Checks, Code Review, Security Review |
 | Test | `grouped-test` | Local Testing (`grouped-local-testing`), Steps to Test (`grouped-steps-to-test`) |
 | Document | `grouped-document` | Update Documentation, Update Merge Request Details, Check Merge Request Details, Add Screenshots to Merge Request |
-| Review | `grouped-review` | Explain the Change, Risk Assessment, Human Review, AI Token Expense Check, Payment Gate, Variation Selection |
+| Review | `grouped-review` | Explain the Change, Risk Assessment, AI Token Expense Check, Payment Gate, Variation Selection |
 | Release (harness) | `grouped-release-harness` | Merge Pull Request, Update the Harness, Request a Restart, Await the Restart |
 | Release (a project's own) | its own release engine | e.g. Take out of Draft Mode, Team Code Review, Address Merge Request Feedback, Ensure Auto-Merge |
 | QA (a project's own) | `grouped-qa` | QA Testing |
@@ -185,7 +185,7 @@ Blocked for Human, saying what was found and what to do.
   - `rebuild`: Local Testing rejected, or a project Release's Team Code Review sent the
     ticket back In Progress. The ticket goes into Build at Generate Solution
     (`start-sub-engine-at`, ASS-66).
-  - `replan`: Human Review or the Payment Gate rejected it. The ticket goes into
+  - `replan`: the Payment Gate rejected it. The ticket goes into
     Plan at Write Execution Plan.
 
   Loops that stay inside a group, such as a code review sending the work back to
@@ -334,13 +334,14 @@ checkout as Generate Solution left it, the last branch it built there: two
 merge requests in one repository with no depends-on between them are not
 both tested.
 
-## Human Review (ASS-118)
+## Explain the Change and Human Review (ASS-118)
 
-Every variation stops at Human Review, however low its risk: the current
-engines' shortcut past it (Risk Assessment's flagged-for-human-review: false)
-is gone here, so no merge request leaves draft and nothing merges — both only
-in Release, entered only from Review's done — until the operator approves.
-Before it, Explain the Change (`prompts/explain-the-change`, in the VM)
+grouped-review has no Human Review (ASS-314): Risk Assessment goes straight on
+to the AI Token Expense Check, however the risk came out, and a variation's
+merge requests leave draft or merge in Release with no operator stop. The gate,
+its review screen and its rejection below are v2-review's (harness,
+software-assassin), which keeps them. Explain the Change and Risk Assessment
+are both engines'. Explain the Change (`prompts/explain-the-change`, in the VM)
 writes `explanation-<variation>.md` in the ticket's folder — what the
 variation changes and why, in plain language, a line per merge request —
 and puts a short `## Summary` at the top of each Open merge request's
@@ -459,7 +460,9 @@ stay the reference to copy from.
   which has no image upload, the screenshots go to an orphan branch
   `screenshots/<ticket>-<variation>`, linked pinned to its commit).
   Review is filled (ASS-116, a pair per test run): Explain the Change, Risk
-  Assessment, Human Review, the AI Token Expense Check, the Payment Gate
+  Assessment, Human Review (v2-review's alone since ASS-314: grouped-review's
+  Risk Assessment goes straight to the expense check, so v2-review is
+  grouped-review but for it), the AI Token Expense Check, the Payment Gate
   (only when it says tokens will be spent), Variation Selection (passes on
   its own for a ticket with one variation); Rejected at the Payment Gate
   ends it at `replan`, back into Plan at Write Execution Plan, whose prompt

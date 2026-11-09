@@ -53,6 +53,12 @@ const ENDS = {};
 const FILLED = ['setup', 'plan', 'build', 'test', 'document', 'review', 'release'];
 // switchedOn(step) — the step without its is-active (ASS-192): v2-review's Human Review is switched off, otherwise grouped-review's.
 const switchedOn = ({ 'is-active': _, ...step }) => step;
+// toHumanReview(step) — grouped-review's step read as it was before ASS-314 took its Human Review
+// out: Risk Assessment going on to Human Review, which is what v2-review's still does. v2-review
+// keeps the gate (harness, software-assassin); grouped-review (case-law) has none, so the engines
+// differ in that one exit alone and the rest of grouped-review stays v2-review's reference.
+const toHumanReview = step => (step?.id !== 'risk-assessment' ? step
+  : { ...step, 'exit-events': step['exit-events'].map(e => (e['move-to-state'] === 'token-expense-check' ? { ...e, 'move-to-state': 'human-review' } : e)) });
 // beforeQueue(engine) — the engine as it was before ASS-197 put the merge queue into v2-release (Merge Pull Request in its
 // turn, rebased and fully re-tested; red to Back to Build, `rebuild`): grouped-release-harness's Merge Pull Request, no Rebuild, and Release's
 // exit to Build gone. The grouped engines stay the reference; the queue is v2's alone (harness only, the operator's decision).
@@ -76,7 +82,7 @@ test('AC1: harness-development-v2 is the exception states, Backlog, Committed, t
     assert.deepEqual(action, { type: 'state-engine', engine: `v2-${group}` }, group);
     // Filled, it is the engine harness-development-grouped's group step runs (Release's grouped-release-harness).
     // Build's is grouped-build as it was before ASS-249's CI Checks (groupedBuild).
-    if (FILLED.includes(group)) { const grouped = stepOf(engines['harness-development-grouped'], group).action.engine; sameShared(asGrouped(beforeQueue(engines[action.engine])), grouped === 'grouped-build' ? groupedBuild : engines[grouped], { message: group, as: withoutReRun }); continue; }
+    if (FILLED.includes(group)) { const grouped = stepOf(engines['harness-development-grouped'], group).action.engine; sameShared(asGrouped(beforeQueue(engines[action.engine])), grouped === 'grouped-build' ? groupedBuild : engines[grouped], { message: group, as: withoutReRun, asReference: toHumanReview }); continue; }
     const stub = engines[action.engine], through = stepOf(stub, 'pass-through');
     hasInOrder(ids(action.engine), [...(ADDED[group] ?? []), 'pass-through', 'done', 'blocked', ...(ENDS[group] ?? [])], group);
     assert.deepEqual(stub.steps.map(s => s.sequence), stub.steps.map((_, i) => i + 1), group);
@@ -843,7 +849,7 @@ test('ASS-116 AC1 (pair 1): v2-review\'s first steps are grouped-review\'s Expla
   const engine = engines['v2-review'], reference = id => stepOf(engines['grouped-review'], id);
   assert.equal(firstStepId(engine), 'explain-the-change');
   same(stepOf(engine, 'explain-the-change'), reference('explain-the-change'));
-  same(stepOf(engine, 'risk-assessment'), reference('risk-assessment'));
+  same(stepOf(engine, 'risk-assessment'), toHumanReview(reference('risk-assessment')));   // ASS-314: grouped-review's goes on to the Token Expense Check, its Human Review gone
   for (const [id, prompt] of [['explain-the-change', 'explain-the-change'], ['risk-assessment', 'risk-assessment-grouped']]) {
     const step = stepOf(engine, id);
     assert.deepEqual([step.action.type, step.action.prompt, step['max-visits'], step['on-max-visits'], step['run-location']], ['prompt', prompt, 3, 'blocked', 'vm'], id);
@@ -879,9 +885,10 @@ test('ASS-116 AC2 (pair 1): Risk Assessment — its turn done goes on to Human R
   assert.deepEqual(walk(TOP), trailThrough(['check-setup-complete']));
 });
 
-test('ASS-116 AC1 (pair 2): v2-review\'s next steps are grouped-review\'s Human Review and AI Token Expense Check, field for field — Human Review a human step, Approved on to the Token Expense Check, Rejected to the Back to Plan done step; the Token Expense Check the check-if-ticket-will-spend-tokens-grouped prompt, run in the VM, its verdicts going on to the Payment Gate and Variation Selection (pair 3); both max-visits 3 then Blocked. Back to Plan is grouped\'s, and the Review group step takes grouped\'s exits: replan back into Plan at Write Execution Plan; validate.js accepts them', () => {
+test('ASS-116 AC1 (pair 2): v2-review\'s next steps are its own Human Review (grouped-review has none since ASS-314) and grouped-review\'s AI Token Expense Check, field for field — Human Review a human step, Approved on to the Token Expense Check, Rejected to the Back to Plan done step; the Token Expense Check the check-if-ticket-will-spend-tokens-grouped prompt, run in the VM, its verdicts going on to the Payment Gate and Variation Selection (pair 3); both max-visits 3 then Blocked. Back to Plan is grouped\'s, and the Review group step takes grouped\'s exits: replan back into Plan at Write Execution Plan; validate.js accepts them', () => {
   const engine = engines['v2-review'], reference = id => stepOf(engines['grouped-review'], id);
-  same(switchedOn(stepOf(engine, 'human-review')), reference('human-review'));
+  // ASS-314: grouped-review has no Human Review to compare with any more — v2-review's is asserted field by field here instead.
+  assert.equal(reference('human-review'), undefined);
   assert.equal(stepOf(engine, 'human-review')['is-active'], false);   // ASS-192: switched off for harness, passed by its Approved exit
   assert.deepEqual(stepOf(engine, 'human-review')['exit-events'].map(e => [e.condition, e['move-to-state']]), [[{ 'human-review': 'Approved' }, 'token-expense-check'], [{ 'human-review': 'Rejected' }, 'replan'], [{ 'fast-tracked': true }, 'token-expense-check']]);   // ASS-151: a fast-tracked ticket passes it by itself
   same(stepOf(engine, 'token-expense-check'), reference('token-expense-check'));
@@ -956,7 +963,7 @@ test('ASS-116 AC1 (pair 3): v2-review\'s last steps are grouped-review\'s Paymen
   assert.deepEqual(stepOf(engine, 'payment-gate')['exit-events'].map(e => [e.condition, e['move-to-state']]), [[{ 'human-review': 'Approved' }, 'variation-selection'], [{ 'human-review': 'Rejected' }, 'replan'], [{ 'fast-tracked': true }, 'variation-selection']]);   // ASS-151
   assert.deepEqual(stepOf(engine, 'variation-selection')['exit-events'].map(e => [e.condition, e['move-to-state']]), [[{ 'variation-selected': true }, 'done'], [{ 'has-variations': false }, 'done']]);
   hasInOrder(ids('v2-review'), ['explain-the-change', 'risk-assessment', 'human-review', 'token-expense-check', 'payment-gate', 'variation-selection', 'done', 'blocked', 'replan', 'write-test-plan', 'generate-solution']);   // ASS-228: Human Review's return steps
-  sameShared(engine, engines['grouped-review'], { as: switchedOn });   // but for Human Review and Payment Gate switched off (ASS-192)
+  sameShared(engine, engines['grouped-review'], { as: switchedOn, asReference: toHumanReview });   // but for Human Review and Payment Gate switched off (ASS-192), and grouped-review's Human Review gone (ASS-314)
   assert.deepEqual(validateStateEngine(engine, ROOT, 'v2-review', EXAMPLE_ENGINES), []);
   assert.deepEqual(validateStateEngine(engines[TOP], ROOT, TOP, EXAMPLE_ENGINES), []);
 });
@@ -1211,7 +1218,7 @@ test('ASS-151 AC1: a fast-tracked ticket passes the Review group\'s human steps 
     assert.equal(nextState(step, engine, {}), null, id);
     assert.equal(nextState(step, engine, { fastTracked: true, humanReview: { state: id, decision: 'Rejected' } }).to, 'replan', id);
   }
-  sameShared(engine, engines['grouped-review'], { as: switchedOn });   // but for Human Review and Payment Gate switched off (ASS-192)
+  sameShared(engine, engines['grouped-review'], { as: switchedOn, asReference: toHumanReview });   // but for Human Review and Payment Gate switched off (ASS-192), and grouped-review's Human Review gone (ASS-314)
   const stuck = stepOf(engines[TOP], 'blocked-for-human');
   assert.equal(nextState(stuck, engines[TOP], { fastTracked: true }), null);
   assert.deepEqual(reviewRun({ ...SPENDS, fastTracked: true, humanReview: () => undefined }), ['explain-the-change', 'risk-assessment', 'human-review', 'token-expense-check', 'payment-gate', 'variation-selection', 'done']);
