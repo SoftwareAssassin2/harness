@@ -130,7 +130,6 @@ trap cleanup EXIT
 
 # run_check <repository> <command> <base SHA> <output file> — prints its exit code.
 run_check() { local status=0; in_project "$command" "$project" "/repos/$1" "export CI_CHECK_BASE=$3; $2" "$vm" > "$4" 2>&1 || status=$?; echo "$status"; }
-runnable() { [[ $1 -ne 125 && $1 -ne 126 && $1 -ne 127 ]] && ! grep -qE "$NOT_RUNNABLE" "$2"; }
 block() { local lines; lines="$(wc -l < "$1" | tr -d ' ')"; [[ $lines -le $TAIL ]] || printf '\n(the last %s of %s lines)' "$TAIL" "$lines"; printf '\n```\n%s\n```\n' "$(tail -n "$TAIL" "$1")"; }
 # matches <files> <globs> — whether a file (one per line) matches a glob (a JSON list), as CI's rules:changes does.
 matches() {

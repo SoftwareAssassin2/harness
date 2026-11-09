@@ -134,6 +134,29 @@ test('ASS-249 AC3: a check that could not run — exit 125/126/127, or a not-run
   assert.match(s.results(), /## ✗ harness: new-red \(exit 1\)/);
 });
 
+// ASS-320: a check whose only NOT_RUNNABLE hit is a test runner's own result
+// line (a passing ✔ name that holds "is not running") is runnable — red on the
+// branch only exits 1 (## ✗), not "could not run"; a real error after such a
+// line still exits 3.
+test('ASS-320: a ✔ "… is not running …" result line does not make a red check "could not run"; a real error after such a line still does', async () => {
+  // AC1: a ✔ result line then a branch-only failure (src/app/fix.js committed on the branch, absent on master) → runnable, master comparison runs, ## ✗ (exit 1), not could not run.
+  const s = setup(log => checksFor('harness', [{ name: 'policy', command: `git rev-parse --abbrev-ref HEAD >> ${log}; echo "✔ ASS-159: whose VM is not running (1ms)"; ! test -f src/app/fix.js` }]));
+  const e = await s.failure();
+  assert.equal(e.code, 1, e.stderr);
+  assert.match(e.stderr, /1 of 1 failed/);
+  assert.doesNotMatch(e.stderr, /could not run/);
+  assert.match(s.results(), /## ✗ harness: policy \(exit 1\)/);
+  assert.doesNotMatch(s.results(), /could not run/);
+  // AC2: a ✔ result line followed by a real environment error → still not runnable (exit 3, could not run).
+  for (const command of ['echo "✔ ok (1ms)"; echo "bash: foo: command not found" >&2; exit 1', 'echo "✔ ok (1ms)"; echo "Error: No such container: x" >&2; exit 1']) {
+    const t = setup(checksFor('harness', [{ name: 'broken', command }]));
+    const err = await t.failure();
+    assert.equal(err.code, 3, command);
+    assert.match(err.stderr, /could not run 1 of 1: an environment problem, not a failed check/, command);
+    assert.match(t.results(), /## ⚠ harness: broken \(exit \d+: could not run\)/, command);
+  }
+});
+
 test('ASS-249 AC3: a project with no ci-checks.json, or none declared for the ticket\'s repositories, exits 0 with nothing run — not even the VM reached', async () => {
   const s = setup(undefined);
   assert.deepEqual(JSON.parse((await s.verify()).stdout), { passed: 0, failed: 0, skipped: 0 });

@@ -344,6 +344,29 @@ test('automated-tests:verify-success exits 3 — not failed tests — when a tes
   assert.equal((await failing.agent('automated-tests:verify-success', 'p', 'ABC-3', 'A').then(() => null, error => error))?.code, 1);   // a test that ran and failed: still 1
 });
 
+// ASS-320: a failing command whose only NOT_RUNNABLE hit is a test runner's own
+// result line (a passing ✔ test name that holds "is not running") is runnable —
+// it goes to the master comparison and is reported as a failure, not "could not
+// run"; a real environment error sharing the output is still not runnable.
+test('ASS-320 AC1, AC2: a passing test name matching NOT_RUNNABLE (a ✔ "… is not running …" line) does not make a red command "could not run"; a real error after such a line still does', async () => {
+  // AC1: a ✔ result line then a branch-only failure → runnable, master comparison runs, ## ✗ (exit 1), not ## ⚠ could not run, not exit 3.
+  const pass = await withTests([{ list: 'echo a', run: 'echo ran a' }, { list: 'echo b', run: `echo "✔ ASS-159 AC1, AC2: a step whose VM is not running gets no agent (1.2ms)"; ${ON_MASTER} || { echo "b broke" >&2; exit 1; }` }]);
+  const e1 = await pass.agent('automated-tests:verify-success', 'p', 'ABC-3', 'A').then(() => null, error => error);
+  assert.equal(e1?.code, 1);                                            // a test that ran and failed, not exit 3
+  assert.match(e1.stderr, /1 of \d+ failed/);
+  assert.doesNotMatch(e1.stderr, /could not run/);
+  assert.match(pass.results(), /## ✗ .*\(exit 1\)/);                    // master comparison ran, new failure reported
+  assert.doesNotMatch(pass.results(), /## ⚠ .*could not run/);
+  // AC2: a ✔ result line followed by a real environment error → still not runnable (exit 3, could not run).
+  for (const run of ['echo "✔ ok (1ms)"; echo "bash: foo: command not found" >&2; exit 1', 'echo "✔ ok (1ms)"; echo "Error: No such container: x" >&2; exit 1']) {
+    const err = await withTests([{ list: 'echo a', run: 'echo ran a' }, { list: 'echo b', run }]);
+    const e = await err.agent('automated-tests:verify-success', 'p', 'ABC-3', 'A').then(() => null, error => error);
+    assert.equal(e?.code, 3, run);
+    assert.match(e.stderr, /could not run 1 of 2: an environment problem, not failed tests/, run);
+    assert.match(err.results(), /## ⚠ .* \(exit \d+: could not run\)/, run);
+  }
+});
+
 // ASS-99: tap.txt committed on master (and pushed: origin/master), ABC-3 A's
 // worktree on its branch with tap.txt as given committed there, and one test
 // whose run prints tap.txt and fails when it holds a "not ok" — each run

@@ -88,7 +88,6 @@ trap cleanup EXIT
 
 # run_test <project> <command> <output file> — runs it, its output (both streams) to the file; prints its exit code.
 run_test() { local status=0; in_project automated-tests:verify-success "$1" "$where" "$2" "$vm" > "$3" 2>&1 || status=$?; echo "$status"; }
-runnable() { [[ $1 -ne 125 && $1 -ne 126 && $1 -ne 127 ]] && ! grep -qE "$NOT_RUNNABLE" "$2"; }
 block() { printf '\n```\n%s\n```\n' "$(cat "$1")"; }
 
 mapfile -t commands < <(jq -r '.[].run' <<< "$tests")
