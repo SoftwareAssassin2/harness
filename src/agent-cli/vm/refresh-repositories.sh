@@ -14,7 +14,9 @@ set -euo pipefail
 # and neither HEAD nor its local default branch has a commit origin's lacks.
 # Otherwise it is left as it is: changes not committed, commits of its own,
 # a fetch that failed. The ticket's own repositories are never touched, not
-# even fetched. Prints "<repository>: <what happened>" for each, and exits 0
+# even fetched; an entry of the plan naming no repository — an id-less one
+# ticket:sync found on the forge — is in none, and is passed over (ASS-321).
+# Prints "<repository>: <what happened>" for each, and exits 0
 # whatever any one repository did; fails (1) only with no running VM, or
 # when the VM cannot be reached.
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../vm.bash"
@@ -23,7 +25,7 @@ source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../vm.bash"
 project="$1" key="$(tr '[:lower:]' '[:upper:]' <<< "$2")" variation="$3"
 vm="$(running_vm vm:refresh-repositories "$project" "$key" "$variation")"
 name='sub("\\.git$"; "") | split("/") | last'
-own="$("$agent" ticket:merge-request-plan "$project" "$key" "$variation" | jq -r ".[].repository | $name")"
+own="$("$agent" ticket:merge-request-plan "$project" "$key" "$variation" | jq -r ".[] | select(.repository != null) | .repository | $name")"
 refs=()
 while read -r repo; do
   if grep -qxF -- "$repo" <<< "$own"; then echo "$repo: the ticket's own, untouched"; else refs+=("$repo"); fi
