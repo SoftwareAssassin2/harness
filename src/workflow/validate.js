@@ -97,8 +97,9 @@ export function validateStateEngine(engine, root, name, own) {
     if (s['run-location'] !== undefined && s['run-location'] !== 'host' && s['run-location'] !== 'vm') errors.push(`${at} run-location "${s['run-location']}" is not host or vm`);
     if (s['run-location'] === 'vm') checkVmStep(s, at, root, errors);
     if (s['run-in-repository'] !== undefined) checkRepository(s, at, root, name, errors);
-    // vm (ASS-75): the variation's VM runs at the step, or is kept there stopped; missing, it is not needed (src/control/vm-lifecycle.js, vm.bash).
-    if (s.vm !== undefined && s.vm !== 'running' && s.vm !== 'stopped') errors.push(`${at} vm "${s.vm}" is not running or stopped`);
+    // vm (ASS-75): the variation's VM runs at the step, or is kept there stopped; missing, it is not needed (src/control/vm-lifecycle.js, vm.bash);
+    // released (ASS-325), it is deleted there at once, its disk back to the project's VM disk budget.
+    if (s.vm !== undefined && s.vm !== 'running' && s.vm !== 'stopped' && s.vm !== 'released') errors.push(`${at} vm "${s.vm}" is not running, stopped or released`);
     // is-active (ASS-192): false switches the step off — passed at once by its first exit's move-to-state (steps.js);
     // absent is on. A run's first step and a done step, where nothing passes on, cannot be.
     if (s['is-active'] !== undefined && typeof s['is-active'] !== 'boolean') errors.push(`${at} is-active "${s['is-active']}" is not true or false`);

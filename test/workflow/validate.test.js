@@ -306,11 +306,13 @@ test('a step\'s run-location, when given, is host or vm', () => {
 });
 
 // vm (ASS-75): whether the variation's VM runs at a step (running) or is kept there, stopped (stopped); missing, it is not needed.
-test('a step\'s vm, when given, is running or stopped', () => {
+// released (ASS-325): it is deleted there at once, its disk back to the project's VM disk budget.
+test('a step\'s vm, when given, is running, stopped or released', () => {
   const done = fields => step('a', 1, { 'is-done': true, ...fields });
   assert.deepEqual(errorsFor(engine([done({ vm: 'running' })])), []);
   assert.deepEqual(errorsFor(engine([done({ vm: 'stopped' })])), []);
-  assertError(engine([done({ vm: 'paused' })]), /step "a" vm "paused" is not running or stopped/);
+  assert.deepEqual(errorsFor(engine([done({ vm: 'released' })])), []);
+  assertError(engine([done({ vm: 'paused' })]), /step "a" vm "paused" is not running, stopped or released/);
 });
 
 // A vm step's agent.sh calls reach the Mac only through the forwarder, which refuses a command not on its allowlist (src/control/forwarder-allowlist.json).

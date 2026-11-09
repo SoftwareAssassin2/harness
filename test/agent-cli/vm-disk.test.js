@@ -9,7 +9,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { randomBytes } from 'node:crypto';
 import { execFileSync, spawn } from 'node:child_process';
-import { writeFileSync, readFileSync, existsSync, utimesSync, appendFileSync, rmSync, statSync } from 'node:fs';
+import { writeFileSync, readFileSync, existsSync, utimesSync, appendFileSync, rmSync, statSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { lima, edit } from './vm-fixture.js';
 
@@ -157,6 +157,33 @@ test('vm:stop p <vm> stops one of p\'s VMs and records it accessed now; another\
   await assert.rejects(d.cli('vm:stop', 'p', 'xyz-1-a'), /vm:stop: xyz-1-a is not one of p's VMs/);
   await assert.rejects(d.cli('vm:stop', 'p', 'golden-p'), /vm:stop: golden-p is not one of p's VMs/);
   assert.equal(readFileSync(join(d.v.instances, 'xyz-1-a', 'status'), 'utf8'), 'Running');
+});
+
+// ASS-325: control deletes a VM whose variation reached a `vm: released` step (QA, say) through vm:delete, as make_room
+// deletes one; a released variation is not in flight, so its stopped VM is deletable to make_room and vm:reclaim-all too.
+test('ASS-325 AC2: vm:delete p <vm> deletes one of p\'s stopped VMs whose variation is not in flight — at a vm: released step — dropping its vms.json row and forwarder token; a running one, one whose variation is at a running or stopped step, another project\'s or a golden image it refuses', async () => {
+  const d = disk();
+  edit(d.at('engines', 'example-development', 'state-engine.json'), e => { e.steps.find(s => s.id === 'local-testing').vm = 'released'; e.steps.push({ id: 'blocked', sequence: 4, 'is-done': null, action: { type: 'none' }, vm: 'stopped' }); });
+  d.vm('abc-3-c', 1, 'Stopped'); d.record('C', 'abc-3-c');   // at local-testing: released
+  d.vm('abc-3-b', 1, 'Running'); d.record('B', 'abc-3-b');   // at local-testing, still running
+  d.vm('abc-3-a', 1, 'Stopped'); d.record('A', 'abc-3-a');   // at generate-solution: running
+  d.vm('xyz-1-a', 1, 'Stopped');
+  edit(d.at('projects', 'p', 'sprints', 'sprint-10', 'sprint.json'), s => { s.features.push({ key: 'ABC-4', variations: [{ name: 'A', 'harness-status': { state: 'blocked', 'state-engine': 'example-development' }, vm: { name: 'abc-4-a' } }] }); });
+  d.vm('abc-4-a', 1, 'Stopped');                              // at blocked: stopped, kept
+  mkdirSync(join(d.home, '.harness'), { recursive: true });
+  writeFileSync(join(d.home, '.harness', 'vm-tokens.json'), JSON.stringify({ 'abc-3-c': { hash: 'x' }, 'abc-3-a': { hash: 'y' } }));
+  assert.deepEqual((await d.inventory()).vms.filter(v => v.deletable).map(v => v.name), ['abc-3-c'], 'released: not in flight');
+  await d.cli('vm:delete', 'p', 'abc-3-c');
+  assert.equal(d.exists('abc-3-c'), false);
+  assert.equal(d.vms()['abc-3-c'], undefined);
+  assert.deepEqual(Object.keys(d.tokens()), ['abc-3-a']);
+  await assert.rejects(d.cli('vm:delete', 'p', 'abc-3-b'), /vm:delete: abc-3-b is running: vm:stop it first/);
+  await assert.rejects(d.cli('vm:delete', 'p', 'abc-3-a'), /vm:delete: abc-3-a's variation is in flight/);
+  await assert.rejects(d.cli('vm:delete', 'p', 'abc-4-a'), /vm:delete: abc-4-a's variation is in flight/);
+  await assert.rejects(d.cli('vm:delete', 'p', 'xyz-1-a'), /vm:delete: xyz-1-a is not one of p's VMs/);
+  await assert.rejects(d.cli('vm:delete', 'p', 'golden-p'), /vm:delete: golden-p is not one of p's VMs/);
+  await assert.rejects(d.cli('vm:delete', 'p', 'abc-3-c'), /vm:delete: abc-3-c is not one of p's VMs/);   // gone now
+  assert.deepEqual(['abc-3-b', 'abc-3-a', 'abc-4-a', 'xyz-1-a', 'golden-p'].map(d.exists), [true, true, true, true, true]);
 });
 
 test('two vm:creates of one VM at once (Setup\'s and control\'s) clone it once, under the project\'s VM lock, and both succeed', async () => {

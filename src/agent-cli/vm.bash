@@ -18,7 +18,7 @@
 #   golden_bytes <project>                    # golden-<project>'s disk, allocated: what a new VM is charged
 #   make_room <command> <project> <bytes> <vm> [volume]   # least recently accessed deletable VMs deleted until <vm>'s <bytes> fit, within the
 #                                             # project's limit (not with volume) and the volume's free space; 3, deleting none, when they cannot ($room_short, $room_long)
-#   delete_vm <command> <project> <vm>        # deleted, and dropped from the inventory and the forwarder tokens
+#   delete_vm <command> <project> <vm>        # deleted, and dropped from the inventory and the forwarder tokens (make_room's, reclaim's, vm:delete's: ASS-325)
 #   build_in_progress <project>               # a golden image build of it runs now (its build lock held, or a started one still going: ASS-289)
 #   delete_build <command> <project>          # golden-<project>-build deleted, under its build lock (not waited for); fails while a build holds it
 #   reclaim_generations <command> <project> [dry-run]   # the project's deletable VMs of an older golden generation deleted (ASS-287); prints what was, and what was kept
@@ -148,7 +148,9 @@ start_sandboxed() {
 # active sprint, set aside (is-deleted), or at a step where it needs no VM. A
 # step says so with `vm` (running or stopped, ASS-75), the deepest level of
 # the variation's status that sets it deciding; a VM whose variation is at
-# one that sets either is in flight, whatever it is now.
+# one that sets either is in flight, whatever it is now. One that sets
+# `released` (ASS-325: QA, say, where control deletes it at once through
+# vm:delete) needs none, as one that sets no `vm`.
 # The limit is project.json's vm-disk-limit-gb (GB, 10^9 bytes), within
 # harness.json's, every project's default and ceiling: a project's above it
 # is held to it, with a warning.
@@ -257,7 +259,7 @@ reconcile_vms() {
       | ($engines[$l["state-engine"]] // [] | map(select(.id == $l.state)) | first | .vm) // empty] | last;
     def live($e): first(($sprint // {}) | (.features, .bugs, .spikes) // [] | .[] | select(.key | ascii_downcase == ($e.ticket | ascii_downcase))
       | .variations // [] | .[] | select(.name == $e.variation and (.["is-deleted"] | not))) // null;
-    ($vms[0] | to_entries | map({ name: .key } + .value | . + { deletable: (.state != "Running" and (live(.) as $v | $v == null or use($v) == null)),
+    ($vms[0] | to_entries | map({ name: .key } + .value | . + { deletable: (.state != "Running" and (live(.) as $v | $v == null or (use($v) | . == null or . == "released"))),
         "golden-built-at": $m[0][.name]["built-at"], "old-generation": $m[0][.name].old })
       | sort_by(.["last-accessed"], .name)) as $list
     | { project: $p, "limit-bytes": $limit, "use-bytes": ($list | map(.["disk-bytes"]) | add // 0), "golden-bytes": $golden,

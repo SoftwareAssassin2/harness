@@ -503,3 +503,75 @@ test('ASS-297 AC3: another project\'s human pause, an AI pause (its own or "all"
     assert.deepEqual(await l.pass(), ['vm:start p ABC-3 B'], JSON.stringify({ pauses, extra, limited }));
   }
 });
+
+// ASS-325: a step that sets `vm: released` (here example's QA, which needs no
+// VM) has its variation's VM deleted at once — stopped first when running,
+// then vm:delete (limactl delete and its vms.json row, as make_room deletes
+// one) — so its disk goes back to the project's VM disk budget without
+// waiting for a new VM to be short of room. Not while an assignment is on its
+// variation, nor for a paused or held variation (stopped only, as today), nor
+// a variation at a running or stopped step; golden images never.
+const QA = at('qa');
+const released = l => {
+  const file = l.file('engines', ENGINE, 'state-engine.json'), engine = JSON.parse(readFileSync(file, 'utf8'));
+  engine.steps.find(s => s.id === 'qa').vm = 'released';
+  writeFileSync(file, JSON.stringify(engine));
+  return l;
+};
+
+test('ASS-325 AC2: a variation at a vm: released step has its VM stopped (when running) and deleted, logged "deleted (<KEY> <variation> at <step>: released)"; one already gone is left; running and stopped steps\' VMs and golden images are not deleted', async () => {
+  const l = released(lifecycle({
+    A: [QA, 'Running'],
+    B: [QA, 'Stopped'],
+    C: [QA, null],                                                // deleted already
+    D: [BUILDING, 'Running'],                                     // as it should be
+    E: [at('blocked', ['grouped-blocked', 'wait-on']), 'Stopped'],   // kept, stopped
+    F: [at('done'), 'Running'],                                   // stopped, kept till room is needed (out of scope)
+  }));
+  l.v.instance('golden-p', 'Stopped');
+  assert.deepEqual(await l.pass(), ['vm:delete p abc-3-a', 'vm:delete p abc-3-b', 'vm:stop p abc-3-a', 'vm:stop p abc-3-f']);
+  assert.ok(l.calls.indexOf('vm:stop p abc-3-a') < l.calls.indexOf('vm:delete p abc-3-a'), l.calls.join('\n'));
+  assert.ok(l.f.lines.includes('vm p abc-3-a: deleted (ABC-3 A at qa: released)'), l.f.lines.join('\n'));
+  assert.ok(l.f.lines.includes('vm p abc-3-b: deleted (ABC-3 B at qa: released)'), l.f.lines.join('\n'));
+  assert.ok(!l.calls.some(c => /golden|abc-3-[cde]/.test(c)), l.calls.join('\n'));
+});
+
+test('ASS-325 AC2: a released variation\'s VM with an assignment on its variation is left — neither stopped nor deleted — until that ends', async () => {
+  const l = released(lifecycle({ A: [QA, 'Running'], B: [QA, 'Stopped'] }));
+  pauseWith(l, {}, [working('A'), working('B')]);
+  assert.deepEqual(await l.pass(), []);
+  pauseWith(l, {}, [working('B')]);
+  assert.deepEqual(await l.pass(), ['vm:delete p abc-3-a', 'vm:stop p abc-3-a']);
+});
+
+test('ASS-325 AC3: a paused variation or ticket, a ticket worked by hand, and a human pause of the project have a released VM stopped as today, never deleted', async () => {
+  for (const [extra, ticket, pauses] of [[{ 'is-paused': true }], [{}, { 'is-paused': true }], [{}, { 'worked-manually': { by: 'alice', since: '2026-10-27T10:00:00Z', note: null } }], [{}, {}, { p: HUMAN }]]) {
+    const l = released(lifecycle({ A: [QA, 'Running', extra], B: [QA, 'Stopped', extra] }));
+    l.edit(t => Object.assign(t, ticket));
+    if (pauses) pauseWith(l, pauses);
+    assert.deepEqual(await l.pass(), ['vm:stop p abc-3-a'], JSON.stringify({ extra, ticket, pauses }));
+  }
+});
+
+test('ASS-325 AC2: a failed delete is logged and retried with the usual backoff, 30 seconds doubling', async () => {
+  const l = released(lifecycle({ A: [QA, 'Stopped'] }, { fail: args => args[0] === 'vm:delete' && 'vm:delete: could not delete abc-3-a' }));
+  assert.deepEqual(await l.pass(), ['vm:delete p abc-3-a']);
+  assert.ok(l.f.lines.includes('error vm p abc-3-a: vm:delete p abc-3-a failed (1 in a row; next try in 30s): vm:delete: could not delete abc-3-a'), l.f.lines.join('\n'));
+  l.later(29_000);
+  assert.deepEqual(await l.pass(), []);
+  l.later(1000);
+  assert.deepEqual(await l.pass(), ['vm:delete p abc-3-a']);
+  assert.ok(l.f.lines.some(x => /\(2 in a row; next try in 60s\)/.test(x)), l.f.lines.join('\n'));
+});
+
+test('ASS-325 AC3: QA → Blocked → Build: the VM deleted at QA is not recreated at Blocked, and is recreated (vm:create) at Build', async () => {
+  const l = released(lifecycle({ A: [QA, 'Stopped'] }));
+  assert.deepEqual(await l.pass(), ['vm:delete p abc-3-a']);
+  rmSync(join(l.v.instances, 'abc-3-a'), { recursive: true });   // as vm:delete left it (agent.sh is a recorder here)
+  assert.deepEqual(await l.pass(), []);
+  l.edit(t => { t.variations[0]['harness-status'] = at('blocked', ['grouped-blocked', 'wait-on']); });
+  assert.deepEqual(await l.pass(), []);
+  l.edit(t => { t.variations[0]['harness-status'] = BUILDING; });
+  assert.deepEqual(await l.pass(), ['vm:create p ABC-3 A']);
+  assert.ok(l.f.lines.includes('vm p abc-3-a: recreated (ABC-3 A at build; it had been deleted)'), l.f.lines.join('\n'));
+});

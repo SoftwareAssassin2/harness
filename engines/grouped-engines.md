@@ -245,6 +245,19 @@ Blocked for Human, saying what was found and what to do.
   Selection) have theirs stopped too. Control matches the VMs to this once per
   loop (`src/control/vm-lifecycle.js`), so a move by hand in the TUI is
   followed; `move_to` and the TUI do nothing of their own.
+- **Released (ASS-325).** A step may instead say `released`: the variation's
+  VM is deleted as soon as it gets there, so its disk goes back to the
+  project's VM disk budget at once rather than when a new VM is short of
+  room. Control stops it if it runs (`vm:stop`), then deletes it
+  (`vm:delete <p> <vm>`: `limactl delete` and its `vms.json` row, as room is
+  made, under the project's VM lock), logging `deleted (<KEY> <variation> at
+  <step>: released)`; a failed delete is logged and retried with the usual
+  backoff. A VM with an assignment on its variation is left as it is until
+  that ends; a paused or held variation's, or a paused project's, is only
+  stopped, as anywhere else. Back at a step that says `running` (QA failed:
+  Blocked, then Build), the VM is recreated (`vm:create`), as any deleted VM
+  is. None of the repo's engines sets it; a project turns it on in its own
+  engine, on a step that needs no VM (QA).
 - **The inventory.** `data/projects/<p>/vms.json` (untracked) holds each VM of the
   project: ticket, variation, state, disk bytes, last accessed (started or
   stopped). `vm:inventory <p>` reconciles it with `limactl list` and the sprint
@@ -258,7 +271,7 @@ Blocked for Human, saying what was found and what to do.
   its APFS private size; a new VM is charged the golden image's allocated size.
 - **Deleting.** Before cloning, Create VM deletes the least recently accessed
   stopped VMs whose variation is not in flight — gone from the sprint, set
-  aside, or at a step that sets no `vm` — until the new one fits. If it cannot
+  aside, or at a step that sets no `vm` or `released` — until the new one fits. If it cannot
   fit without deleting one that runs or is in flight, it deletes nothing and
   exits 3: Setup sends the ticket to Blocked for Human, the reason (project,
   limit, use, need) as the variation's ai-feedback. A deleted VM that is

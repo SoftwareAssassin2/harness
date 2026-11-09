@@ -18,7 +18,17 @@
 // recreated (vm:create, which the variation records); one that should not is
 // stopped (vm:stop), and stays, until room is needed — one stopped for a
 // project's pause logged with it ("…; <p> is paused"), and started again,
-// once released, as its step says. One Running and due to
+// once released, as its step says. One whose variation is at a step that
+// says `vm: released` (ASS-325: QA, which needs none — VM disk being what
+// holds new tickets back) is deleted at once, its disk back to the project's
+// VM disk budget: stopped when running (vm:stop), then deleted (vm:delete:
+// limactl delete and its vms.json row, as make_room deletes one, under the
+// project's VM lock), logged "deleted (<KEY> <variation> at <step>:
+// released)" — but left as it is, neither stopped nor deleted, while an
+// assignment is on its variation, until it ends; and only stopped, as
+// anywhere else, while the variation is held, its project paused or it set
+// aside. Back at a step that runs it, it is recreated as any deleted VM is
+// (vm:create). One Running and due to
 // run whose credential kind (vms.json credential-kind, recorded by vm:start)
 // is not the one its project declares now (~/.harness/vm-credentials.json;
 // a project declaring neither is never compared) is refreshed (vm:start,
@@ -60,7 +70,7 @@ import { declaredCredentials } from './vm-credentials.js';
 const PHASE = 'vm';
 
 // vmUse(engines, engineName, variation) — `vm` of the deepest step of the
-// variation's status that sets it ('running' or 'stopped'), or undefined.
+// variation's status that sets it ('running', 'stopped' or 'released', ASS-325), or undefined.
 const vmUse = (engines, engineName, variation) => statusOf(engines, engineName, variation).chain.findLast(l => l.step?.vm)?.step.vm;
 
 // waitsForSlot(plan, ticket, variation) — the variation is in motion but holds no slot (planFor's `waiting`, ASS-233).
@@ -109,7 +119,7 @@ function declaredVmKind(ctx, id) {
 // kind (its recorded credential kind), busy (an assignment on its variation, its agent started or not), unlinked (ASS-234: only the
 // inventory knows it, yet its variation is in the sprint — a vm:create that failed before linking it — logged so when it is stopped),
 // paused (ASS-297: the scope of the human pause holding the project, when only that keeps it from running), keep (paused and busy:
-// left as it is till its assignment ends) }.
+// left as it is till its assignment ends), release (ASS-325: at a `vm: released` step, not held, set aside or paused: to delete) }.
 function vmsOf(ctx, state, project) {
   const vms = new Map();
   const pause = humanPause(state, project.id);
@@ -120,11 +130,12 @@ function vmsOf(ctx, state, project) {
   }
   for (const t of project.tickets) for (const v of t.variations ?? []) {
     if (!v.vm?.name) continue;
-    const wants = !v['is-deleted'] && !isHeld(t, v) && vmUse(project.engines ?? state.engines, project.engineName, v) === 'running';
+    const use = vmUse(project.engines ?? state.engines, project.engineName, v), free = !v['is-deleted'] && !isHeld(t, v);
+    const wants = free && use === 'running', release = free && !pause && use === 'released';
     const busy = state.assignments.some(a => a.project === project.id && a['work-item'] === t.key && a.variation === v.name);
     const waits = wants && !pause && waitsForSlot(plan ??= planFor(state, project), t, v), run = wants && !waits && !pause;
     const paused = wants && pause ? pause : undefined, keep = !!pause && busy;   // ASS-297: paused, stopped once idle, never started
-    vms.set(v.vm.name, { ...vms.get(v.vm.name), ticket: t.key, variation: v.name, state: v['harness-status']?.state, run, waits, busy, paused, keep });
+    vms.set(v.vm.name, { ...vms.get(v.vm.name), ticket: t.key, variation: v.name, state: v['harness-status']?.state, run, waits, busy, paused, keep, release });
   }
   return vms;
 }
@@ -168,18 +179,21 @@ const probe = (ctx, name) => new Promise((resolve, reject) => execFile('limactl'
 // not yet reached but Running is probed (ASS-169: a VM is `Running` a few
 // seconds before its sshd accepts connections) — silently, so a VM not yet
 // reachable is simply tried again next job, same as one still starting; then
-// each VM started, recreated, stopped or refreshed as it should be (not while backed off).
+// each VM started, recreated, stopped, refreshed or deleted (ASS-325) as it should be (not while backed off).
 async function match(ctx, id, vms, r, status, diskHold = false) {
   const up = (ctx.memory.vmsUp ??= new Set());
   const declared = declaredVmKind(ctx, id);
   for (const [name, vm] of vms) {
     if (vm.keep) continue;   // ASS-297: its project paused, an assignment on it: left as it is till that ends
+    if (vm.release && vm.busy) continue;   // ASS-325: released, an assignment on it: left as it is till that ends
     const now = ctx.now().getTime(), s = status.get(name);
     if (vm.run && s === 'Running' && !up.has(name)) {
       try { await probe(ctx, name); isUp(ctx, name); } catch { /* not yet reachable; probed again next job */ }
     }
-    let args, did, refreshing = false;
-    if (vm.run && s == null) [args, did] = [['vm:create', id, vm.ticket, vm.variation], `recreated (${vm.ticket} ${vm.variation} at ${vm.state}; it had been deleted)`];
+    let args, did, refreshing = false, first = null;
+    if (vm.release && s == null) continue;   // ASS-325: deleted already
+    if (vm.release) [first, args, did] = [s === 'Running' ? ['vm:stop', id, name] : null, ['vm:delete', id, name], `deleted (${vm.ticket} ${vm.variation} at ${vm.state}: released)`];
+    else if (vm.run && s == null) [args, did] = [['vm:create', id, vm.ticket, vm.variation], `recreated (${vm.ticket} ${vm.variation} at ${vm.state}; it had been deleted)`];
     else if (vm.run && s != null && s !== 'Running') [args, did] = [['vm:start', id, vm.ticket, vm.variation], `started (${vm.ticket} ${vm.variation} at ${vm.state})`];
     else if (!vm.run && s === 'Running') [args, did] = [['vm:stop', id, name], `stopped (${vm.ticket} ${vm.variation} ${vm.state ? `at ${vm.state}` : vm.unlinked ? 'not linked to its variation' : 'is not in the sprint'}${vm.waits ? '; waits for a slot' : ''}${vm.paused ? `; ${vm.paused === 'all' ? 'all projects are' : `${id} is`} paused` : ''})`];
     else if (vm.run && s === 'Running' && up.has(name) && declared && vm.kind !== declared) {
@@ -201,8 +215,10 @@ async function match(ctx, id, vms, r, status, diskHold = false) {
     ctx.memory.warned.delete(`disk/${name}`);
     const h = r.held.get(name) ?? { failures: 0, until: 0 };
     if (now < h.until) continue;
+    let doing = first ?? args;
     try {
       if (!vm.run || refreshing) up.delete(name);   // a stopping or refreshing VM is not up until it is reached again
+      if (first) { await ctx.cli(first); doing = args; }   // ASS-325: a released VM running stopped, then deleted
       const out = await ctx.cli(args);
       if (args[0] === 'vm:start' && s === 'Running') {
         const kind = JSON.parse(out || '{}')['credential-kind'] ?? null;
@@ -215,7 +231,7 @@ async function match(ctx, id, vms, r, status, diskHold = false) {
       const wait = backoffDelay(++h.failures);
       h.until = now + wait;
       r.held.set(name, h);
-      ctx.log('error', `${PHASE} ${id} ${name}: ${args.join(' ')} failed (${h.failures} in a row; next try in ${held(wait)}): ${error.message}`);
+      ctx.log('error', `${PHASE} ${id} ${name}: ${doing.join(' ')} failed (${h.failures} in a row; next try in ${held(wait)}): ${error.message}`);
     }
   }
 }
