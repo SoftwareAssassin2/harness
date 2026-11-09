@@ -421,6 +421,19 @@ test('ASS-227 AC1: generate-automated-tests-grouped says to mark "reproduces": t
   assert.match(text('generate-automated-tests-grouped'), /every entry whose test file or target is new in this ticket/);
 });
 
+// A "reproduces": true entry's run is judged with no master baseline
+// (verify-success.sh, ASS-227), so every failure it reports counts as new -
+// a whole-file run command is un-passable wherever the file also holds
+// failures unrelated to the ticket (ASS-320). Step 4 must tell the agent to
+// narrow such a run to the ticket's own tests instead.
+test('ASS-324 AC1: generate-automated-tests-grouped says a "reproduces": true entry gets no master-baseline comparison, so its run command covers only the ticket\'s own tests — a --test-name-pattern or other runner filter — where the file also holds failures unrelated to the ticket', () => {
+  const t = text('generate-automated-tests-grouped');
+  assert.match(t, /no master-baseline comparison/);
+  assert.match(t, /--test-name-pattern/);
+  assert.match(t, /failing for reasons unrelated to the ticket/);
+  assert.doesNotMatch(text('generate-automated-tests'), /test-name-pattern/, 'flat prompt unchanged');
+});
+
 test('ASS-180 AC4: write-test-plan and -grouped name ticket:set-demo-plan, not a direct write of demo-plan-<V>.json', () => {
   for (const name of ['write-test-plan', 'write-test-plan-grouped']) {
     const t = text(name);
