@@ -7,11 +7,12 @@
 // (merge-in-turn-fixture.js, which kills every process a test starts).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, readFileSync, existsSync, rmSync } from 'node:fs';
+import { execFileSync, spawn } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { run } from './harness-fixture.js';
-import { queue, git, exited } from './merge-in-turn-fixture.js';
+import { queue, git, exited, ID } from './merge-in-turn-fixture.js';
 
 test('ASS-197 AC2/AC4: two tickets cut from an older main merge one after the other, each rebased onto the latest main (the other\'s merge in it) and its full tests run there first — the merged head is the one tested; the lock is free after each', async t => {
   const q = queue(t);
@@ -148,4 +149,71 @@ test('a gate left hanging', { timeout: 15_000 }, async t => {
     for (let i = 0; groups.some(alive) && i < 50; i++) await new Promise(res => setTimeout(res, 100));
     assert.deepEqual(groups.filter(alive), [], `${ending}: the gate's processes are gone`);
   }
+});
+
+// ASS-318: the gate's fetch (merge-in-turn.sh:75) wrote the shared tracking
+// refs refs/remotes/origin/<main|branch>, which the plain `git fetch origin`
+// another ticket's start runs in the same workspace (code/create-branch.sh:20)
+// writes too: the two raced for the same ref lock, git refused the gate's
+// ("cannot lock ref ...: is at X but expected Y"), and the gate ended failed —
+// exit 1, to Blocked — on a branch with nothing wrong with it (seen on
+// ASS-315). The command below is read out of the script itself, so the race is
+// run against whatever the gate really fetches, options and all, rather than
+// against a copy of it that can drift. Note that naming refspecs on the
+// command line is not enough on its own: git also updates the matching
+// refs/remotes/origin/* opportunistically (its remote's refmap), and those
+// updates race just the same.
+const GATE = join(import.meta.dirname, '..', '..', 'src', 'agent-cli', 'merge-request', 'merge-in-turn.sh');
+
+// The gate's fetch as it runs it: the command from the script (continuation
+// lines joined, its `|| ends failed ...` and fd-6 close dropped), with the
+// workspace, main and the branch filled in.
+const gateFetch = (workspace, main, branch) => {
+  const lines = readFileSync(GATE, 'utf8').split('\n');
+  const start = lines.findIndex(l => !/^\s*#/.test(l) && /\bgit\b.*\bfetch\b.*\borigin\b/.test(l));
+  assert.ok(start >= 0, 'the gate fetches from origin in merge-in-turn.sh');
+  let command = '';
+  for (let i = start; i < lines.length; i++) {
+    command += `${lines[i].replace(/\\$/, '')} `;
+    if (!/\\$/.test(lines[i])) break;
+  }
+  command = command.split('||')[0].replaceAll('6>&-', '').trim();
+  assert.match(command, /\$main[\s\S]*\$branch/, `the gate's fetch names main and the branch: ${command}`);
+  return command.replaceAll('"$workspace"', JSON.stringify(workspace)).replaceAll('$main', main).replaceAll('$branch', branch);
+};
+
+// Where that fetch writes what it fetches: its <from>:<to> refspec pairs.
+const fetched = command => [...command.replaceAll('"', '').matchAll(/\+?(refs\/heads\/\S+?):(\S+)/g)].map(m => ({ from: m[1], to: m[2] }));
+
+test('ASS-318 AC1: the gate\'s fetch of main and the branch survives a plain `git fetch origin` at the same time in the same workspace — it no longer races the shared tracking refs, so a green branch is not sent to Blocked', { timeout: 300_000 }, async t => {
+  const dir = mkdtempSync(join(tmpdir(), 'mit-race-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const origin = join(dir, 'origin.git'), seed = join(dir, 'seed'), ws = join(dir, 'workspace');
+  const branch = 'change/ASS-318-1';                                                           // a real ticket branch's shape: a slash in it
+  execFileSync('git', ['init', '--bare', '--initial-branch=main', origin], { stdio: 'ignore' });
+  execFileSync('git', ['clone', '--quiet', origin, seed], { stdio: 'ignore' });
+  const commit = text => { writeFileSync(join(seed, 'f.txt'), `${text}\n`); git(seed, 'add', '.'); execFileSync('git', ['-C', seed, 'commit', '-q', '-m', text], { env: { ...process.env, ...ID } }); };
+  commit('first'); git(seed, 'push', '-q', 'origin', 'main');
+  git(seed, 'checkout', '-q', '-b', branch); commit('branch'); git(seed, 'push', '-q', 'origin', branch);
+  execFileSync('git', ['clone', '--quiet', origin, ws], { stdio: 'ignore' });                  // the shared operator workspace
+  const command = gateFetch(ws, 'main', branch);
+  const refs = fetched(command);
+  assert.equal(refs.length, 2, `the gate fetches main and the branch into refs of its own: ${command}`);
+  // A command's exit and what it said; both are started before either is awaited, so they run at once.
+  const started = cmd => {
+    const child = spawn('bash', ['-c', cmd], { stdio: ['ignore', 'ignore', 'pipe'] });
+    let err = '';
+    child.stderr.on('data', d => { err += d; });
+    return () => exited(child).then(() => ({ code: child.exitCode, err: err.trim() }));
+  };
+  const failures = [];
+  for (let round = 1; round <= 40; round++) {                                                  // a real ref move every round: a no-op fetch cannot race
+    git(seed, 'checkout', '-q', 'main'); commit(`main ${round}`); git(seed, 'push', '-q', 'origin', 'main');
+    git(seed, 'checkout', '-q', branch); commit(`branch ${round}`); git(seed, 'push', '-q', 'origin', branch);
+    const gate = started(command), other = started(`git -C ${JSON.stringify(ws)} fetch origin`);  // the gate's fetch, and another ticket's plain one
+    const [result] = await Promise.all([gate(), other()]);
+    if (result.code !== 0) failures.push(`round ${round}: exit ${result.code}: ${result.err}`);
+  }
+  assert.deepEqual(failures, [], `the gate's fetch failed in ${failures.length} of 40 rounds`);
+  for (const { from, to } of refs) assert.equal(git(ws, 'rev-parse', to), git(origin, 'rev-parse', from), to);  // and it did advance the refs it fetched
 });
