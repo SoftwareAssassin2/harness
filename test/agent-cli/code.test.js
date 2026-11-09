@@ -518,6 +518,89 @@ test('ASS-99: in a VM, master\'s run switches every repository in /repos/ not at
   assert.ok(vm.calls().every(c => c.vm === 'abc-3-a' && c.workdir === '/repos/'));
 });
 
+// ASS-329: the time limit on each test command run — project.json's
+// automated-test-run-minutes (absent 30, null none) — set to a second or so;
+// minutes() sets it (undefined removes it). A run past it is stopped with
+// everything it started: sleeping() is a run command that starts a child,
+// both logging their PIDs to pids(), and sleeps past the limit; gone(f)
+// whether every one of them has exited.
+function minutes(f, value) {
+  const file = join(f.dir, 'projects', 'p', 'project.json');
+  const json = JSON.parse(readFileSync(file, 'utf8'));
+  if (value === undefined) delete json['automated-test-run-minutes']; else json['automated-test-run-minutes'] = value;
+  writeFileSync(file, JSON.stringify(json));
+}
+const sleeping = f => `echo started; sleep 30 & echo $! >> ${join(f.tmp, 'pids')}; echo $$ >> ${join(f.tmp, 'pids')}; sleep 30`;
+const pids = f => readFileSync(join(f.tmp, 'pids'), 'utf8').trim().split('\n').map(Number);
+const gone = f => pids(f).every(pid => { try { process.kill(pid, 0); return false; } catch { return true; } });
+
+test('ASS-329 AC1, AC2: a run past automated-test-run-minutes is stopped with everything it started — a failed run, not one that could not run — its results saying it timed out, with its output so far', async () => {
+  const w = workspace();
+  const f = await withTests([{ list: 'echo t', run: `${ON_MASTER} || { ${sleeping(w)}; }` }], w);
+  minutes(f, 0.02);
+  const started = Date.now();
+  await exitsWith(f.agent('automated-tests:verify-success', 'p', 'ABC-3', 'A'), 1, /1 of 1 failed/);
+  assert.ok(Date.now() - started < 20000);
+  assert.equal(pids(f).length, 4);                                            // the branch's run and its re-run, each with its child
+  assert.ok(gone(f));
+  assert.match(f.results(), /## ✗ .* \(exit 124: timed out after 0\.02 minutes\)\n\nNew failures, not failing on master, and failing again on a re-run:\n- the command timed out after 0\.02 minutes; on master it finished \(exit 0\)\n\n```\nstarted\nautomated-tests:verify-success: timed out after 0\.02 minutes\n```\n\n### Re-run \(exit 124: timed out after 0\.02 minutes\)\n/);
+});
+
+test('ASS-329 AC2: a node --test run stopped at the limit names the file it was running', async () => {
+  const f = workspace();
+  const spec = join(f.tmp, 'hangs.test.js');
+  writeFileSync(spec, "import test from 'node:test';\ntest('quick', () => {});\ntest('hangs', () => new Promise(r => setTimeout(r, 60000)));\n");
+  const t = await withTests([{ list: 'echo t', run: `${ON_MASTER} || env -u NODE_TEST_CONTEXT node --test --test-reporter=spec ${spec}` }], f);
+  minutes(t, 0.03);
+  await exitsWith(t.agent('automated-tests:verify-success', 'p', 'ABC-3', 'A'), 1, /1 of 1 failed/);
+  assert.match(t.results(), new RegExp(`\\(exit 124: timed out after 0\\.03 minutes, in ${spec}\\)\\n\\nNew failures[^\\n]*\\n- the command timed out after 0\\.03 minutes, in ${spec}; on master`));
+  assert.match(t.results(), /✔ quick/);
+});
+
+test('ASS-329 AC3: a command timed out on master too exits 3 for a human, with both outputs; master\'s timed-out run is not kept, run again next time', async () => {
+  const f = await againstMaster('master\n', 'branch\n', 'cat tap.txt; sleep 30');
+  minutes(f, 0.02);
+  await exitsWith(f.agent('automated-tests:verify-success', 'p', 'ABC-3', 'A'), 3, /1 of 1 red on master too/);
+  assert.match(f.results(), /## ⚠ .* \(exit 124: timed out after 0\.02 minutes: timed out on master too, nothing to compare\)\n\n```\nbranch\nautomated-tests:verify-success: timed out after 0\.02 minutes\n```\n\n### On master \(exit 124: timed out after 0\.02 minutes\)\n\n```\nmaster\nautomated-tests:verify-success: timed out after 0\.02 minutes\n```/);
+  assert.deepEqual(f.runs(), ['change/ABC-3', 'HEAD']);
+  assert.equal(f.on(), 'change/ABC-3');
+  await exitsWith(f.agent('automated-tests:verify-success', 'p', 'ABC-3', 'A'), 3);
+  assert.deepEqual(f.runs(), ['change/ABC-3', 'HEAD', 'change/ABC-3', 'HEAD']);   // master's run again, not the timed-out one kept
+});
+
+test('ASS-329 AC1: automated-test-run-minutes absent is 30, null no limit; a value that is no number of minutes above 0 exits 3, running nothing', async () => {
+  const f = await withTests([{ list: 'echo t', run: 'ps -ww -o command= -p $PPID | grep -o "seconds=[0-9.]*"; sleep 1.5; echo done' }]);
+  assert.deepEqual(JSON.parse((await f.agent('automated-tests:verify-success', 'p', 'ABC-3', 'A')).stdout), { passed: 1, failed: 0 });
+  assert.match(f.results(), /seconds=1800\n/);
+  minutes(f, 0.01);
+  await assert.rejects(f.agent('automated-tests:verify-success', 'p', 'ABC-3', 'A'));
+  assert.match(f.results(), /timed out after 0\.01 minutes/);
+  minutes(f, null);
+  assert.deepEqual(JSON.parse((await f.agent('automated-tests:verify-success', 'p', 'ABC-3', 'A')).stdout), { passed: 1, failed: 0 });
+  assert.doesNotMatch(f.results(), /^seconds=/m);                            // run as it is, with no limit around it
+  const before = f.results();
+  for (const bad of [0, -1, '30', 'x', true]) {
+    minutes(f, bad);
+    await exitsWith(f.agent('automated-tests:verify-success', 'p', 'ABC-3', 'A'), 3, /automated-test-run-minutes must be a number of minutes above 0, or null/);
+  }
+  assert.equal(f.results(), before);
+});
+
+test('ASS-329 AC1: in a VM, the limit stops the run and everything it started there', async () => {
+  const f = workspace();
+  const folder = join(f.dir, 'projects', 'p', 'work', 'ABC-3');
+  mkdirSync(folder, { recursive: true });
+  writeFileSync(join(folder, 'automated-tests-A.json'), JSON.stringify([{ list: 'echo t', run: sleeping(f), reproduces: true }]));
+  const sprint = join(f.dir, 'projects', 'p', 'sprints', 'sprint-10', 'sprint.json');
+  writeFileSync(sprint, readFileSync(sprint, 'utf8').replace('"name": "A",', '"name": "A", "vm": { "name": "abc-3-a", "ip": "192.168.64.9", "created-at": "2026-10-19T00:00:00Z" },'));
+  minutes(f, 0.02);
+  const vm = fakeVm(f.env);
+  await exitsWith(run(AGENT, ['automated-tests:verify-success', 'p', 'ABC-3', 'A'], { env: vm.env }), 1, /1 of 1 failed/);
+  assert.equal(pids(f).length, 4);
+  assert.ok(gone(f));
+  assert.match(readFileSync(join(folder, 'automated-test-results-A.md'), 'utf8'), /- the command timed out after 0\.02 minutes\n/);
+});
+
 test('the automated-testing step sends a test run that could not start (exit 3) to Blocked, not back to generate-solution', () => {
   const engine = JSON.parse(readFileSync(join(engineDir('example-development'), 'state-engine.json'), 'utf8'));   // the example project's own (ASS-277)
   const exits = engine.steps.find(s => s.id === 'automated-testing')['exit-events'];
@@ -820,4 +903,16 @@ test('without a dev-container, automated-tests:verify-success runs every test on
   assert.deepEqual(JSON.parse((await f.agent('automated-tests:verify-success', 'p', 'ABC-3', 'A')).stdout), { passed: 2, failed: 0 });
   assert.match(results(), new RegExp(`${f.folder}[\\s\\S]*second`));
   assert.equal(f.dockerLog(), '');
+});
+
+test('ASS-329 AC1: in the dev container, the limit stops the run and everything it started there, not only the docker exec', async () => {
+  const f = inContainer();
+  await worktreeIn(f);
+  const results = recordTests(f, [{ list: 'echo t', run: sleeping(f), reproduces: true }]);
+  minutes(f, 0.02);
+  await exitsWith(f.agent('automated-tests:verify-success', 'p', 'ABC-3', 'A'), 1, /1 of 1 failed/);
+  assert.equal(pids(f).length, 4);
+  assert.ok(gone(f));
+  assert.match(results(), /- the command timed out after 0\.02 minutes\n/);
+  assert.equal(f.dockerLog().match(new RegExp(`^exec -i -w ${f.inside} ctr bash -c `, 'gm')).length, 2);
 });

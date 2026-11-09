@@ -43,12 +43,25 @@ set -euo pipefail
 # local-testing (ASS-241): number-of-relevant-automated-tests, the commands
 # run, and number-of-passing-relevant-automated-tests, those that passed —
 # the "x/y automated tests" line (src/tui/ticket.js testCounts).
+#
+# Each run of a command — on the branch, on master, the re-run — is stopped
+# once it passes project.json's automated-test-run-minutes (ASS-329: absent,
+# 30; null, none; time_limited in automated-tests.bash), with everything it
+# started, in the VM or dev container too. A run stopped so failed — never
+# "could not run" — its results saying "timed out after N minutes", with its
+# output up to then and, where that shows it, what was running (node --test's
+# file or test). test-results.js judges it as any failure with no test to
+# compare: timed out on the branch with master finishing inside the limit, a
+# new failure (re-run once, then exit 1); timed out on master too, exit 3,
+# both outputs in the results. Master's run that timed out is recorded as
+# such, and run again next time, never kept.
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../automated-tests.bash"
 judge_js="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/test-results.js"
 
 [[ $# -eq 3 ]] || { echo "usage: automated-tests:verify-success <project> <ticket-key> <variation>" >&2; exit 1; }
 key="$(upper "$2")"
 tests_setup automated-tests:verify-success "$1" "$key" "$3"
+minutes="$(run_minutes automated-tests:verify-success "$1")" || exit 3
 baseline="${results%/*}/automated-test-baseline-$3.json"
 
 # The checkout's git, run where the tests run (in the VM, every repository in
@@ -86,8 +99,14 @@ restore=()
 cleanup() { [[ ${#restore[@]} -eq 0 ]] || in_checkout back "${restore[@]}" || true; rm -rf "$tmp"; }
 trap cleanup EXIT
 
-# run_test <project> <command> <output file> — runs it, its output (both streams) to the file; prints its exit code.
-run_test() { local status=0; in_project automated-tests:verify-success "$1" "$where" "$2" "$vm" > "$3" 2>&1 || status=$?; echo "$status"; }
+# run_test <project> <command> <output file> — runs it, inside the time limit, its output (both streams) to the file; prints its exit code.
+run_test() { local status=0; in_project automated-tests:verify-success "$1" "$where" "$(time_limited "$minutes" "$2")" "$vm" > "$3" 2>&1 || status=$?; echo "$status"; }
+# timed_out <exit code> <output file> — "timed out after N minutes[, in …]" for a run stopped at the limit; else fails.
+timed_out() { local why; [[ $1 -eq 124 ]] && why="$(node "$judge_js" timed-out "$1" "$2")" && [[ -n "$why" ]] && echo "$why"; }
+# ran <exit code> <output file> — whether the run got as far as a test: stopped at the limit, it did.
+ran() { timed_out "$1" "$2" > /dev/null || runnable "$1" "$2"; }
+# exit_of <exit code> <output file> — the run's exit, as the results put it.
+exit_of() { local why; if why="$(timed_out "$1" "$2")"; then echo "exit $1: $why"; else echo "exit $1"; fi; }
 block() { printf '\n```\n%s\n```\n' "$(cat "$1")"; }
 
 mapfile -t commands < <(jq -r '.[].run' <<< "$tests")
@@ -95,7 +114,7 @@ mapfile -t reproduces < <(jq -r '.[].reproduces == true' <<< "$tests")
 statuses=() red=()
 for i in "${!commands[@]}"; do
   statuses[i]="$(run_test "$1" "${commands[i]}" "$tmp/branch-$i")"
-  [[ ${statuses[i]} -eq 0 || ${reproduces[i]} == true ]] || ! runnable "${statuses[i]}" "$tmp/branch-$i" || red+=("$i")
+  [[ ${statuses[i]} -eq 0 || ${reproduces[i]} == true ]] || ! ran "${statuses[i]}" "$tmp/branch-$i" || red+=("$i")
 done
 
 # Master's runs of the red commands: the ones recorded for master's SHA, the rest run now.
@@ -105,14 +124,16 @@ if [[ ${#red[@]} -gt 0 ]]; then
   else
     [[ -f "$baseline" ]] && jq -e --arg sha "$sha" '.master == $sha' "$baseline" > /dev/null 2>&1 || jq -n --arg sha "$sha" '{ master: $sha, tests: {} }' | replace_file "$baseline"
     missing=()
-    for i in "${red[@]}"; do jq -e --arg run "${commands[i]}" '.tests | has($run)' "$baseline" > /dev/null || missing+=("$i"); done
+    for i in "${red[@]}"; do jq -e --arg run "${commands[i]}" '.tests[$run] | . != null and (.["timed-out"] | not)' "$baseline" > /dev/null || missing+=("$i"); done
     if [[ ${#missing[@]} -gt 0 ]]; then
       if ! switched="$(in_checkout to-master 2> "$tmp/error")"; then baseline_error="$(cat "$tmp/error")"
       else
         [[ -z "$switched" ]] || read -ra restore <<< "$(tr '\n' ' ' <<< "$switched")"
         for i in "${missing[@]}"; do
           status="$(run_test "$1" "${commands[i]}" "$tmp/master-$i")"
-          jq --arg run "${commands[i]}" --argjson status "$status" --rawfile output "$tmp/master-$i" '.tests[$run] = { status: $status, output: $output }' "$baseline" | replace_file "$baseline"
+          timed=false; ! timed_out "$status" "$tmp/master-$i" > /dev/null || timed=true
+          jq --arg run "${commands[i]}" --argjson status "$status" --rawfile output "$tmp/master-$i" --argjson timed "$timed" \
+            '.tests[$run] = { status: $status, output: $output } + if $timed then { "timed-out": true } else {} end' "$baseline" | replace_file "$baseline"
         done
         [[ ${#restore[@]} -eq 0 ]] || in_checkout back "${restore[@]}"
         restore=()
@@ -127,7 +148,7 @@ report="# Automated test results — $key $3, $(date -u +%Y-%m-%dT%H:%M:%SZ)"$'\
 for i in "${!commands[@]}"; do
   command="${commands[i]}" status="${statuses[i]}" out="$tmp/branch-$i" extra=""
   if [[ $status -eq 0 ]]; then passed=$((passed + 1)); report+=$'\n'"## ✓ $command (exit 0)"$'\n'"$(block "$out")"$'\n'; continue; fi
-  if ! runnable "$status" "$out"; then unrunnable=$((unrunnable + 1)); report+=$'\n'"## ⚠ $command (exit $status: could not run)"$'\n'"$(block "$out")"$'\n'; continue; fi
+  if ! ran "$status" "$out"; then unrunnable=$((unrunnable + 1)); report+=$'\n'"## ⚠ $command (exit $status: could not run)"$'\n'"$(block "$out")"$'\n'; continue; fi
   master_status=- master=- new="New failures, failing again on a re-run:"
   if [[ ${reproduces[i]} != true ]]; then
     if [[ -n "$baseline_error" ]]; then unrunnable=$((unrunnable + 1)); report+=$'\n'"## ⚠ $command (exit $status: could not run master's tests: $baseline_error)"$'\n'"$(block "$out")"$'\n'; continue; fi
@@ -139,17 +160,18 @@ for i in "${!commands[@]}"; do
     why="no new failure failed again on a re-run"
     rerun="$(run_test "$1" "$command" "$tmp/rerun-$i")"
     verdict="$(node "$judge_js" "$master_status" "$master" "$status" "$out" "$rerun" "$tmp/rerun-$i")"
-    extra=$'\n'"### Re-run (exit $rerun)"$'\n'"$(block "$tmp/rerun-$i")"$'\n'
+    extra=$'\n'"### Re-run ($(exit_of "$rerun" "$tmp/rerun-$i"))"$'\n'"$(block "$tmp/rerun-$i")"$'\n'
   fi
   case "$(jq -r .verdict <<< "$verdict")" in
     passed) passed=$((passed + 1)); pre_existing="$(jq -c --argjson v "$verdict" '. + $v["pre-existing"]' <<< "$pre_existing")"
       listed="$(jq -r '.["pre-existing"][] | "- \(.)"' <<< "$verdict")"
       [[ -z "$listed" ]] || listed=$'\n\n'"Pre-existing failures, failing on master too:"$'\n'"$listed"
-      report+=$'\n'"## ✓ $command (exit $status: $why)$listed"$'\n'"$(block "$out")"$'\n'"$extra" ;;
+      report+=$'\n'"## ✓ $command ($(exit_of "$status" "$out"): $why)$listed"$'\n'"$(block "$out")"$'\n'"$extra" ;;
     failed) failed=$((failed + 1))
-      report+=$'\n'"## ✗ $command (exit $status)"$'\n\n'"$new"$'\n'"$(jq -r '.new[] | "- \(.)"' <<< "$verdict")"$'\n'"$(block "$out")"$'\n'"$extra" ;;
-    blocked) blocked=$((blocked + 1))
-      report+=$'\n'"## ⚠ $command (exit $status: red on master too, with no test results to compare)"$'\n'"$(block "$out")"$'\n\n'"### On master (exit $master_status)"$'\n'"$(block "$tmp/master-$i")"$'\n'"$extra" ;;
+      report+=$'\n'"## ✗ $command ($(exit_of "$status" "$out"))"$'\n\n'"$new"$'\n'"$(jq -r '.new[] | "- \(.)"' <<< "$verdict")"$'\n'"$(block "$out")"$'\n'"$extra" ;;
+    blocked) blocked=$((blocked + 1)) why="red on master too, with no test results to compare"
+      ! timed_out "$master_status" "$tmp/master-$i" > /dev/null || why="timed out on master too, nothing to compare"
+      report+=$'\n'"## ⚠ $command ($(exit_of "$status" "$out"): $why)"$'\n'"$(block "$out")"$'\n\n'"### On master ($(exit_of "$master_status" "$tmp/master-$i"))"$'\n'"$(block "$tmp/master-$i")"$'\n'"$extra" ;;
   esac
 done
 printf '%s' "$report" | replace_file "$results"

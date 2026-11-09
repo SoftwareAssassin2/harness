@@ -96,6 +96,7 @@ const ALLOWED = {
   'src/agent-cli/ticket/set-gate-when-leaving-state.sh': { '/<state>…]': 'usage text, not a redirect' },
   'src/agent-cli/code.bash': { '"$f"': 'a mktemp file in a shim run in the project' },
   'src/agent-cli/code/create-worktree.sh': { '"$(git -C "': 'the workspace\'s .git/info/exclude, not the harness\'s data' },
+  'src/agent-cli/automated-tests.bash': { '"$f"': 'a mktemp flag file in the time limit\'s script, run where the tests run (ASS-329)' },
   'src/agent-cli/automated-tests/verify-success.sh': { '"$3"': 'a test run\'s output, to its own temp file', '"$tmp/master-$i"': 'a temp folder of its own' },
   'src/agent-cli/ci-checks/verify.sh': Object.fromEntries(['"$4"', '"$tmp/head"', '"$tmp/base"', '"$tmp/changed"', '"$tmp/master-tail"', '"$tmp/master-$i"'].map(t => [t, 'a temp folder of its own (mktemp -d)'])),
   'src/agent-cli/project/check-on-master.sh': { '"$why"': 'a temp file of its own' },

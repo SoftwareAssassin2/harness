@@ -3,6 +3,7 @@
 // failed on the ticket's branch:
 //
 //   node test-results.js <master's exit code> <master's output file> <exit code> <output file> [<exit code> <output file>]
+//   node test-results.js timed-out <exit code> <output file>
 //
 // prints judge()'s verdict as JSON: the command's run on master, then its run
 // on the branch and, when the first was judged failed, its re-run. For a
@@ -26,6 +27,18 @@
 // nothing to compare by test: red on master and red here is blocked (for a
 // human, with both outputs); green on master and red here failed. With no
 // master (null: a reproducing check) every failure is new.
+//
+// ASS-329: a run stopped at verify-success's time limit (timedOut) never
+// finished, so its output is not compared by test: timed out where master
+// finished inside the limit, it failed (the timeout its one new failure);
+// master timed out, with the branch red, it is blocked, nothing to compare. A
+// re-run that finished is judged on its own failures, a timed-out run's
+// standing in for any.
+//
+// timedOut(run) — { minutes, in: [<what was running when stopped>] }, or null
+// for a run that did not hit the limit: exit 124 with the limit's own line
+// in its output (a command's own 124 is a plain failure). `timed-out` prints
+// it as "timed out after <minutes> minutes[, in <…>]", or nothing.
 import { readFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 
@@ -97,8 +110,43 @@ function jsonReports(lines) {
   return reports;
 }
 
+// The limit's line, which verify-success's TIME_LIMIT (automated-tests.bash) prints when it stops a run.
+const LIMIT = /^automated-tests:verify-success: timed out after (\S+) minutes$/m;
+
+export function timedOut({ status, output }) {
+  const m = status === 124 && output.match(LIMIT);
+  return m ? { minutes: m[1], in: running(output) } : null;
+}
+
+// What was running when a run was stopped, as its output shows it: node
+// --test's spec reporter lists each file it was running as failed, with its
+// time (a file not started has none), named as given — its "test at" line
+// may give it relative to the folder instead; its TAP reporter leaves the
+// running test's "# Subtest:" lines with no result, nested by indentation.
+function running(output) {
+  const lines = output.replace(ANSI, '').split('\n').map(line => line.replace(/\r$/, ''));
+  const files = [], base = path => path.slice(path.lastIndexOf('/') + 1);
+  lines.forEach((line, i) => {
+    const at = line.match(/^test at (.+?):\d+:\d+$/)?.[1], file = lines[i + 1]?.match(/^✖ (.+) \([\d.]+m?s\)$/)?.[1];
+    if (at && file && base(file) === base(at) && !files.includes(file)) files.push(file);
+  });
+  if (files.length) return files;
+  const open = [];
+  for (const line of lines) {
+    let m;
+    if ((m = line.match(/^(\s*)# Subtest: (.*)$/))) open.splice(m[1].length / 4, Infinity, m[2]);
+    else if ((m = line.match(TEST))) open.splice(m[1].length / 4);
+  }
+  return open.length ? [open.join(' > ')] : [];
+}
+
+const described = t => `timed out after ${t.minutes} minutes${t.in.length ? `, in ${t.in.join(', ')}` : ''}`;
+
 function judgeRun(master, run) {
   if (run.status === 0) return { verdict: 'passed', new: new Map(), pre: new Map() };
+  const out = timedOut(run);
+  if (master && timedOut(master)) return { verdict: 'blocked', new: new Map(), pre: new Map() };
+  if (out) return { verdict: 'failed', new: new Map([['timed out', `the command ${described(out)}${master ? `; on master it finished (exit ${master.status})` : ''}`]]), pre: new Map(), timedOut: true };
   const here = failures(run.output);
   const there = master ? failures(master.output) : { found: true, failed: new Map() };
   if (here.failed.size === 0 || (master?.status !== 0 && !there.found)) {
@@ -117,11 +165,15 @@ export function judge(master, runs) {
   const passed = each.find(r => r.verdict === 'passed');
   if (passed) return shape('passed', new Map(), passed.pre);
   if (each.some(r => r.verdict === 'blocked')) return shape('blocked', new Map(), new Map());
-  const fresh = new Map([...each[0].new].filter(([key]) => each.every(r => r.new.has(key))));
-  return shape(fresh.size ? 'failed' : 'passed', fresh, each[0].pre);
+  const finished = each.filter(r => !r.timedOut);
+  const fresh = finished.length ? new Map([...finished[0].new].filter(([key]) => finished.every(r => r.new.has(key)))) : each[0].new;
+  return shape(fresh.size ? 'failed' : 'passed', fresh, (finished[0] ?? each[0]).pre);
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (import.meta.url === pathToFileURL(process.argv[1]).href && process.argv[2] === 'timed-out') {
+  const t = timedOut({ status: Number(process.argv[3]), output: readFileSync(process.argv[4], 'utf8') });
+  if (t) console.log(described(t));
+} else if (import.meta.url === pathToFileURL(process.argv[1]).href) {
   const [masterStatus, masterFile, ...rest] = process.argv.slice(2);
   const read = (status, file) => ({ status: Number(status), output: readFileSync(file, 'utf8') });
   const runs = [];

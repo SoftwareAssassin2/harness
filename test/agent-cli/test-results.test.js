@@ -10,7 +10,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { judge } from '../../src/agent-cli/automated-tests/test-results.js';
+import { judge, timedOut } from '../../src/agent-cli/automated-tests/test-results.js';
 
 const branch = readFileSync(new URL('./fixtures/example-shop-api-db-e2e.txt', import.meta.url), 'utf8');
 const PARITY = 'ok 217 - parity: search_result_browse.brand_names = product_overview.brand_names on a product that has brands';
@@ -190,4 +190,57 @@ test('ASS-227: with no master to compare (a reproducing check), a red run failed
   assert.deepEqual(judge(null, [red('x.sql ....... \n1..1\nnot ok 1 - a\n'), red('x.sql ....... \n1..1\nnot ok 1 - a\n')]).new, ['x.sql: a']);
   assert.equal(judge(null, [{ status: 0, output: 'ok\n' }]).verdict, 'passed');
   assert.equal(judge(null, [red('boom\n'), { status: 0, output: 'ok\n' }]).verdict, 'passed');
+});
+
+// ASS-329: a run stopped at automated-tests:verify-success's time limit — exit
+// 124, its output ending with the limit's own line — and what node --test
+// prints when stopped: its spec reporter lists each file it was running as a
+// failed one, with its time (one never started has none); its TAP reporter
+// leaves the running test's "# Subtest:" with no result.
+const STOPPED = 'automated-tests:verify-success: timed out after 30 minutes\n';
+const stopped = output => ({ status: 124, output: output + STOPPED });
+const SPEC_STOPPED = `✔ a quick one (0.773708ms)
+✖ test/agents/process.test.js (2973.976ms)
+✔ b one (0.606459ms)
+ℹ tests 3
+ℹ cancelled 2
+
+✖ failing tests:
+
+test at test/agents/process.test.js:1:1
+✖ test/agents/process.test.js (2973.976ms)
+  'Promise resolution is still pending but the event loop has already resolved'
+
+test at test/c.test.js:1:1
+✖ test/c.test.js
+  'Promise resolution is still pending but the event loop has already resolved'
+`;
+
+test('ASS-329 AC2: a run that hit the time limit timed out — after its minutes, naming what node --test was running when stopped — and no other run did', () => {
+  assert.deepEqual(timedOut(stopped(SPEC_STOPPED)), { minutes: '30', in: ['test/agents/process.test.js'] });
+  assert.deepEqual(timedOut(stopped('TAP version 13\n# Subtest: suite\n    # Subtest: first\n    ok 1 - first\n    # Subtest: hangs\n')), { minutes: '30', in: ['suite > hangs'] });
+  assert.deepEqual(timedOut(stopped('# Subtest: a\nok 1 - a\n')), { minutes: '30', in: [] });
+  assert.deepEqual(timedOut(stopped('starting\n')), { minutes: '30', in: [] });
+  assert.equal(timedOut({ status: 124, output: 'exit 124 of its own\n' }), null);   // no limit's line: the command's own 124
+  assert.equal(timedOut({ status: 1, output: STOPPED }), null);
+  assert.equal(timedOut({ status: 0, output: 'ok\n' }), null);
+});
+
+test('ASS-329 AC3: a branch run that timed out, master finishing inside the limit, is a new failure — named tests on master or not — and passes only on a green or pre-existing re-run', () => {
+  const tap = 'x.sql ....... \n1..2\nok 1 - a\nnot ok 2 - b\n';
+  const failed = judge({ status: 0, output: 'ok\n' }, [stopped(SPEC_STOPPED)]);
+  assert.deepEqual(failed, { verdict: 'failed', new: ['the command timed out after 30 minutes, in test/agents/process.test.js; on master it finished (exit 0)'], 'pre-existing': [] });
+  assert.equal(judge(red(tap), [stopped(SPEC_STOPPED)]).verdict, 'failed');                         // master red, but it finished
+  assert.equal(judge(red(tap), [stopped('x.sql ....... \n1..2\nok 1 - a\nnot ok 2 - b\n')]).verdict, 'failed');   // its failures master's, but it never finished
+  assert.equal(judge(red(tap), [stopped(SPEC_STOPPED), stopped(SPEC_STOPPED)]).verdict, 'failed');   // timed out again on its re-run
+  assert.deepEqual(judge(red(tap), [stopped(SPEC_STOPPED), red('x.sql ....... \n1..2\nnot ok 1 - a\nnot ok 2 - b\n')]).new, ['x.sql: a']);   // a re-run that finished: its new failures
+  assert.equal(judge(red(tap), [stopped(SPEC_STOPPED), red(tap)]).verdict, 'passed');                 // re-run red only as master is
+  assert.equal(judge({ status: 0, output: 'ok\n' }, [stopped(SPEC_STOPPED), { status: 0, output: 'ok\n' }]).verdict, 'passed');
+  assert.deepEqual(judge(null, [stopped('starting\n')]).new, ['the command timed out after 30 minutes']);   // a reproducing check
+});
+
+test('ASS-329 AC3: master\'s run timed out too — or master timed out where the branch finished red — is blocked, nothing to compare; a green branch run still passes', () => {
+  assert.equal(judge(stopped(SPEC_STOPPED), [stopped(SPEC_STOPPED)]).verdict, 'blocked');
+  assert.equal(judge(stopped(SPEC_STOPPED), [red('x.sql ....... \n1..1\nnot ok 1 - a\n')]).verdict, 'blocked');
+  assert.equal(judge(stopped(SPEC_STOPPED), [{ status: 0, output: 'ok\n' }]).verdict, 'passed');
 });
