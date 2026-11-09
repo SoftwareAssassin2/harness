@@ -11,7 +11,8 @@ import { join } from 'node:path';
 import { engineDir, engineNames } from '../support/engine-walk.js';
 
 const ROOT = join(import.meta.dirname, '..', '..');
-const projects = readdirSync(join(ROOT, 'data', 'projects')).filter(p => existsSync(join(ROOT, 'data', 'projects', p, 'project.json')));
+// The projects on this machine: data/projects is local, untracked, so a fresh clone has none.
+const projects = (existsSync(join(ROOT, 'data', 'projects')) ? readdirSync(join(ROOT, 'data', 'projects')) : []).filter(p => existsSync(join(ROOT, 'data', 'projects', p, 'project.json')));
 const prefixes = ['HD', ...projects.flatMap(p => JSON.parse(readFileSync(join(ROOT, 'data', 'projects', p, 'project.json'), 'utf8'))['work-sources'] ?? [])
   .map(s => s['key-prefix'] ?? s.url?.match(/\/projects\/([A-Z]+)\b/)?.[1]).filter(Boolean)];
 const key = new RegExp(`\\b(${prefixes.join('|')})-(\\d+|n)\\b`);

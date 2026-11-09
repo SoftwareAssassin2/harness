@@ -303,7 +303,8 @@ test('a project with no declared credentials, or an unreadable keychain item, fa
 // the Mac (Lima's vz opens one at start when video.display is "vz" or "default") until the Demo action starts it with one.
 test('every project has a golden image, whose template starts its VMs with no display', () => {
   const data = join(import.meta.dirname, '..', '..', 'data');   // project.json's folder is relative to it
-  for (const p of readdirSync(join(data, 'projects')).filter(p => existsSync(join(data, 'projects', p, 'project.json')))) {
+  // The projects on this machine: data/projects is local, untracked, so a fresh clone has none to check.
+  for (const p of (existsSync(join(data, 'projects')) ? readdirSync(join(data, 'projects')) : []).filter(p => existsSync(join(data, 'projects', p, 'project.json')))) {
     const folder = JSON.parse(readFileSync(join(data, 'projects', p, 'project.json'), 'utf8'))['golden-image']?.folder;
     assert.ok(folder, `${p} has a golden image`);
     assert.match(readFileSync(join(data, folder, 'template.yaml'), 'utf8'), /^video:\n  display: "none"$/m, p);
