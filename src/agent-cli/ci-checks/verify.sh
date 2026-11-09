@@ -99,7 +99,7 @@ problem="$(jq -r --argjson repos "$(jq -c '[.repositories[]?.url | sub("\\.git$"
 # The repositories the ticket changes that declare checks: each with its merge requests not Closed.
 plan="$(variation_field '.["merge-request"] // []' "$command" "$project" "$key" "$variation")" || exit 3
 mapfile -t repos < <(jq -r --slurpfile d "$declared" '
-  [.[] | select(.status != "Closed") | .repository | sub("\\.git$"; "") | split("/") | last] | unique[]
+  [.[] | select(.status != "Closed" and .repository != null) | .repository | sub("\\.git$"; "") | split("/") | last] | unique[]
   | select(($d[0].repositories[.] // []) != [])' <<< "$plan")
 [[ ${#repos[@]} -gt 0 ]] || nothing "no repository the ticket changes declares a CI check"
 [[ -n "$results" ]] || fail "$key has no work folder in $project"
@@ -149,7 +149,7 @@ for repo in "${repos[@]}"; do
   if ! in_repo "$repo" head > "$tmp/head" 2>&1; then could_not "$(tr '\n' ' ' < "$tmp/head")"; continue; fi
   { read -r branch; read -r default; } < "$tmp/head"
   base="$(jq -r --arg r "$repo" --arg b "$branch" --arg d "$default" '
-    [.[] | select(.status != "Closed" and (.repository | sub("\\.git$"; "") | split("/") | last) == $r)] | sort_by(.id)
+    [.[] | select(.status != "Closed" and .repository != null and (.repository | sub("\\.git$"; "") | split("/") | last) == $r)] | sort_by(.id)
     | (first(.[] | select(.branch == $b)) // first) | .base // $d' <<< "$plan")"
   if ! in_repo "$repo" base "$base" > "$tmp/base" 2>&1; then could_not "$(tr '\n' ' ' < "$tmp/base")"; continue; fi
   master="$(sed -n 1p "$tmp/base")" merge_base="$(sed -n 2p "$tmp/base")"

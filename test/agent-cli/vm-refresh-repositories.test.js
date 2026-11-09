@@ -11,6 +11,7 @@ import assert from 'node:assert/strict';
 import { writeFileSync, readFileSync, renameSync } from 'node:fs';
 import { join } from 'node:path';
 import { lima, git, edit } from './vm-fixture.js';
+import { idless } from './harness-fixture.js';
 
 // ABC-3 A, its VM abc-3-a recorded and running, its merge request plan
 // changing harness alone: harness on the ticket's branch with a commit of its own.
@@ -74,4 +75,27 @@ test('ASS-218: a reference checkout that cannot be fetched is left as it is and 
   renameSync(`${work}.gone`, work);
   writeFileSync(join(s.v.instances, 'abc-3-a', 'status'), 'Stopped');
   await assert.rejects(s.refresh(), /abc-3-a is not running/);
+});
+
+test('ASS-321 AC1: an id-less merge-request entry (no repository), placed before the planned one, does not abort the script; the planned repository is still reported "the ticket\'s own, untouched", and the reference repo is still refreshed, reaching limactl', async () => {
+  const s = setup();
+  edit(join(s.f.dir, 'projects', 'p', 'sprints', 'sprint-10', 'sprint.json'), j => {
+    j.features[0].variations[0]['merge-request'].unshift(idless());
+  });
+  const origin = git(s.origins['example-corpus'].work, 'rev-parse', 'HEAD'), before = s.head(s.own);
+  const { stdout } = await s.refresh();
+  assert.match(stdout, /^harness: the ticket's own, untouched$/m);
+  assert.doesNotMatch(stdout, /^: /m);
+  assert.deepEqual(s.head(s.ref), [origin, 'master']);
+  assert.deepEqual(s.head(s.own), before);
+});
+
+test('ASS-321 AC1: a merge-request array holding only id-less entries (no repository) does not abort either; with nothing planned, harness itself is then treated as a reference repo, not the ticket\'s own', async () => {
+  const s = setup();
+  edit(join(s.f.dir, 'projects', 'p', 'sprints', 'sprint-10', 'sprint.json'), j => {
+    j.features[0].variations[0]['merge-request'] = [idless()];
+  });
+  const { stdout } = await s.refresh();
+  assert.match(stdout, /^harness: /m);
+  assert.doesNotMatch(stdout, /the ticket's own, untouched/);
 });

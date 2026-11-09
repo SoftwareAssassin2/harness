@@ -12,7 +12,7 @@ export const repositoryName = url => url.replace(/\.git$/, '').split('/').pop();
 
 // touchedRepositories(variation) — the names of the repositories the
 // variation's planned merge requests are in, each once, in plan order.
-export const touchedRepositories = variation => [...new Set((variation?.['merge-request'] ?? []).map(m => repositoryName(m.repository)))];
+export const touchedRepositories = variation => [...new Set((variation?.['merge-request'] ?? []).filter(m => m?.repository != null).map(m => repositoryName(m.repository)))];
 
 // visitOf(place) — one visit of a step, whose per-repository runs are counted
 // together: a run's (by its id, state and moves so far) or a ticket

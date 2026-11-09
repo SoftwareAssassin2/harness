@@ -12,7 +12,7 @@ import { writeFileSync, readFileSync, existsSync, mkdirSync, mkdtempSync } from 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { lima, git, edit } from './vm-fixture.js';
-import { run, AGENT } from './harness-fixture.js';
+import { run, AGENT, idless } from './harness-fixture.js';
 
 // ABC-3 A, its VM abc-3-a recorded and running; its plan an open merge
 // request in harness (change/ABC-3-1, a commit adding src/app/fix.js) and a
@@ -198,6 +198,36 @@ test('ASS-249: the results and baseline files are the harness\'s own: an agent c
     const e = await run(AGENT, ['work:write', 'p', 'ABC-3', 'A', name], { env: s.env }).then(() => null, error => error);
     assert.match(e?.stderr ?? '', /is the harness's own: not written/, name);
   }
+});
+
+test('ASS-321 AC2: an id-less merge-request entry (no repository), placed before the planned ones, does not abort verify.sh; the repository list and CI_CHECK_BASE still come from the planned entry alone', async () => {
+  const s = setup(checksFor('harness', [{ name: 'hygiene', command: 'echo hygiene ok' }]));
+  edit(join(s.f.dir, 'projects', 'p', 'sprints', 'sprint-10', 'sprint.json'), j => {
+    j.features[0].variations[0]['merge-request'].unshift(idless());
+  });
+  assert.deepEqual(JSON.parse((await s.verify()).stdout), { passed: 1, failed: 0, skipped: 0 });
+  assert.match(s.results(), /## ✓ harness: hygiene \(exit 0\)/);
+  assert.doesNotMatch(s.results(), /## ⚠ : /);
+  const base = git(s.own, 'merge-base', 'HEAD', 'origin/main');
+  assert.match(s.results(), new RegExp(`CI_CHECK_BASE for harness: ${base} `));
+});
+
+test('ASS-321 AC2: the same, with the id-less entry Closed — the null-repository guard and the Closed filter work together', async () => {
+  const s = setup(checksFor('harness', [{ name: 'hygiene', command: 'echo hygiene ok' }]));
+  edit(join(s.f.dir, 'projects', 'p', 'sprints', 'sprint-10', 'sprint.json'), j => {
+    j.features[0].variations[0]['merge-request'].unshift(idless({ status: 'Closed' }));
+  });
+  assert.deepEqual(JSON.parse((await s.verify()).stdout), { passed: 1, failed: 0, skipped: 0 });
+});
+
+test('ASS-321 AC2: a merge-request array holding only id-less entries (no repository) exits 0 with nothing run, as when the ticket declares no repository with a CI check', async () => {
+  const s = setup(checksFor('harness', [{ name: 'hygiene', command: 'echo hygiene ok' }]));
+  edit(join(s.f.dir, 'projects', 'p', 'sprints', 'sprint-10', 'sprint.json'), j => {
+    j.features[0].variations[0]['merge-request'] = [idless()];
+  });
+  assert.deepEqual(JSON.parse((await s.verify()).stdout), { passed: 0, failed: 0, skipped: 0 });
+  assert.match(s.results(), /Nothing run: no repository the ticket changes declares a CI check/);
+  assert.deepEqual(s.shells(), []);
 });
 
 test('ASS-249: with checks declared and no VM on the variation it exits 3, naming why', async () => {

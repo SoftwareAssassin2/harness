@@ -19,6 +19,13 @@ export const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{1
 
 // A harness-status at `state` of the example-development engine.
 export const hs = state => ({ state, 'state-engine': 'example-development' });
+
+// An id-less forge entry of a variation's `merge-request` array (ASS-321): a
+// forge merge request matching no planned branch, as ticket/sync.sh appends
+// one — the forge's own fields alone, no `id` and no `repository`, the shape
+// every reader of the array must skip. `fields` overrides or adds any of them
+// (status: 'Closed'; repository: null for an explicit null).
+export const idless = (fields = {}) => ({ key: '!3296', url: 'https://gitlab.com/g/other/-/merge_requests/3296', 'build-status': null, status: 'Open', branch: 'feat/x', ...fields });
 const change = (from, to, log = []) => ({ 'state-engine': 'example-development', 'from-state': from, 'to-state': to, timestamp: '2026-10-07T20:00:00Z', 'agent-dispatch-log': log, 'work-is-done': false });
 
 const write = (file, content) => {

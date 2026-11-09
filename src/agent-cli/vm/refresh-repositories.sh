@@ -23,7 +23,7 @@ source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../vm.bash"
 project="$1" key="$(tr '[:lower:]' '[:upper:]' <<< "$2")" variation="$3"
 vm="$(running_vm vm:refresh-repositories "$project" "$key" "$variation")"
 name='sub("\\.git$"; "") | split("/") | last'
-own="$("$agent" ticket:merge-request-plan "$project" "$key" "$variation" | jq -r ".[].repository | $name")"
+own="$("$agent" ticket:merge-request-plan "$project" "$key" "$variation" | jq -r ".[] | select(.repository != null) | .repository | $name")"
 refs=()
 while read -r repo; do
   if grep -qxF -- "$repo" <<< "$own"; then echo "$repo: the ticket's own, untouched"; else refs+=("$repo"); fi
