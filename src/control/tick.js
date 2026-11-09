@@ -65,11 +65,13 @@ import { pushAccount } from '../agents/forge.js';
 // with: `root` the repo (agent.sh lives there), `env` the agent-cli's path
 // overrides (tests), `command` the agent command instead of Claude (tests),
 // log(phase, detail) one line per action, now() the clock. Holds `agents`,
-// the live agent processes by name (see dispatch.js), `memory`, what control
+// the live agent processes by name (see dispatch.js), `scripts`, the script
+// steps' commands running (cli.js runScript, ASS-328), `memory`, what control
 // remembers between ticks (timers, scripts run, nags sent, state
 // changes counted, the rate-limit reset last logged, each dev container's
-// mounts, the failing steps backing off — see backoff.js), and the ways to act: cli(args), script(argv), succeeds(argv) (see
-// cli.js; script and succeeds take a VM to run in, ASS-74), load() (see state.js), stopAgents(), mounts(container) (docker
+// mounts, the failing steps backing off — see backoff.js; the script steps
+// running in the background, steps.js), and the ways to act: cli(args), script(argv), succeeds(argv) (see
+// cli.js; script and succeeds take a VM to run in, ASS-74), load() (see state.js), stopAgents(), stopScripts(), mounts(container) (docker
 // inspect's Mounts, [{ Source, Destination }], asked once; tests replace it).
 // With `project` (a project's id) the control is that project's alone
 // (ASS-9): load() lists it alone in `projects` — every phase acts on it only —
@@ -83,7 +85,7 @@ export function createContext({ root, env = process.env, command, log = () => {}
   const ctx = {
     root, env, command, log, now, started: now(), project,
     paths: paths(root, env),
-    agents: new Map(),
+    agents: new Map(), scripts: new Set(),
     memory: { lastRun: new Map(), ran: new Set(), timers: new Map(), changes: new Map(), health: [], nagged: new Map(), warned: new Set(), holding: new Map(), mounts: new Map(), backoff: new Map() },
   };
   ctx.mounts = container => {
@@ -130,6 +132,16 @@ export function createContext({ root, env = process.env, command, log = () => {}
     return { ...state, allProjects: state.projects, projects: project ? state.projects.filter(p => p.id === project) : state.projects, running };
   };
   ctx.stopAgents = () => { for (const live of ctx.agents.values()) live.agent.stop(); };
+  // stopScripts() — each script step's command still running (cli.js
+  // runScript, ctx.scripts; ASS-328: run in the background, so control can
+  // exit while one runs) SIGTERMed, its process group with it: the next
+  // control, remembering none of it, runs the step's script again
+  // (steps.js), and the two never run at once.
+  // scriptWait — how long a script step's command is waited for in the tick
+  // that starts it before it is left running (steps.js, ASS-328): 5 seconds,
+  // or SCRIPT_WAIT_MS (the test fixtures' env: a loaded machine's slow start).
+  if (env.SCRIPT_WAIT_MS) ctx.scriptWait = Number(env.SCRIPT_WAIT_MS);
+  ctx.stopScripts = () => { for (const child of ctx.scripts) try { process.kill(-child.pid, 'SIGTERM'); } catch { /* gone */ } };
   // attempt(phase, what, fn) — fn() awaited; what it throws is logged under
   // "error" as "<phase> <what>: <message>", so one failing item leaves the
   // rest of its phase to run.

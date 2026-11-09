@@ -122,6 +122,9 @@ export function fixture() {
     ANTHROPIC_API_COST_DISABLED: '1', API_COST_FILE: at('api-cost.json'),
     // Control's push-account check never reads a forge token or calls a forge (ASS-307).
     PUSH_ACCOUNT_DISABLED: '1',
+    // Control waits for a script step's command up to 30 seconds in the tick that started it (ASS-328: 5 by
+    // default, then left running), so a test ticking a fixed number of times still moves on a slow-starting one.
+    SCRIPT_WAIT_MS: '30000',
     // The learned context-window cache (ASS-190): harness:set-context-window writes here, not the real data folder.
     CONTEXT_WINDOWS_FILE: at('context-windows.json'),
     // Control's disk watch (ASS-288) is off, so a test's control never reads the real disk with df; its record is the fixture's.

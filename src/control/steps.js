@@ -97,6 +97,62 @@ async function runScriptStep(ctx, step, values, who, variation) {
   return { exitCode, scriptOutput: parseOutput(stdout) };
 }
 
+// Script steps run in the background (ASS-328): awaited, a long one — a
+// ticket's two-hour test suite — held its project's whole tick, its ended
+// agents unfinished and nothing dispatched, until it exited. Its command is
+// started (startScript) and waited for SCRIPT_WAIT at most (ctx.scriptWait when
+// set, tick.js), so a quick one — an agent.sh call — is still read in the tick that
+// started it and its step moves on at once; then it is left running, and each
+// later tick reads it, without waiting, once it has exited (scriptExit). Kept
+// in memory.scripts: the step's key → { visit, done, exited }. While it is
+// there its step is not started again — by a later tick, the chain, or its
+// timer — nor its backoff, gate or disk hold asked, and its variation or run
+// is not moved on by its exits until they are read (left running, it is said
+// once, in the tick that started it): with the same facts,
+// logging, backoff and last-script-failure as when it was awaited.
+// Restarted while a script runs (AC3), control runs the step's script again:
+// the new control remembers no visit run (scriptDue), and the old one stopped
+// the scripts it ran on its way out (tick.js stopScripts, main.js) — never the
+// two at once, and no exit waited for that no control would read.
+const SCRIPT_WAIT = 5_000;
+
+// scriptRunning(ctx, key, visit) — whether step `key` has a script started
+// and not yet read; one a past visit left behind exited and unread (its
+// variation moved off meanwhile, by a human say) is forgotten, so the step
+// runs anew. One still running from a past visit is waited for: never two at
+// once.
+function scriptRunning(ctx, key, visit) {
+  const entry = ctx.memory.scripts?.get(key);
+  if (entry?.exited && entry.visit !== visit) ctx.memory.scripts.delete(key);
+  return ctx.memory.scripts?.has(key) ?? false;
+}
+
+// startScript(ctx, key, visit, running, who) — `running`, the step's script
+// (runScriptStep), kept under `key` until its exit is read; should it throw
+// (it never does: a fake's), that is logged and read as exit code 1.
+function startScript(ctx, key, visit, running, who) {
+  const entry = { visit };
+  entry.done = running.then(facts => { entry.exited = facts; }, error => { ctx.log(PHASE, `${who}: ${error.message}`); entry.exited = { exitCode: 1 }; });
+  (ctx.memory.scripts ??= new Map()).set(key, entry);
+}
+
+// scriptExit(ctx, key, wait) — step `key`'s script's facts (exitCode,
+// scriptOutput) once it has exited, forgotten as they are read; null while it
+// still runs, after waiting up to `wait` ms for it (only in the tick that
+// started it: a later tick never waits).
+async function scriptExit(ctx, key, wait) {
+  const entry = ctx.memory.scripts?.get(key);
+  if (!entry) return null;
+  if (!entry.exited && wait) {
+    let timer;
+    await Promise.race([entry.done, new Promise(resolve => { timer = setTimeout(resolve, wait); })]);
+    clearTimeout(timer);
+  }
+  if (!entry.exited) return null;
+  ctx.memory.scripts.delete(key);
+  return entry.exited;
+}
+
 // scriptExited(ctx, who, key, exitCode, retried, values, step) — a script step's exit
 // logged, once its exits are read. A failure holds the step a while before it
 // runs again (backoff.js, under `key`; the callers skip it while held, before
@@ -173,12 +229,21 @@ async function runVariation(ctx, state, project, key, name) {
       }
       case 'script': {
         // A timer step polls: no gate holds it (moves.js TIMER, ASS-236), nor one marked before.
+        // One already running (ASS-328) is not started again: its exit read once it has exited.
         const held = ticketKey(project.id, ticket.key, variation.name, step.id), timer = step.action.mode === 'timer';
-        if (waiting(ctx.memory, held, ctx.now().getTime()) || (!timer && heldAtGate(variation))) return;
-        if (diskWaits(ctx, state, step, who)) return;
-        if (!scriptDue(ctx, who, `${project.id}/${who}`, `${project.id}/${who}/${(variation['state-changes'] ?? []).length}`, step, ctx.now().getTime())) return;
+        const running = `${project.id}/${who}`, visit = `${running}/${(variation['state-changes'] ?? []).length}`;
         const values = ticketValues(project, ticket, variation);
-        Object.assign(facts, await runScriptStep(ctx, step, values, who, variation));
+        let wait = 0;
+        if (!scriptRunning(ctx, running, visit)) {
+          if (waiting(ctx.memory, held, ctx.now().getTime()) || (!timer && heldAtGate(variation))) return;
+          if (diskWaits(ctx, state, step, who)) return;
+          if (!scriptDue(ctx, who, running, visit, step, ctx.now().getTime())) return;
+          startScript(ctx, running, visit, runScriptStep(ctx, step, values, who, variation), who);
+          wait = ctx.scriptWait ?? SCRIPT_WAIT;
+        }
+        const exited = await scriptExit(ctx, running, wait);
+        if (!exited) { if (wait) ctx.log(PHASE, `${who}: script still running; its exit is read once it has exited`); return; }   // the step stays where it is
+        Object.assign(facts, exited);
         const next = nextState(step, engine, facts, changes);
         await scriptExited(ctx, who, held, facts.exitCode, next?.to == null || next.to === stateId, values, step);
         if (!await move(next, timer ? TIMER : undefined)) return;
@@ -293,12 +358,21 @@ async function runTransient(ctx, state, id) {
         break;
       }
       case 'script': {
+        // As a ticket's script step (runVariation): one already running (ASS-328) is not started again.
         const held = runKey(run.id, run.state), at = ticketPath(run, state.transient), timer = step.action.mode === 'timer';
-        if (waiting(ctx.memory, held, ctx.now().getTime()) || (!timer && variation && at && heldAtGate(variation, run['state-engine'], run.state, at.path.length + 1))) return;
-        if (diskWaits(ctx, state, step, who)) return;
-        if (!scriptDue(ctx, who, `${run.id}/${run.state}`, `${run.id}/${run.state}/${changes.length}`, step, ctx.now().getTime())) return;
+        const running = `${run.id}/${run.state}`, visit = `${running}/${changes.length}`;
         const values = runValues(run, context);
-        Object.assign(facts, await runScriptStep(ctx, step, values, who, variation));
+        let wait = 0;
+        if (!scriptRunning(ctx, running, visit)) {
+          if (waiting(ctx.memory, held, ctx.now().getTime()) || (!timer && variation && at && heldAtGate(variation, run['state-engine'], run.state, at.path.length + 1))) return;
+          if (diskWaits(ctx, state, step, who)) return;
+          if (!scriptDue(ctx, who, running, visit, step, ctx.now().getTime())) return;
+          startScript(ctx, running, visit, runScriptStep(ctx, step, values, who, variation), who);
+          wait = ctx.scriptWait ?? SCRIPT_WAIT;
+        }
+        const exited = await scriptExit(ctx, running, wait);
+        if (!exited) { if (wait) ctx.log(PHASE, `${who}: script still running; its exit is read once it has exited`); return; }   // the run stays where it is
+        Object.assign(facts, exited);
         // A step that records its script's output (record-script-output) merges that JSON into the run's structured-output.
         const recorded = step['record-script-output'] === true && facts.scriptOutput && typeof facts.scriptOutput === 'object' && !Array.isArray(facts.scriptOutput) ? facts.scriptOutput : undefined;
         const next = nextState(step, engine, facts, changes);

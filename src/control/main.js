@@ -132,8 +132,15 @@ while (!stopping) {
   await sleep(tickMs);
 }
 
-// Shutdown: SIGTERM every agent's group, wait up to 5
-// seconds for them to end, SIGKILL the rest.
+// Shutdown: every script step's command still running stopped, its group
+// SIGTERMed (ASS-328: run in the background, a step's script may still be
+// running; the next control runs it again, so the two never run at once);
+// SIGTERM every agent's group, wait up to 5 seconds for them to end, SIGKILL
+// the rest.
+if (ctx.scripts.size) {
+  say('shutdown', `stopping ${ctx.scripts.size} script${ctx.scripts.size === 1 ? '' : 's'}; their steps run them again when control starts`);
+  ctx.stopScripts();
+}
 if (ctx.agents.size) {
   say('shutdown', `stopping ${ctx.agents.size} agent${ctx.agents.size === 1 ? '' : 's'}`);
   ctx.stopAgents();
