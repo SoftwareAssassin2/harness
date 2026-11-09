@@ -2,9 +2,11 @@
 // background-weekly-usage-limit-percent (project.json; absent 90, null never),
 // by its last claude-usage.json reading before that week resets, holds its
 // grooming and background work (BACKGROUND triggers: check-health and the
-// rest, and the runs under them) — never moved onto the API key — while its
+// rest, and the runs under them) while its
 // sprint work goes on. The hold is logged once when it starts and once when
-// it lifts; a missing or `-` reading never holds.
+// it lifts; a missing or `-` reading never holds. A project declaring both a
+// subscription and an API key is held no more: that work goes onto the key
+// (ASS-327, below).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { join } from 'node:path';
@@ -114,19 +116,87 @@ test('ASS-232 AC4: a missing reading, a weekly null (no weekly cap) or a `-` per
   }
 });
 
-test('ASS-232 AC2: held background work never falls back to the API key — with the subscription rate limited, sprint work goes onto the API key and grooming waits', async () => {
+// ASS-327: a project declaring both a subscription and an API key (ASS-217:
+// here on the host, its .claude and .claude-api) is not held at the limit:
+// its grooming and background work go onto the API key, as any API dispatch
+// (the anthropic rate limit and the API caps hold it), while its sprint work
+// keeps ASS-217's rule — the subscription till that is rate limited.
+const dual = f => { for (const d of ['.claude', '.claude-api']) mkdirSync(join(f.dir, 'projects', 'p', d)); };
+
+test('ASS-327 AC1, AC2: a dual project at the limit grooms on its API key while its sprint work stays on the subscription; once the week resets its grooming goes back to the subscription, each logged', async () => {
   const f = weekly();
   try {
-    for (const d of ['.claude', '.claude-api']) mkdirSync(join(f.dir, 'projects', 'p', d));
+    dual(f);
+    f.usage(92);
+    await tick(f.ctx);
+    await tick(f.ctx);
+    assert.equal(f.groomed()?.['payment-method'], 'api', f.lines.join('\n'));
+    assert.equal(f.sprint()?.['payment-method'], 'subscription', f.lines.join('\n'));
+    assert.deepEqual(f.holds(), ['hold p: weekly Claude usage is 92%, at or above its limit of 90%; its grooming and background work go to its API key']);
+    f.clear();
+    f.usage(92, '2000-01-01T00:00:00Z');
+    await tick(f.ctx);
+    assert.equal(f.groomed()?.['payment-method'], 'subscription', `the week has reset\n${f.lines.join('\n')}`);
+    assert.deepEqual(f.holds().slice(1), ['hold p: its weekly Claude usage has reset; its grooming and background work go back to its subscription']);
+  } finally { done(f); }
+});
+
+test('ASS-327 AC1: a dual project at the limit still starts its BACKGROUND triggers, their runs\' agents on its API key', async () => {
+  const f = weekly();
+  let clock = f.ctx.started.getTime();
+  f.ctx.now = () => new Date(clock);
+  edit(join(f.dir, 'engines', 'example-development', 'state-engine.json'), e => { e['check-health-interval-seconds'] = 300; });
+  const triggers = () => f.assignments()['transient-state-engines'].map(r => r.parent.trigger).filter(Boolean);
+  try {
+    dual(f);
+    f.usage(95);
+    clock += 600e3;
+    await tick(f.ctx);
+    await tick(f.ctx);
+    assert.deepEqual(triggers(), ['check-health'], f.lines.join('\n'));
+    assert.equal(f.background()?.['payment-method'], 'api', f.lines.join('\n'));
+  } finally { done(f); }
+});
+
+test('ASS-327 AC1, AC3: a dual project at the limit with its API key unable to pay — an API cap reached, or the anthropic kind rate limited — leaves its grooming waiting, never on the subscription', async () => {
+  for (const block of ['cap', 'anthropic']) {
+    const f = weekly();
+    try {
+      dual(f);
+      if (block === 'cap') edit(join(f.dir, 'projects', 'p', 'project.json'), p => { p['max-api-spend-per-day-usd'] = 0; });
+      else writeFileSync(join(f.dir, 'projects', 'p', 'rate-limit.json'), JSON.stringify({ anthropic: { since: '2026-10-29T00:00:00Z', type: 'five_hour', 'resets-at': FUTURE } }));
+      f.usage(90);
+      await tick(f.ctx);
+      await tick(f.ctx);
+      assert.equal(f.groomed(), undefined, `${block}\n${f.lines.join('\n')}`);
+      assert.equal(f.sprint()?.['payment-method'], 'subscription', `${block}: sprint work goes on\n${f.lines.join('\n')}`);
+    } finally { done(f); }
+  }
+});
+
+test('ASS-327 AC2, AC3: a single-credential project — its .claude alone — is held at the limit as ASS-232 has it, and logged as held', async () => {
+  const f = weekly();
+  try {
+    mkdirSync(join(f.dir, 'projects', 'p', '.claude'));
+    f.usage(90);
+    await tick(f.ctx);
+    await tick(f.ctx);
+    assert.equal(f.groomed(), undefined, f.lines.join('\n'));
+    assert.ok(f.sprint(), f.lines.join('\n'));
+    assert.deepEqual(f.holds(), ['hold p: weekly Claude usage is 90%, at or above its limit of 90%; its grooming and background work are held']);
+  } finally { done(f); }
+});
+
+test('ASS-327 AC1: with the subscription rate limited too, a dual project at the limit runs both its sprint work and its grooming on the API key', async () => {
+  const f = weekly();
+  try {
+    dual(f);
     writeFileSync(join(f.dir, 'projects', 'p', 'rate-limit.json'), JSON.stringify({ claude: { since: '2026-10-29T00:00:00Z', type: 'seven_day', 'resets-at': FUTURE } }));
     f.usage(98);
     await tick(f.ctx);
     await tick(f.ctx);
-    assert.equal(f.groomed(), undefined, f.lines.join('\n'));
+    assert.equal(f.groomed()?.['payment-method'], 'api', f.lines.join('\n'));
     assert.equal(f.sprint()?.['payment-method'], 'api', f.lines.join('\n'));
-    f.usage(50);
-    await tick(f.ctx);
-    assert.equal(f.groomed()?.['payment-method'], 'api', `not held: grooming on the API key, as ASS-217 has it\n${f.lines.join('\n')}`);
   } finally { done(f); }
 });
 

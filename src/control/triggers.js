@@ -12,7 +12,8 @@ import { isHarnessProject } from './harness-project.js';
 // A run of the engine's `<kind>-steps` list started for `parent`, when the
 // list exists and no such run is going — and, for background work, the
 // project it runs on has it on (backgroundOff) and is not held for its weekly
-// usage (weeklyHeld, ASS-232); whether it was. Also
+// usage (weeklyHeld, ASS-232; one with an API key is not, its runs' agents
+// paid api, ASS-327); whether it was. Also
 // reverts.js's (ASS-146).
 export async function startTrigger(ctx, state, phase, project, kind, parent) {
   const list = project.engine?.[`${kind}-steps`];

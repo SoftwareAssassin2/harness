@@ -5,11 +5,13 @@ set -euo pipefail
 # Writes data/projects/<project>/project.json's
 # background-weekly-usage-limit-percent: the percent (0–100), or null for
 # none (PROJECTS_DIR overrides the projects folder, used by tests). Absent is
-# 90. Control reads it every tick (ASS-232, moves.js weeklyHeld): while the
+# 90. Control reads it every tick (ASS-232, moves.js weeklyLimit): while the
 # project's last claude-usage.json weekly reading is at or above it, before
 # that week resets, none of its grooming or background work (check-health,
 # check-memory, check-variation-appeal, check-ticket-health, self-healing) is
-# dispatched, on the subscription or the API key; its sprint work goes on.
+# dispatched on the subscription: a project with an API key beside it runs
+# that work on the key (ASS-327, held by the API caps and rate limit as any
+# API dispatch), one without holds it; its sprint work goes on.
 # Fails, writing nothing, on an unknown project or value.
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../json-file.bash"
 projects="${PROJECTS_DIR:-$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../../../data/projects}"

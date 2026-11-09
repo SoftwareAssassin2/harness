@@ -15,7 +15,8 @@
 // and its last check kept, so the next hour asks again from there. Only for
 // a project whose engine has check-memory-steps and whose background work is
 // on (moves.js backgroundOff) and not held for its weekly usage (moves.js
-// weeklyHeld, ASS-232): nothing is asked that could start no review, and
+// weeklyHeld, ASS-232; with an API key it is not, the review paid api,
+// ASS-327): nothing is asked that could start no review, and
 // nothing marked checked, so a revert made meanwhile is found once it lifts.
 // One page of 100 commits a repository an hour.
 import { execFile } from 'node:child_process';

@@ -3,6 +3,8 @@
 // at a human gate, ticket:mark-work-done
 // and a wait — a state engine run with transient-state-engine:change-state.
 // And the small readings the phases share.
+import { existsSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { cleared, ticketKey, runKey } from './backoff.js';
 import { changePath, stepOf, isHeld } from './engine.js';
 import { mayEnter, slotKind, topRun } from './plan.js';
@@ -97,30 +99,57 @@ export function backgroundProject(state, runId) {
 // heldBackground(state, runId) — the run is background work (backgroundProject) of a project with that off.
 const heldBackground = (state, runId) => backgroundOff(backgroundProject(state, runId));
 
-// weeklyHeld(ctx, project) — whether the project's grooming and background
-// work are held for its weekly Claude usage (ASS-232): its last
-// claude-usage.json weekly percent (loadState's claudeUsage) is at or above
-// project.json's background-weekly-usage-limit-percent — absent, 90; null,
-// never (project:set-background-weekly-usage-limit) — and that week has not
-// reset (resets-at). A missing or `-` reading never holds. Logged under "hold"
-// once when it starts and once when it lifts (memory.weeklyHolds).
+// weeklyLimit(ctx, project) — what the project's weekly Claude usage does to
+// its grooming and background work (ASS-232): null while it is under the
+// limit — its last claude-usage.json weekly percent (loadState's claudeUsage)
+// below project.json's background-weekly-usage-limit-percent (absent, 90;
+// null, never: project:set-background-weekly-usage-limit), or that week has
+// reset (resets-at); a missing or `-` reading is never at it. At it: 'api'
+// for a project declaring an API key beside its subscription (declaresApiKey,
+// ASS-327) — that work goes onto the key, so the subscription's last share is
+// still kept for sprint work while nothing stops; dispatch.js paymentFor pays
+// it api, per step, and holds it as any API dispatch (the anthropic rate
+// limit, the API caps) — else 'held'. Logged under "hold" once when it
+// starts, when it changes between the two, and once when it lifts
+// (memory.weeklyHolds: id → which).
 const WEEKLY_LIMIT = 'background-weekly-usage-limit-percent';
-export function weeklyHeld(ctx, project) {
+export function weeklyLimit(ctx, project) {
   const limit = WEEKLY_LIMIT in project.json ? project.json[WEEKLY_LIMIT] : 90;
   const { percent, 'resets-at': resetsAt } = project.claudeUsage?.weekly ?? {};
   const reset = Date.parse(resetsAt) <= ctx.now().getTime();
-  const held = limit != null && typeof percent === 'number' && percent >= limit && !reset;
-  const holds = (ctx.memory.weeklyHolds ??= new Set());
-  if (held === holds.has(project.id)) return held;
-  if (held) {
-    holds.add(project.id);
-    ctx.log('hold', `${project.id}: weekly Claude usage is ${percent}%, at or above its limit of ${limit}%; its grooming and background work are held`);
+  const at = limit != null && typeof percent === 'number' && percent >= limit && !reset;
+  const now = at ? (declaresApiKey(ctx, project) ? 'api' : 'held') : null;
+  const holds = (ctx.memory.weeklyHolds ??= new Map());
+  const was = holds.get(project.id) ?? null;
+  if (now === was) return now;
+  if (now) {
+    holds.set(project.id, now);
+    ctx.log('hold', `${project.id}: weekly Claude usage is ${percent}%, at or above its limit of ${limit}%; its grooming and background work ${now === 'api' ? 'go to its API key' : 'are held'}`);
   } else {
     holds.delete(project.id);
     const why = limit == null ? 'its weekly usage limit is off' : reset ? 'its weekly Claude usage has reset' : typeof percent === 'number' ? `weekly Claude usage is ${percent}%, under its limit of ${limit}%` : 'its weekly Claude usage is not known';
-    ctx.log('hold', `${project.id}: ${why}; its grooming and background work go on`);
+    ctx.log('hold', `${project.id}: ${why}; its grooming and background work ${was === 'api' ? 'go back to its subscription' : 'go on'}`);
   }
-  return held;
+  return now;
+}
+
+// weeklyHeld(ctx, project) — whether the project's grooming and background
+// work are held for its weekly usage (weeklyLimit 'held', ASS-232): none of
+// its BACKGROUND triggers start (triggers.js, reverts.js) and dispatch.js
+// puts no agent on that work. One at the limit with an API key is not held
+// (ASS-327): its work goes on, onto the key.
+export const weeklyHeld = (ctx, project) => weeklyLimit(ctx, project) === 'held';
+
+// declaresApiKey(ctx, project) — the project declares an API key beside its
+// subscription (ASS-217) somewhere its agents run: its host .claude-api
+// (dispatch.js configDir(ctx, project, 'api')) or a VM its vms.json records
+// as holding both (credential-kind `both`, vm-lifecycle.js credentialKindOf).
+// Project-wide, for the weekly limit (ASS-327): whether a step's own agent
+// can pay by the key is paymentFor's, per step; one that cannot waits there.
+function declaresApiKey(ctx, project) {
+  if (existsSync(join(ctx.paths.projects, project.id, '.claude-api'))) return true;
+  const vms = join(ctx.paths.projects, project.id, 'vms.json');
+  try { return existsSync(vms) && Object.values(JSON.parse(readFileSync(vms, 'utf8'))).some(vm => vm?.['credential-kind'] === 'both'); } catch { return false; }
 }
 
 // humanPause(state, project) — the scope of the human pause holding the

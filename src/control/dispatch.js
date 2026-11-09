@@ -17,7 +17,7 @@ import { confineHostAgent } from '../agents/confinement.js';
 import { memoryMcpConfig, memoryPort, memoryAnswers } from '../agents/memory.js';
 import { accountOf, kindOfAccount } from '../agents/account.js';
 import { sessionDir } from '../agents/session.js';
-import { found, contextOf, ticketPath, isPaused, levelChanges, moveTicket, moveRun, mayMove, firstStepId, backgroundProject, weeklyHeld } from './moves.js';
+import { found, contextOf, ticketPath, isPaused, levelChanges, moveTicket, moveRun, mayMove, firstStepId, backgroundProject, weeklyLimit } from './moves.js';
 import { problemOf, ticketOf, blockHistory, questionsOf } from './facts.js';
 import { failed, waiting, held, ticketKey, runKey } from './backoff.js';
 import { runsInVm, vmOf, REPOS, TICKET_FOLDER } from './vm.js';
@@ -246,7 +246,7 @@ async function rateHeld(ctx, limited, project, step, key, variation) {
 // The name of the VM a ticket variation of the project records, or undefined.
 const vmNameOf = (project, key, variation) => project.tickets.find(t => t.key === key)?.variations?.find(v => v.name === variation)?.vm?.name;
 
-// paymentFor(ctx, limited, project, step, key, variation) — how the
+// paymentFor(ctx, limited, project, step, key, variation, weekly) — how the
 // candidate's agent pays (ASS-217), or null while it waits. Where the project
 // declares both a subscription and an API key — a host step's project its
 // .claude-api, a VM step's VM both credentials (vms.json credential-kind
@@ -254,11 +254,16 @@ const vmNameOf = (project, key, variation) => project.tickets.find(t => t.key ==
 // limited, else { payment: 'api' } unless the anthropic kind is too or an API
 // cap holds (project.json api-cap-hold, superviseAgents); else null. Where it
 // declares one, { payment: null } unless rateHeld holds it, as before.
-async function paymentFor(ctx, limited, project, step, key, variation) {
+// `weekly`: the candidate is grooming or background work of a project at its
+// weekly usage limit with an API key (moves.js weeklyLimit 'api', ASS-327) —
+// it skips the subscription, paid api as above or waiting; where this step
+// cannot pay by the key (a VM with one credential), it waits, held as ASS-232
+// holds a project with none.
+async function paymentFor(ctx, limited, project, step, key, variation, weekly = false) {
   const both = runsInVm(step) ? credentialKindOf(ctx, project.id, vmNameOf(project, key, variation)) === 'both' : Boolean(configDir(ctx, project, 'api'));
-  if (!both) return (await rateHeld(ctx, limited, project, step, key, variation)) ? null : { payment: null };
+  if (!both) return weekly || (await rateHeld(ctx, limited, project, step, key, variation)) ? null : { payment: null };
   const held = limited.get(project.id) ?? [];
-  if (!held.includes('claude')) return { payment: 'subscription' };
+  if (!weekly && !held.includes('claude')) return { payment: 'subscription' };
   return held.includes('anthropic') || project.json['api-cap-hold'] ? null : { payment: 'api' };
 }
 
@@ -448,9 +453,12 @@ function waitsOnAnswer(ctx, state) {
 // backlog entry, after a failed join, is never groomed. An agent whose
 // credential kind its project holds under a rate limit (rateHeld, ASS-215) is not dispatched; one of a
 // project declaring both a subscription and an API key is dispatched on the one paymentFor picks, or waits (ASS-217).
-// A project held for its weekly usage (moves.js weeklyHeld, ASS-232) grooms
+// A project at its weekly usage limit (moves.js weeklyLimit, ASS-232) grooms
 // nothing and puts no agent on a background run (moves.js backgroundProject):
-// they wait, never moved onto the API key; its sprint work goes on. A ticket
+// they wait; its sprint work goes on. One declaring an API key beside its
+// subscription (ASS-327) is not held: that work is paid api (paymentFor's
+// `weekly`), as any API dispatch held by the anthropic rate limit and the API
+// caps, its sprint work on paymentFor's own rule. A ticket
 // an open blocking question holds gets no agent anywhere (waitsOnAnswer, ASS-248).
 export async function dispatch(ctx, state) {
   const maxAgents = state.harness['max-agents'] ?? Infinity;
@@ -464,8 +472,8 @@ export async function dispatch(ctx, state) {
   for (const project of state.projects) if (await accountHold(ctx, project)) accountHeld.add(project.id);
   // Each project's credential kinds held by a rate limit (rateHeld).
   const limited = new Map(state.projects.map(p => [p.id, heldKinds(p, ctx.now().getTime())]));
-  // Each project held for its weekly usage (weeklyHeld), asked every tick so its hold is logged as it starts and lifts.
-  const weekly = new Set(state.projects.filter(p => weeklyHeld(ctx, p)).map(p => p.id));
+  // Each project at its weekly usage limit (weeklyLimit: 'held' or 'api'), asked every tick so its hold is logged as it starts and lifts.
+  const weekly = new Map(state.projects.map(p => [p.id, weeklyLimit(ctx, p)]));
   // Each project planned against its own limits and harness.json's, every other project's tickets in motion counted (plan.js planFor).
   const plan = (project, state) => planFor(state, project, { agentsRunning: allAgents(), projectAgentsRunning: agentsOf(project.id) });
   const holds = state.projects.filter(p => p.engine && p.sprint).flatMap(p => plan(p, state).held.map(h => ({ project: p.id, ...h })));
@@ -481,13 +489,14 @@ export async function dispatch(ctx, state) {
     if (!project || accountHeld.has(project.id) || isPaused(state, run.project, context.workItem, context.variation, run.id)) continue;
     if (context.workItem != null && answering.has(`${run.project}/${context.workItem}`)) continue;
     const background = backgroundProject(state, run.id);
-    if (background && weeklyHeld(ctx, background)) continue;
+    const limit = background ? weeklyLimit(ctx, background) : null;   // its project's, which may be one this control does not run (allProjects)
+    if (limit === 'held') continue;
     // A run for a ticket at its spending limit (ASS-191: a step's sub-engine's, Blocked's) starts no agent.
     if (context.workItem != null && overSpent(found(state, { project: run.project, 'work-item': context.workItem }).ticket, state.harness, project.json, runningOn(state.running, run.project, context.workItem))) continue;
     const key = runKey(run.id, run.state);
     if (waiting(ctx.memory, key, ctx.now().getTime())) continue;   // failing: held a while (backoff.js)
     if (vmDown(ctx, state, step, run.project, context.workItem, context.variation, run.state)) continue;
-    const pays = await paymentFor(ctx, limited, project, step, context.workItem, context.variation);
+    const pays = await paymentFor(ctx, limited, project, step, context.workItem, context.variation, limit === 'api');
     if (!pays) continue;
     // Its ticket at Committed, waiting for what it depends on (ASS-195): the same predicate steps.js holds it with.
     const waits = found(state, { project: run.project, 'work-item': context.workItem, variation: context.variation });
@@ -515,7 +524,7 @@ export async function dispatch(ctx, state) {
     state = ctx.load();
   }
   for (const project of state.projects) {
-    if (!project.refinement || accountHeld.has(project.id) || weekly.has(project.id)) continue;
+    if (!project.refinement || accountHeld.has(project.id) || weekly.get(project.id) === 'held') continue;
     // A fast-tracked ticket (ASS-83) is never groomed: complete at creation, in the backlog only after a failed join, for the next.
     for (const t of rankBacklog(project.backlog ?? [])) for (const v of t['fast-track'] === true ? [] : t.variations ?? []) {
       if (v['is-deleted']) continue;
@@ -531,7 +540,7 @@ export async function dispatch(ctx, state) {
       const count = step.action['agent-count'] ?? 1;
       if (allAgents() + count > maxAgents || agentsOf(project.id) + count > (project.json['max-agents'] ?? Infinity)) continue;
       if (!workspaceFree(ctx, state, step, project, t.key, v.name)) continue;
-      const pays = await paymentFor(ctx, limited, project, step, t.key, v.name);
+      const pays = await paymentFor(ctx, limited, project, step, t.key, v.name, weekly.get(project.id) === 'api');
       if (!pays) continue;
       await ctx.attempt(PHASE, `${t.key} ${v.name}`, heldOnFailure(ctx, key, async () => {
         await takeWorkspace(ctx, step, project, t.key, v.name);
