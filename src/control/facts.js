@@ -16,13 +16,15 @@ export const ticketValues = (project, ticket, variation) => ({ ticket: ticket.ke
 // {missing-repository} (the url Blocked's Troubleshoot named, ASS-121) from
 // its structured-output, - when it has none; {failing-repository} and
 // {failing-job} the failing check Troubleshoot named (ASS-163, for
-// project:check-on-master), - when none; {project}; {run} its id.
+// project:check-on-master), - when none; {no-ticket-reason} and
+// {no-ticket-why} why create-ticket-grouped's write-ticket ended with an
+// empty key (ASS-316), - when none; {project}; {run} its id.
 export function runValues(run, context) {
   const output = run['structured-output'] ?? {};
   return {
     ticket: output.key || context.workItem, 'work-item': context.workItem, variation: context.variation, summary: output.summary, 'ticket-url': output.url ?? '-', project: run.project,
     'pause-tickets': (output['pause-tickets'] ?? []).join(',') || '-', 'human-action': output['human-action'] || '-', 'missing-repository': output['missing-repository'] || '-',
-    'failing-repository': output['failing-repository'] || '-', 'failing-job': output['failing-job'] || '-', run: run.id,
+    'failing-repository': output['failing-repository'] || '-', 'failing-job': output['failing-job'] || '-', 'no-ticket-reason': output['no-ticket-reason'] || '-', 'no-ticket-why': output.why || '-', run: run.id,
   };
 }
 

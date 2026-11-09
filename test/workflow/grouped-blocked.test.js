@@ -62,7 +62,8 @@ const defaults = {
   classify: { structuredOutput: { issue: 'harness', reasoning: 'R' } },
   'repair-environment': { structuredOutput: { remediated: true, evidence: ['pnpm install → ok'], 'ai-feedback-short': 'Repaired', 'ai-feedback-long': 'node_modules reinstalled' } },
   'repair-environment-on-host': { structuredOutput: { remediated: true, evidence: [], 'ai-feedback-short': 'Repaired', 'ai-feedback-long': 'L' } },
-  'create-fix-ticket': { structuredOutput: { key: 'ASS-1' } },
+  // ASS-316: the reason and why are the empty key's; a run that raised one carries them blank (the contract requires both).
+  'create-fix-ticket': { structuredOutput: { key: 'ASS-1', 'no-ticket-reason': '', why: '' } },
   'add-repository': { exitCode: 2 },   // no missing repository named: nothing added
   'check-on-master': { exitCode: 0, scriptOutput: { 'on-master': 'present', 'master-evidence': 'E' } },   // ASS-163: failing on the latest master
   'plan-obstacle-fix': { exitCode: 0, scriptOutput: { 'plan-revised': 'execution-plan.md', 'obstacle-fix': 'repair the environment' } },
@@ -113,7 +114,8 @@ test('AC2/AC3: a harness issue and a project issue each raise a fix ticket — t
       assert.equal(raisedIn(run.output, 'harness'), 'Raise the fix ticket in: project harness — the harness project\'s backlog', `${name} ${value} on the harness project`);
     }
     assert.equal(stepOf(engines[name], 'create-fix-ticket').action.engine, 'create-ticket-grouped', 'its own copy: Jira bugs raised through ticket:raise-bug (ASS-164); the flat engines keep create-ticket');
-    assert.equal(stepOf(engines[name], 'wait-on').action.command, './agent.sh ticket:wait-on {project} {work-item} {variation} {ticket}');
+    // ASS-316: wait-on also takes the reason no fix ticket was raised, and why, for its ai-feedback.
+    assert.equal(stepOf(engines[name], 'wait-on').action.command, './agent.sh ticket:wait-on {project} {work-item} {variation} {ticket} {no-ticket-reason} {no-ticket-why}');
     const wait = stepOf(engines[name], 'await-fix');
     assert.deepEqual([wait.action.command, wait.action.mode, wait['record-script-output']], ['./agent.sh ticket:fix-landed {project} {work-item} {variation}', 'timer', true]);
   }
@@ -132,8 +134,10 @@ test('ASS-306 AC1: fast-track-fix runs ticket:fast-track host-side between creat
     assert.equal(step.vm, undefined, `${name}: host-side, runs no VM`);
     assert.equal(step['run-location'], undefined, `${name}: host-side`);
     assert.equal(step['record-script-output'], undefined, `${name}: no record-script-output, so the run's {ticket} is kept for wait-on`);
-    // create-fix-ticket now leads to it, and whatever it does it reaches wait-on.
-    assert.equal(stepOf(engines[name], 'create-fix-ticket')['exit-events'][0]['move-to-state'], 'fast-track-fix', name);
+    // ASS-316: an empty key skips it, straight to wait-on; a ticket raised still reaches it — either way wait-on is next.
+    const create = stepOf(engines[name], 'create-fix-ticket');
+    assert.deepEqual(create['exit-events'][0], { condition: { all: [{ 'is-done': true }, { 'structured-output': { key: '' } }] }, 'move-to-state': 'wait-on' }, name);
+    assert.deepEqual(create['exit-events'][1], { condition: { 'is-done': true }, 'move-to-state': 'fast-track-fix' }, name);
     assert.deepEqual([0, 1].map(code => nextState(step, engines[name], { exitCode: code }, []).to), ['wait-on', 'wait-on'], `${name}: both exits reach wait-on`);
     assert.deepEqual(validateStateEngine(engines[name], ROOT, undefined, EXAMPLE_ENGINES), [], name);
   }
@@ -253,12 +257,71 @@ test('AC6: Blocked for Human only after 3 failed fix attempts in one stay — co
   }
 });
 
+// ASS-316 — a write-ticket turn that raised no ticket says why in its output:
+// analysis-did-not-hold (nothing to raise) or create-failed (the create command's
+// error as it printed), each with a one-line why; an agent that gave none is as before.
+const NO_TICKET = { key: '', 'no-ticket-reason': 'create-failed', why: 'ticket:create: the ticket store is locked by another run' };
+const DID_NOT_HOLD = { key: '', 'no-ticket-reason': 'analysis-did-not-hold', why: 'the failing job passes on the latest master: nothing to raise' };
+const NO_REASON = { key: '' };
+// wroteTicket(retries) — a create-ticket-grouped run's own history, as control counts
+// write-ticket's visits (engine.js visitsInto): check-existing → write-ticket is visit 1,
+// each retry one more.
+const wroteTicket = (retries = 0) => [{ 'from-state': 'check-existing', 'to-state': 'write-ticket' },
+  ...Array.from({ length: retries }, () => ({ 'from-state': 'write-ticket', 'to-state': 'write-ticket' }))];
+
+test('ASS-316 AC1: the reason and why a run ends with reach the block entry', () => {
+  for (const name of BLOCKED) {
+    const run = walk(name, { 'create-fix-ticket': { structuredOutput: NO_TICKET }, 'wait-on': { exitCode: 3, scriptOutput: { 'ai-feedback-short': 'No fix ticket: ticket:create failed', 'ai-feedback-long': NO_TICKET.why } } });
+    assert.equal(run.output['no-ticket-reason'], NO_TICKET['no-ticket-reason'], name);
+    assert.equal(run.output.why, NO_TICKET.why, name);
+    // Edge (stale reason): a run that did raise a ticket carries the blank reason/why the contract requires on a key, not the first attempt's — and fast-track-fix still runs (only an empty key skips it).
+    const raised = walk(name, { 'create-fix-ticket': { structuredOutput: { key: 'ASS-1', 'no-ticket-reason': '', why: '' } } });
+    assert.deepEqual([raised.output['no-ticket-reason'], raised.output.why], ['', ''], name);
+    assert.ok(steps(raised).includes('fast-track-fix'), name);
+  }
+});
+
+test('ASS-316 AC2: write-ticket re-runs once on an empty key with create-failed or no reason; analysis-did-not-hold and a second empty key are done', () => {
+  const engine = engines['create-ticket-grouped'];
+  const write = stepOf(engine, 'write-ticket');
+  assert.deepEqual([write['max-visits'], write['on-max-visits']], [2, 'done']);
+  const at = (output, history) => nextState(write, engine, { turnComplete: true, structuredOutput: output }, history);
+  for (const output of [NO_TICKET, NO_REASON, { key: '', 'no-ticket-reason': '' }]) {
+    assert.equal(at(output, wroteTicket()).to, 'write-ticket', JSON.stringify(output));
+    const again = at(output, wroteTicket(1));
+    assert.equal(again.to, 'done', JSON.stringify(output));
+    assert.equal(again.reason, 'max-visits', JSON.stringify(output));
+  }
+  assert.equal(at(DID_NOT_HOLD, wroteTicket()).to, 'done', 'no retry: nothing to raise');
+  assert.equal(at({ key: 'ASS-9', 'no-ticket-reason': '', why: '' }, wroteTicket()).to, 'done', 'a key raised');
+  // Error paths: no key field at all (strict equality, undefined !== '') never loops; a non-empty key with a stale create-failed is done, not a retry (exit order); a turn not complete takes no exit.
+  assert.equal(at({}, wroteTicket()).to, 'done', 'no key field at all');
+  assert.equal(at({ key: 'ASS-9', 'no-ticket-reason': 'create-failed', why: 'x' }, wroteTicket()).to, 'done', 'a stale reason on a raised key');
+  assert.equal(nextState(write, engine, { turnComplete: false, structuredOutput: NO_TICKET }, wroteTicket()), null);
+  // The exits in order: analysis-did-not-hold before the bare {key: ""} one, the turn-complete catch-all last.
+  const exits = write['exit-events'];
+  assert.equal(exits.length, 3, JSON.stringify(exits));
+  assert.deepEqual(exits[0], { condition: { all: [{ 'turn-complete': true }, { 'structured-output': { key: '', 'no-ticket-reason': 'analysis-did-not-hold' } }] }, 'move-to-state': 'done' });
+  assert.deepEqual(exits[1], { condition: { all: [{ 'turn-complete': true }, { 'structured-output': { key: '' } }] }, 'move-to-state': 'write-ticket' });
+  assert.deepEqual(exits[2], { condition: { 'turn-complete': true }, 'move-to-state': 'done' });
+});
+
+test('ASS-316 AC2: the retry inside the shared create-ticket-grouped engine changes nothing for check-ticket-health-grouped\'s create-ticket step', () => {
+  const health = engines['check-ticket-health-grouped'];
+  const create = stepOf(health, 'create-ticket');
+  assert.equal(nextState(create, health, { subEngineDone: true, structuredOutput: NO_REASON }, []).to, 'done');
+});
+
 test('AC7: when no fix ticket can be raised or waited on, the ticket never resumes as if fixed — Blocked for Human, saying why', () => {
   for (const name of BLOCKED) {
-    // No ticket raised: the run hands wait-on the blocked ticket's own key, which it refuses (exit 3).
-    const none = walk(name, { 'create-fix-ticket': { structuredOutput: { key: '' } }, 'wait-on': { exitCode: 3, scriptOutput: { 'ai-feedback-short': 'No fix ticket was raised' } } });
-    assert.deepEqual(steps(none).slice(3), ['create-fix-ticket', 'fast-track-fix', 'wait-on', 'blocked-for-human'], name);
-    toHuman(name, none, /No fix ticket was raised/);
+    // ASS-316: no ticket raised skips fast-track-fix, straight to wait-on, which refuses the blocked ticket's own key (exit 3) with the reason-named feedback.
+    const none = walk(name, { 'create-fix-ticket': { structuredOutput: NO_TICKET }, 'wait-on': { exitCode: 3, scriptOutput: { 'ai-feedback-short': 'No fix ticket: ticket:create failed' } } });
+    assert.deepEqual(steps(none).slice(3), ['create-fix-ticket', 'wait-on', 'blocked-for-human'], name);
+    toHuman(name, none, /No fix ticket: ticket:create failed/);
+    // Edge: an empty key from check-existing itself (a malformed find) — no reason given — skips fast-track-fix too, with the generic feedback.
+    const malformed = walk(name, { 'create-fix-ticket': { structuredOutput: NO_REASON }, 'wait-on': { exitCode: 3, scriptOutput: { 'ai-feedback-short': 'No fix ticket was raised' } } });
+    assert.deepEqual(steps(malformed).slice(3), ['create-fix-ticket', 'wait-on', 'blocked-for-human'], name);
+    toHuman(name, malformed, /No fix ticket was raised/);
     const unclaimed = walk(name, { 'wait-on': { exitCode: 1, scriptOutput: { 'ai-feedback-short': 'The fix ticket cannot be waited on' } } });
     toHuman(name, unclaimed, /cannot be waited on/);
     const nothing = walk(name, { 'await-fix': { exitCode: 4, scriptOutput: { 'ai-feedback-short': 'The fix ticket cannot be waited on' } } });

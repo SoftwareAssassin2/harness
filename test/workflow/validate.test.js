@@ -488,8 +488,8 @@ test('ASS-303 AC1-AC3: the grouped create-ticket prompt states the bare-command-
   assert.match(grouped, /report/);
   assert.match(grouped, /as it printed it/);
   assert.match(grouped, /once more, bare/);
-  assert.match(grouped, /Only if that fails too/);
-  assert.match(grouped, /Finish with JSON: \{"key": "<ticket key>"\}/);
+  assert.match(grouped, /only if that fails too/i);
+  assert.match(grouped, /Finish with JSON: \{"key": "<ticket key>"/);
 
   // AC3: the flat prompt is untouched
   assert.doesNotMatch(flat, /bare command line/);

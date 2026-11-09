@@ -21,7 +21,7 @@ const CHECKED_LEAVES = ['exit-code', 'script-succeeds', 'file-updated'];
 // The placeholders control fills in a script command: the ticket, its
 // project and variation, and what a transient run's structured output
 // carries (see the self-healing engine).
-const PLACEHOLDERS = new Set(['ticket', 'work-item', 'project', 'variation', 'summary', 'ticket-url', 'pause-tickets', 'human-action', 'missing-repository', 'failing-repository', 'failing-job', 'run']);
+const PLACEHOLDERS = new Set(['ticket', 'work-item', 'project', 'variation', 'summary', 'ticket-url', 'pause-tickets', 'human-action', 'missing-repository', 'failing-repository', 'failing-job', 'no-ticket-reason', 'no-ticket-why', 'run']);
 
 // Where each list's run starts: its lowest-sequence step (moves.js firstStepId), which may not be switched off.
 const firstsOf = engine => new Set(Object.entries(engine).filter(([key]) => /(^|-)(steps|trigger)$/.test(key)).map(([, list]) => list.toSorted((a, b) => a.sequence - b.sequence)[0]?.id));

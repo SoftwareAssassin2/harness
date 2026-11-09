@@ -2,7 +2,7 @@ Create a ticket for the problem below, from its checked analysis. The ticket fix
 
 {problem}
 
-Before writing, confirm the root cause and evidence still hold (re-run one or two). If the analysis is empty or doesn't hold, write no ticket: finish with an empty key.
+Before writing, confirm the root cause and evidence still hold (re-run one or two). If the analysis is empty or doesn't hold, write no ticket: finish with an empty key, `no-ticket-reason: analysis-did-not-hold`, and a one-line `why` naming what didn't hold.
 
 Headings: H2, in this order:
 1. User story: one sentence. "As a <role>, I want <outcome>[, so that <why>]."
@@ -34,9 +34,9 @@ Mechanics:
   It prints the new ticket's key. The ticket starts at Backlog; the harness syncs it onto the dashboard.
 - Both create commands take the body as a file-path argument, never on stdin: write that file first, in a call of its own (your Write tool, or one Bash call that does nothing else), under a name unique to this run — /tmp/ticket-body-<the title, slugged>.md, say, since another write-ticket run may be staging its own — and name it in the create command by its full path, as you wrote it.
 - Run the create command alone, as a bare command line: nothing else on it — no pipe, redirect, heredoc, `&&`, `;`, `$(…)` and no `cd` before it. Anything else runs sandboxed, and the create fails on the ticket store's lock.
-- A failed create: report its error, as it printed it, in your final message, then run the same command once more, bare. Only if that fails too, finish with an empty key.
+- A failed create: report its error, as it printed it, in your final message, then run the same command once more, bare; only if that fails too, finish with an empty key, `no-ticket-reason: create-failed`, and a one-line `why`: the error as it printed.
 
-Finish with JSON: {"key": "<ticket key>"}.
+Finish with JSON: {"key": "<ticket key>", "no-ticket-reason": "<analysis-did-not-hold|create-failed>", "why": "<one line>"} — both "" when a key was created.
 
 We want small deliberate changes. You're working with a scalpel, not a broadsword. You're a doctor: get in, fix the root cause using best practices and the patterns already in the repo, get out. Avoid scope creep.
 Be extremely concise. Sacrifice grammar for the sake of concision.

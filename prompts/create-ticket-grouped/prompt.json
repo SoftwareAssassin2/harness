@@ -31,10 +31,21 @@
             "key": {
                 "type": "string",
                 "description": "The key of the ticket created"
+            },
+            "no-ticket-reason": {
+                "type": "string",
+                "enum": ["", "analysis-did-not-hold", "create-failed"],
+                "description": "Why key is empty: the analysis did not hold, or ticket:create failed twice. \"\" when key is set"
+            },
+            "why": {
+                "type": "string",
+                "description": "One line: what didn't hold, or the create command's error as it printed. \"\" when key is set"
             }
         },
         "required": [
-            "key"
+            "key",
+            "no-ticket-reason",
+            "why"
         ],
         "additionalProperties": false
     }
