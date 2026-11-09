@@ -161,8 +161,11 @@ async function holdForRateLimit(ctx, state, live) {
 // holds its project's agents of its credential kind (holdForRateLimit);
 // one whose assignment is gone is ended, its cost recorded on its dispatch all
 // the same (endUnassigned); one paused or shutting down, or that exited
-// without a result, is just ended (the step runs again), with what it cost; else, once the
-// assignment's turn is complete (turnComplete), the step's exits are
+// without a result, is just ended (the step runs again), with what it cost;
+// a group whose any live member's last turn left background work pending
+// (ASS-334) is held — nothing of it ended — up to pendingWaitMs, logged once
+// per span, then finished anyway with a timeout line once that passes; else,
+// once the assignment's turn is complete (turnComplete), the step's exits are
 // evaluated with turn-complete, the result's structured_output, the ticket's
 // facts and files written since the turn began — then, in this order, every
 // agent of the assignment is ended (assignments:remove with its cost, the
