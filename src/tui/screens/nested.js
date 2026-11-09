@@ -14,10 +14,11 @@ import { scrollLast } from '../table.js';
 // `workflows`, not already running above it) opens into that engine's floor
 // when a ticket is inside it, or every one `expanded`. Each station shows a 🤖
 // per live assignment of the tickets listed under it, then a 💻 per one that
-// counts. notes, when given, are for this floor's own steps: a sub-flow's
-// stations then list nothing beneath them. look, when given, is how each step
-// is drawn, at every depth.
-export function nestedFloor(steps, entries, { workflows, expanded = false, notes, look = s => s, running = [] }) {
+// counts. notes, when given, makes each floor's notes, at every depth, as
+// notes(steps, parents) — parents, the step ids above the floor, top first —
+// listed beneath its stations in place of their tickets (ASS-331: a
+// sub-flow's too). look, when given, is how each step is drawn, at every depth.
+export function nestedFloor(steps, entries, { workflows, expanded = false, notes, look = s => s, running = [], parents = [] }) {
   const tickets = {}, counts = {}, inside = {}, subflows = {};
   for (const step of steps) {
     const mine = entries.filter(e => e.path[0] === step.id);
@@ -30,10 +31,10 @@ export function nestedFloor(steps, entries, { workflows, expanded = false, notes
     const robots = '🤖'.repeat(here.reduce((n, e) => n + e.agents, 0)) + '💻'.repeat(here.filter(e => e.script).length);
     if (robots) inside[step.id] = [robots];
     if (subSteps.length && (expanded || deeper.length)) {
-      subflows[step.id] = nestedFloor(subSteps, deeper.map(e => ({ ...e, path: e.path.slice(1) })), { workflows, expanded, notes: notes && {}, look, running: [...running, name] });
+      subflows[step.id] = nestedFloor(subSteps, deeper.map(e => ({ ...e, path: e.path.slice(1) })), { workflows, expanded, notes, look, running: [...running, name], parents: [...parents, step.id] });
     }
   }
-  return { steps: steps.map(look), tickets, counts, inside, subflows, ...(notes ? { notes } : {}) };
+  return { steps: steps.map(look), tickets, counts, inside, subflows, ...(notes ? { notes: notes(steps, parents) } : {}) };
 }
 
 // The hint for g on S and B: what it does next.

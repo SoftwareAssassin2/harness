@@ -1,6 +1,6 @@
 // The sprint flow screen (S): the project's state engine as a factory floor (ASS-201: moved from app.js).
 import { flowchart, NOTE_WIDTH } from '../flowchart.js';
-import { stateMetrics, metricLines } from '../metrics.js';
+import { floorNotes } from '../metrics.js';
 import { scrollBox } from '../table.js';
 import { link } from '../text.js';
 import { below, headerLines, platform } from './frame.js';
@@ -35,8 +35,7 @@ function flowchartView(state, { columns = 0, rows = Infinity, now = 0 }) {
       script: !state.day && t.status.detailStep?.action?.type === 'script' && t.gate == null && !isHeld(t, t.variation),
     };
   });
-  const metrics = state.flowchartView === 'metrics' && stateMetrics(tickets.map(t => t.variation), steps);
-  const notes = metrics && Object.fromEntries(steps.map(s => [s.id, metricLines(metrics[s.id], s.action?.type === 'prompt', NOTE_WIDTH)]));
+  const notes = state.flowchartView === 'metrics' && floorNotes(tickets.map(t => t.variation), NOTE_WIDTH);
   const floor = nestedFloor(steps, entries, { workflows: projectWorkflows(state), expanded: state.flowchartExpanded, notes });
   const boxHeight = Math.max(3, rows - headerLines(state, columns, now).length - below(state) - platform(state, columns, now).length - head.length);
   return { head, list: flowchart(steps, { ...floor, columns: columns - 4 }), boxHeight, height: boxHeight - 2 };

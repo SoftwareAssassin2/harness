@@ -98,3 +98,85 @@ test('a dispatch that finished without a result (killed, or died mid-turn) has n
   assert.equal(plan.tokensPerDispatch, 155);                            // (100 + 200 + 10) over 2
   assert.equal(plan.cacheReadPerDispatch, 25);
 });
+
+// ASS-331: a sub-flow's stations, from the changes made under its parent path. inside(parents, from, to, minutes)
+// — a change made within the steps `parents` names, top first: each a change within its step, the last one's
+// sub-state-change from `from` to `to`.
+const inside = (parents, from, to, minutes, dispatches = []) => ({
+  ...change(parents[0], parents[0], minutes, dispatches),
+  'sub-state-change': parents.slice(1).reduceRight((below, step) => ({ 'from-state': step, 'to-state': step, 'sub-state-change': below }), { 'from-state': from, 'to-state': to }),
+});
+const SUB = [{ id: 'draft', sequence: 1 }, { id: 'code', sequence: 2 }, { id: 'check', sequence: 3 }];
+
+test('ASS-331 AC2: a sub-state\'s visit ends when its parent step is left, not when the sub-flow is next entered; its first state in each parent visit arrives with the parent', () => {
+  const twice = { 'state-changes': [
+    change('committed', 'plan', 0), inside(['plan'], 'draft', 'code', 10), change('plan', 'review', 30),         // draft 0–10, code 10–30
+    change('review', 'plan', 100), inside(['plan'], 'draft', 'code', 105), change('plan', 'review', 125),        // draft 100–105, code 105–125
+  ] };
+  const { draft, code } = stateMetrics([twice], SUB, ['plan']);
+  assert.equal(draft.visits, 2);
+  assert.equal(draft.timePerVisit, (10 + 5) / 2 * MIN);
+  assert.equal(code.visits, 2);
+  assert.equal(code.timePerVisit, 20 * MIN);
+  assert.equal(draft.tickets, 1);
+});
+
+test('ASS-331 AC2: a sub-flow entered with a change from no state: its first state arrives with that change', () => {
+  const entered = { 'state-changes': [change('committed', 'plan', 0), inside(['plan'], null, 'draft', 2), inside(['plan'], 'draft', 'code', 10), change('plan', 'review', 30)] };
+  const { draft, code } = stateMetrics([entered], SUB, ['plan']);
+  assert.equal(draft.timePerVisit, 8 * MIN);
+  assert.equal(code.timePerVisit, 20 * MIN);
+  assert.equal(draft.visitsPerTicket, 1);
+});
+
+test('ASS-331 AC2, AC3: a sub-state\'s dispatches are its own visit\'s, a deeper one\'s joining it; the parent step\'s stay as they were, its sub-steps\' among them', () => {
+  const run = { 'state-changes': [
+    change('committed', 'plan', 0, [sent(0, 1, 1, [1, 1, 1, 1])]),
+    inside(['plan'], 'draft', 'code', 10, [sent(10, 6, 2, [1, 1, 1, 1])]),
+    inside(['plan', 'code'], null, 'deep', 12, [sent(12, 4, 4, [1, 1, 1, 1])]),                              // deeper, within code's visit
+    change('plan', 'review', 30),
+  ] };
+  const { draft, code } = stateMetrics([run], SUB, ['plan']);
+  assert.equal(draft.dispatchesPerVisit, 0);                           // the change into plan is plan's own
+  assert.equal(code.dispatchesPerVisit, 2);
+  assert.equal(code.agentPerVisit, 10 * MIN);
+  assert.equal(code.costPerDispatch, 3);
+  const { plan } = stateMetrics([run], STEPS);
+  assert.deepEqual([plan.visits, plan.timePerVisit, plan.dispatchesPerVisit, plan.costPerDispatch], [1, 30 * MIN, 3, 7 / 3]);
+});
+
+test('ASS-331 AC2: two levels deep, a sub-sub-state\'s visit ends when its own parent sub-state is left, and again when the top step is', () => {
+  const deep = { 'state-changes': [
+    change('committed', 'plan', 0), inside(['plan'], null, 'check', 1),
+    inside(['plan', 'check'], null, 'inspect', 2), inside(['plan', 'check'], 'inspect', 'magnify', 5),
+    inside(['plan'], 'check', 'code', 9),                                                                     // magnify 5–9: check left
+    inside(['plan'], 'code', 'check', 20), inside(['plan', 'check'], null, 'inspect', 21),
+    change('plan', 'review', 24),                                                                             // inspect 21–24: plan left
+  ] };
+  const metrics = stateMetrics([deep], [{ id: 'inspect', sequence: 1 }, { id: 'magnify', sequence: 2 }], ['plan', 'check']);
+  assert.equal(metrics.inspect.timePerVisit, (3 + 3) / 2 * MIN);
+  assert.equal(metrics.magnify.timePerVisit, 4 * MIN);
+  assert.equal(stateMetrics([deep], SUB, ['plan']).check.timePerVisit, (8 + 4) / 2 * MIN);
+});
+
+test('ASS-331 AC2: a variation still inside the sub-flow: its open visit counts as a visit, not a finished one', () => {
+  const still = { 'state-changes': [change('committed', 'plan', 0), inside(['plan'], null, 'draft', 1), inside(['plan'], 'draft', 'code', 10)] };
+  const { draft, code } = stateMetrics([still], SUB, ['plan']);
+  assert.equal(draft.timePerVisit, 9 * MIN);
+  assert.deepEqual([code.tickets, code.visitsPerTicket, code.visits, code.timePerVisit], [1, 1, null, null]);
+  const untracked = { 'harness-status': { ...hs('plan'), 'sub-status': { state: 'code', 'state-engine': 'sub' } } };   // in it with no history
+  assert.equal(stateMetrics([untracked], SUB, ['plan']).code.tickets, 1);
+  assert.equal(stateMetrics([untracked], SUB, ['review']).code.tickets, 0);
+});
+
+test('ASS-331 AC3: the same sub-engine under two parent steps, or at two depths, has each station\'s metrics from its own parent path alone', () => {
+  const both = { 'state-changes': [
+    change('committed', 'plan', 0), inside(['plan'], null, 'draft', 0), inside(['plan'], 'draft', 'code', 10),   // draft 10 minutes under plan
+    change('plan', 'review', 20), inside(['review'], null, 'draft', 20), change('review', 'done', 60),          // 40 under review
+    inside(['done', 'check'], null, 'draft', 60), inside(['done', 'check'], 'draft', 'code', 61),              // 1 under done › check
+  ] };
+  assert.equal(stateMetrics([both], SUB, ['plan']).draft.timePerVisit, 10 * MIN);
+  assert.equal(stateMetrics([both], SUB, ['review']).draft.timePerVisit, 40 * MIN);
+  assert.equal(stateMetrics([both], SUB, ['done', 'check']).draft.timePerVisit, 1 * MIN);
+  assert.equal(stateMetrics([both], SUB, ['done']).draft.tickets, 0);
+});

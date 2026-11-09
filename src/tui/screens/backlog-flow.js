@@ -1,6 +1,6 @@
 // The backlog flow screen (B): the refinement engine's steps as stations (ASS-201: moved from app.js).
 import { flowchart, NOTE_WIDTH } from '../flowchart.js';
-import { stateMetrics, metricLines } from '../metrics.js';
+import { floorNotes } from '../metrics.js';
 import { scrollBox } from '../table.js';
 import { link } from '../text.js';
 import { below, headerLines, platform } from './frame.js';
@@ -34,8 +34,7 @@ function backlogFlowView(state, { columns = 0, rows = Infinity, now = 0 }) {
     };
   });
   const boxHeight = Math.max(3, rows - headerLines(state, columns, now).length - below(state) - platform(state, columns, now).length - head.length);
-  const metrics = state.backlogFlowView === 'metrics' && stateMetrics(backlogTickets(state).flatMap(t => (t.variations ?? []).filter(v => !v['is-deleted'])), steps);
-  const notes = metrics && Object.fromEntries(steps.map(s => [s.id, metricLines(metrics[s.id], s.action?.type === 'prompt', NOTE_WIDTH)]));
+  const notes = state.backlogFlowView === 'metrics' && floorNotes(backlogTickets(state).flatMap(t => (t.variations ?? []).filter(v => !v['is-deleted'])), NOTE_WIDTH);
   const floor = nestedFloor(steps, entries, { workflows: projectWorkflows(state), expanded: state.backlogFlowExpanded, notes, look: station });
   return { head, list: flowchart(floor.steps, { ...floor, columns: columns - 4, legend: false }), boxHeight, height: boxHeight - 2 };
 }

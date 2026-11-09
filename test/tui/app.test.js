@@ -2249,13 +2249,34 @@ test('ASS-245: on a past day, the boxes open and the tickets sit where the day\'
   assert.ok(!rectOf(out, 'Check').group);
 });
 
-test('ASS-245: the run-time metrics view keeps the boxes, its notes under the top-level stations, none under the sub-flows\' own', () => {
+test('ASS-245: the run-time metrics view keeps the boxes, its notes under the top-level stations', () => {
   const out = lines({ ...subflowState(), flowchartView: 'metrics' }, tall);
   assert.ok(rectOf(out, 'Build').group);
   const build = rectOf(out, 'Build');
   assert.match(out[build.bottom + 1].slice(build.left, build.right + 1).replace('║', '').trim().replace(/ +/g, ' '), /^tickets visited 4$/);
-  assert.deepEqual(keysUnder(out, rectOf(out, 'Generate Solution')), []);
   assert.ok(!out.some(l => l.includes('G-1')));
+});
+
+// The notes under a station on the floor, each with its spaces closed up.
+const notesUnder = (out, name) => keysUnder(out, rectOf(out, name)).map(l => l.replace(/ +/g, ' '));
+// G-1's history: into Build at 9:00, Draft at once, Generate Solution at 9:30, where it is.
+const drafted = { ...grouped[0], ...single({ 'harness-status': inBuild(['g', 'code']), 'state-changes': [
+  { 'state-engine': 'e', 'from-state': 'backlog', 'to-state': 'build', timestamp: '2026-09-30T09:00:00Z', 'agent-dispatch-log': [] },
+  ...[[null, 'draft', '09:00'], ['draft', 'code', '09:30']].map(([from, to, time]) => ({ 'state-engine': 'e', 'from-state': 'build', 'to-state': 'build', timestamp: `2026-09-30T${time}:00Z`, 'agent-dispatch-log': [],
+    'sub-state-change': { 'state-engine': 'g', 'from-state': from, 'to-state': to } })),
+] }) };
+
+test('ASS-331 AC1: on S the metrics view shows each drawn sub-flow station\'s metric lines, at any depth, from the changes under its own parent path', () => {
+  const st = { ...subflowState([drafted, ...atEachDepth.slice(2)]), flowchartView: 'metrics' };
+  const out = lines(st, tall);
+  // Draft: G-1's half hour; its visit over G-1 and G-3 and G-9, at Check past it.
+  assert.deepEqual(notesUnder(out, 'Draft').slice(0, 4), ['tickets visited 1', 'visits per ticket 0.33', '↳ subset that visited 1', 'in state per visit 30m 0s']);
+  assert.deepEqual(notesUnder(out, 'Generate Solution').slice(0, 3), ['tickets visited 1', 'visits per ticket 0.33', 'no finished visits']);   // G-1 there still
+  assert.deepEqual(notesUnder(out, 'Inspect').slice(0, 1), ['tickets visited 1']);              // two levels down, where G-3 is
+  assert.deepEqual(notesUnder(out, 'Zoom').slice(0, 1), ['tickets visited 1']);                 // four
+  assert.deepEqual(notesUnder(out, 'Polish'), ['tickets visited 0', 'visits per ticket —', 'no finished visits']);   // none visited: as a top-level station shows it
+  const tickets = lines({ ...st, flowchartView: 'tickets' }, tall);
+  assert.deepEqual(keysUnder(tickets, rectOf(tickets, 'Generate Solution')), ['G-1']);          // the tickets view as it was
 });
 
 test('the flowchart lists the same stats beside each ticket', () => {
@@ -3906,6 +3927,23 @@ test('ASS-245 AC1, AC5: B draws a refinement step running a sub-engine as a box 
   const closed = handleKey(empty, shifted('b'));
   assert.ok(!rectOf(lines(closed, wide), 'Intake').group);
   assert.ok(rectOf(lines(handleKey(closed, key('g', { sequence: 'g' }), wide), wide), 'Intake').group);
+});
+
+test('ASS-331 AC1, AC4: B\'s metrics view shows a sub-flow\'s stations\' metric lines too, one opened by g among them, from the refinement histories under its parent step', () => {
+  const checks = { name: 'intake-checks', steps: [{ id: 'read', name: 'Read It', sequence: 1, action: { type: 'prompt' } }, { id: 'label', name: 'Label It', sequence: 2, action: { type: 'script' } }] };
+  const triage = { ...triageEngine, steps: triageEngine.steps.map(s => (s.id === 'intake' ? { ...s, action: { type: 'state-engine', engine: 'intake-checks' } } : s)) };
+  const moved = (from, to, time, sub) => ({ 'state-engine': 'triage-refinement', 'from-state': from, 'to-state': to, timestamp: `2026-10-01T${time}:00Z`, 'agent-dispatch-log': [],
+    ...(sub ? { 'sub-state-change': { 'state-engine': 'intake-checks', 'from-state': sub[0], 'to-state': sub[1] } } : {}) });
+  // ABC-61: into Intake at 10:00, Read It at once, Label It at 10:45, Sign Off at 11:00.
+  const read = { ...triageTicket('ABC-61', 'sign-off'), variations: [{ name: 'A', 'harness-status': { state: 'sign-off', 'state-engine': 'triage-refinement' },
+    'state-changes': [moved('backlog', 'intake', '10:00'), moved('intake', 'intake', '10:00', [null, 'read']), moved('intake', 'intake', '10:45', ['read', 'label']), moved('intake', 'sign-off', '11:00')] }] };
+  const st = { ...handleKey(withBacklog([read], { workflows: [triaging, triage, checks] }), shifted('b')), backlogFlowView: 'metrics' };
+  assert.ok(!rectOf(lines(st, wide), 'Intake').group);                                         // no ticket inside: closed
+  const out = lines(handleKey(st, key('g', { sequence: 'g' }), wide), { ...wide, rows: 80 });
+  assert.ok(rectOf(out, 'Intake').group);
+  assert.deepEqual(notesUnder(out, 'Read It'), ['tickets visited 1', 'visits per ticket 1', '↳ subset that visited 1', 'in state per visit 45m 0s',
+    'agent time per visit 0s', 'dispatches per visit 0', 'cost per dispatch —', 'tokens per dispatch —', 'cache reads per dispatch —']);
+  assert.deepEqual(notesUnder(out, 'Label It'), ['tickets visited 1', 'visits per ticket 1', '↳ subset that visited 1', 'in state per visit 15m 0s']);   // ends as Intake is left
 });
 
 test('ASS-150 AC3: at a human step of a custom refinement engine, the choices are its exits; choosing one runs ticket:human-review', () => {
