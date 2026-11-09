@@ -199,7 +199,11 @@ Blocked for Human, saying what was found and what to do.
   and every group's visits count from it (ASS-309), so a ticket that was blocked
   with its groups at their caps resumes where it returns instead of being
   redirected straight back to Blocked. The other clears — a retry, an
-  environment repaired, nothing found wrong — keep the counts.
+  environment repaired, nothing found wrong — keep the counts. A merge-gate
+  red (ASS-315, the merge queue below) restarts it too, but only for the
+  groups downstream of Release it sends the ticket back through (Build, Test,
+  Document, Review): Release's own keeps counting across reds, so a gate that
+  never goes green still blocks at Release's `max-visits`.
 - **Setup.** Check Setup Complete asks `vm:setup-complete` whether the
   variation's VM holds the setup-complete marker (`/repos/.setup-complete`).
   If it does, Setup ends at once. If not, Create VM (`vm:create`, which is
@@ -502,7 +506,10 @@ stay the reference to copy from.
   the rebased branch pushed and merged, so what merges is what was tested;
   red (a conflict, a failing test) — nothing pushed or merged, why in
   execution-plan-<variation>.md, exit 2 to the new `rebuild` end, which Release sends
-  into Build at Generate Solution. The grouped engines keep the plain merge.
+  into Build at Generate Solution, the exit itself marked `cause: merge-gate-red`
+  so that move restarts Build/Test/Document/Review's visit counting (ASS-315,
+  above) rather than spending it on a gate red unrelated to the change. The
+  grouped engines keep the plain merge.
 
 ### Switching
 
