@@ -97,7 +97,11 @@ has landed once its ticket is Done with a merge step anywhere in a live
 variation's state changes, top level or nested in a `sub-state-change` at any
 depth, as a grouped fix ticket's own merge is, in its Release sub-engine's run
 (ASS-309); an environment issue repaired in place, else Blocked for Human. It never
-resumes as if fixed when no fix can be raised or waited on. A repository the
+resumes as if fixed when no fix can be raised or waited on: an empty fix key
+carries a no-ticket-reason (analysis-did-not-hold or create-failed) and a
+one-line why, kept in `blocks`; create-failed or no reason retries the write
+once; still none skips fast-track-fix and Blocked for Human's ai-feedback
+names the reason and why (ASS-316). A repository the
 project lacks, which the ticket's work needs, is an environment issue
 (ASS-121): Troubleshoot names its forge url (missing-repository), and Repair
 Environment's first step, Add the Missing Repository
