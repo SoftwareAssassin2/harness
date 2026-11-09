@@ -5,7 +5,7 @@ import { rankBacklog, flattenSprint } from '../../control/rank.js';
 import { dependencyHold } from '../../control/dependencies.js';
 import { stateOf, levelChanges, enginesOf, refinementSteps as refinementStepsOf } from '../status.js';
 import { lastStart } from '../table.js';
-import { visible, clip, link } from '../text.js';
+import { visible, clip, link, wrapParts } from '../text.js';
 import { humanGate } from '../ticket.js';
 
 export const ellipsis = (text, width) => (visible(text) <= width ? text : `${clip(text, width - 1)}…`);
@@ -263,17 +263,52 @@ function further(a, b) {
 // it waits for of the tickets it depends on (ASS-195, its `hold`):
 // "Committed — waits on ASS-180, ASS-181", in dependency order; or, with
 // none holding it, the keys it cannot wait for and why — "Committed — ignores
-// ASS-9 (unknown)". Nothing when it waits for nothing.
-export const statusText = (t, steps) => [t.status.chain.map((at, i, chain) => [
-  at.step?.name ?? at.state,
-  stateStats(t.variation, at.state, chain.slice(0, i).map(c => c.state), steps, at.step),
-].filter(Boolean).join(' ')).join(' › ') || NONE, holdText(t.hold)].filter(Boolean).join(' — ');
+// ASS-9 (unknown)". Nothing when it waits for nothing. One line: the ticket
+// screen's Status field; the sprint grid wraps it (statusCell, ASS-326).
+export const statusText = (t, steps) => {
+  const { chain, hold } = statusParts(t, steps);
+  return [chain.join(' › ') || NONE, hold && `${hold.lead} ${hold.items.join(', ')}`].filter(Boolean).join(' — ');
+};
 
-// holdText(hold) — what a Status says of a dependencyHold: the keys holding
+// The width a sprint grid's Status wraps at (ASS-326): one ticket waiting on 9
+// others made its one-line Status ~115 wide, and since a column is as wide as
+// its widest cell over every row, the grid ran off the screen, cutting off
+// Health and Agents.
+export const STATUS_WRAP = 40;
+
+// statusCell(t, steps) — the sprint grid's Status cell (ASS-326): a function of
+// its column's width (boxTable lays it out once that is known) giving the
+// lines. The step chain, wrapped between its " › " parts; the hold on lines of
+// its own under it, wrapped between keys; each at the narrower of the column
+// and STATUS_WRAP, continuation lines indented (wrapParts). A part wider than
+// STATUS_WRAP keeps its line whole, so the column is never narrower than its
+// longest step; only a column narrower than that (Status giving up width after
+// Health and Agents, sprint.js SHRINK) splits it — nothing is cut with "…".
+export const statusCell = (t, steps) => {
+  const { chain, hold } = statusParts(t, steps);
+  const comma = items => items.map((item, i) => (i < items.length - 1 ? `${item},` : item));
+  const sets = [
+    chain.length ? chain.map((part, i) => (i < chain.length - 1 ? `${part} ›` : part)) : [NONE],
+    ...(hold ? [comma(hold.items).map((item, i) => (i ? item : `${hold.lead} ${item}`))] : []),
+  ];
+  return width => sets.flatMap(parts => wrapParts(parts, Math.min(width, STATUS_WRAP), width));
+};
+
+// statusParts(t, steps) — a Status in parts: `chain`, each level's "name
+// (stats)", and `hold` — { lead: 'waits on' | 'ignores', items } — or null.
+function statusParts(t, steps) {
+  const chain = t.status.chain.map((at, i, all) => [
+    at.step?.name ?? at.state,
+    stateStats(t.variation, at.state, all.slice(0, i).map(c => c.state), steps, at.step),
+  ].filter(Boolean).join(' '));
+  return { chain, hold: holdParts(t.hold) };
+}
+
+// holdParts(hold) — what a Status says of a dependencyHold: the keys holding
 // the variation, or — none holding it — the ones it ignores, each with why;
 // null for neither.
-const holdText = hold => (hold?.waits?.length ? `waits on ${hold.waits.join(', ')}`
-  : hold?.ignores?.length ? `ignores ${hold.ignores.map(i => `${i.key} (${i.why})`).join(', ')}`
+const holdParts = hold => (hold?.waits?.length ? { lead: 'waits on', items: hold.waits }
+  : hold?.ignores?.length ? { lead: 'ignores', items: hold.ignores.map(i => `${i.key} (${i.why})`) }
   : null);
 // The assignments to a ticket and its variation (or to no variation in particular).
 export const ticketAgents = (assignments, t) => assignments.filter(a => a['work-item'] === t.key && (a.variation == null || a.variation === t.variation.name));

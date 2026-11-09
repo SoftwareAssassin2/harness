@@ -53,25 +53,23 @@ export function lastStart(rows, bodyHeight) {
   return Math.min(start, Math.max(0, rows.length - 1));
 }
 
-// boxTable(headers, rows, { columns, stretch, min, shrink, height, scroll, selected, dashed }) — each row is an
-// array of cells; a cell is a string, or an array of strings stacked on extra
-// lines. Rows are separated by a blank line, or with `dashed` (ASS-243) a dim
-// gray line of dashes every four columns, indented — the same one line. Column `stretch` takes the leftover
-// width, its text cut with an ellipsis.
-// `min` is the stretch column's minimum width and `shrink` the columns that
-// give up width (in order, never below their own header) to reach it; when
-// they cannot, the stretch column keeps `min` and the table runs wider than
-// `columns`, as it already may when too narrow.
-// With `height`, the table is at most that many lines: the body starts at row
-// `scroll` (no further than lastStart), lines that do not fit are left out, and
-// when rows are hidden the right border carries a scrollbar thumb. Row
-// `selected` is shown in reverse video.
-export function boxTable(headers, rows, { columns, stretch, min = 0, shrink = [], height = Infinity, scroll = 0, selected, dashed = false }) {
-  const bodyHeight = Math.max(0, height - 4);
-  const last = lastStart(rows, bodyHeight);
-  const start = Math.min(scroll, last);
-  const cells = rows.map(row => headers.map((_, i) => [row[i] ?? ''].flat()));
-  const widths = headers.map((h, i) => Math.max(h.length, ...cells.map(r => Math.max(...r[i].map(visible)))));
+// tableLayout(headers, rows, { columns, stretch, min, shrink }) — { widths,
+// cells }: each column's width and each row's cells as arrays of lines. A cell
+// is a string, an array of strings stacked on extra lines, or (ASS-326) a
+// function of its column's width returning its lines — text that wraps rather
+// than clips (the sprint grid's Status): called with Infinity for the width it
+// asks for, then again at the width its column ends up with. Every row counts,
+// scrolled out of view or not, so columns hold still while scrolling.
+// Column `stretch` takes the leftover width. `min` is its minimum width and
+// `shrink` the columns that give up width (in order, never below their own
+// header) to reach it; when they cannot, the stretch column keeps `min` and
+// the table runs wider than `columns`, as it already may when too narrow. A
+// caller measuring rows (lastStart) measures these cells: a function cell's
+// height is known only once its width is.
+export function tableLayout(headers, rows, { columns, stretch, min = 0, shrink = [] }) {
+  const lay = (cell, w) => [typeof cell === 'function' ? cell(w) : cell ?? ''].flat();
+  const natural = rows.map(row => headers.map((_, i) => lay(row[i], Infinity)));
+  const widths = headers.map((h, i) => Math.max(h.length, ...natural.map(r => Math.max(...r[i].map(visible)))));
   let free = columns - widths.reduce((sum, w, i) => (i === stretch ? sum : sum + w + 3), 0) - 4;
   for (const i of shrink) {
     if (free >= min) break;
@@ -80,6 +78,24 @@ export function boxTable(headers, rows, { columns, stretch, min = 0, shrink = []
     free += give;
   }
   widths[stretch] = Math.max(headers[stretch].length, min, free);
+  const cells = rows.map((row, r) => headers.map((_, i) => (typeof row[i] === 'function' ? lay(row[i], widths[i]) : natural[r][i])));
+  return { widths, cells };
+}
+
+// boxTable(headers, rows, { columns, stretch, min, shrink, height, scroll, selected, dashed }) — each row is an
+// array of cells, laid out by tableLayout (its widths, `stretch`, `min` and
+// `shrink`). Rows are separated by a blank line, or with `dashed` (ASS-243) a dim
+// gray line of dashes every four columns, indented — the same one line. A line
+// wider than its column is cut with an ellipsis.
+// With `height`, the table is at most that many lines: the body starts at row
+// `scroll` (no further than lastStart), lines that do not fit are left out, and
+// when rows are hidden the right border carries a scrollbar thumb. Row
+// `selected` is shown in reverse video.
+export function boxTable(headers, rows, { columns, stretch, min = 0, shrink = [], height = Infinity, scroll = 0, selected, dashed = false }) {
+  const bodyHeight = Math.max(0, height - 4);
+  const { widths, cells } = tableLayout(headers, rows, { columns, stretch, min, shrink });
+  const last = lastStart(cells, bodyHeight);
+  const start = Math.min(scroll, last);
 
   const fit = (text, w) => (visible(text) <= w ? text : `${clip(text, w - 1)}…`);
   const line = (texts, divider) => `│${texts.map((t, i) => ` ${pad(fit(t, widths[i]), widths[i])} `).join(divider)}│`;
@@ -101,7 +117,7 @@ export function boxTable(headers, rows, { columns, stretch, min = 0, shrink = []
   if (last > 0 && body.length) {
     // Keep the height steady when the last rows leave room to spare.
     while (body.length < bodyHeight) body.push(line(headers.map(() => ''), ' '));
-    const [top, size] = thumb(body.length, rows.reduce((sum, row) => sum + rowHeight(row) + 1, -1), start, last);
+    const [top, size] = thumb(body.length, cells.reduce((sum, row) => sum + rowHeight(row) + 1, -1), start, last);
     for (let i = top; i < top + size; i++) body[i] = `${body[i].slice(0, -1)}█`;
   }
   return [rule('┌', '┬', '┐'), line(headers.map((h, i) => center(h, widths[i])), '│'), rule('├', '┴', '┤'), ...body, rule('└', '─', '┘')];

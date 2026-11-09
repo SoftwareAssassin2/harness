@@ -1974,6 +1974,10 @@ test('Status counts one pass through a group as one visit, and counts afresh onc
   assert.match(out.find(l => l.includes('G-2: Reopened')), / Code Review \(1, 0\) /);
 });
 
+// The line holding `text` and the `n` under it, joined: a row whose Status wraps
+// (ASS-326: past STATUS_WRAP, between its " › " parts) reads on across them.
+const rowAndBelow = (out, text, n = 2) => { const at = out.findIndex(l => l.includes(text)); return out.slice(at, at + n + 1).join('\n'); };
+
 test('Status shows each sub-status after its parent, named from its own state engine, each with its stats from the changes made at its level', () => {
   const deep = { ...hs('code-review'), 'sub-status': { state: 'take-screenshots', 'state-engine': 'test', 'sub-status': { state: 'zoom', 'state-engine': 'gone' } } };
   // Changes within code-review: into take-screenshots (2 sent), then within it, into zoom (1 sent).
@@ -1989,7 +1993,8 @@ test('Status shows each sub-status after its parent, named from its own state en
   const test = { name: 'test', steps: [{ id: 'take-screenshots', name: 'Take Screenshots', sequence: 2 }] };
   const out = lines(initialState({ projects: [{ ...projects[0], sprint: { ...sprint, features: tickets, bugs: [], spikes: [] } }], workflows: [engine, test] }), { columns: 220, rows: 40 });
   // Code Review: 2 visits, its 3 + the 2 and 1 sent within it; Take Screenshots: 1 visit, its 2 + the 1 within it.
-  assert.match(out.find(l => l.includes('S-1: Nested')), / Code Review \(2, 6\) › Take Screenshots \(1, 3\) › zoom \(1, 1\) /);
+  // Past STATUS_WRAP (ASS-326) the chain wraps after a " › ", the rest indented on the row's next line.
+  assert.match(rowAndBelow(out, 'S-1: Nested'), / Code Review \(2, 6\) ›[^\n]*\n│ + Take Screenshots \(1, 3\) › zoom \(1, 1\) /);
   assert.match(out.find(l => l.includes('S-2: No history')), / Code Review › Take Screenshots › zoom /);
 });
 
@@ -2046,9 +2051,10 @@ test('(visits, dispatches) of a state-engine step count the sub-engine runs star
     within(g('code', 'check')), within(g('check', 'check', { 'state-engine': 'h', 'from-state': null, 'to-state': 'inspect' }), 4),
   ];
   const v = [{ key: 'G-5', title: 'Counted', priority: 1, ...single({ 'harness-status': inBuild(['g', 'check'], ['h', 'inspect']), 'state-changes': changes }) }];
-  const row = lines(groupedState(v), { columns: 260, rows: 40 }).find(l => l.includes('G-5: Counted'));
+  const row = rowAndBelow(lines(groupedState(v), { columns: 260, rows: 40 }), 'G-5: Counted', 1);
   // Build: two visits, one run each — the latest's 1; Check: one visit, one run started; Inspect: one visit, its 4 agents.
-  assert.match(row, / Build \(2, 1\) › Check \(1, 1\) › Inspect \(1, 4\) /);
+  // Past STATUS_WRAP (ASS-326) the chain wraps after a " › ", the rest indented on the row's next line.
+  assert.match(row, / Build \(2, 1\) › Check \(1, 1\) ›[^\n]*\n│ + Inspect \(1, 4\) /);
   const coding = [{ ...v[0], ...single({ 'harness-status': inBuild(['g', 'code']), 'state-changes': changes.slice(0, 8) }) }];
   // Generate Solution counts within the second run alone: one visit, 2 agents — not the first run's two visits.
   assert.match(lines(groupedState(coding), { columns: 260, rows: 40 }).find(l => l.includes('G-5: Counted')), / Build \(2, 1\) › Generate Solution \(1, 2\) /);

@@ -98,6 +98,23 @@ export function wrapLine(line, columns, hang = null) {
   });
 }
 
+// wrapParts(parts, width, hard = width) — `parts` (a Status's steps or keys,
+// ASS-326) a space apart, packed greedily into lines of at most `width`
+// columns, every line after the first indented two so a wrapped Status reads
+// as one: broken between parts, never inside one. A part too wide for `width`
+// takes a line to itself whole, so a cap (STATUS_WRAP) never cuts a step name;
+// only a line wider than `hard` — the column it must fit — is split
+// (wrapLine, hung under the indent), so nothing is ever clipped.
+export function wrapParts(parts, width, hard = width) {
+  const lines = [];
+  for (const part of parts) {
+    const last = lines.at(-1);
+    if (last != null && visible(last) + 1 + visible(part) <= width) lines[lines.length - 1] = `${last} ${part}`;
+    else lines.push(last == null ? part : `  ${part}`);
+  }
+  return lines.flatMap(line => wrapLine(line, hard, 2));
+}
+
 // markWords(line, marks) — each mark's word (marks: [{ word, color: '#rrggbb' }]),
 // wherever it stands whole in the line's visible text, shown on its color in
 // black or white, whichever reads better on it. Codes and link addresses are

@@ -3,20 +3,22 @@ import { pathToFileURL } from 'node:url';
 import { progressBar, stateColor } from '../progress.js';
 import { runsBefore } from '../since.js';
 import { isUnopened, unopenedAs, mrShown } from '../status.js';
-import { boxTable, lastStart } from '../table.js';
+import { boxTable, lastStart, tableLayout } from '../table.js';
 import { pad, link, visible, clip } from '../text.js';
 import { workedByHand, tokenSpend, testCounts } from '../ticket.js';
 import { below, headerLines, platform } from './frame.js';
-import { NONE, feedback, agentLines, liveAssignments, ticketMarks, sprintMark, markDot, GLYPHS, move, green, red, gold, gray, sprintTickets, statusText, ticketAgents, chatSpend } from './shared.js';
+import { NONE, feedback, agentLines, liveAssignments, ticketMarks, sprintMark, markDot, GLYPHS, move, green, red, gold, gray, sprintTickets, statusCell, ticketAgents, chatSpend } from './shared.js';
 import { openTicket } from './ticket.js';
 import { isHeld } from '../../control/engine.js';
 
 const TABLE_HEADERS = ['Ticket', 'Priority', 'Status', 'Points', 'Build', 'Dev', 'Testing', 'MR', 'Total Token Spend', 'Assignee', 'Health', 'Agents'];
 // The Ticket column is the most important one (ASS-207): it keeps at least the
 // key and TITLE_CHARS characters of title, Health then Agents giving up their
-// width to leave room. Declared after TABLE_HEADERS, which SHRINK reads.
+// width to leave room — then Status (ASS-326), re-wrapping its lines narrower
+// (statusCell) rather than letting the grid run off the screen. Declared after
+// TABLE_HEADERS, which SHRINK reads.
 const TITLE_CHARS = 24;
-const SHRINK = ['Health', 'Agents'].map(h => TABLE_HEADERS.indexOf(h));
+const SHRINK = ['Health', 'Agents', 'Status'].map(h => TABLE_HEADERS.indexOf(h));
 // The Ticket column's floor: over the rows, the width of the key/icon prefix
 // plus TITLE_CHARS title characters (or the whole title if shorter), and one
 // more for the ellipsis when the title is cut. Measured off the already-built
@@ -48,16 +50,21 @@ function gridAt(state, { rows, bodyHeight }, tickets, done) {
 // grid's own lines, not the key's. The header and the platform boxes are
 // measured at the size's now, the time render draws them at (ASS-295): the
 // models box's API spend line shows only in now's month, so at time 0 the
-// footer came out a line short and render cut the key.
+// footer came out a line short and render cut the key. The grid's rows are
+// kept laid out (tableLayout, ASS-326): a Status cell's height depends on the
+// width its column ends up with, and scrolling (gridAt, move) counts lines.
 function layout(state, { columns = 0, rows = Infinity, now = 0 }) {
   const { tickets, steps, done } = sprintTickets(state);
   const bottom = below(state) + Math.max(1, platform(state, columns, now).length);
   const key = iconKey(columns);
   const free = rows - headerLines(state, columns, now).length - bottom - 5 - key.length;
-  const ticketGrid = { rows: ticketRows(tickets, liveAssignments(state), steps, state.projects[state.project]?.collaborations, ticketMarks(state, tickets)), bodyHeight: free - 4 };
+  const cells = ticketRows(tickets, liveAssignments(state), steps, state.projects[state.project]?.collaborations, ticketMarks(state, tickets));
+  const fit = { columns, stretch: 0, min: ticketFloor(cells, tickets), shrink: SHRINK };
+  const ticketGrid = { rows: tableLayout(TABLE_HEADERS, cells, fit).cells, bodyHeight: free - 4 };
   const [selected, scroll] = gridAt(state, ticketGrid, tickets, done);
-  const table = boxTable(TABLE_HEADERS, ticketGrid.rows.length ? ticketGrid.rows : [['No tickets in this sprint']], {
-    columns, stretch: 0, min: ticketFloor(ticketGrid.rows, tickets), shrink: SHRINK, height: ticketGrid.bodyHeight + 4, scroll, dashed: true,
+  // The same rows and fit as ticketGrid's: boxTable lays them out alike.
+  const table = boxTable(TABLE_HEADERS, cells.length ? cells : [['No tickets in this sprint']], {
+    ...fit, height: ticketGrid.bodyHeight + 4, scroll, dashed: true,
     selected: state.focus === 'tickets' && ticketGrid.rows.length ? selected : undefined,
   });
   return { tickets, steps, done, ticketGrid, table, key, room: Math.max(0, free), selected, scroll };
@@ -90,7 +97,7 @@ function iconKey(columns) {
 const BUILD_COLORS = { Merged: gray, Closed: gray, Running: gold, Failed: red, Passed: green };
 
 // One table row per ticket variation (see sprintTickets). Status is its
-// statusText. The Ticket cell leads with a square in that step's
+// statusCell, wrapped at its column's width (ASS-326). The Ticket cell leads with a square in that step's
 // progress-bar color, the deepest step's own when it has one (`steps` set its shade). Priority, points and assignee come from the ticket; Agents
 // lists its assignments from assignments.json; Health is the variation's ai-feedback-short;
 // Total Token Spend its tokenSpend, the ticket's chat's spend (ASS-35) on its first variation's row alone.
@@ -120,7 +127,7 @@ function ticketRows(tickets, assignments, steps, collaborations = {}, marks = { 
     return [
       `${icons.map(icon => icon || ' ').join('')} ${t.variation['is-paused'] === true ? `${PAUSED} ` : ''}${t.url ? link(name, t.url) : name}`,
       String(t.priority ?? NONE) + (t['manual-priority'] != null ? ' 🪪' : ''),
-      statusText(t, steps),
+      statusCell(t, steps),
       String(t.points ?? NONE),
       ...variationCells(t.variation),
       tokenSpend(t.variation, t.variation === t.variations?.[0] ? chatSpend(collaborations, t.key) : 0) ?? NONE,

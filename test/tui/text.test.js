@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { visible, clip, pad, link, markWords, wrapLine } from '../../src/tui/text.js';
+import { visible, clip, pad, link, markWords, wrapLine, wrapParts } from '../../src/tui/text.js';
 const strip = s => s.replace(/\x1b\[[0-9;]*m|\x1b\]8;;[^\x1b]*\x1b\\/g, '');
 
 test('emoji take two columns; colors and links take none', () => {
@@ -35,6 +35,18 @@ test('markWords puts each word on its color, in black or white, whichever reads,
   assert.equal(markWords('ABC-1262', []), 'ABC-1262');
   assert.equal(markWords('ABC-1262', [{ word: 'ABC-1262', color: '#00ff00' }]), '\x1b[48;2;0;255;0m\x1b[30mABC-1262\x1b[39;49m');   // black on bright green
   assert.equal(markWords('ABC-1262', [{ word: 'ABC-1262', color: '#ff0000' }]), '\x1b[48;2;255;0;0m\x1b[97mABC-1262\x1b[39;49m');  // white on red
+});
+
+// ASS-326: the sprint grid's Status wraps between its parts (steps, keys).
+test('ASS-326: wrapParts packs parts a space apart into lines of at most `width`, later lines indented two', () => {
+  assert.deepEqual(wrapParts(['waits on ABC-2,', 'ABC-3,', 'ABC-4'], 21), ['waits on ABC-2,', '  ABC-3, ABC-4']);
+  assert.deepEqual(wrapParts(['a', 'b'], 10), ['a b']);
+  assert.deepEqual(wrapParts([], 10), []);
+});
+
+test('ASS-326: wrapParts keeps a part wider than `width` whole on its own line, splitting it only past `hard`', () => {
+  assert.deepEqual(wrapParts(['short', 'a much longer part', 'x'], 10, 20), ['short', '  a much longer part', '  x']);
+  assert.deepEqual(wrapParts(['short', 'a much longer part', 'x'], 10, 10), ['short', '  a much', '  longer', '  part', '  x']);
 });
 
 test('wrapLine leaves a line that fits as it is, a blank line one row', () => {
