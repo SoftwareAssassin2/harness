@@ -17,7 +17,9 @@ Never end your turn while a command you started is still running: run a long one
 
 If {ticket-folder}/operator-review-{variation}.md exists, it holds the operator's notes from rejecting earlier passes at Human Review: read it and address each note in this step's work.
 
-Finish with JSON: {"is-approved": true, "summary": "<one line>"} when every criterion passed, or {"is-approved": false, "summary": "<what failed, one line>"} otherwise.
+Finish with JSON: {"is-approved": true, "did-not-finish": false, "summary": "<one line>"} when every criterion passed, or {"is-approved": false, "did-not-finish": false, "summary": "<what failed, one line>"} otherwise. Give "did-not-finish" on every verdict, false whenever the testing finished.
+
+When the testing itself could not finish within the turn — a suite cut short by the tool's foreground timeout, a backgrounded run still going, a criterion left unchecked — that is no judgement of the change: finish with {"is-approved": false, "did-not-finish": true, "summary": "<what did not finish, one line>"} and the step re-runs the tests instead of sending the ticket back to build.
 
 A golden-image rebuild ticket ("fast-track": true in {ticket-folder}/ticket.json, titled "Rebuild golden-<project>") changes no code: test the image, not an app. Run {agent-sh} vm:golden-status <project>, <project> from its title, and read its "status":
 - "building": the engine waits for the build before this step, so it should have settled; don't wait — report the reading as it is: {"is-approved": false, "summary": "golden-<project> still building"}.
