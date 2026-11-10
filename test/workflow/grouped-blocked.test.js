@@ -175,6 +175,14 @@ test('ASS-343: a landed fix\'s resume-step records the run\'s resume-at, and the
       assert.equal(back(landedAt('requirements-changed'), 'release'), 'release', `${top}: AC3, a detour`);
     }
   }
+  // AC2: a resume at plan regenerates its artifacts — the plan group's run starts afresh at its first step, and
+  // Write Execution Plan leaves only once its plan file was written in that turn — then Build's generate-solution runs again.
+  const plan = engines['grouped-plan'], write = stepOf(plan, 'write-execution-plan');
+  const updated = { 'file-updated': { file: 'execution-plan.md', since: 'turn-start' } };
+  assert.equal(firstStepId(plan), 'enrich-ac');
+  assert.notEqual(nextState(write, plan, { turnComplete: true, fileUpdated: () => false }, []).to, nextState(write, plan, { turnComplete: true, fileUpdated: () => true }, []).to, 'an unwritten plan does not move on');
+  assert.deepEqual(write['exit-events'][0].condition, { all: [{ 'turn-complete': true }, updated] });
+  assert.ok(stepOf(engines['grouped-build'], 'generate-solution'));
 });
 
 test('nothing wrong any more: no fix, no classification — the ticket resumes', () => {

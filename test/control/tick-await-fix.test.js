@@ -11,6 +11,7 @@ import { controlFixture } from './control-fixture.js';
 import { tick } from '../../src/control/tick.js';
 import { hs } from '../agent-cli/harness-fixture.js';
 import { engineDir } from '../support/engine-walk.js';
+import { until } from '../support/until.js';
 
 const ROOT = join(import.meta.dirname, '..', '..');
 const edit = (file, change) => { const json = JSON.parse(readFileSync(file, 'utf8')); change(json); writeFileSync(file, JSON.stringify(json)); };
@@ -104,4 +105,60 @@ test('ASS-309: a landed fix whose merge is only in a nested sub-state-change cle
   const cleared = f.variation()['state-changes'].find(c => c['from-state'] === 'blocked' && !c['sub-state-change']);   // its own move out, not one within its run
   assert.equal(cleared?.['to-state'], 'build', f.lines.join('\n'));
   assert.equal(cleared?.cause, 'fix-landed', f.lines.join('\n'));
+});
+
+// ASS-343 AC1/AC2: a fix that changed an earlier step than the one the ticket blocked at — its
+// resume-step (ticket:fix-resume-step) names plan, upstream of local-testing — resumes the ticket
+// there, through control's own tick: Blocked → plan, its prompt dispatched afresh, then the steps
+// after it run again in order (build's script, local-testing's sub-engine from its first step), each
+// a new visit, none skipped as already run. AC3: one naming the blocked step resumes where it blocked.
+const turnsEnd = ctx => until(() => [...ctx.agents.values()].every(a => a.result));
+function blockedAtLocalTesting(resume) {
+  const f = fixture();
+  edit(join(f.dir, 'engines', 'example-development', 'state-engine.json'), e => Object.assign(e.steps.find(s => s.id === 'blocked'), {
+    'follow-return-to-state': true, 'exit-events': [{ condition: { 'is-done': true }, 'follow-return-to-state': true }],
+  }));
+  const was = (from, to) => ({ 'state-engine': 'example-development', 'from-state': from, 'to-state': to, timestamp: '2026-10-29T20:00:00Z', 'agent-dispatch-log': [], 'work-is-done': true });
+  edit(sprint(f), s => {
+    s.features[0].variations[0]['state-changes'] = [was('committed', 'plan'), was('plan', 'build'), was('build', 'local-testing'), was('local-testing', 'blocked')];
+    Object.assign(s.features[1], { 'ticket-system-status': 'Done', variations: [{ name: 'A', 'harness-status': hs('done'), 'state-changes': [{ 'from-state': 'merge-pull-request', 'to-state': 'done' }] }] });
+  });
+  // ticket:fix-resume-step's answer, as it would derive it from the fix's commits.
+  const script = f.ctx.script;
+  f.ctx.script = (argv, vm) => (argv.includes('ticket:fix-resume-step')
+    ? Promise.resolve({ exitCode: 0, stdout: JSON.stringify({ 'resume-at': resume, 'resume-source': resume === 'local-testing' ? 'none' : 'commits', 'resume-why': `the fix changed ${resume}`, 'resume-ignored': [] }) })
+    : script(argv, vm));
+  return f;
+}
+const topTrail = f => f.variation()['state-changes'].filter(c => !c['sub-state-change']).map(c => `${c['from-state']}→${c['to-state']}`);
+
+test('ASS-343 AC1/AC2: a landed fix whose resume-at is plan, upstream of the blocked local-testing, resumes there and the steps after it run again in order', async () => {
+  const f = blockedAtLocalTesting('plan');
+  process.env.FAKE_OUTPUT = '{"is-approved":true}';
+  try {
+    for (let i = 0; i < 4 && state(f) === 'blocked'; i++) { await tick(f.ctx); f.now += 5 * 60e3 + 1e3; }
+    assert.equal(state(f), 'plan', f.lines.join('\n'));
+    const cleared = f.variation()['state-changes'].findLast(c => c['from-state'] === 'blocked' && !c['sub-state-change']);
+    assert.deepEqual([cleared['to-state'], cleared.cause], ['plan', 'fix-landed']);
+    assert.ok(f.lines.some(l => /^steps ABC-3 A blocked: the fix landed; resumes at plan: the fix changed plan$/.test(l)), f.lines.join('\n'));
+    assert.ok(f.lines.some(l => /^cli agent\.sh transient-state-engine:change-state \S+ await-fix resume-step /.test(l)), 'the run went through resume-step');
+    // plan's prompt dispatched afresh; its turn ends approved, and build's script and local-testing follow.
+    for (let i = 0; i < 6 && !f.variation()['harness-status']['sub-status']; i++) { assert.ok(await turnsEnd(f.ctx)); await tick(f.ctx); }
+    assert.deepEqual(topTrail(f).slice(3), ['local-testing→blocked', 'blocked→plan', 'plan→build', 'build→local-testing'], f.lines.join('\n'));
+    const plan = f.variation()['state-changes'].findLast(c => c['to-state'] === 'plan' && !c['sub-state-change']);
+    assert.equal(plan['agent-dispatch-log'].length, 1, 'a new plan agent, its plan written afresh');
+    assert.ok(f.lines.some(l => /^script \.\/agent\.sh ticket:set-paused p ABC-3 A false$/.test(l)), 'build\'s script ran again, not skipped as already run');
+    assert.deepEqual(f.variation()['harness-status']['sub-status'], { state: 'test', 'state-engine': 'test' }, 'local-testing\'s sub-engine from its first step');
+  } finally {
+    delete process.env.FAKE_OUTPUT;
+    f.ctx.stopAgents();
+  }
+});
+
+test('ASS-343 AC3: a landed fix whose resume-at is the blocked step itself resumes there, no rewind', async () => {
+  const f = blockedAtLocalTesting('local-testing');
+  for (let i = 0; i < 4 && state(f) === 'blocked'; i++) { await tick(f.ctx); f.now += 5 * 60e3 + 1e3; }
+  assert.equal(state(f), 'local-testing', f.lines.join('\n'));
+  assert.deepEqual(topTrail(f).slice(3), ['local-testing→blocked', 'blocked→local-testing'], f.lines.join('\n'));
+  assert.ok(f.lines.some(l => /^steps ABC-3 A blocked: the fix landed; resumes at local-testing: /.test(l)), f.lines.join('\n'));
 });
