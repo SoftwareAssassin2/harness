@@ -646,17 +646,17 @@ test('ASS-335 AC1: MR 2 depending on MR 1 in another repository, MR 1 not Merged
   view(f, 'app', 9, {});
   const waiting = await awaiting(f);
   assert.equal(waiting.code, 2, waiting.err);
-  assert.deepEqual(waiting.out, { waiting: [{ id: 2, repository: APP, 'depends-on': { id: 1, repository: LIB, status: 'Open', key: '!7', url: `${LIB}/-/merge_requests/7` } }] });
+  assert.deepEqual(waiting.out, { waiting: [{ id: 2, repository: APP, 'depends-on': { id: 1, repository: LIB, status: 'Open', key: '!7', url: `${LIB}/-/merge_requests/7` }, needs: ['draft'] }] });
   assert.ok(f.forge.log('glab').includes('api projects/g%2Flib/merge_requests/7 --hostname gitlab.com'), f.forge.log('glab').join('\n'));
   // Recorded Open, but merged on the forge since: no wait.
   view(f, 'lib', 7, { state: 'merged' });
   assert.equal((await awaiting(f)).code, 0);
-  // Not yet created counts as not merged too.
+  // Not yet created counts as not merged too — and, since ASS-359, is not waited on: exit 3, back to Generate Solution.
   const g = await planned([{ id: 1, repository: LIB }, { id: 2, repository: APP, 'depends-on': [1] }]);
   g.record({ 2: { status: 'Open', key: '!9', base: 'master' } });
   view(g, 'app', 9, {});
   const unmade = await awaiting(g);
-  assert.deepEqual([unmade.code, unmade.out.waiting[0]['depends-on'].status], [2, 'Not Created']);
+  assert.deepEqual([unmade.code, unmade.out.waiting[0]['depends-on'].status], [3, 'Not Created']);
 });
 
 test('ASS-335 AC2: once MR 1 is Merged the dependent flow goes on — merge-request:await-dependencies exits 0, MR 1 recorded Merged; nothing to wait for (a same-repository dependency, which is stacked, one Closed, or none) exits 0 asking no forge', async () => {
@@ -680,6 +680,110 @@ test('ASS-335 AC2: once MR 1 is Merged the dependent flow goes on — merge-requ
     assert.deepEqual(await awaiting(g), { code: 0, out: { waiting: [] } }, JSON.stringify(entries));
     assert.deepEqual(g.forge.log('glab'), [], JSON.stringify(entries));
   }
+});
+
+// ASS-359: merge-request:await-dependencies says why each dependency it waits
+// on is not merging (needs), tells the operator through the variation's
+// ai-feedback only when that changes, and sends a planned merge request never
+// created back to Generate Solution (exit 3) rather than waiting on it.
+// The engine side: test/workflow/grouped-development.test.js and
+// test/control/tick-await-dependencies.test.js.
+const variationOf = f => JSON.parse(readFileSync(f.file, 'utf8')).features[0].variations[0];
+const LIB_7 = `${LIB}/-/merge_requests/7`;
+// MR 2 (app) depending on MR 1 (lib !7), both Open; lib !7 as `v` says, its approvals_left `left` (null: no approvals route).
+async function dependedOn(v, left = 0) {
+  const f = await planned([{ id: 1, repository: LIB }, { id: 2, repository: APP, 'depends-on': [1] }]);
+  f.record({ 1: { status: 'Open', key: '!7', url: LIB_7, base: 'master' }, 2: { status: 'Open', key: '!9', url: `${APP}/-/merge_requests/9`, base: 'master' } });
+  view(f, 'lib', 7, { web_url: LIB_7, ...v });
+  view(f, 'app', 9, {});
+  if (left != null) f.forge.route('glab', /^api projects\/g%2Flib\/merge_requests\/7\/approvals --hostname gitlab.com$/, { out: { approvals_left: left } });
+  return f;
+}
+
+test('ASS-359 AC1: each waiting dependency gets needs from its forge, in order — draft, build-failed, open-threads, needs-rebase, needs-approval — on GitLab and GitHub; one only waiting to merge has [] and the other fields are as before', async () => {
+  const red = { draft: true, head_pipeline: { id: 55, status: 'failed' }, blocking_discussions_resolved: false, detailed_merge_status: 'need_rebase' };
+  const f = await dependedOn(red, 2);
+  f.forge.route('glab', /^api projects\/g%2Flib\/pipelines\/55\/jobs\?scope=failed --hostname gitlab.com$/, { out: [{ name: 'lint' }, { name: 'unit' }] });
+  const all = await awaiting(f);
+  assert.equal(all.code, 2, all.err);
+  assert.deepEqual(all.out, { waiting: [{ id: 2, repository: APP, 'depends-on': { id: 1, repository: LIB, status: 'Open', key: '!7', url: LIB_7 }, needs: ['draft', 'build-failed', 'open-threads', 'needs-rebase', 'needs-approval'] }] });
+  // A canceled pipeline is build-failed too; conflicts need a rebase.
+  const c = await dependedOn({ draft: false, head_pipeline: { id: 56, status: 'canceled' }, has_conflicts: true });
+  c.forge.route('glab', /pipelines\/56\/jobs/, { out: [] });
+  assert.deepEqual((await awaiting(c)).out.waiting[0].needs, ['build-failed', 'needs-rebase']);
+  // Only waiting to merge (out of draft, green, set to auto-merge, approved): needs [], polled on silently.
+  const ready = await dependedOn({ draft: false, merge_when_pipeline_succeeds: true });
+  const quiet = await awaiting(ready);
+  assert.deepEqual([quiet.code, quiet.out.waiting[0].needs, quiet.err], [2, [], '']);
+  // A GitLab that will not say its approvals (no route: the call fails) needs none from it.
+  const unsaid = await dependedOn({ draft: false }, null);
+  assert.deepEqual((await awaiting(unsaid)).out.waiting[0].needs, []);
+  // GitHub: a draft, a failed check, changes requested, behind its base, a review still required.
+  const g = await planned([{ id: 1, repository: HUB }, { id: 2, repository: APP, 'depends-on': [1] }]);
+  g.record({ 1: { status: 'Open', key: '#12', url: 'https://github.com/o/h/pull/12', base: 'main' }, 2: { status: 'Open', key: '!9', base: 'master' } });
+  view(g, 'app', 9, {});
+  prView(g, 12, { reviewDecision: 'CHANGES_REQUESTED', mergeStateStatus: 'BEHIND', statusCheckRollup: [{ name: 'lint', conclusion: 'FAILURE', detailsUrl: 'https://github.com/o/h/actions/runs/5/job/1' }] });
+  assert.deepEqual((await awaiting(g)).out.waiting[0].needs, ['draft', 'build-failed', 'open-threads', 'needs-rebase']);
+  prView(g, 12, { isDraft: false, reviewDecision: 'REVIEW_REQUIRED' });
+  const review = await awaiting(g);
+  assert.deepEqual(review.out.waiting[0].needs, ['needs-approval']);
+  assert.match(variationOf(g)['ai-feedback-long'], /^o\/h #12 https:\/\/github.com\/o\/h\/pull\/12: it needs approval\./);
+});
+
+test('ASS-359 AC2: the operator is told what each dependency needs — repository, key, url, in plain words — once per change: not rewritten while the needs stay, rewritten when they change, cleared once nothing needs action; the log (stderr) says the same once', async () => {
+  const f = await dependedOn({ draft: true, head_pipeline: { id: 55, status: 'failed' } }, 1);
+  f.forge.route('glab', /pipelines\/55\/jobs\?scope=failed/, { out: [{ name: 'check-collisions' }] });
+  const first = await awaiting(f);
+  assert.equal(first.code, 2, first.err);
+  const told = variationOf(f);
+  assert.equal(told['ai-feedback-short'], 'Waiting on g/lib !7: is a draft, its pipeline failed (check-collisions), it needs 1 approval');
+  assert.equal(told['ai-feedback-long'], `g/lib !7 ${LIB_7}: is a draft; its pipeline failed (check-collisions); it needs 1 approval. MR 2 depends on it. The tests run once it merges: act on it on the forge, and this step goes on by itself.`);
+  assert.deepEqual(told['awaited-dependency-needs'].needs, [{ id: 1, key: '!7', needs: ['draft', 'build-failed', 'needs-approval'] }]);
+  assert.match(first.err, /merge-request:await-dependencies: ABC-5 A: g\/lib !7 .*: is a draft; its pipeline failed \(check-collisions\); it needs 1 approval\./);
+  // Polled again, the same needs: nothing written, nothing said.
+  const again = await awaiting(f);
+  assert.deepEqual([again.code, again.err], [2, '']);
+  assert.deepEqual(variationOf(f), told);
+  // Out of draft: the needs changed, so the feedback is rewritten and said once.
+  view(f, 'lib', 7, { web_url: LIB_7, draft: false, head_pipeline: { id: 55, status: 'failed' } });
+  const changed = await awaiting(f);
+  assert.equal(variationOf(f)['ai-feedback-short'], 'Waiting on g/lib !7: its pipeline failed (check-collisions), it needs 1 approval');
+  assert.match(changed.err, /its pipeline failed \(check-collisions\); it needs 1 approval\./);
+  // Green and approved, only waiting to merge: cleared, said once; then silent.
+  view(f, 'lib', 7, { web_url: LIB_7, draft: false, merge_when_pipeline_succeeds: true });
+  f.forge.route('glab', /merge_requests\/7\/approvals/, { out: { approvals_left: 0 } });
+  const cleared = await awaiting(f);
+  assert.equal(cleared.code, 2);
+  assert.match(cleared.err, /no dependency in another repository needs action now/);
+  assert.deepEqual([variationOf(f)['ai-feedback-short'], variationOf(f)['ai-feedback-long'], variationOf(f)['awaited-dependency-needs']], [null, null, undefined]);
+  assert.equal((await awaiting(f)).err, '');
+  // Feedback another step wrote since is not cleared: only this step's own.
+  view(f, 'lib', 7, { web_url: LIB_7, draft: true });
+  await awaiting(f);
+  await f.agent('ticket:set-ai-feedback', 'p', 'ABC-5', 'A', 'Something else', 'Something else entirely');
+  view(f, 'lib', 7, { state: 'merged' });
+  assert.equal((await awaiting(f)).code, 0);
+  assert.deepEqual([variationOf(f)['ai-feedback-short'], variationOf(f)['awaited-dependency-needs']], ['Something else', undefined]);
+});
+
+test('ASS-359 AC3: a dependency of the ticket\'s own never created is not waited on — exit 3, needs not-created, the operator told which and the execution plan noted for Generate Solution', async () => {
+  const f = await planned([{ id: 1, repository: LIB }, { id: 2, repository: APP, 'depends-on': [1] }]);
+  f.record({ 2: { status: 'Open', key: '!9', base: 'master' } });
+  view(f, 'app', 9, {});
+  const unmade = await awaiting(f);
+  assert.equal(unmade.code, 3, unmade.err);
+  assert.deepEqual(unmade.out.waiting, [{ id: 2, repository: APP, 'depends-on': { id: 1, repository: LIB, status: 'Not Created', key: null, url: null }, needs: ['not-created'] }]);
+  assert.equal(variationOf(f)['ai-feedback-short'], 'Never created: MR 1 (g/lib); back to Generate Solution');
+  assert.match(variationOf(f)['ai-feedback-long'], /^MR 1 \(g\/lib\): was never created\. MR 2 depends on it\. A planned merge request Generate Solution never created is not waited on/);
+  assert.ok(f.notes().some(l => /MR 1 never created, though MR 2 in another repository depends on it: back to Generate Solution to build it and record it/.test(l)), f.notes().join('\n'));
+  assert.ok(!f.forge.log('glab').some(l => /approvals|jobs/.test(l)), 'nothing asked of a forge for one not created');
+});
+
+test('ASS-359 AC4: an error in the command exits 1, never a code the step reads as waiting (2) or never created (3)', async () => {
+  const f = await dependedOn({});
+  view(f, 'lib', 7, {}, { exit: 1 });
+  const failed = await awaiting(f);
+  assert.equal(failed.code, 1, failed.err);
 });
 
 // ASS-335 AC3: merge-request:create titles a merge request in the project's
