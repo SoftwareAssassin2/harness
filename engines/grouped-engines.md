@@ -397,7 +397,25 @@ re-run resumes. A project Release's Take out of Draft Mode readies every Open on
 Team Code Review's `merge-request:check` reports over them all (auto-merge
 and merged only when every one is), and Ensure Auto-Merge sets auto-merge in
 depends-on order, a dependent only once its dependencies have merged (until
-then Team Code Review runs it again), with the same stop and resume. Once
+then Team Code Review runs it again), with the same stop and resume.
+`merge-request:check` holds back a failed pipeline that only reflects a
+dependency (ASS-346), so a group across several repositories still reaches
+Ensure Auto-Merge: while any of a merge request's depends-on, in its
+repository or another, is neither Merged nor Closed (the same test as
+`merge-request:await-dependencies`), its failed pipeline is not
+`build-failed`, though its `open-threads` and `needs-rebase` still are. Once
+all have merged, a failed pipeline that started before the latest of them
+merged (the forge's merged-at against the pipeline's created-at; on GitHub,
+the latest start of a failed check) is started again — on GitLab a new merge
+request pipeline (`POST …/merge_requests/<iid>/pipelines`), or, when the
+project refuses one, its failed jobs retried (`POST …/pipelines/<id>/retry`);
+on GitHub each failed workflow run re-run (`gh run rerun <run> --failed`) —
+and is not `build-failed` while it runs. That happens once per dependency
+merge (its time recorded on the row as `pipeline-rerun`): a pipeline that
+started after the merge, or one re-run for it already, that fails is
+`build-failed`, as is one that cannot be started again. Each one held back is
+listed in the check's output as `"build-pending": [{ id, key, why:
+"dependency-unmerged" | "re-run" }]`, present only when there is one. Once
 every one not Closed is Merged, Team Code Review ends Release (ASS-224) and
 QA sets the ticket system to In Testing.
 

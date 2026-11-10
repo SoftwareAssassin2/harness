@@ -15,7 +15,8 @@ set -euo pipefail
 #
 # So: each merge request not Closed or Merged whose depends-on names one in
 # another repository that is neither Merged nor Closed (Closed: control's
-# "nothing to wait for", as for a base) is waiting. With none recorded, it
+# "nothing to wait for", as for a base; MR_DEPS's unmerged_deps, which
+# merge-request:check shares) is waiting. With none recorded, it
 # passes at once, asking no forge (most tickets: no merge request depends on
 # another repository's). Otherwise every one is read from its forge first
 # (refresh_merge_requests: statuses recorded, bases retargeted) and the
@@ -33,12 +34,11 @@ source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../merge-requests.bash"
 [[ $# -eq 3 ]] || { echo "usage: merge-request:await-dependencies <project> <ticket-key> <variation>" >&2; exit 1; }
 project="$1" key="$(upper "$2")" variation="$3"
 
-WAITING='def done: .status | IN("Merged", "Closed");
+WAITING="$MR_DEPS"'
   . as $all
   | { waiting: [ $all[] | select(.id != null and (done | not)) as $m
-      | $m["depends-on"][]? as $d
-      | first($all[] | select(.id == $d)) // empty
-      | select(.repository != $m.repository and (done | not))
+      | $m | unmerged_deps($all)[]
+      | select(.repository != $m.repository)
       | { id: $m.id, repository: $m.repository, "depends-on": { id, repository, status, key, url } } ] }'
 
 MRS="$(variation_field '.["merge-request"] // []' merge-request:await-dependencies "$project" "$key" "$variation")"

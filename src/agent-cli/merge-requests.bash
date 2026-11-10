@@ -11,6 +11,9 @@
 #   mr_thread <command> <index> <thread-id>     # fails unless <thread-id> can name a review thread of MRS[<index>] (ASS-239)
 #   mr_view / mr_default_branch / mr_find_open / mr_changes / mr_open / mr_retarget / mr_ready / mr_auto_merge
 #       each <command> <index> …: one forge call for MRS[<index>]
+#   mr_rerun <command> <index>                  # its failed pipeline started again (ASS-346)
+#   MR_DEPS                                     # (jq defs) done; unmerged_deps($all): the rows it depends on, neither Merged nor Closed
+#   MR_TIME                                     # (jq def) epoch: a forge's ISO 8601 time as seconds
 #   mr_close <command> <url>                    # the merge request at <url> closed on its forge, unmerged (ASS-104)
 #
 # Each merge request is on its own repository's forge: a planned one (ASS-80)
@@ -30,6 +33,21 @@ source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/code.bash"
 MR_ROW='def same_mr($m): if $m.id != null then .id == $m.id else .id == null and .key == $m.key and .repository == $m.repository end;
   def settle($s): if (.status | IN("Merged", "Closed")) and ($s | IN("Merged", "Closed") | not) then .status else $s end;
   def patch($m; $fields): map(if same_mr($m) then . + $fields + (if $fields | has("status") then { status: settle($fields.status) } else {} end) else . end);'
+
+# MR_DEPS — done: this row is Merged or Closed (Closed: "nothing to wait
+# for", as for a base); unmerged_deps($all): the rows of $all this one's
+# depends-on names that are not done, in any repository (one named but not
+# in $all is nothing to wait for). merge-request:await-dependencies keeps
+# those in another repository (ASS-335); merge-request:check holds back a
+# failed pipeline while there are any (ASS-346).
+MR_DEPS='def done: .status | IN("Merged", "Closed");
+  def unmerged_deps($all): . as $m | [ $m["depends-on"][]? as $d | first($all[] | select(.id == $d)) // empty | select(done | not) ];'
+
+# MR_TIME — epoch: an ISO 8601 time as either forge gives it (fractional
+# seconds or none; Z or an offset) as seconds since 1970, so GitLab's and
+# GitHub's times compare.
+MR_TIME='def epoch: capture("^(?<t>[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2})(\\.[0-9]+)?(?<z>.*)$") as $c
+  | ($c.t + "Z" | fromdateiso8601) - ($c.z | if test("^[+-][0-9]{2}:?[0-9]{2}$") then (.[1:3] | tonumber) * 3600 + (.[-2:] | tonumber) * 60 | if $c.z[0:1] == "-" then -. else . end else 0 end);'
 
 # refresh_merge_requests reads every created merge request's live state from
 # its forge and records it by id, deterministically: status Open, Merged or
@@ -160,19 +178,26 @@ GITLAB_VIEW='{ state: ({ opened: "Open", merged: "Merged" }[.state] // "Closed")
   reasons: [ (if (.blocking_discussions_resolved == false) or .detailed_merge_status == "discussions_not_resolved" then "open-threads" else empty end),
              (if ((.head_pipeline // .pipeline // {}).status // "") | IN("failed", "canceled") then "build-failed" else empty end),
              (if .has_conflicts == true or (.detailed_merge_status | IN("need_rebase", "conflict")) then "needs-rebase" else empty end) ],
-  "auto-merge": (.merge_when_pipeline_succeeds == true) }'
-GITHUB_VIEW='{ state: ({ OPEN: "Open", MERGED: "Merged" }[.state] // "Closed"), base: .baseRefName, title, draft: (.isDraft == true),
+  "auto-merge": (.merge_when_pipeline_succeeds == true), "merged-at": .merged_at,
+  pipeline: ((.head_pipeline // .pipeline) as $p | if $p then { id: $p.id, "created-at": $p.created_at } else null end) }'
+GITHUB_VIEW='def failed: (.conclusion // .state // "") | IN("FAILURE", "ERROR", "CANCELLED", "TIMED_OUT");
+  { state: ({ OPEN: "Open", MERGED: "Merged" }[.state] // "Closed"), base: .baseRefName, title, draft: (.isDraft == true),
   reasons: [ (if .reviewDecision == "CHANGES_REQUESTED" then "open-threads" else empty end),
-             (if any(.statusCheckRollup // [] | .[]; (.conclusion // .state // "") | IN("FAILURE", "ERROR", "CANCELLED", "TIMED_OUT")) then "build-failed" else empty end),
+             (if any(.statusCheckRollup // [] | .[]; failed) then "build-failed" else empty end),
              (if .mergeable == "CONFLICTING" or (.mergeStateStatus | IN("BEHIND", "DIRTY")) then "needs-rebase" else empty end) ],
-  "auto-merge": (.autoMergeRequest != null) }'
+  "auto-merge": (.autoMergeRequest != null), "merged-at": .mergedAt,
+  pipeline: ([.statusCheckRollup // [] | .[] | select(failed)] | if . == [] then null
+    else { "created-at": (map(.startedAt // empty) | max), runs: ([.[] | .detailsUrl // "" | capture("/actions/runs/(?<r>[0-9]+)").r | tonumber] | unique) } end) }'
 
-# mr_view — { state: Open|Merged|Closed, base, title, draft, reasons, auto-merge }, reasons as merge-request:check names them.
+# mr_view — { state: Open|Merged|Closed, base, title, draft, reasons, auto-merge, merged-at, pipeline }, reasons as
+# merge-request:check names them; merged-at the forge's time it merged (null until then); pipeline its head pipeline
+# { id, created-at } on GitLab, on GitHub its failed checks { created-at: the latest started, runs: their workflow
+# run ids } (null when none failed).
 mr_view() {
   local command="$1" url iid planned out
   IFS=$'\t' read -r url iid planned < <(mr_at "$2")
   if on_github "$url"; then
-    out="$(gh_run "$command" pr view "$iid" --repo "$(path_of "$url")" --json state,mergeable,mergeStateStatus,reviewDecision,autoMergeRequest,statusCheckRollup,baseRefName,title,isDraft)" || return 1
+    out="$(gh_run "$command" pr view "$iid" --repo "$(path_of "$url")" --json state,mergeable,mergeStateStatus,reviewDecision,autoMergeRequest,statusCheckRollup,baseRefName,title,isDraft,mergedAt)" || return 1
     jq -ce "$GITHUB_VIEW" <<< "$out" || { echo "$command: no view of #$iid from GitHub" >&2; return 1; }
   else
     if [[ "$planned" == true ]]; then out="$(lab "$command" "$url" "/merge_requests/$iid")" || return 1
@@ -249,6 +274,31 @@ mr_auto_merge() {
   if on_github "$url"; then gh_run "$command" pr merge "$iid" --repo "$(path_of "$url")" --auto --merge >/dev/null
   elif [[ "$planned" != true ]]; then glab_run "$command" mr merge "$iid" --repo "$(path_of "$url")" --auto-merge --yes >/dev/null
   else lab "$command" "$url" "/merge_requests/$iid/merge" -X PUT -f merge_when_pipeline_succeeds=true >/dev/null; fi
+}
+
+# mr_rerun <command> <index> <view> — its failed pipeline started again, as
+# <view> (mr_view) names it (ASS-346). GitLab: a new merge request pipeline
+# on its branch as it now is (POST …/merge_requests/<iid>/pipelines, as
+# merge-request:update starts one); a project with no merge request
+# pipelines refuses that, so its head pipeline's failed jobs are retried
+# (POST …/pipelines/<id>/retry). GitHub: each failed check's workflow run
+# re-run, its failed jobs only (gh run rerun <run> --failed). Fails when
+# nothing could be started (on GitHub, a failed check that is no workflow
+# run, which cannot be re-run from here).
+mr_rerun() {
+  local command="$1" url iid planned pipeline run
+  IFS=$'\t' read -r url iid planned < <(mr_at "$2")
+  if on_github "$url"; then
+    [[ "$(jq '.pipeline.runs // [] | length' <<< "$3")" -gt 0 ]] || return 1
+    for run in $(jq -r '.pipeline.runs[]' <<< "$3"); do
+      gh_run "$command" run rerun "$run" --failed --repo "$(path_of "$url")" >/dev/null || return 1
+    done
+  else
+    lab "$command" "$url" "/merge_requests/$iid/pipelines" -X POST >/dev/null 2>&1 && return 0
+    pipeline="$(jq -r '.pipeline.id // empty' <<< "$3")"
+    [[ -n "$pipeline" ]] || return 1
+    lab "$command" "$url" "/pipelines/$pipeline/retry" -X POST >/dev/null
+  fi
 }
 
 # mr_close <command> <url> — gh pr close <url> on GitHub; on GitLab its API's

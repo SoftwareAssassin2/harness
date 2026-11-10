@@ -807,7 +807,7 @@ test('on a GitHub origin, merge-request:check reads the pull request with gh —
   const check = async () => JSON.parse((await f.agent('merge-request:check', 'p', 'ABC-3', 'A')).stdout);
   f.view({});
   assert.deepEqual(await check(), { 'needs-attention': false, reasons: [], 'auto-merge': false, merged: false });
-  assert.equal(f.ghLog().at(-1), 'pr view 7 --repo owner/repo --json state,mergeable,mergeStateStatus,reviewDecision,autoMergeRequest,statusCheckRollup,baseRefName,title,isDraft');
+  assert.equal(f.ghLog().at(-1), 'pr view 7 --repo owner/repo --json state,mergeable,mergeStateStatus,reviewDecision,autoMergeRequest,statusCheckRollup,baseRefName,title,isDraft,mergedAt');
   f.view({ reviewDecision: 'CHANGES_REQUESTED', statusCheckRollup: [{ conclusion: 'FAILURE', status: 'COMPLETED' }], mergeable: 'CONFLICTING', autoMergeRequest: { enabledAt: 'x' } });
   assert.deepEqual(await check(), { 'needs-attention': true, reasons: ['open-threads', 'build-failed', 'needs-rebase'], 'auto-merge': true, merged: false });
   f.view({ mergeStateStatus: 'BEHIND' });

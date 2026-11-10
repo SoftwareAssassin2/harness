@@ -722,3 +722,116 @@ test('ASS-335 AC3: with "merge-request-title": "conventional", merge-request:cre
   assert.match(created, / --title fix: API times out \(ABC-5\) --body /);
   assert.match('fix: API times out (ABC-5)', CONVENTIONAL);
 });
+
+// ASS-346: merge-request:check holds back a failed pipeline that only
+// reflects a dependency — while any depends-on is neither Merged nor Closed
+// (in any repository), and, once all have merged, while a pipeline that
+// started before the latest merge runs again. Times are the forge's: GitLab's
+// merged_at and head_pipeline.created_at, GitHub's mergedAt and each failed
+// check's startedAt.
+const BEFORE = '2026-11-10T10:00:00.000Z', MERGED_AT = '2026-11-10T11:00:00.000Z', AFTER = '2026-11-10T11:05:00.000Z';
+const failedAt = (created_at, id = 50) => ({ head_pipeline: { id, status: 'failed', created_at } });
+const checked = async f => JSON.parse((await f.agent('merge-request:check', 'p', 'ABC-5', 'A')).stdout);
+const reruns = f => [...f.forge.log('glab').filter(l => /\/pipelines(\/\d+\/retry)? --hostname gitlab.com -X POST$/.test(l)), ...f.forge.log('gh').filter(l => /^run rerun /.test(l))];
+
+// lib's !7 (MR 1) and app's !9 (MR 2, depending on MR 1).
+async function dependent(mr1 = {}, mr2 = {}) {
+  const f = await planned([{ id: 1, repository: LIB }, { id: 2, repository: APP, 'depends-on': [1] }]);
+  f.record({ 1: { status: 'Open', key: '!7', base: 'master' }, 2: { status: 'Open', key: '!9', base: 'master' } });
+  view(f, 'lib', 7, mr1);
+  view(f, 'app', 9, mr2);
+  return f;
+}
+
+test('ASS-346 AC1/AC3: an Open MR whose pipeline failed while a dependency (another repository\'s, or its own stacked one) is neither Merged nor Closed is not build-failed — needs-attention false with nothing else, its open threads and needs-rebase still reported — and nothing is re-run', async () => {
+  const f = await dependent({}, failedAt(BEFORE));
+  assert.deepEqual(await checked(f), { 'needs-attention': false, reasons: [], 'auto-merge': false, merged: false, 'build-pending': [{ id: 2, key: '!9', why: 'dependency-unmerged' }] });
+  // Threads and a rebase on the waiting one are still reasons; only the pipeline failure is held back.
+  view(f, 'app', 9, { ...failedAt(BEFORE), blocking_discussions_resolved: false, has_conflicts: true });
+  assert.deepEqual(await checked(f), { 'needs-attention': true, reasons: ['open-threads', 'needs-rebase'], 'auto-merge': false, merged: false, 'build-pending': [{ id: 2, key: '!9', why: 'dependency-unmerged' }] });
+  // Not yet created counts as unmerged too.
+  const n = await planned([{ id: 1, repository: LIB }, { id: 2, repository: APP, 'depends-on': [1] }]);
+  n.record({ 2: { status: 'Open', key: '!9', base: 'master' } });
+  view(n, 'app', 9, failedAt(BEFORE));
+  assert.equal((await checked(n))['needs-attention'], false);
+  // The same repository: !8 stacked on !7's branch.
+  const g = await planned([{ id: 1, repository: APP }, { id: 2, repository: APP, 'depends-on': [1] }]);
+  g.record({ 1: { status: 'Open', key: '!7', base: 'master' }, 2: { status: 'Open', key: '!8', base: 'change/ABC-5-1' } });
+  view(g, 'app', 7, {});
+  view(g, 'app', 8, { target_branch: 'change/ABC-5-1', ...failedAt(BEFORE) });
+  assert.deepEqual(await checked(g), { 'needs-attention': false, reasons: [], 'auto-merge': false, merged: false, 'build-pending': [{ id: 2, key: '!8', why: 'dependency-unmerged' }] });
+  // The dependency's own failure is still build-failed: it waits on nothing.
+  view(f, 'lib', 7, failedAt(BEFORE));
+  assert.deepEqual((await checked(f)).reasons, ['open-threads', 'build-failed', 'needs-rebase']);
+  assert.deepEqual([...reruns(f), ...reruns(g), ...reruns(n)], []);
+});
+
+test('ASS-346 AC2: a failed pipeline with no depends-on, a Closed dependency, or one that started after its dependency merged is build-failed, and nothing is re-run', async () => {
+  const f = await planned([{ id: 1, repository: APP }]);
+  f.record({ 1: { status: 'Open', key: '!7', base: 'master' } });
+  view(f, 'app', 7, failedAt(BEFORE));
+  assert.deepEqual(await checked(f), { 'needs-attention': true, reasons: ['build-failed'], 'auto-merge': false, merged: false });
+  const closed = await dependent({ state: 'closed' }, failedAt(BEFORE));
+  assert.deepEqual((await checked(closed)).reasons, ['build-failed']);
+  const after = await dependent({ state: 'merged', merged_at: MERGED_AT }, failedAt(AFTER));
+  assert.deepEqual(await checked(after), { 'needs-attention': true, reasons: ['build-failed'], 'auto-merge': false, merged: false });
+  assert.deepEqual([...reruns(f), ...reruns(closed), ...reruns(after)], []);
+});
+
+test('ASS-346 AC4: on GitLab, once the dependency merged, a pipeline that failed before the merge is started again (a new merge request pipeline) and pending, not build-failed; once per merge — failing again after it is build-failed, with no second re-run', async () => {
+  const f = await dependent({ state: 'merged', merged_at: MERGED_AT }, failedAt(BEFORE));
+  const POST = 'api projects/g%2Fapp/merge_requests/9/pipelines --hostname gitlab.com -X POST';
+  f.forge.route('glab', /^api projects\/g%2Fapp\/merge_requests\/9\/pipelines --hostname gitlab.com -X POST$/, { out: { id: 51, status: 'created' } });
+  assert.deepEqual(await checked(f), { 'needs-attention': false, reasons: [], 'auto-merge': false, merged: false, 'build-pending': [{ id: 2, key: '!9', why: 're-run' }] });
+  assert.deepEqual(reruns(f), [POST]);
+  assert.equal(f.mrs()[1]['pipeline-rerun'], Date.parse(MERGED_AT) / 1000);
+  // Running: nothing to report, nothing started.
+  view(f, 'app', 9, { head_pipeline: { id: 51, status: 'running', created_at: AFTER } });
+  assert.deepEqual(await checked(f), { 'needs-attention': false, reasons: [], 'auto-merge': false, merged: false });
+  // Failed again: a real failure.
+  view(f, 'app', 9, failedAt(AFTER, 51));
+  assert.deepEqual(await checked(f), { 'needs-attention': true, reasons: ['build-failed'], 'auto-merge': false, merged: false });
+  // The forge still showing the old pipeline: re-run already for this merge, so build-failed.
+  view(f, 'app', 9, failedAt(BEFORE));
+  assert.deepEqual((await checked(f)).reasons, ['build-failed']);
+  assert.deepEqual(reruns(f), [POST]);
+  // A project with no merge request pipelines refuses a new one: the head pipeline's failed jobs are retried instead.
+  const g = await dependent({ state: 'merged', merged_at: MERGED_AT }, failedAt(BEFORE));
+  g.forge.route('glab', /merge_requests\/9\/pipelines --hostname gitlab.com -X POST$/, { out: { message: 'No pipeline created' }, exit: 1 });
+  g.forge.route('glab', /^api projects\/g%2Fapp\/pipelines\/50\/retry --hostname gitlab.com -X POST$/, { out: { id: 50, status: 'running' } });
+  assert.deepEqual((await checked(g))['build-pending'], [{ id: 2, key: '!9', why: 're-run' }]);
+  assert.deepEqual(reruns(g), [POST, 'api projects/g%2Fapp/pipelines/50/retry --hostname gitlab.com -X POST']);
+  // Neither could be started: build-failed, saying why, and nothing recorded.
+  const h = await dependent({ state: 'merged', merged_at: MERGED_AT }, failedAt(BEFORE));
+  h.forge.route('glab', /\/pipelines(\/50\/retry)? --hostname gitlab.com -X POST$/, { out: { message: 'Forbidden' }, exit: 1 });
+  const { stdout, stderr } = await h.agent('merge-request:check', 'p', 'ABC-5', 'A');
+  assert.deepEqual(JSON.parse(stdout), { 'needs-attention': true, reasons: ['build-failed'], 'auto-merge': false, merged: false });
+  assert.match(stderr, /could not start MR 2 \(!9\)'s failed pipeline again/);
+  assert.equal(h.mrs()[1]['pipeline-rerun'], undefined);
+});
+
+test('ASS-346 AC4: on GitHub, once the dependency merged, the failed workflow runs that started before the merge are re-run (gh run rerun --failed), once; a failed check that is no workflow run cannot be, and is build-failed', async () => {
+  const f = await planned([{ id: 1, repository: LIB }, { id: 2, repository: HUB, 'depends-on': [1] }]);
+  f.record({ 1: { status: 'Open', key: '!7', base: 'master' }, 2: { status: 'Open', key: '#12', base: 'main' } });
+  view(f, 'lib', 7, {});
+  const check = (conclusion, startedAt, run) => ({ __typename: 'CheckRun', name: `job-${run}`, status: 'COMPLETED', conclusion, startedAt, detailsUrl: `https://github.com/o/h/actions/runs/${run}/job/${run}1` });
+  prView(f, 12, { statusCheckRollup: [check('FAILURE', '2026-11-10T09:58:00Z', 77), check('FAILURE', '2026-11-10T10:00:00Z', 78), check('FAILURE', '2026-11-10T09:59:00Z', 77), check('SUCCESS', '2026-11-10T10:00:00Z', 79)] });
+  // MR 1 not merged: held back, as on GitLab.
+  assert.deepEqual((await checked(f))['build-pending'], [{ id: 2, key: '#12', why: 'dependency-unmerged' }]);
+  assert.ok(f.forge.log('gh').some(l => /^pr view 12 --repo o\/h --json .*,mergedAt$/.test(l)), f.forge.log('gh').join('\n'));
+  view(f, 'lib', 7, { state: 'merged', merged_at: MERGED_AT });
+  f.forge.route('gh', /^run rerun \d+ --failed --repo o\/h$/);
+  assert.deepEqual(await checked(f), { 'needs-attention': false, reasons: [], 'auto-merge': false, merged: false, 'build-pending': [{ id: 2, key: '#12', why: 're-run' }] });
+  assert.deepEqual(reruns(f), ['run rerun 77 --failed --repo o/h', 'run rerun 78 --failed --repo o/h']);
+  // Re-run, one fails again after the merge: build-failed, not re-run again.
+  prView(f, 12, { statusCheckRollup: [check('FAILURE', '2026-11-10T11:06:00Z', 80)] });
+  assert.deepEqual((await checked(f)).reasons, ['build-failed']);
+  assert.equal(reruns(f).length, 2);
+  // A failed status from another CI (no workflow run): it cannot be re-run here, so build-failed.
+  const g = await planned([{ id: 1, repository: LIB }, { id: 2, repository: HUB, 'depends-on': [1] }]);
+  g.record({ 1: { status: 'Open', key: '!7', base: 'master' }, 2: { status: 'Open', key: '#12', base: 'main' } });
+  view(g, 'lib', 7, { state: 'merged', merged_at: MERGED_AT });
+  prView(g, 12, { statusCheckRollup: [{ __typename: 'StatusContext', context: 'ci/external', state: 'ERROR', startedAt: '2026-11-10T10:00:00Z', targetUrl: 'https://ci.example.com/1' }] });
+  assert.deepEqual((await checked(g)).reasons, ['build-failed']);
+  assert.deepEqual(reruns(g), []);
+});
