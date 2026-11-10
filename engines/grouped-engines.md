@@ -69,6 +69,14 @@ by CI Checks below (ASS-321).
 Only a VM not running fails it: Blocked. Test's Rebuild enters Build at
 Generate Solution, past the first refresh; the second still runs.
 
+Generate Automated Tests (grouped/v2 Build, `generate-automated-tests-grouped`)
+records an entry only once its `run` command, not just its `list`, runs in
+the VM (ASS-337). A CI-only test — one whose `run` cannot execute in the VM:
+a missing toolchain, an outside credential, an image not on the mirror — is
+written on the branch for CI but left out of `automated-tests-<variation>.json`,
+so Automated Testing does not block on it. The flat `generate-automated-tests`
+prompt is unchanged.
+
 CI Checks (ASS-249; grouped Build only — v2-build and the flat engines have
 none — `ci-checks:verify`, in the VM, max-visits 3) runs, between Automated
 Testing and Code Review, the merge-request CI checks the project declares for

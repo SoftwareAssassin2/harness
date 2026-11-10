@@ -83,6 +83,24 @@ test('ASS-113: generate-automated-tests-grouped is told where it is, records com
   assert.match(flat, /from your worktree's root/, 'the flat engines\' prompt is unchanged');
 });
 
+// ASS-337: a test whose run cannot execute in the VM leaked into
+// automated-tests-<variation>.json because only `list` was checked, and
+// Automated Testing blocked on it.
+test('ASS-337 AC1, AC2, AC3: generate-automated-tests-grouped checks each entry\'s run in the VM, names the CI-only rule and its admission_test.go precedent; the flat engines\' prompt is unchanged', () => {
+  const grouped = readFileSync(join(ROOT, 'prompts', 'generate-automated-tests-grouped', 'prompt.txt'), 'utf8');
+  const rule = grouped.split(/(?<=\.) /).find(s => /ci-only/i.test(s));
+  assert.ok(rule, 'AC1: a sentence names the CI-only rule');
+  assert.match(rule, /`run` cannot execute in this VM/);
+  assert.match(rule, /missing toolchain, outside credential, image not on the mirror/);
+  assert.match(rule, /author it on the branch/);
+  assert.match(rule, /omit it from automated-tests-\{variation\}\.json/);
+  assert.match(grouped, /check its run command actually runs here in the VM, not only its list/, 'AC2');
+  assert.match(grouped, /drop the entry otherwise/, 'AC2');
+  assert.match(grouped, /Precedent: the admission_test\.go case/, 'AC3');
+  const flat = readFileSync(join(ROOT, 'prompts', 'generate-automated-tests', 'prompt.txt'), 'utf8');
+  assert.doesNotMatch(flat, /ci-only|admission_test/i, 'the flat engines\' prompt is unchanged');
+});
+
 // Automated Testing (ASS-113 pair 2) sends a new failure back to Generate
 // Solution; automated-tests:verify-success writes what ran and failed to the
 // ticket's folder, automated-test-results-<variation>.md — the file
