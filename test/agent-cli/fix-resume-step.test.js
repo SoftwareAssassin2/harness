@@ -156,3 +156,79 @@ test('ASS-343: always exits 0 — a ticket or variation it cannot find, or one w
   assert.equal((await f.resume('nope', 'ABC-3', 'A'))['resume-at'], null);
   assert.deepEqual(Object.values(await f.resume('p', 'abc-3', 'A')).slice(0, 2), ['release', 'none']);   // no fix ticket in the store, no commits: none
 });
+
+// ASS-347: a ticket blocked more than once keeps each Blocked run in its variation's blocks
+// ({ waits-on, status, landed, ended-at, came-from, run, timestamp }: steps.js append-output-to,
+// ticket:record-output). ABC-3 A went plan → build → release, blocked there, waited on ASS-339
+// and left Blocked at 09:30 for `resumed` (release unless given), went on to release, blocked
+// again at 10:00, waited on `middle` (left at 10:30), and blocked at release a third time,
+// now waiting on ASS-343. `blocks` overrides each block's fields by index.
+function blockedAgain(f, { resumed = 'release', middle = 'ASS-340', landed = [true, true, true] } = {}) {
+  const sprint = join(f.dir, 'projects', 'p', 'sprints', 'sprint-10', 'sprint.json');
+  const s = JSON.parse(readFileSync(sprint, 'utf8'));
+  const at = time => `2026-11-10T${time}:00Z`;
+  const rerun = resumed === 'plan' ? [change('blocked', 'plan', at('09:30')), change('plan', 'build', at('09:40')), change('build', 'release', at('09:50'))] : [change('blocked', 'release', at('09:30'))];
+  const block = (ticket, time, i) => ({ 'waits-on': { project: 'q', ticket }, status: 'Done', landed: landed[i], 'ended-at': 'done', 'came-from': 'release/take-out-of-draft-mode', run: `run-${i}`, timestamp: at(time) });
+  Object.assign(s.features[0].variations[0], {
+    'waits-on': { project: 'q', ticket: 'ASS-343' },
+    'state-changes': [change('committed', 'plan', at('08:00')), change('plan', 'build', at('08:30')), change('build', 'release', at('09:00')), change('release', 'blocked', at('09:10')),
+      ...rerun, change('release', 'blocked', at('10:00')), change('blocked', 'release', at('10:30')), change('release', 'blocked', at('11:00')),
+      change('blocked', 'blocked', WAIT_BEGAN, { 'state-engine': 'grouped-blocked', 'from-state': 'wait-on', 'to-state': 'await-fix' })],
+    blocks: [block('ASS-339', '09:30', 0), block(middle, '10:30', 1), block('ASS-343', '11:30', 2)].filter(b => b['waits-on'].ticket),
+  });
+  writeFileSync(sprint, JSON.stringify(s));
+}
+const PLAN_PROMPT = 'prompts/write-execution-plan-grouped/prompt.txt';
+const DETOUR = 'blocked is a blocked or detour state';
+
+test('ASS-347 AC1: an earlier landed fix\'s commits count too — its plan prompt change rewinds a ticket blocked at release to plan (commits), naming its file', async () => {
+  const f = blocked();
+  f.commit('ASS-339: the plan prompt', PLAN_PROMPT);
+  f.commit('ASS-343: the blocked engine', 'engines/grouped-blocked/state-engine.json');
+  blockedAgain(f, { middle: null });
+  const out = await f.resume();
+  assert.deepEqual([out['resume-at'], out['resume-source']], ['plan', 'commits']);
+  assert.equal(out['resume-why'], `ASS-339's commits change ${PLAN_PROMPT}, which sub-plan/write-execution-plan runs`);
+  // ASS-343's own commits lift to Blocked, a detour: ignored, tagged with its key.
+  assert.deepEqual(out['resume-ignored'], [{ step: 'blocked', source: 'commits', why: DETOUR, fix: 'ASS-343' }]);
+});
+
+test('ASS-347 AC2: a block whose fix did not land contributes nothing; an earlier fix\'s detour step is still ignored, tagged with its key', async () => {
+  const f = blocked();
+  f.commit('ASS-339: the plan prompt', PLAN_PROMPT);                                                  // its block says landed false
+  f.commit('ASS-340: the blocked engine', 'engines/grouped-blocked/state-engine.json');
+  f.commit('ASS-343: the verify command', 'src/agent-cli/automated-tests/verify-success.sh');
+  blockedAgain(f, { landed: [false, true, true] });
+  const out = await f.resume();
+  assert.deepEqual([out['resume-at'], out['resume-source']], ['build', 'commits']);
+  assert.match(out['resume-why'], /^ASS-343's commits change src\/agent-cli\/automated-tests\/verify-success\.sh/);
+  // Nothing from ASS-339, whose block did not land; ASS-340's engine change lifts to Blocked, a detour.
+  assert.deepEqual(out['resume-ignored'], [{ step: 'blocked', source: 'commits', why: DETOUR, fix: 'ASS-340' }]);
+});
+
+test('ASS-347: an earlier fix whose step ran again since its block ended no longer rewinds — resume-ignored says so', async () => {
+  const f = blocked();
+  f.commit('ASS-339: the plan prompt', PLAN_PROMPT);
+  f.commit('ASS-343: the blocked engine', 'engines/grouped-blocked/state-engine.json');
+  blockedAgain(f, { resumed: 'plan', middle: null });                                                 // resumed at plan after ASS-339 landed
+  const out = await f.resume();
+  assert.deepEqual([out['resume-at'], out['resume-source']], ['release', 'none']);
+  assert.deepEqual(out['resume-ignored'], [{ step: 'plan', source: 'commits', why: 'plan ran again since ASS-339\'s block ended (2026-11-10T09:30:00Z), so its output already has that fix', fix: 'ASS-339' },
+    { step: 'blocked', source: 'commits', why: DETOUR, fix: 'ASS-343' }]);
+});
+
+test('ASS-347 AC3: with one landed block — the fix waited on — the output is byte for byte as without blocks', async () => {
+  const f = blocked();
+  f.commit('Q-1: the verify command', 'src/agent-cli/automated-tests/verify-success.sh');
+  f.work('execution-plan-A.md', '2026-11-10T12:31:00Z');
+  const sprint = join(f.dir, 'projects', 'p', 'sprints', 'sprint-10', 'sprint.json');
+  const raw = async () => (await run(AGENT, ['ticket:fix-resume-step', 'p', 'ABC-3', 'A'], { env: { ...f.env, OFF_BOARD_DIR: join(f.dir, 'nowhere') } })).stdout;
+  const before = await raw();
+  const s = JSON.parse(readFileSync(sprint, 'utf8'));
+  s.features[0].variations[0].blocks = [{ 'waits-on': { project: 'q', ticket: 'Q-1' }, status: 'Done', landed: true, 'ended-at': 'done', run: 'run-0', timestamp: '2026-11-10T09:00:00Z' }];
+  writeFileSync(sprint, JSON.stringify(s));
+  assert.equal(await raw(), before);
+  s.features[0].variations[0].blocks.push({ 'waits-on': { project: 'q', ticket: 'Q-2' }, status: 'Done', landed: false, run: 'run-1', timestamp: '2026-11-10T09:30:00Z' });
+  writeFileSync(sprint, JSON.stringify(s));
+  assert.equal(await raw(), before, 'a block whose fix did not land changes nothing');
+});

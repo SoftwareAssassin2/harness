@@ -9,7 +9,9 @@
 // state-engine.json the project sees, engines/'s first, its own after),
 // fix (the key it waits on, or null), declared (the fix ticket's resume-at,
 // or null), changed (the files its "<KEY>:" commits changed, repository
-// paths), workFolder (data/projects/<project>/work/<ticket>) }.
+// paths), earlier (ASS-347: each earlier landed fix in the variation's
+// blocks, [{ fix, at (its block's timestamp), changed }], oldest first),
+// workFolder (data/projects/<project>/work/<ticket>) }.
 //
 // Prints { resume-at, resume-source, resume-why, resume-ignored } (ASS-343):
 // the top-level step the blocked variation resumes at once its fix has
@@ -20,6 +22,18 @@
 // blocked at (none). A step inside a group is lifted to the group's
 // top-level step. resume-ignored lists each step named but not taken, with
 // why. Never fails: a missing or unreadable input is no step found.
+//
+// ASS-347: the commits are those of the fix waited on and of each earlier
+// landed fix (a block of the variation's blocks with landed: true; one with
+// landed false contributes nothing) whose effect the ticket's artifacts
+// still predate. A step S an earlier fix maps to counts unless the variation
+// entered S at the top level (a change into S from another state) at or
+// after that block's timestamp — when the block ended and the ticket left
+// Blocked, its fix already landed — for then S ran again with the fix in
+// place and its output already carries it; such a step goes to
+// resume-ignored, saying so. A block with no timestamp always counts. With
+// earlier fixes in play each commits or declared entry of resume-ignored
+// carries its fix key (fix); with none the output is as before.
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -64,11 +78,16 @@ function waitBegan(variation) {
   return Number.isNaN(at) ? undefined : at;
 }
 
-export function fixResumeStep({ project, ticket, variation = {}, engine: name, engineFiles = [], fix = null, declared = null, changed = [], workFolder } = {}) {
+// enteredSince(variation, step, at) — whether the variation entered the top-level step at or after `at` (ms).
+const enteredSince = (variation, step, at) => levelChanges(variation).some(c => c['to-state'] === step && c['from-state'] !== step && Date.parse(c.timestamp ?? '') >= at);
+
+export function fixResumeStep({ project, ticket, variation = {}, engine: name, engineFiles = [], fix = null, declared = null, changed = [], earlier = [], workFolder } = {}) {
   const all = engines(engineFiles), top = all[name] ?? { steps: [] }, via = reach(all, name);
   const back = returnTo('blocked', top, levelChanges(variation));
   const order = id => top.steps.findIndex(s => s.id === id);
   const ignored = [];
+  // tagged(entry, candidate) — an ignored entry with its candidate's fix key, when earlier fixes are in play (ASS-347).
+  const tagged = (entry, c) => (earlier.length && c.fix ? { ...entry, fix: c.fix } : entry);
   // lift(engineName, stepId) — the top-level steps a step runs under.
   const lift = (engineName, stepId) => (engineName === name ? [stepId] : via.get(engineName) ?? []);
   // Every step of the engines the top one reaches, with its engine's name.
@@ -77,7 +96,7 @@ export function fixResumeStep({ project, ticket, variation = {}, engine: name, e
     let best;
     for (const c of candidates) {
       const why = back == null ? 'the step it blocked at cannot be told' : whyNotResume(top, back, c.step);
-      if (why) { ignored.push({ step: c.step, source, why }); continue; }
+      if (why) { ignored.push(tagged({ step: c.step, source, why }, c)); continue; }
       if (!best || order(c.step) < order(best.step)) best = c;
     }
     return best && { 'resume-at': best.step, 'resume-source': source, 'resume-why': best.why };
@@ -89,20 +108,33 @@ export function fixResumeStep({ project, ticket, variation = {}, engine: name, e
   if (typeof declared === 'string' && declared !== '') {
     const at = everyStep.filter(({ step }) => step.id === declared);
     const tops = at.some(({ engine }) => engine === name) ? [declared] : [...new Set(at.flatMap(({ engine, step }) => lift(engine, step.id)))];
-    const chosen = take('declared', (tops.length ? tops : [declared]).map(step => ({ step, why: `${fix ?? 'the fix ticket'} declares resume-at ${declared}${step === declared ? '' : ` (in ${step})`}` })));
+    const chosen = take('declared', (tops.length ? tops : [declared]).map(step => ({ step, fix, why: `${fix ?? 'the fix ticket'} declares resume-at ${declared}${step === declared ? '' : ` (in ${step})`}` })));
     if (chosen) return result(chosen);
   }
 
-  // Commits: each file the fix's commits changed, mapped to the steps that run it.
-  const fromCommits = [];
-  for (const file of changed) {
-    const prompt = file.match(/^prompts\/([^/]+)\//)?.[1];
-    const command = file.match(/^src\/agent-cli\/([^/]+)\/([^/]+)\.(sh|js)$/);
-    const sub = file.match(/^engines\/([^/]+)\//)?.[1];
-    const runs = everyStep.filter(({ step }) => (prompt && step.action?.prompt === prompt)
-      || (command && typeof step.action?.command === 'string' && new RegExp(`agent\\.sh ${escape(`${command[1]}:${command[2]}`)}(\\s|$)`).test(step.action.command)));
-    for (const { engine, step } of runs) for (const t of lift(engine, step.id)) fromCommits.push({ step: t, why: `${fix}'s commits change ${file}, which ${engine}/${step.id} runs` });
-    if (sub && sub !== name) for (const t of via.get(sub) ?? []) fromCommits.push({ step: t, why: `${fix}'s commits change ${file}, the ${sub} engine ${t} runs` });
+  // Commits: each file a fix's commits changed, mapped to the steps that run it — the fix waited on's,
+  // then each earlier landed fix's whose step has not run again since its block (ASS-347).
+  const mapCommits = (key, files) => {
+    const found = [];
+    for (const file of files) {
+      const prompt = file.match(/^prompts\/([^/]+)\//)?.[1];
+      const command = file.match(/^src\/agent-cli\/([^/]+)\/([^/]+)\.(sh|js)$/);
+      const sub = file.match(/^engines\/([^/]+)\//)?.[1];
+      const runs = everyStep.filter(({ step }) => (prompt && step.action?.prompt === prompt)
+        || (command && typeof step.action?.command === 'string' && new RegExp(`agent\\.sh ${escape(`${command[1]}:${command[2]}`)}(\\s|$)`).test(step.action.command)));
+      for (const { engine, step } of runs) for (const t of lift(engine, step.id)) found.push({ step: t, fix: key, why: `${key}'s commits change ${file}, which ${engine}/${step.id} runs` });
+      if (sub && sub !== name) for (const t of via.get(sub) ?? []) found.push({ step: t, fix: key, why: `${key}'s commits change ${file}, the ${sub} engine ${t} runs` });
+    }
+    return found;
+  };
+  const fromCommits = mapCommits(fix, changed);
+  for (const e of earlier) {
+    const at = Date.parse(e?.at ?? '');
+    for (const c of mapCommits(e?.fix, e?.changed ?? [])) {
+      const resumable = back != null && !whyNotResume(top, back, c.step);   // else take ignores it, saying why
+      if (resumable && !Number.isNaN(at) && enteredSince(variation, c.step, at)) ignored.push(tagged({ step: c.step, source: 'commits', why: `${c.step} ran again since ${c.fix}'s block ended (${e.at}), so its output already has that fix` }, c));
+      else fromCommits.push(c);
+    }
   }
 
   // Data: files of the work folder changed since the wait began, mapped to the step that writes them.
