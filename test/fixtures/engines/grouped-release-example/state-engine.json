@@ -35,6 +35,7 @@
             "description": "Code is being reviewed; polled until every merge request is merged",
             "max-visits": 10,
             "on-max-visits": "blocked",
+            "record-script-output": true,
             "action": {
                 "type": "script",
                 "command": "./agent.sh merge-request:check {project} {ticket} {variation}",
@@ -83,6 +84,21 @@
                         ]
                     },
                     "move-to-state": "done"
+                },
+                {
+                    "condition": {
+                        "all": [
+                            {
+                                "exit-code": 0
+                            },
+                            {
+                                "script-output": {
+                                    "approval-wait-expired": true
+                                }
+                            }
+                        ]
+                    },
+                    "move-to-state": "blocked-for-human"
                 },
                 {
                     "condition": {
@@ -187,6 +203,16 @@
                 "type": "none"
             },
             "sequence": 7
+        },
+        {
+            "id": "blocked-for-human",
+            "name": "Blocked for Human",
+            "description": "Approvals have not come within approval-wait-days; the parent step sends the ticket to Blocked for Human, the merge requests named in its feedback",
+            "is-done": true,
+            "action": {
+                "type": "none"
+            },
+            "sequence": 8
         }
     ]
 }

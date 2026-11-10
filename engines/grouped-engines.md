@@ -461,10 +461,45 @@ Release takes the whole variation. Harness's Merge Pull Request
 each dependent to master once its dependency has merged; the first that
 cannot merge stops it non-zero (Blocked), those merged stay Merged, and a
 re-run resumes. A project Release's Take out of Draft Mode readies every Open one,
-Team Code Review's `merge-request:check` reports over them all (auto-merge
-and merged only when every one is), and Ensure Auto-Merge sets auto-merge in
-depends-on order, a dependent only once its dependencies have merged (until
-then Team Code Review runs it again), with the same stop and resume.
+Team Code Review's `merge-request:check` reports over them all (merged only
+when every one is), and Ensure Auto-Merge sets auto-merge in depends-on order,
+a dependent only once its dependencies have merged, with the same stop and
+resume. The check's `auto-merge` says Ensure Auto-Merge has nothing to set
+now (ASS-351): every one not Closed is Merged, set to auto-merge, or Open and
+waiting on a depends-on neither Merged nor Closed. So a group whose later
+merge requests wait on earlier ones, every one it can set already set, just
+waits at Team Code Review for approvals: a timer poll that matches no exit
+leaves the step where it is, with no move and so no visit spent (control's
+`nextState` is null, `src/control/engine.js`; `runTransient`'s settle,
+`src/control/steps.js`), where before each poll went to Ensure Auto-Merge and
+back and spent a visit, sending the group to Blocked after ten polls. Once a
+dependency merges, a merge request it unblocks that is not set yet makes
+`auto-merge` false: Ensure Auto-Merge runs once, sets it, and the wait
+resumes. Each wave of dependency merges costs one visit of each, so a chain
+deeper than Ensure Auto-Merge's `max-visits` allows still blocks.
+
+The wait for approvals has its own bound (ASS-351): harness.json's
+`approval-wait-days`, 3 by default. An Open merge request set to auto-merge
+with nothing of its own to act on records when it was first seen so
+(`approval-wait-since` on its row; cleared once it is not, so a real problem,
+or GitLab cancelling auto-merge, restarts it), counted from no earlier than
+the variation's last move at its own level (a Release entered afresh, or
+resumed from Blocked for Human, waits afresh). Once the group is only waiting
+and any one has waited past the bound, the check adds
+`"approval-wait-expired": true`, `"awaiting-approval": [{ id, key, url,
+since }]` naming those, and `ai-feedback-short` / `ai-feedback-long` for the
+operator. A project Release routes it to Blocked for Human with three
+additions, as the example project's `grouped-release-example` and
+`example-development-grouped` have them: on Team Code Review,
+`"record-script-output": true` and an exit `{ "all": [{ "exit-code": 0 },
+{ "script-output": { "approval-wait-expired": true } }] }` → a done step
+`blocked-for-human`; and on the parent's Release step, an exit for
+`"sub-engine-ended-at": "blocked-for-human"` → `blocked-for-human`, before its
+bare `is-done` exit (else the ended run would move the ticket on to QA). The
+run's recorded output carries the feedback, which control sets on the
+variation after the move (`steps.js`, as for Create VM's out-of-disk
+reason). A Release without them is unchanged: the check's new fields match
+none of its exits, and the group waits on.
 `merge-request:check` holds back a failed pipeline that only reflects a
 dependency (ASS-346), so a group across several repositories still reaches
 Ensure Auto-Merge: while any of a merge request's depends-on, in its
