@@ -593,6 +593,26 @@ test('ASS-335 AC1/AC2: grouped-build waits at Await Dependencies in Other Reposi
   for (const flat of [...Object.values(CURRENT), 'blocked']) assert.ok(!JSON.stringify(engines[flat]).includes('await-dependencies'), flat);
 });
 
+// ASS-359 AC3: a dependency that is one of the ticket's own planned merge
+// requests, never created, is not waited on: merge-request:await-dependencies
+// exits 3, and grouped-build sends that back to Generate Solution — counted
+// as a visit there, so at its max-visits (5) the run ends at Blocked instead.
+test('ASS-359 AC3: Await Dependencies\' exit 3 (a planned merge request never created) goes back to Generate Solution, within its max-visits, then Blocked; waiting (2) still stays', () => {
+  const build = engines['grouped-build'], step = stepOf(build, 'await-dependencies'), solve = stepOf(build, 'generate-solution');
+  assert.deepEqual(step['exit-events'].map(e => [e.condition, e['move-to-state']]), [[{ 'exit-code': 0 }, 'refresh-before-testing'], [{ 'exit-code': 3 }, 'generate-solution']]);
+  assert.equal(step.action['waiting-exit-code'], 2);
+  assert.deepEqual([solve['max-visits'], solve['on-max-visits']], [5, 'blocked']);
+  const visits = n => Array.from({ length: n }, (_, i) => [
+    { 'from-state': i ? 'await-dependencies' : 'generate-automated-tests', 'to-state': 'generate-solution' },
+    { 'from-state': 'generate-solution', 'to-state': 'await-dependencies' }]).flat();
+  assert.deepEqual(nextState(step, build, { exitCode: 3 }, visits(1)), { to: 'generate-solution', exit: step['exit-events'][1], reason: 'exit' });
+  assert.equal(nextState(step, build, { exitCode: 3 }, visits(4)).to, 'generate-solution');
+  assert.deepEqual(nextState(step, build, { exitCode: 3 }, visits(5)), { to: 'blocked', exit: step['exit-events'][1], reason: 'max-visits' });
+  assert.equal(nextState(step, build, { exitCode: 2 }, visits(5)), null, 'waiting stays, whatever the visits');
+  assert.equal(nextState(step, build, { exitCode: 1 }, []), null, 'an error still matches no exit');
+  assert.deepEqual(validateStateEngine(build, ROOT, 'grouped-build', EXAMPLE_ENGINES), []);
+});
+
 // ASS-261: the grouped Risk Assessment writes a fixed risk line the ticket
 // screen's panel shows; the flat prompt (pinned in
 // fixtures/unchanged-engines-and-prompts.json) keeps none.
