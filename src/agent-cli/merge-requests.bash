@@ -12,6 +12,8 @@
 #   mr_view / mr_default_branch / mr_find_open / mr_changes / mr_open / mr_retarget / mr_ready / mr_auto_merge
 #       each <command> <index> …: one forge call for MRS[<index>]
 #   mr_rerun <command> <index>                  # its failed pipeline started again (ASS-346)
+#   mr_approvals_left <command> <index> <view>  # approvals it still needs: a number, "unknown" (GitHub: review required), else 0 (ASS-359)
+#   mr_failed_jobs <command> <index> <view>     # its failed pipeline's job names (GitHub: failed checks'), a JSON array (ASS-359)
 #   MR_DEPS                                     # (jq defs) done; unmerged_deps($all): the rows it depends on, neither Merged nor Closed
 #   MR_TIME                                     # (jq def) epoch: a forge's ISO 8601 time as seconds
 #   mr_close <command> <url>                    # the merge request at <url> closed on its forge, unmerged (ASS-104)
@@ -186,14 +188,16 @@ GITHUB_VIEW='def failed: (.conclusion // .state // "") | IN("FAILURE", "ERROR", 
   reasons: [ (if .reviewDecision == "CHANGES_REQUESTED" then "open-threads" else empty end),
              (if any(.statusCheckRollup // [] | .[]; failed) then "build-failed" else empty end),
              (if .mergeable == "CONFLICTING" or (.mergeStateStatus | IN("BEHIND", "DIRTY")) then "needs-rebase" else empty end) ],
-  "auto-merge": (.autoMergeRequest != null), "merged-at": .mergedAt,
+  "auto-merge": (.autoMergeRequest != null), "merged-at": .mergedAt, "review-required": (.reviewDecision == "REVIEW_REQUIRED"),
   pipeline: ([.statusCheckRollup // [] | .[] | select(failed)] | if . == [] then null
-    else { "created-at": (map(.startedAt // empty) | max), runs: ([.[] | .detailsUrl // "" | capture("/actions/runs/(?<r>[0-9]+)").r | tonumber] | unique) } end) }'
+    else { "created-at": (map(.startedAt // empty) | max), runs: ([.[] | .detailsUrl // "" | capture("/actions/runs/(?<r>[0-9]+)").r | tonumber] | unique),
+           jobs: ([.[] | .name // .context // empty] | unique) } end) }'
 
 # mr_view — { state: Open|Merged|Closed, base, title, draft, reasons, auto-merge, merged-at, pipeline }, reasons as
 # merge-request:check names them; merged-at the forge's time it merged (null until then); pipeline its head pipeline
 # { id, created-at } on GitLab, on GitHub its failed checks { created-at: the latest started, runs: their workflow
-# run ids } (null when none failed).
+# run ids, jobs: their names } (null when none failed); on GitHub also review-required (its review decision
+# REVIEW_REQUIRED: an approval is still needed).
 mr_view() {
   local command="$1" url iid planned out
   IFS=$'\t' read -r url iid planned < <(mr_at "$2")
@@ -300,6 +304,32 @@ mr_rerun() {
     [[ -n "$pipeline" ]] || return 1
     lab "$command" "$url" "/pipelines/$pipeline/retry" -X POST >/dev/null
   fi
+}
+
+# mr_approvals_left <command> <index> <view> — how many approvals it still
+# needs before it may merge (ASS-359): on GitLab its approvals'
+# approvals_left (GET …/merge_requests/<iid>/approvals); GitHub gives no
+# number, so "unknown" when <view> (mr_view) has review-required, else 0.
+# Best effort: a GitLab that will not say (an edition or token without
+# approvals) is 0, so asking never fails the caller.
+mr_approvals_left() {
+  local command="$1" url iid planned
+  IFS=$'\t' read -r url iid planned < <(mr_at "$2")
+  if on_github "$url"; then jq -r 'if .["review-required"] == true then "unknown" else 0 end' <<< "$3"
+  else lab "$command" "$url" "/merge_requests/$iid/approvals" 2>/dev/null | jq -r '.approvals_left // 0 | if type == "number" then . else 0 end' 2>/dev/null || echo 0; fi
+}
+
+# mr_failed_jobs <command> <index> <view> — the names of the jobs that failed
+# in its head pipeline (ASS-359), a JSON array: on GitLab that pipeline's
+# failed jobs (GET …/pipelines/<id>/jobs?scope=failed, its id from <view>);
+# on GitHub the failed checks <view> names. Best effort: [] when none is known.
+mr_failed_jobs() {
+  local command="$1" url iid planned pipeline
+  IFS=$'\t' read -r url iid planned < <(mr_at "$2")
+  if on_github "$url"; then jq -c '.pipeline.jobs // []' <<< "$3"; return; fi
+  pipeline="$(jq -r '.pipeline.id // empty' <<< "$3")"
+  [[ -n "$pipeline" ]] || { echo '[]'; return; }
+  lab "$command" "$url" "/pipelines/$pipeline/jobs?scope=failed" 2>/dev/null | jq -c '[.[]? | .name // empty] | unique' 2>/dev/null || echo '[]'
 }
 
 # mr_close <command> <url> — gh pr close <url> on GitHub; on GitLab its API's
