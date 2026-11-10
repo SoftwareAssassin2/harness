@@ -363,6 +363,20 @@ Blocked for Human, saying what was found and what to do.
   Blocked, then Build), the VM is recreated (`vm:create`), as any deleted VM
   is. None of the repo's engines sets it; a project turns it on in its own
   engine, on a step that needs no VM (QA).
+- **Refreshing credentials (ASS-215, ASS-350).** `vm:start` (through
+  `vm:credentials`) records on the VM's `vms.json` row the credential kind it
+  injected (`credential-kind`) and each injected keychain item's modification
+  time (`credential-stamps`, `{ "<kind>": "<mdat>" }`, read from the item's
+  attributes, never its value; atlassian is never injected, so never
+  stamped). A Running VM control has reached is refreshed (`vm:start` on the
+  running VM, which re-runs `vm:credentials`) when its project now declares
+  another kind, or when a declared item has been saved again since (a rotated
+  key), logged `credentials refreshed (…; <kind> key changed)`. Control reads
+  the stamps (`vm:credential-stamps <p>`) at most once per VM job pass per
+  project. With an assignment on its variation the refresh waits until it is
+  idle, logged once. A VM recording no stamps (not started since ASS-350), or
+  an item only one side stamps, is not compared until its next start records
+  them.
 - **Waiting for a VM (ASS-133, ASS-159, ASS-348).** A step that runs in the
   VM is not judged while control has not yet seen the VM up (Running and
   reached by a probe), for at most 2 minutes; then it is judged as it stands.

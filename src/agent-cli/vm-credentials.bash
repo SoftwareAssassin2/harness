@@ -7,6 +7,7 @@
 #   source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../vm-credentials.bash"
 #   declared_credentials <command> <project>   # the project's object in ~/.harness/vm-credentials.json, as JSON; fails on a bad one
 #   read_tokens <command> <project> <json>     # fills TOKENS[kind] and SERVICES[kind] from the keychain; fails naming every bad item at once
+#   read_stamps <json>                         # each declared item's keychain modification time, as JSON { "<kind>": "<mdat>" }: never its value
 #   forge_tokens <command> <url…>              # sets gh_token and gl_token from the Mac's own gh and glab logins, for the forges the URLs are on;
 #                                              # fails at once, before reading its token, when that login has expired (gh/glab auth status)
 #
@@ -49,6 +50,14 @@
 # process took up to ~10s (ASS-109), so 30s leaves room for a loaded Mac while
 # a read that never answers (a locked keychain, a prompt nobody sees) still
 # fails the step within half a minute.
+# read_stamps reads each item's attributes only (ASS-350): `security
+# find-generic-password -s <service>`, with neither -w nor -g, prints no secret
+# and asks for no access, and its "mdat"<timedate> line is when the item was
+# last saved: e.g. "20261110140759Z". A rotated token changes it, so control
+# compares it with the stamps vm:credentials recorded on the VM's vms.json row
+# (credential-stamps) and refreshes a running VM whose item changed. atlassian,
+# never injected, is never stamped; an item that cannot be read, or shows no
+# mdat, is left out (unknown: never compared).
 # Whitespace is stripped from every value. Whether a token still works is not
 # checked: an expired one fails the step that uses it.
 
@@ -96,6 +105,19 @@ read_tokens() {
   [[ ${#problems[@]} -eq 0 ]] && return 0
   { echo "$command: $project's VM credentials cannot be read from the keychain:"; printf '  %s\n' "${problems[@]}"; } >&2
   return 1
+}
+
+read_stamps() {
+  local decl="$1" kind service attributes mdat stamps='{}' limit="${VM_KEYCHAIN_TIMEOUT:-30}"
+  for kind in "${KINDS[@]}"; do
+    [[ "$kind" == atlassian ]] && continue
+    service="$(jq -r --arg k "$kind" '.[$k]["keychain-service"] // empty' <<< "$decl")"
+    [[ -n "$service" ]] || continue
+    attributes="$(perl -e 'alarm shift; exec @ARGV' "$limit" security find-generic-password -s "$service" 2>/dev/null)" || continue
+    mdat="$(sed -nE 's/^[[:space:]]*"mdat"<timedate>=.*"([0-9]{14}Z).*/\1/p' <<< "$attributes" | head -n 1)"
+    [[ -n "$mdat" ]] && stamps="$(jq -c --arg k "$kind" --arg m "$mdat" '.[$k] = $m' <<< "$stamps")"
+  done
+  echo "$stamps"
 }
 
 forge_tokens() {

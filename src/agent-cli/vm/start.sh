@@ -26,7 +26,10 @@ set -euo pipefail
 #     printed (claude, anthropic, both — ASS-217 — or none) is recorded on the VM's vms.json
 #     row as credential-kind (ASS-215): control compares it with the kind the
 #     project declares, and refreshes a running VM through vm:start when they
-#     differ.
+#     differ. vm:credentials records on the same row credential-stamps, each
+#     injected item's keychain modification time (ASS-350, never a value):
+#     control refreshes a running VM the same way when one has changed since
+#     (a rotated key).
 #  3. A fresh forwarder token: 32 random bytes, sent over stdin to the VM's
 #     /run/harness/agent-token (tmpfs, 0600) with the forwarder's URL
 #     (/run/harness/agent-url); on the Mac only its SHA-256, with the

@@ -190,6 +190,29 @@ test('ASS-215 AC1: vm:start prints and records the credential kind vm:credential
   assert.equal(row().ticket, 'ABC-3');
 });
 
+// ASS-350 AC1: vm:start (through vm:credentials) records, beside credential-kind,
+// each injected keychain item's modification time — read from its attributes, never
+// its value — so control can tell a rotated key; a later start takes the new stamp.
+test('ASS-350 AC1: vm:start records credential-stamps { kind: mdat } on the VM\'s row beside credential-kind, from the items\' attributes, and no token in vms.json or its output', async () => {
+  const l = lima();
+  l.mount();
+  const mdat = join(l.v.dir, 'mdat');
+  writeFileSync(mdat, '20261110120000Z');
+  l.v.script('security', `if [[ "$*" == "find-generic-password -s Claude Token (Test) -w" ]]; then echo sk-ant-oat01-TEST
+elif [[ "$*" == "find-generic-password -s Claude Token (Test)" ]]; then printf '%s\\n' 'attributes:' "    \\"mdat\\"<timedate>=0x00  \\"$(cat '${mdat}')\\\\000\\""
+else exit 2; fi`);
+  await l.cli('vm:create', 'p', 'ABC-3', 'A');
+  const vms = () => readFileSync(join(l.f.dir, 'projects', 'p', 'vms.json'), 'utf8');
+  const row = () => JSON.parse(vms())['abc-3-a'];
+  const first = await l.cli('vm:start', 'p', 'ABC-3', 'A');
+  assert.equal(row()['credential-kind'], 'claude');
+  assert.deepEqual(row()['credential-stamps'], { claude: '20261110120000Z' });
+  writeFileSync(mdat, '20261110140759Z');   // the item saved again: a rotated key
+  const second = await l.cli('vm:start', 'p', 'ABC-3', 'A');
+  assert.deepEqual(row()['credential-stamps'], { claude: '20261110140759Z' });
+  for (const text of [vms(), first.stdout, first.stderr, second.stdout, second.stderr]) assert.ok(!text.includes('sk-ant-oat01-TEST'), text);
+});
+
 test('ASS-215 AC1: vm:start fails, naming the step, when what vm:credentials printed is not a credential kind', async () => {
   const l = lima();
   l.mount();

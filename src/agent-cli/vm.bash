@@ -100,9 +100,11 @@ start_sandboxed() {
 
 # The inventory: data/projects/<project>/vms.json (untracked), one entry per VM of
 # the project's — { "<vm>": { ticket, variation, state, disk-bytes,
-# last-accessed, credential-kind } } — credential-kind the kind vm:credentials
+# last-accessed, credential-kind, credential-stamps } } — credential-kind the kind vm:credentials
 # last injected ('claude', 'anthropic' or 'both' (ASS-217), or absent for a
-# project that declares neither, ASS-215). Written when a VM is created (before it is
+# project that declares neither, ASS-215); credential-stamps, { "<kind>":
+# "<mdat>" }, the keychain modification time of each item it injected
+# (ASS-350: never a value; absent on a VM not started since). Written when a VM is created (before it is
 # cloned, so a crash cannot hide it), started, stopped or deleted (record_vm,
 # make_room).
 # "Accessed" is when it was last started or stopped: a VM is used only while

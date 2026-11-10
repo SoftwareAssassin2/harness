@@ -36,14 +36,20 @@ set -euo pipefail
 # A dev container in the VM (a project's) gets the same by being started with
 # `--env-file /run/harness/env -v /run/harness:/run/harness` as the VM user:
 # every path in the env file is the same inside it.
+# Before the tokens are read, each injected item's keychain modification time
+# (vm-credentials.bash read_stamps: its attributes only, never its value) is
+# read, and once the script has run they are recorded on the VM's vms.json row,
+# when it has one, as credential-stamps { "<kind>": "<mdat>" } (ASS-350): control
+# refreshes a running VM whose item has been saved again since (a rotated key).
+# Read before the tokens, so an item saved between the two reads leaves an
+# older stamp, and costs one refresh more, never one missed.
 # On success prints the credential kind injected (ASS-215): `anthropic` or
 # `claude`, the one the project declares, `both` when it declares both
 # (ASS-217), or nothing when it declares neither.
 # LIMA_HOME as lima-home.bash resolves it (ASS-273): the env var, else
 # harness.local.json's lima-home (ASS-281), else harness.json's, else ~/.lima.
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../vm-credentials.bash"
-source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lima-home.bash"
-LIMA_HOME="$(lima_home)"; export LIMA_HOME
+source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../vm.bash"   # $projects, update_json; LIMA_HOME as lima-home.bash resolves it
 
 [[ $# -eq 2 ]] || { echo "usage: vm:credentials <project> <vm>" >&2; exit 1; }
 [[ "$1" =~ ^[A-Za-z0-9_-]+$ ]] || { echo "vm:credentials: invalid project '$1'" >&2; exit 1; }
@@ -51,6 +57,7 @@ LIMA_HOME="$(lima_home)"; export LIMA_HOME
 project="$1" vm="$2"
 
 decl="$(declared_credentials vm:credentials "$project" | jq -c 'del(.atlassian)')"
+stamps="$(read_stamps "$decl")"
 read_tokens vm:credentials "$project" "$decl"
 field() { jq -r --arg k "$1" --arg f "$2" '.[$k][$f] // empty' <<< "$decl"; }
 gitlab_host="$(field gitlab host)"; gitlab_host="${gitlab_host:-gitlab.com}"
@@ -117,4 +124,7 @@ EOF
 script="$(injection_script)"
 printf '%s\n' "$script" | limactl shell "$vm" -- bash -s \
   || { echo "vm:credentials: could not inject $project's credentials into VM '$vm'" >&2; exit 1; }
+# Only on a row there already: a VM vms.json does not know gets none, and no file is made.
+[[ ! -f "$projects/$project/vms.json" ]] || update_json "$projects/$project/vms.json" --arg n "$vm" --argjson s "$stamps" \
+  'if .[$n] then .[$n]["credential-stamps"] = $s else . end'
 if [[ -v TOKENS[anthropic] && -v TOKENS[claude] ]]; then echo both; elif [[ -v TOKENS[anthropic] ]]; then echo anthropic; elif [[ -v TOKENS[claude] ]]; then echo claude; fi

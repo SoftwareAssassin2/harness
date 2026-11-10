@@ -2,6 +2,8 @@
 // read from the Mac's keychain and injected into a running Lima VM's tmpfs.
 // `security`, `limactl`, and (for running the injection script here, against a
 // folder standing in for the VM's root) `sudo`, `findmnt` and `acli` are fakes on PATH.
+// The fake `security` answers a read of an item's value (-w) and, ASS-350, of its
+// attributes alone (no -w or -g: what vm:credential-stamps reads), as the real one prints them.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFile, execFileSync } from 'node:child_process';
@@ -23,7 +25,8 @@ const CASE_LAW = {
 
 const script = (bin, name, body) => { writeFileSync(join(bin, name), `#!/usr/bin/env bash\n${body}\n`); chmodSync(join(bin, name), 0o755); };
 
-// A Mac: HOME with ~/.harness/vm-credentials.json, a keychain folder (one file per service; `<service>.hang` never answers;
+// A Mac: HOME with ~/.harness/vm-credentials.json, a keychain folder (one file per service, its modification time
+// `<service>.mdat` when there, else 20261101000000Z; `<service>.hang` never answers;
 // `<service>.alarm` ends as the time limit's alarm ends a read that never answers, at once), and fakes on PATH. The
 // limit is 60s: the fake answers at once, but on a busy machine starting it took up to ~10s (ASS-109).
 function mac(declaration = { harness: HARNESS, 'example': CASE_LAW }, keychain = TOKENS) {
@@ -33,16 +36,22 @@ function mac(declaration = { harness: HARNESS, 'example': CASE_LAW }, keychain =
   if (declaration) writeFileSync(join(home, '.harness', 'vm-credentials.json'), JSON.stringify(declaration));
   for (const [service, value] of Object.entries(keychain)) writeFileSync(join(kc, service), `${value}\n`);   // as saved: a trailing newline to strip
   script(bin, 'security', `printf '%s\\n' "$*" >> "${log}/security"
-[[ "$1 $2 $4" == "find-generic-password -s -w" && $# -eq 4 ]] || { echo "unexpected security call: $*" >&2; exit 2; }
+[[ ( "$1 $2 $4" == "find-generic-password -s -w" && $# -eq 4 ) || ( "$1 $2" == "find-generic-password -s" && $# -eq 3 ) ]] || { echo "unexpected security call: $*" >&2; exit 2; }
 [[ -e "${kc}/$3.hang" ]] && exec sleep 30
 [[ -e "${kc}/$3.alarm" ]] && kill -ALRM $$
 [[ -e "${kc}/$3" ]] || { echo 'security: SecKeychainSearchCopyNext: The specified item could not be found in the keychain.' >&2; exit 44; }
-cat "${kc}/$3"`);
+[[ $# -eq 4 ]] && exec cat "${kc}/$3"
+m="$(cat "${kc}/$3.mdat" 2>/dev/null || echo 20261101000000Z)"
+printf '%s\n' 'keychain: "/Users/ada/Library/Keychains/login.keychain-db"' 'version: 512' 'class: "genp"' 'attributes:' \
+  '    0x00000007 <blob>="'"$3"'"' '    "acct"<blob>="ada"' '    "cdat"<timedate>=0x32303236313030313030303030305A00  "20261001000000Z\\000"' \
+  '    "mdat"<timedate>=0x00  "'"$m"'\\000"' '    "svce"<blob>="'"$3"'"'`);
   script(bin, 'limactl', `printf '%s\\n' "$*" >> "${log}/limactl"; cat > "${log}/limactl.stdin"; exit "\${FAKE_LIMACTL_EXIT:-0}"`);
-  const env = { ...process.env, HOME: home, PATH: `${bin}:${process.env.PATH}`, VM_KEYCHAIN_TIMEOUT: '60' };
+  const projects = join(dir, 'projects');   // PROJECTS_DIR: the vms.json vm:credentials records stamps in (ASS-350), never the repo's data/
+  mkdirSync(projects);
+  const env = { ...process.env, HOME: home, PATH: `${bin}:${process.env.PATH}`, VM_KEYCHAIN_TIMEOUT: '60', PROJECTS_DIR: projects };
   const cli = (...args) => run(AGENT, args, { env });
   const logOf = name => (existsSync(join(log, name)) ? readFileSync(join(log, name), 'utf8') : '');
-  return { dir, home, kc, bin, log, env, cli, logOf };
+  return { dir, home, kc, bin, log, env, cli, logOf, projects };
 }
 
 // Runs the script vm:credentials sent to limactl, against a folder standing in for the VM's root: sudo runs its command, findmnt reports <fstype> and acli logs its call and writes its stdin into its config dir, as the real one does.
@@ -73,7 +82,9 @@ test('vm:credentials harness <vm> reads only the declared items from the keychai
   const m = mac();
   await m.cli('vm:credentials', 'harness', 'ass-71-a');
   assert.equal(m.logOf('limactl'), 'shell ass-71-a -- bash -s\n');               // the only limactl call: into the running VM, nothing image-related
-  assert.equal(m.logOf('security'), 'find-generic-password -s Claude Token (Test) -w\nfind-generic-password -s GitHub PAT (Test) -w\n');   // read only, never unlock; no Atlassian or GitLab (AC2)
+  assert.equal(m.logOf('security'), [   // read only, never unlock; no Atlassian or GitLab (AC2); attributes first (ASS-350), then values
+    'find-generic-password -s Claude Token (Test)', 'find-generic-password -s GitHub PAT (Test)',
+    'find-generic-password -s Claude Token (Test) -w', 'find-generic-password -s GitHub PAT (Test) -w', ''].join('\n'));
   for (const t of Object.values(TOKENS)) assert.ok(!m.logOf('limactl').includes(t) && !m.logOf('security').includes(t));
   assert.ok(m.logOf('limactl.stdin').includes(TOKENS['Claude Token (Test)']), 'the tokens travel on stdin');
 });
@@ -177,7 +188,7 @@ test('ASS-123 AC2: by default a keychain read gets 30s, room for a loaded Mac, b
 test('ASS-214: an anthropic project gets ANTHROPIC_API_KEY in the env file over stdin, and no CLAUDE_CODE_OAUTH_TOKEN', async () => {
   const m = mac({ 'example': { anthropic: { 'keychain-service': 'Anthropic API Key (Test)' } } });
   await m.cli('vm:credentials', 'example', 'vm');
-  assert.equal(m.logOf('security'), 'find-generic-password -s Anthropic API Key (Test) -w\n');
+  assert.equal(m.logOf('security'), 'find-generic-password -s Anthropic API Key (Test)\nfind-generic-password -s Anthropic API Key (Test) -w\n');
   assert.ok(!m.logOf('limactl').includes(TOKENS['Anthropic API Key (Test)']), 'never on a command line');
   const { root, status, stderr } = inVm(m);
   assert.equal(status, 0, stderr);
@@ -260,6 +271,41 @@ test('vm:credentials fails clearly on a bad declaration or usage, and passes on 
   await assert.rejects(mac().cli('vm:credentials', 'harness', 'a b'), /invalid VM/);
   const m = mac();
   await assert.rejects(run(AGENT, ['vm:credentials', 'harness', 'vm'], { env: { ...m.env, FAKE_LIMACTL_EXIT: '1' } }), /could not inject/);
+});
+
+// ASS-350: each declared item's keychain modification time, never its value.
+test('ASS-350: vm:credential-stamps <project> prints each declared item\'s mdat as JSON, read from its attributes only (no -w, no -g); never atlassian, never a token', async () => {
+  const m = mac();
+  writeFileSync(join(m.kc, 'GitLab PAT (Test).mdat'), '20261110140759Z');
+  const { stdout, stderr } = await m.cli('vm:credential-stamps', 'example');
+  assert.deepEqual(JSON.parse(stdout), { claude: '20261101000000Z', gitlab: '20261110140759Z' });
+  assert.equal(m.logOf('security'), 'find-generic-password -s Claude Token (Test)\nfind-generic-password -s GitLab PAT (Test)\n');
+  for (const t of Object.values(TOKENS)) assert.ok(!stdout.includes(t) && !stderr.includes(t) && !m.logOf('security').includes(t));
+});
+
+test('ASS-350: vm:credential-stamps leaves out an item it cannot read or that shows no mdat, and fails on a bad project or declaration', async () => {
+  const m = mac({ example: { claude: CASE_LAW.claude, gitlab: CASE_LAW.gitlab } }, { 'Claude Token (Test)': 'sk-ant-oat01-CLAUDE_tok' });
+  assert.deepEqual(JSON.parse((await m.cli('vm:credential-stamps', 'example')).stdout), { claude: '20261101000000Z' });
+  await assert.rejects(m.cli('vm:credential-stamps', 'other'), /declares no VM credentials for project 'other'/);
+  await assert.rejects(m.cli('vm:credential-stamps', '../x'), /invalid project/);
+  await assert.rejects(m.cli('vm:credential-stamps'), /usage/);
+});
+
+test('ASS-350 AC1: vm:credentials records the injected items\' stamps on the VM\'s vms.json row, beside what it holds, never a token; a VM with no row, or no vms.json, gets none', async () => {
+  const m = mac();
+  mkdirSync(join(m.projects, 'example'));
+  const vms = join(m.projects, 'example', 'vms.json');
+  writeFileSync(vms, JSON.stringify({ vm: { ticket: 'EX-1', variation: 'A', state: 'Running', 'credential-kind': 'claude' } }));
+  writeFileSync(join(m.kc, 'Claude Token (Test).mdat'), '20261110140759Z');
+  const { stdout } = await m.cli('vm:credentials', 'example', 'vm');
+  assert.equal(stdout, 'claude\n');
+  assert.deepEqual(JSON.parse(readFileSync(vms, 'utf8')), { vm: { ticket: 'EX-1', variation: 'A', state: 'Running', 'credential-kind': 'claude',
+    'credential-stamps': { claude: '20261110140759Z', gitlab: '20261101000000Z' } } });   // no atlassian: never injected
+  await m.cli('vm:credentials', 'example', 'other-vm');
+  assert.deepEqual(Object.keys(JSON.parse(readFileSync(vms, 'utf8'))), ['vm']);
+  await m.cli('vm:credentials', 'harness', 'vm');
+  assert.equal(existsSync(join(m.projects, 'harness', 'vms.json')), false);
+  for (const t of Object.values(TOKENS)) assert.ok(!readFileSync(vms, 'utf8').includes(t) && !stdout.includes(t));
 });
 
 test('vm:scan-image <project> searches golden-<project> for every configured token and names the kind found, never the value', async () => {
