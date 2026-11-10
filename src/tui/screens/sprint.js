@@ -23,7 +23,7 @@ const SHRINK = ['Health', 'Agents', 'Status'].map(h => TABLE_HEADERS.indexOf(h))
 // plus TITLE_CHARS title characters (or the whole title if shorter), and one
 // more for the ellipsis when the title is cut. Measured off the already-built
 // Ticket cell and its title, so the prefix (the six one-cell icon columns,
-// PAUSED, the linked key: see ticketRows) is not re-derived. No rows → 0 (no floor).
+// PAUSED or UNASSIGNED, the linked key: see ticketRows) is not re-derived. No rows → 0 (no floor).
 const ticketFloor = (rows, tickets) => Math.max(0, ...rows.map((row, i) => {
   const title = tickets[i].title;
   return visible(row[0]) - visible(title) + visible(clip(title, TITLE_CHARS)) + (visible(title) > TITLE_CHARS ? 1 : 0);
@@ -71,17 +71,18 @@ function layout(state, { columns = 0, rows = Infinity, now = 0 }) {
 }
 
 const PAUSED = '\x1b[34mPAUSED\x1b[0m';   // blue, before a paused variation's key (ASS-259)
+const UNASSIGNED = '\x1b[34mUNASSIGNED\x1b[0m';   // the same blue, before a reassigned ticket's key, in PAUSED's place (ASS-345)
 const dim = text => `\x1b[2m${text}\x1b[0m`;
 
 // The key under the ticket grid (ASS-259): each of the rows' glyphs as they
-// are drawn there — ⦿ in each of its colors, PAUSED in blue — with what it
+// are drawn there — ⦿ in each of its colors, PAUSED and UNASSIGNED in blue — with what it
 // means, in dim text; entries two blanks apart, wrapped at `columns` between
 // entries, never inside one.
 const KEY = [
   [dim(GLYPHS.step), 'step'], [dim(GLYPHS.features), 'feature'], [dim(GLYPHS.bugs), 'bug'], [dim(GLYPHS.spikes), 'spike'],
   [dim(GLYPHS.hand), 'by hand'], [dim(GLYPHS.fast), 'fast-tracked'], [markDot(GLYPHS.mark, 'change'), 'requirements change'],
   [markDot(GLYPHS.mark, 'needed'), 'needs you'], [markDot(GLYPHS.mark, 'assumed'), 'assumption'], [dim(GLYPHS.agent), 'agent working'],
-  [PAUSED, 'paused'],
+  [PAUSED, 'paused'], [UNASSIGNED, 'reassigned away'],
 ].map(([glyph, meaning]) => `${glyph}${dim(` ${meaning}`)}`);
 function iconKey(columns) {
   const lines = [];
@@ -112,8 +113,11 @@ const BUILD_COLORS = { Merged: gray, Closed: gray, Running: gold, Failed: red, P
 // (`marks.needed`, see ticketMarks, ASS-242), else dim grey going on with an
 // assumption alone (`marks.assumed`, ASS-248), on every variation's row; c6 ⚉
 // while an agent works on the row's ticket and variation (its Agents). A
-// paused variation's (is-paused) text starts "PAUSED " in blue; iconKey says
-// what each means, under the grid.
+// paused variation's (is-paused) text starts "PAUSED " in blue — a ticket
+// reassigned away from the operator's account (ASS-345: ticket:sync's
+// reassigned, to another person or to nobody) "UNASSIGNED " in its place, on
+// every variation's row, paused by the operator too or not: the reassignment
+// says more; iconKey says what each means, under the grid.
 function ticketRows(tickets, assignments, steps, collaborations = {}, marks = { needed: new Set() }) {
   return tickets.map(t => {
     // One line per assignment to this ticket and this row's variation (or to no
@@ -124,8 +128,9 @@ function ticketRows(tickets, assignments, steps, collaborations = {}, marks = { 
       t.step ? `${stateColor({ sequence: t.step.sequence, color: t.color }, steps)}${GLYPHS.step}\x1b[0m` : '',
       GLYPHS[t.kind] ?? '', workedByHand(t) ? GLYPHS.hand : '', t['fast-track'] === true ? GLYPHS.fast : '', sprintMark(marks, t), agents.length ? GLYPHS.agent : '',
     ];
+    const held = t.reassigned ? `${UNASSIGNED} ` : t.variation['is-paused'] === true ? `${PAUSED} ` : '';
     return [
-      `${icons.map(icon => icon || ' ').join('')} ${t.variation['is-paused'] === true ? `${PAUSED} ` : ''}${t.url ? link(name, t.url) : name}`,
+      `${icons.map(icon => icon || ' ').join('')} ${held}${t.url ? link(name, t.url) : name}`,
       String(t.priority ?? NONE) + (t['manual-priority'] != null ? ' 🪪' : ''),
       statusCell(t, steps),
       String(t.points ?? NONE),

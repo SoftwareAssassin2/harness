@@ -5,7 +5,8 @@
 // ⚉ an agent working on that row's ticket and variation — each a blank when it
 // doesn't apply — then a blank and the text, so the text starts on the same
 // terminal column on every row. A paused variation's text starts "PAUSED " in
-// blue; no 📝 or ⏸️. Every glyph is East Asian Width N with no Emoji property. A
+// blue — "UNASSIGNED " in its place for a ticket reassigned away from the
+// operator (ASS-345); no 📝 or ⏸️. Every glyph is East Asian Width N with no Emoji property. A
 // key in dim text under the grid says what each means.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -64,7 +65,7 @@ const KEYS = ['A-1', 'A-2', 'A-3', 'A-4', 'A-5', 'A-6', 'A-7', 'A-8', 'A-9', 'A-
 // The key under the grid: the lines right after its bottom border that start with a key entry.
 const keyLines = lines => {
   const after = lines.slice(lines.findLastIndex(l => /^└/.test(strip(l))) + 1);
-  const end = after.findIndex(l => !/^([▮✦✘⌕☛↯⦿⚉]|PAUSED) /.test(strip(l)));
+  const end = after.findIndex(l => !/^([▮✦✘⌕☛↯⦿⚉]|PAUSED|UNASSIGNED) /.test(strip(l)));
   return end < 0 ? after : after.slice(0, end);
 };
 
@@ -179,7 +180,7 @@ test('ASS-259 AC7: a dim key directly under the grid shows each glyph as drawn i
   const bottom = raw.findLastIndex(l => /^└/.test(strip(l)));
   const key = keyLines(raw);
   assert.equal(raw.indexOf(key[0]), bottom + 1);                     // directly under the grid
-  assert.equal(strip(key.join('  ')), '▮ step  ✦ feature  ✘ bug  ⌕ spike  ☛ by hand  ↯ fast-tracked  ⦿ requirements change  ⦿ needs you  ⦿ assumption  ⚉ agent working  PAUSED paused');
+  assert.equal(strip(key.join('  ')), '▮ step  ✦ feature  ✘ bug  ⌕ spike  ☛ by hand  ↯ fast-tracked  ⦿ requirements change  ⦿ needs you  ⦿ assumption  ⚉ agent working  PAUSED paused  UNASSIGNED reassigned away');
   const all = key.join('');
   for (const kind of ['31', '34', '2;90']) assert.ok(all.includes(`\x1b[${kind}m⦿\x1b[0m`), kind);   // ⦿ in each of its colors
   assert.ok(all.includes('\x1b[34mPAUSED\x1b[0m'));
@@ -187,7 +188,7 @@ test('ASS-259 AC7: a dim key directly under the grid shows each glyph as drawn i
 });
 
 test('ASS-259 AC7: the key wraps between entries at the screen width, never inside one, and is never cut off — the grid gives up rows', () => {
-  const ENTRIES = ['▮ step', '✦ feature', '✘ bug', '⌕ spike', '☛ by hand', '↯ fast-tracked', '⦿ requirements change', '⦿ needs you', '⦿ assumption', '⚉ agent working', 'PAUSED paused'];
+  const ENTRIES = ['▮ step', '✦ feature', '✘ bug', '⌕ spike', '☛ by hand', '↯ fast-tracked', '⦿ requirements change', '⦿ needs you', '⦿ assumption', '⚉ agent working', 'PAUSED paused', 'UNASSIGNED reassigned away'];
   for (const columns of [200, 100, 60, 40]) {
     const size = { ...wide, columns, rows: 40 };
     const lines = render(state, size);
@@ -208,4 +209,27 @@ test('ASS-259 AC7: the key wraps between entries at the screen width, never insi
   for (const rows of [40, 30]) assert.equal(whole(at(rows)), keyLines(at(80)).join('  '), String(rows));
   const short = at(30);
   assert.ok(!short.slice(short.findIndex(l => /^│ +Ticket +│/.test(l))).some(l => l.startsWith('└')));   // at 30 rows the grid's bottom border went instead
+});
+
+// ASS-345 AC5: a ticket ticket:sync holds as reassigned away from the operator
+// (its reassigned, to another person or to nobody) starts each of its rows
+// "UNASSIGNED " in PAUSED's blue, in PAUSED's place — paused by the operator
+// too or not; a row paused by the operator alone still starts "PAUSED ".
+test('ASS-345 AC5: a reassigned ticket\'s rows start "UNASSIGNED " in blue, not "PAUSED "; one paused by the operator alone still starts "PAUSED "; the key lists UNASSIGNED', () => {
+  const away = to => ({ to, 'to-id': to && `acc-${to}`, 'detected-at': '2026-11-10T13:00:00Z', 'paused-variations': ['A'] });
+  const held = [
+    ticket('R-1', 'To another', { paused: true, reassigned: away('bea') }),
+    ticket('R-2', 'To nobody', { paused: true, reassigned: away(null) }),
+    ticket('R-3', 'Two ways', { variations: ['A', 'B'], paused: true, reassigned: away('bea') }),   // B paused by the operator too
+    ticket('R-4', 'Operator only', { paused: true }),
+  ];
+  const s = initialState({ projects: [{ ...project, sprint: { ...project.sprint, features: held, bugs: [], spikes: [] }, questions: [] }], workflows: [{ name: 'e', steps }], assignments: [] });
+  const r = render(s, wide);
+  const text = key => strip(r.find(l => new RegExp(`(^|\\s)${key.replace('.', '\\.')}: `).test(strip(l)))).slice(2 + TEXT);
+  for (const key of ['R-1', 'R-2', 'R-3.A', 'R-3.B']) assert.ok(text(key).startsWith(`UNASSIGNED ${key}: `), `${key}: ${text(key)}`);
+  assert.ok(text('R-4').startsWith('PAUSED R-4: '), text('R-4'));
+  assert.ok(!['R-1', 'R-2', 'R-3.A', 'R-3.B'].some(k => text(k).includes('PAUSED')));
+  assert.ok(r.some(l => l.includes('\x1b[34mUNASSIGNED\x1b[0m R-1: ')));                 // PAUSED's blue
+  const key = keyLines(r);
+  assert.ok(key.join('').includes('\x1b[34mUNASSIGNED\x1b[0m\x1b[2m reassigned away\x1b[0m'), key.join('\n'));
 });

@@ -86,7 +86,7 @@ const blueDot = (l, text) => /\x1b\[34m[●⦿]/.test(l) && new RegExp(`[●⦿]
 const cols = ({ step = '▮', type = '✦', hand = ' ', fast = ' ', dot = ' ', agent = ' ' } = {}) => `${[step, type, hand, fast, dot, agent].join('')} `;
 // How many lines of the key under the sprint grid (ASS-259) follow line `bottom`, its bottom border.
 const keyUnder = (out, bottom) => {
-  const end = out.slice(bottom + 1).findIndex(l => !/^([▮✦✘⌕☛↯⦿⚉]|PAUSED) /.test(strip(l)));
+  const end = out.slice(bottom + 1).findIndex(l => !/^([▮✦✘⌕☛↯⦿⚉]|PAUSED|UNASSIGNED) /.test(strip(l)));
   return end < 0 ? out.length - bottom - 1 : end;
 };
 const lines = (s, size = screen) => render(s, size).map(strip);

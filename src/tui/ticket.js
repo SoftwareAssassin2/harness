@@ -65,6 +65,18 @@ export function workedByHand(t) {
   return m ? `worked by hand by ${m.by} since ${String(m.since).replace('T', ' ').slice(0, 16)} UTC${m.note ? `: ${m.note}` : ''}` : null;
 }
 
+// reassignedTo(t) — why ticket `t` is held when ticket:sync found it
+// reassigned away from the operator's account (ASS-345: its reassigned):
+// "Reassigned to <name>" (its account id when it has no name), or
+// "Unassigned" with no one; null when it is not. reassignedText(t) adds
+// when: "…, detected <yyyy-mm-dd hh:mm> UTC".
+export function reassignedTo(t) {
+  const r = t?.reassigned;
+  if (!r) return null;
+  return r.to != null ? `Reassigned to ${r.to}` : r['to-id'] != null ? `Reassigned to ${r['to-id']}` : 'Unassigned';
+}
+const reassignedText = t => (reassignedTo(t) ? `${reassignedTo(t)}, detected ${String(t.reassigned['detected-at']).replace('T', ' ').slice(0, 16)} UTC` : null);
+
 export function tokenSpend(v, chat = 0, running = 0) {
   const costs = [...(v['state-changes'] ?? []).flatMap(c => c['agent-dispatch-log'] ?? []).map(d => d['cost-usd']), chat || null, running || null].filter(c => c != null);
   return costs.length ? `$${costs.reduce((sum, c) => sum + c, 0).toFixed(2)}${runningText(running)}` : null;
@@ -192,6 +204,8 @@ export function ticketLines(t, { status, stepName, prompted, agents, columns, st
     // Paused: why, when control pre-empted it for a fast-tracked ticket (ASS-83).
     ...(v['is-paused'] === true ? field('Paused', v['paused-for-fast-track'] ? `to free a seat for fast-tracked ${v['paused-for-fast-track']}` : 'yes') : []),
     ...(workedByHand(t) ? field('By hand', workedByHand(t)) : []),
+    // Held because it was reassigned away from the operator (ASS-345), whoever it went to and when that was seen.
+    ...(reassignedText(t) ? field('Held', reassignedText(t)) : []),
     ...field('Status in ticketing system', t['ticket-system-status']),
     ...field('Assignee', t['ticket-system-assignment']),
     ...field('Points', t.points),
@@ -585,7 +599,7 @@ export function tabBar(active, width, { gate = false, open = 0 } = {}, tabs = TA
 // fast-tracked, ✋ by hand), linked, and its variation ("A of 2" among
 // several); its title in at most two lines; `needs` (needsYou) in red when
 // something waits; its `status` and since when, and how long, from its last
-// move; Paused and By hand when they apply; the `agents` on it; priority (🪪
+// move; Paused, By hand and Held (reassigned away, ASS-345) when they apply; the `agents` on it; priority (🪪
 // when set by hand) · points, and beneath an estimate noted too large (ASS-264); its ticketing system's status · assignee; up to
 // three merge requests, then how many more; its automated tests; Health's
 // first line; spend (its chat's too, and its running agents' so far, marked:
@@ -635,6 +649,7 @@ export function quickLines(t, { status, agents = [], needs, chatSpend = 0, runni
     ...(moved ? [`  since ${at(moved)} UTC (${duration(now - Date.parse(moved))})`] : []),
     ...(v['is-paused'] === true ? [`Paused: ${v['paused-for-fast-track'] ? `for fast-track ${v['paused-for-fast-track']}` : 'yes'}`] : []),
     ...(hand ? [`By hand: ${hand.by} since ${at(hand.since)} UTC`] : []),   // UTC, as State's since (ASS-294)
+    ...(reassignedTo(t) ? [`Held: ${reassignedTo(t)}`, `  since ${at(t.reassigned['detected-at'])} UTC`] : []),   // reassigned away (ASS-345), detected when
     agentsOf(agents),
     '',
     `${priorityOf(t)} · Points ${t.points ?? NONE}`,

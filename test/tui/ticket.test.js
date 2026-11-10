@@ -546,3 +546,16 @@ test('ASS-261 AC4: the strip shows the risk after the key when there is room, an
   assert.ok(stripLines(t, { status: 'Build', agents: [], documents: DOCS, width: 20 }).every(l => visible(l) <= 20));
   assert.deepEqual(stripLines(t, { status: 'Build', agents: [], documents: null, width: 96 }), stripLines(t, { status: 'Build', agents: [], width: 96 }));
 });
+
+test('ASS-345: a ticket held as reassigned away from the operator says so on its screen and its quick panel — "Reassigned to <name>", or "Unassigned", and when that was detected; nothing for another', () => {
+  const away = to => ({ reassigned: { to, 'to-id': to && 'acc-bea', 'detected-at': '2026-11-10T13:05:42Z', 'paused-variations': ['A'] } });
+  const lines = ticket => ticketLines({ icon: '✨', key: 'ABC-1', title: 'T', ...ticket, variation: { 'local-testing': {}, 'state-changes': [], 'is-paused': true } },
+    { status: 'Build', stepName: id => id, prompted: () => false, agents: [], columns: 100, steps: [] }).details;
+  assert.ok(lines(away('Bea Other')).some(l => /^Held +Reassigned to Bea Other, detected 2026-11-10 13:05 UTC$/.test(l)), lines(away('Bea Other')).join('\n'));
+  assert.ok(lines(away(null)).some(l => /^Held +Unassigned, detected 2026-11-10 13:05 UTC$/.test(l)));
+  assert.ok(!lines({}).some(l => l.startsWith('Held')));
+  const panel = ticket => { const plain = quick(ticket).map(strip); const at = plain.findIndex(l => l.startsWith('Held')); return plain.slice(at, at + 2); };
+  assert.deepEqual(panel(away('Bea Other')), ['Held: Reassigned to Bea Other', '  since 11-10 13:05 UTC']);
+  assert.deepEqual(panel(away(null)), ['Held: Unassigned', '  since 11-10 13:05 UTC']);
+  assert.ok(!quick().map(strip).some(l => l.startsWith('Held')));
+});
