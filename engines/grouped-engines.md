@@ -137,7 +137,19 @@ depth, as a grouped fix ticket's own merge is, in its Release sub-engine's run
 straight to the default branch), once a commit whose subject starts with its
 key and a colon (`<KEY>:`, the key exactly) is reachable from the default
 branch of its project's local-pc workspace, locally or on origin as last
-fetched; a workspace that cannot be read finds none (ASS-340); an environment issue repaired in place, else Blocked for Human. It never
+fetched; a workspace that cannot be read finds none (ASS-340), or, Done with
+neither (a fix that re-recorded the blocked ticket's own data, a gitignored
+file no commit can carry), once one of the waiting variation's own inputs in
+its work folder — an allowlist, automated-tests-<variation>.json and
+demo-plan-<variation>.json, written only through automated-tests:record and
+ticket:set-demo-plan — holds other content than when the wait began:
+ticket:wait-on records the moment and each input's SHA-256 (null while
+missing) in the variation's `wait-began`. Nothing the harness writes on its
+own while the ticket is blocked or waiting counts — ticket.json, locks, step
+outputs, Blocked's change-log, the obstacle fix appended to the plan — nor
+another variation's file, an edit made before the wait began or a removed
+file; a wait recorded with no `wait-began` finds no such edit (ASS-342); an
+environment issue repaired in place, else Blocked for Human. It never
 resumes as if fixed when no fix can be raised or waited on: an empty fix key
 carries a no-ticket-reason (analysis-did-not-hold or create-failed) and a
 one-line why, kept in `blocks`; create-failed or no reason retries the write

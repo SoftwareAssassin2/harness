@@ -18,9 +18,17 @@ set -euo pipefail
 # ticket was raised — no-ticket-reason (analysis-did-not-hold|create-failed)
 # and a one-line why — naming the reason in the feedback; - or an unknown
 # reason (no reason given) keeps the generic text. Ignored on every other path.
+# ASS-342: beside waits-on it writes the variation's "wait-began": { at, the
+# time it began waiting (UTC), inputs, { <name>: SHA-256, or null while
+# missing } of each of the variation's own input files in its work folder
+# then (work.bash work_inputs: automated-tests-<variation>.json,
+# demo-plan-<variation>.json) } — for ticket:fix-landed to tell a fix made by
+# re-recording one of them after the wait began; {} when the ticket has no
+# work folder. Each wait records it afresh; - removes it with waits-on.
 here="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
 source "$here/../sprint.bash"
 source "$here/../ticket-system.bash"
+source "$here/../work.bash"
 
 [[ $# -eq 4 || $# -eq 6 ]] || { echo "usage: ticket:wait-on <project> <ticket-key> <variation> <fix-ticket-key|-> [<no-ticket-reason> <no-ticket-why>]" >&2; exit 1; }
 fix="$(tr '[:lower:]' '[:upper:]' <<< "$4")"
@@ -28,7 +36,7 @@ reason="${5:--}"
 no_ticket_why="${6:--}"
 has='if any(.variations // [] | .[]; .name == $name and (.["is-deleted"] | not)) then . else error("\($command): no \($key) variation \($name)") end'
 [[ "$fix" != - ]] || {
-  update_whole_ticket ticket:wait-on "$1" "$2" --arg name "$3" "$has"' | .variations |= map(if .name == $name then del(.["waits-on"]) else . end)'
+  update_whole_ticket ticket:wait-on "$1" "$2" --arg name "$3" "$has"' | .variations |= map(if .name == $name then del(.["waits-on"], .["wait-began"]) else . end)'
   jq -nc --arg t "$(tr '[:lower:]' '[:upper:]' <<< "$2")" --arg v "$3" '{ ticket: $t, variation: $v, "waits-on": null }'
   exit 0; }
 why() { jq -nc --arg s "$1" --arg l "$2" '{ "ai-feedback-short": $s, "ai-feedback-long": $l }'; echo "ticket:wait-on: $2" >&2; }
@@ -43,5 +51,6 @@ fi
 home="$(key_project ticket:wait-on "$fix")"
 [[ -n "$home" ]] || { why "The fix ticket cannot be waited on" "$fix names no project, so $2 cannot wait on it."; exit 1; }
 waits="$(jq -nc --arg p "$home" --arg t "$fix" '{ project: $p, ticket: $t }')"
-update_whole_ticket ticket:wait-on "$1" "$2" --arg name "$3" --argjson waits "$waits" "$has"' | .variations |= map(if .name == $name then .["waits-on"] = $waits else . end)'
+inputs="$(work_input_digests ticket:wait-on "$1" "$2" "$3")"
+update_whole_ticket ticket:wait-on "$1" "$2" --arg name "$3" --argjson waits "$waits" --argjson inputs "$inputs" "$has"' | .variations |= map(if .name == $name then .["waits-on"] = $waits | .["wait-began"] = { at: $at, inputs: $inputs } else . end)'
 jq -nc --arg t "$(tr '[:lower:]' '[:upper:]' <<< "$2")" --arg v "$3" --argjson w "$waits" '{ ticket: $t, variation: $v, "waits-on": $w }'

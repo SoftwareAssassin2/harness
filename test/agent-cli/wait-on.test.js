@@ -3,11 +3,11 @@
 // and merged (0), closed without a merge (3), or not yet (1).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { execFile, execFileSync } from 'node:child_process';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { fixture } from './harness-fixture.js';
+import { AGENT, fixture } from './harness-fixture.js';
 
 const fails = (promise, message) => assert.rejects(promise, e => message.test(e.stderr));
 const exitOf = promise => promise.then(() => 0, e => e.code);
@@ -116,6 +116,118 @@ test('ticket:fix-landed: a Done fix with no merge step landed when a "<KEY>:" co
   assert.deepEqual(JSON.parse((await f.agent('ticket:fix-landed', 'p', 'ABC-3', 'A')).stdout), { 'waits-on': { project: 'q', ticket: 'Q-1' }, status: 'Done', landed: true });
   f.fix({ 'ticket-system-status': 'In Progress' });
   assert.equal(await landed(), 1);                                                             // its commit alone does not land a ticket not yet Done
+});
+
+// ASS-342: a fix that re-records the blocked ticket's own inputs — automated-tests:record into its work folder, a
+// gitignored data file: no merge step, no commit — reaches Done with nothing merged or committed. ticket:wait-on
+// records when the wait began and what the variation's inputs held then (wait-began); one of them changed since,
+// through the harness's own write command, landed the fix. AC1: re-recorded after the wait began, exit 0, landed.
+// AC2: nothing changed — or only files outside the allowlist (ticket.json, locks, Blocked's change-log, the plan's
+// obstacle fix, another variation's tests), or the edit made before the wait began — is still a failed attempt, 3.
+const record = (f, variation, tests) => new Promise((resolve, reject) => {
+  const child = execFile(AGENT, ['automated-tests:record', 'p', 'ABC-3', variation], { env: f.env }, error => (error ? reject(error) : resolve()));
+  child.stdin.end(JSON.stringify(tests));
+});
+const doneUnmerged = f => f.fix({ 'ticket-system-status': 'Done', variations: [{ name: 'A', 'harness-status': { state: 'done' }, 'state-changes': [{ 'from-state': 'backlog', 'to-state': 'plan' }] }] });
+const blockedWork = f => {
+  const folder = join(f.dir, 'projects', 'p', 'work', 'ABC-3');
+  mkdirSync(folder, { recursive: true });
+  return folder;
+};
+const tests = [{ list: 'npm test -- --list', run: 'npm test' }, { list: 'npm run ci -- --list', run: 'npm run ci' }];
+
+test('ticket:wait-on records when the wait began and the digests of the variation\'s own inputs then (ASS-342)', async () => {
+  const f = waiting();
+  blockedWork(f);
+  await record(f, 'A', tests);
+  await f.agent('ticket:wait-on', 'p', 'ABC-3', 'A', 'Q-1');
+  const began = f.variation('A')['wait-began'];
+  assert.match(began.at, /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$/);
+  assert.deepEqual(Object.keys(began.inputs).sort(), ['automated-tests-A.json', 'demo-plan-A.json']);
+  assert.match(began.inputs['automated-tests-A.json'], /^[0-9a-f]{64}$/);
+  assert.equal(began.inputs['demo-plan-A.json'], null);                                       // missing then
+  await f.agent('ticket:wait-on', 'p', 'ABC-3', 'A', '-');
+  assert.equal('wait-began' in f.variation('A'), false);                                      // removed with waits-on
+});
+
+test('ASS-342 AC1: a Done fix with no merge step and no commit landed when it re-recorded the blocked variation\'s automated tests after the wait began', async () => {
+  const f = waiting();
+  blockedWork(f);
+  await record(f, 'A', tests);
+  await f.agent('ticket:wait-on', 'p', 'ABC-3', 'A', 'Q-1');
+  const landed = () => exitOf(f.agent('ticket:fix-landed', 'p', 'ABC-3', 'A'));
+  f.fix({ 'ticket-system-status': 'In Progress' });
+  await record(f, 'A', tests.slice(0, 1));                                                    // the ci-only entry dropped
+  assert.equal(await landed(), 1);                                                             // not Done yet: still waiting
+  doneUnmerged(f);
+  assert.equal(await landed(), 0);
+  assert.deepEqual(JSON.parse((await f.agent('ticket:fix-landed', 'p', 'ABC-3', 'A')).stdout), { 'waits-on': { project: 'q', ticket: 'Q-1' }, status: 'Done', landed: true });
+});
+
+test('ASS-342: a file first recorded after the wait began (missing then) landed the fix too', async () => {
+  const f = waiting();
+  blockedWork(f);
+  await f.agent('ticket:wait-on', 'p', 'ABC-3', 'A', 'Q-1');
+  doneUnmerged(f);
+  assert.equal(await exitOf(f.agent('ticket:fix-landed', 'p', 'ABC-3', 'A')), 3);
+  await record(f, 'A', []);
+  assert.equal(await exitOf(f.agent('ticket:fix-landed', 'p', 'ABC-3', 'A')), 0);
+});
+
+test('ASS-342 AC2: Done with no merge, no commit and no edit of the blocked variation\'s inputs since the wait began still exits 3, landed false', async () => {
+  const f = waiting();
+  blockedWork(f);
+  await record(f, 'A', tests);
+  await f.agent('ticket:wait-on', 'p', 'ABC-3', 'A', 'Q-1');
+  const landed = () => exitOf(f.agent('ticket:fix-landed', 'p', 'ABC-3', 'A'));
+  doneUnmerged(f);
+  assert.equal(await landed(), 3);                                                             // nothing changed
+  const out = await f.agent('ticket:fix-landed', 'p', 'ABC-3', 'A').then(() => assert.fail('landed'), e => e);
+  assert.deepEqual(JSON.parse(out.stdout), { 'waits-on': { project: 'q', ticket: 'Q-1' }, status: 'Done', landed: false });
+  await record(f, 'A', tests);                                                                 // re-recorded, the same content
+  assert.equal(await landed(), 3);
+});
+
+test('ASS-342: an edit of the blocked variation\'s inputs made before the wait began exits 3', async () => {
+  const f = waiting();
+  blockedWork(f);
+  await record(f, 'A', tests);
+  await record(f, 'A', tests.slice(0, 1));                                                     // the fix, before the wait
+  await f.agent('ticket:wait-on', 'p', 'ABC-3', 'A', 'Q-1');
+  doneUnmerged(f);
+  assert.equal(await exitOf(f.agent('ticket:fix-landed', 'p', 'ABC-3', 'A')), 3);
+});
+
+test('ASS-342: only files outside the allowlist changing since the wait began exits 3', async () => {
+  const f = waiting();
+  const folder = blockedWork(f);
+  await record(f, 'A', tests);
+  await record(f, 'B', tests);
+  await f.agent('ticket:wait-on', 'p', 'ABC-3', 'A', 'Q-1');
+  doneUnmerged(f);
+  writeFileSync(join(folder, 'ticket.json'), '{"changed":true}');
+  writeFileSync(join(folder, 'automated-tests-A.json.lock'), '');
+  writeFileSync(join(folder, 'change-log-A.md'), 'Blocked: troubleshot\n');
+  writeFileSync(join(folder, 'execution-plan-A.md'), '## Obstacle fix\n');
+  writeFileSync(join(folder, 'acceptance-criteria.json'), '[]');
+  await record(f, 'B', tests.slice(0, 1));                                                     // another variation's tests
+  assert.equal(await exitOf(f.agent('ticket:fix-landed', 'p', 'ABC-3', 'A')), 3);
+  rmSync(join(folder, 'automated-tests-A.json'));                                              // removed: not a recorded fix
+  assert.equal(await exitOf(f.agent('ticket:fix-landed', 'p', 'ABC-3', 'A')), 3);
+});
+
+test('ASS-342: a wait recorded before wait-began existed falls back to exit 3 whatever changed', async () => {
+  const f = waiting();
+  blockedWork(f);
+  await record(f, 'A', tests);
+  await f.agent('ticket:wait-on', 'p', 'ABC-3', 'A', 'Q-1');
+  const sprint = join(f.dir, 'projects', 'p', 'sprints', 'sprint-10', 'sprint.json');
+  const s = JSON.parse(readFileSync(sprint, 'utf8'));
+  for (const t of s.features) for (const v of t.variations ?? []) delete v['wait-began'];
+  writeFileSync(sprint, JSON.stringify(s));
+  doneUnmerged(f);
+  await record(f, 'A', tests.slice(0, 1));
+  assert.equal(await exitOf(f.agent('ticket:fix-landed', 'p', 'ABC-3', 'A')), 3);
 });
 
 // ASS-107 AC6 (operator, 2026-10-24): as every state's, the count is per stay — it starts again each time the

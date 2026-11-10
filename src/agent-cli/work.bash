@@ -58,3 +58,28 @@ work_file() {
   done
   work_path "$command" "$project" "$3" "$variation" "$file"
 }
+
+# work_inputs <variation> — the files of a ticket's work folder that are the
+# variation's own inputs, changed only through the harness's own write
+# commands: automated-tests-<variation>.json (automated-tests:record) and
+# demo-plan-<variation>.json (ticket:set-demo-plan). An allowlist, for
+# ticket:wait-on and ticket:fix-landed (ASS-342): never a file the harness
+# writes on its own while the ticket is blocked or waiting — ticket.json,
+# *.lock, step outputs, change-log-<variation>.md (Blocked's notes),
+# execution-plan-<variation>.md (ticket:plan-obstacle-fix) — nor another
+# variation's.
+work_inputs() { printf '%s\n' "automated-tests-$1.json" "demo-plan-$1.json"; }
+
+# work_input_digests <command> <project> <ticket-key> <variation> — as JSON,
+# { <name>: its SHA-256, or null while it is missing } for each of the
+# variation's work_inputs; {} when the ticket has no work folder.
+work_input_digests() {
+  local name file digest digests='{}'
+  while IFS= read -r name; do
+    file="$(work_path "$1" "$2" "$3" "$4" "$name" 2>/dev/null)" || { echo '{}'; return 0; }
+    digest=null
+    [[ -f "$file" ]] && digest="\"$(shasum -a 256 < "$file" | cut -d' ' -f1)\""
+    digests="$(jq -c --arg n "$name" --argjson d "$digest" '.[$n] = $d' <<< "$digests")"
+  done < <(work_inputs "$4")
+  printf '%s\n' "$digests"
+}

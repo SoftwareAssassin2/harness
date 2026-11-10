@@ -18,14 +18,28 @@ set -euo pipefail
 # step (ASS-340). That reads a host checkout, so it is for control's host;
 # where the workspace is missing or not a git checkout (inside a VM, say), or
 # neither branch can be read, no commit is found and it is not landed.
+# A Done ticket with neither has landed too when its fix was a direct edit,
+# made after the wait began, to the waiting variation's own inputs (ASS-342):
+# one of its work_inputs (work.bash, an allowlist: automated-tests-<variation>
+# .json and demo-plan-<variation>.json, which only automated-tests:record and
+# ticket:set-demo-plan write) is in the waiting ticket's work folder now with
+# content other than ticket:wait-on recorded for it in the variation's
+# "wait-began" when the wait began. Nothing else there counts — ticket.json,
+# *.lock, step outputs, Blocked's change-log, the obstacle fix
+# ticket:plan-obstacle-fix appends to the execution plan: all written by the
+# harness on its own while the ticket is blocked or waiting — nor another
+# variation's file, an edit made before the wait began (it is in what was
+# recorded), or a file removed. A wait recorded before ASS-342, with no
+# "wait-began", finds no such edit.
 # Prints { waits-on, status,
-# landed } and exits 0 once landed; exits 3 when it is Done without a merge
-# or such a commit (closed without its fix merged: a failed fix attempt); 1
-# until then. When
+# landed } and exits 0 once landed; exits 3 when it is Done without a merge,
+# such a commit or such an edit (closed without its fix landed: a failed fix
+# attempt); 1 until then. When
 # the variation waits on nothing, or is missing, exit 4, printing why as { ai-feedback-short, ai-feedback-long } (ASS-107 AC7: the
 # fix cannot be waited on).
 here="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
 source "$here/../code.bash"
+source "$here/../work.bash"
 
 # committed <project> <ticket-key> — whether a commit whose subject starts
 # "<ticket-key>:" is reachable from the default branch of the project's
@@ -43,10 +57,22 @@ committed() {
     | awk -v prefix="$2:" 'index($0, prefix) == 1 { found = 1 } END { exit !found }'
 }
 
+# edited <project> <ticket-key> <variation> <wait-began> — whether one of the
+# variation's work_inputs that <wait-began> recorded is in its work folder
+# now with other content than then; fails when none is.
+edited() {
+  local now
+  now="$(work_input_digests ticket:fix-landed "$1" "$2" "$3")"
+  jq -en --argjson now "$now" --argjson began "$4" --argjson names "$(work_inputs "$3" | jq -Rnc '[inputs]')" '
+    any($names[]; . as $n | ($began.inputs // {} | has($n)) and $now[$n] != null and $now[$n] != $began.inputs[$n])' >/dev/null
+}
+
 [[ $# -eq 3 ]] || { echo "usage: ticket:fix-landed <project> <ticket-key> <variation>" >&2; exit 1; }
 key="$(tr '[:lower:]' '[:upper:]' <<< "$2")"
-waits="$(jq -c --arg key "$key" --arg name "$3" '
-  first((.features, .bugs, .spikes) // [] | .[] | select(.key | ascii_upcase == $key)) // {} | .variations // [] | map(select(.name == $name)) | first | .["waits-on"] // empty' "$(sprint_file ticket:fix-landed "$1")")"
+variation="$(jq -c --arg key "$key" --arg name "$3" '
+  first((.features, .bugs, .spikes) // [] | .[] | select(.key | ascii_upcase == $key)) // {} | .variations // [] | map(select(.name == $name)) | first // {}' "$(sprint_file ticket:fix-landed "$1")")"
+waits="$(jq -c '.["waits-on"] // empty' <<< "$variation")"
+began="$(jq -c '.["wait-began"] | objects' <<< "$variation")"
 [[ -n "$waits" ]] || {
   jq -nc --arg l "$key $3 waits on no fix ticket, so it cannot wait for one to land." '{ "ai-feedback-short": "The fix ticket cannot be waited on", "ai-feedback-long": $l }'
   echo "ticket:fix-landed: $key $3 waits on no ticket" >&2; exit 4; }
@@ -63,7 +89,8 @@ merged="$(jq -r '.merged // false' <<< "${found:-null}")"
 landed=false
 [[ "$status" == Done && "$merged" == true ]] && landed=true
 [[ "$status" == Done && "$landed" == false ]] && committed "$home" "$fix" && landed=true
+[[ "$status" == Done && "$landed" == false && -n "$began" ]] && edited "$1" "$key" "$3" "$began" && landed=true
 jq -nc --argjson w "$waits" --arg s "$status" --argjson l "$landed" '{ "waits-on": $w, status: $s, landed: $l }'
 [[ "$landed" == true ]] && exit 0
-[[ "$status" == Done ]] && { echo "ticket:fix-landed: $fix is Done without its fix merged" >&2; exit 3; }
+[[ "$status" == Done ]] && { echo "ticket:fix-landed: $fix is Done without its fix landed" >&2; exit 3; }
 exit 1
