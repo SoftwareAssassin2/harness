@@ -25,13 +25,13 @@ const asked = (key, blocking) => ({ 'asked-on-ticket': key.toLowerCase(), status
 const BLUE = /\x1b\[34m[●⦿]/, GREY = /\x1b\[2;90m[●⦿]/;
 
 // The tile's count and, on the sprint and backlog screens, the tickets wearing each mark (on
-// the sprint, only its ⚉ column between the mark and the text, ASS-259).
+// the sprint, only its ⚉ and 💺 columns between the mark and the text, ASS-259, ASS-357).
 function shown(features, { backlog = [], questions = [] } = {}) {
   const project = { id: 'p', name: 'P', stateEngine: 'e', sprint: { number: 10, start: '2026-09-18', end: '2026-10-01', features, bugs: [], spikes: [] }, backlog, questions };
   const s = initialState({ projects: [project], workflows: [{ name: 'e', steps }, refinement], assignments: [{ project: 'p', 'agent-name': 'Daredevil', 'work-item': 'A-0', variation: null }] });
   const out = render(s, wide);
   const raw = [...out, ...render(handleKey(s, { name: 'b' }), wide)];
-  const marked = dot => [...new Set(raw.filter(l => dot.test(l)).map(l => strip(l).match(/[●⦿][ ⚉]*(A-\d+)/u)?.[1]).filter(Boolean))].sort();
+  const marked = dot => [...new Set(raw.filter(l => dot.test(l)).map(l => strip(l).match(/[●⦿][ ⚉]*(?:💺)?[ ]*(A-\d+)/u)?.[1]).filter(Boolean))].sort();
   return { n: Number(strip(out[7]).match(/│ +(\d+) +│/)[1]), blue: marked(BLUE), grey: marked(GREY), raw };
 }
 

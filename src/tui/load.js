@@ -74,6 +74,8 @@ const asShown = sprint => sprint && Object.fromEntries(Object.entries(sprint).ma
 // depends on (wait-for-dependencies, ASS-195: at any step, ASS-355); outside
 // its outside-tickets.json's tickets, the ones its tickets depend on that
 // its sprint and backlog do not hold (loadOutside, ASS-355);
+// limits the fields of its project.json and of harness.json control's
+// planner reads (pickLimits, ASS-357: the sprint screen's seats);
 // rateLimit its rate-limit.json (one entry per credential kind, ASS-215), or null (ASS-94); apiKey
 // whether it has an API key to fall back to (hasApiKey, ASS-333); claudeUsage its
 // claude-usage.json — its login's session and weekly (ASS-65) usage and account, as control last
@@ -114,6 +116,7 @@ export const loadProjects = (dir, lima = limaHome()) => readdirSync(dir)
       backgroundWorkOff: project['background-work'] === false,
       waitForDependencies: project['wait-for-dependencies'] === true,   // ASS-195: a ticket waits for the tickets it depends on
       outside: loadOutside(join(dir, name), readJson),   // ASS-355: the tickets depended on that its sprint and backlog do not hold
+      limits: { project: pickLimits(project), harness: pickLimits(harnessOf(dir)) },   // ASS-357: what the planner reads, for the sprint screen's seats
 
       rateLimit: existsSync(join(dir, name, 'rate-limit.json')) ? readJson(join(dir, name, 'rate-limit.json')) : null,
       claudeUsage: existsSync(join(dir, name, 'claude-usage.json')) ? readJson(join(dir, name, 'claude-usage.json')) : null,
@@ -133,6 +136,12 @@ export const loadProjects = (dir, lima = limaHome()) => readdirSync(dir)
     };
   })
   .toSorted((a, b) => a.name.localeCompare(b.name));
+
+// pickLimits(json) — the fields of a project.json or harness.json control's
+// planner (control/plan.js planDispatch) reads: the ticket limits, max-agents
+// and the per-ticket spending limit (ASS-357, the sprint screen's seats).
+const LIMIT_FIELDS = ['max-tickets-in-progress', 'max-tickets-in-planning', 'max-agents', 'max-spend-per-ticket-usd'];
+const pickLimits = json => Object.fromEntries(LIMIT_FIELDS.filter(name => json?.[name] != null).map(name => [name, json[name]]));
 
 // hasApiKey(folder) — whether the project in `folder` has an API key to fall
 // back to while its subscription is rate limited (ASS-333), as control's

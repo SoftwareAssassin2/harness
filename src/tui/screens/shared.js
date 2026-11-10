@@ -1,8 +1,10 @@
 // Helpers the screens share (ASS-201): used by two or more of src/tui/screens/,
 // or by the frame every screen sizes against. Moved from app.js as they were.
-import { sinceResolution, visitsInto, statusOf, changePath, isOpenQuestion, blocksTicket, markOff, isHeld, isBlockedState, waitsOnHuman, isDoneStep } from '../../control/engine.js';
+import { sinceResolution, visitsInto, statusOf, changePath, isOpenQuestion, blocksTicket, markOff, switchOff, isHeld, isBlockedState, waitsOnHuman, isDoneStep } from '../../control/engine.js';
 import { rankBacklog, flattenSprint } from '../../control/rank.js';
 import { dependencyHold, dependencyRows } from '../../control/dependencies.js';
+import { seatsOf } from '../../control/plan.js';
+import { switchedOffStepErrors } from '../../workflow/validate.js';
 import { stateOf, levelChanges, enginesOf, refinementSteps as refinementStepsOf } from '../status.js';
 import { lastStart } from '../table.js';
 import { visible, clip, link, wrapParts } from '../text.js';
@@ -264,6 +266,46 @@ export function sprintTickets(state) {
     }))
     .toSorted((a, b) => further(a, b) || (a.priority ?? Infinity) - (b.priority ?? Infinity) || 0);
   return { tickets, steps, done: Math.max(1, ...steps.map(s => s.sequence)) };
+}
+
+// seatHolders(state) — the "<key> <variation>" of the selected project's
+// sprint variations holding a planning or an in-progress seat (ASS-357): the
+// planner's own answer (control/plan.js seatsOf, its in-planning and
+// in-progress; not over-the-limits), asked of the dashboard's state laid out
+// as control's loadState has it (planProject), so a row's seat and control's
+// never disagree. Empty on a past day: seats are live state, as assignments
+// are (liveAssignments). The one thing control knows that the dashboard does
+// not is its running agents' spend so far (ASS-270), so spending limits count
+// the recorded spend alone.
+export function seatHolders(state) {
+  const selected = state.projects[state.project];
+  if (state.day || !selected) return new Set();
+  const projects = state.projects.map(p => planProject(state, p));
+  const plan = {
+    projects, allProjects: projects, assignments: state.assignments ?? [], harness: selected.limits?.harness ?? {}, running: {},
+    engines: enginesOf(state.workflows.filter(w => w.project == null)),
+  };
+  const seats = seatsOf(plan, projects[state.project]);
+  return new Set([...seats['in-progress'], ...seats['in-planning']]);
+}
+
+// planProject(state, p) — a dashboard project as control's loadState lists it,
+// what its planner reads: id, json (the limits of its project.json the
+// dashboard loads), engines (engines/'s with its own over them, ASS-276, its
+// valid switched-off-steps switched off, ASS-209 — as loadState switches them),
+// engine (its execution engine), tickets (its live sprint's, flattenSprint),
+// asking (those of them, not Done, an open blocking question in their own
+// questions-and-answers.json holds, as loadState's openBlocking, ASS-248), and
+// what control's heldBy reads to skip a variation its dependencies hold
+// (ASS-355): json's wait-for-dependencies, backlog and outside — the same
+// loaded data holdingOf gives dependencyHold, so a held row has no 💺.
+function planProject(state, p) {
+  const seen = enginesOf(state.workflows.filter(w => w.project == null || w.project === p.id).toReversed());   // its own listed first: last wins
+  const engines = switchOff(seen, (p.switchedOffSteps ?? []).filter(e => !switchedOffStepErrors(e, seen).length));
+  const tickets = flattenSprint(p.sprint ?? {});
+  const asking = new Set(tickets.filter(t => t['ticket-system-status'] !== 'Done' && (p.questions ?? []).some(q => q.source === t.key && blocksTicket(q))).map(t => t.key));
+  const json = { ...p.limits?.project, ...(p.waitForDependencies === true ? { 'wait-for-dependencies': true } : {}) };
+  return { id: p.id, json, engines, engine: engines[p.stateEngine], tickets, backlog: p.backlog ?? [], outside: p.outside ?? [], asking };
 }
 
 // Which of two sprint tickets is closer to done: the higher step sequence at

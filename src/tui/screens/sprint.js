@@ -7,7 +7,7 @@ import { boxTable, lastStart, tableLayout } from '../table.js';
 import { pad, link, visible, clip } from '../text.js';
 import { workedByHand, tokenSpend, testCounts } from '../ticket.js';
 import { below, headerLines, platform } from './frame.js';
-import { NONE, feedback, agentLines, liveAssignments, ticketMarks, sprintMark, markDot, GLYPHS, move, green, red, gold, gray, sprintTickets, statusCell, ticketAgents, chatSpend } from './shared.js';
+import { NONE, feedback, agentLines, liveAssignments, ticketMarks, sprintMark, markDot, GLYPHS, move, green, red, gold, gray, sprintTickets, statusCell, ticketAgents, chatSpend, seatHolders } from './shared.js';
 import { openTicket } from './ticket.js';
 import { isHeld } from '../../control/engine.js';
 import { slotKind } from '../../control/plan.js';
@@ -23,8 +23,8 @@ const SHRINK = ['Health', 'Agents', 'Status'].map(h => TABLE_HEADERS.indexOf(h))
 // The Ticket column's floor: over the rows, the width of the key/icon prefix
 // plus TITLE_CHARS title characters (or the whole title if shorter), and one
 // more for the ellipsis when the title is cut. Measured off the already-built
-// Ticket cell and its title, so the prefix (the six one-cell icon columns,
-// PAUSED, WAITING ON or UNASSIGNED, the linked key: see ticketRows) is not re-derived. No rows → 0 (no floor).
+// Ticket cell and its title, so the prefix (the six one-cell icon columns and
+// the two-cell seat, PAUSED, WAITING ON or UNASSIGNED, the linked key: see ticketRows) is not re-derived. No rows → 0 (no floor).
 const ticketFloor = (rows, tickets) => Math.max(0, ...rows.map((row, i) => {
   const title = tickets[i].title;
   return visible(row[0]) - visible(title) + visible(clip(title, TITLE_CHARS)) + (visible(title) > TITLE_CHARS ? 1 : 0);
@@ -59,7 +59,7 @@ function layout(state, { columns = 0, rows = Infinity, now = 0 }) {
   const bottom = below(state) + Math.max(1, platform(state, columns, now).length);
   const key = iconKey(columns);
   const free = rows - headerLines(state, columns, now).length - bottom - 5 - key.length;
-  const cells = ticketRows(tickets, liveAssignments(state), steps, state.projects[state.project]?.collaborations, ticketMarks(state, tickets));
+  const cells = ticketRows(tickets, liveAssignments(state), steps, state.projects[state.project]?.collaborations, ticketMarks(state, tickets), seatHolders(state));
   const fit = { columns, stretch: 0, min: ticketFloor(cells, tickets), shrink: SHRINK };
   const ticketGrid = { rows: tableLayout(TABLE_HEADERS, cells, fit).cells, bodyHeight: free - 4 };
   const [selected, scroll] = gridAt(state, ticketGrid, tickets, done);
@@ -94,6 +94,9 @@ const UNASSIGNED = red('UNASSIGNED');   // red (ASS-355; was PAUSED's blue), bef
 const WAITING_KEYS = 2;
 const waitingOn = keys => gold(`WAITING ON ${keys.slice(0, WAITING_KEYS).join(', ')}${keys.length > WAITING_KEYS ? ` +${keys.length - WAITING_KEYS}` : ''}`);
 const dim = text => `\x1b[2m${text}\x1b[0m`;
+// A variation holding a planning or in-progress seat (ASS-357): an emoji, two
+// cells wide (text.js visible counts it so), its column two blanks without.
+const SEAT = '💺';
 
 // The key under the ticket grid (ASS-259): each of the rows' glyphs as they
 // are drawn there — ⦿ in each of its colors, PAUSED in blue, UNASSIGNED in red, WAITING ON in gold — with what it
@@ -103,6 +106,7 @@ const KEY = [
   [dim(GLYPHS.step), 'step'], [dim(GLYPHS.features), 'feature'], [dim(GLYPHS.bugs), 'bug'], [dim(GLYPHS.spikes), 'spike'],
   [dim(GLYPHS.hand), 'by hand'], [dim(GLYPHS.fast), 'fast-tracked'], [markDot(GLYPHS.mark, 'change'), 'requirements change'],
   [markDot(GLYPHS.mark, 'needed'), 'needs you'], [markDot(GLYPHS.mark, 'assumed'), 'assumption'], [dim(GLYPHS.agent), 'agent working'],
+  [SEAT, 'holds a seat (planning or in progress)'],
   [PAUSED, 'paused'], [UNASSIGNED, 'reassigned away'], [gold('WAITING ON'), 'a dependency not done yet'],
 ].map(([glyph, meaning]) => `${glyph}${dim(` ${meaning}`)}`);
 function iconKey(columns) {
@@ -133,7 +137,9 @@ const BUILD_COLORS = { Merged: gray, Closed: gray, Running: gold, Failed: red, P
 // requirements change (ASS-78), else blue waiting on the operator
 // (`marks.needed`, see ticketMarks, ASS-242), else dim grey going on with an
 // assumption alone (`marks.assumed`, ASS-248), on every variation's row; c6 ⚉
-// while an agent works on the row's ticket and variation (its Agents). A
+// while an agent works on the row's ticket and variation (its Agents); then a
+// two-cell column, 💺 when the variation holds a planning or in-progress seat
+// (ASS-357: `seats`, seatHolders — the planner's, none on a past day). A
 // paused variation's (is-paused) text starts "PAUSED " in blue — one its
 // dependencies hold (its `hold`, ASS-355: control's own predicate) "WAITING ON
 // <KEY>, <KEY> " in gold in its place, paused too or not; a ticket
@@ -141,7 +147,7 @@ const BUILD_COLORS = { Merged: gray, Closed: gray, Running: gold, Failed: red, P
 // reassigned, to another person or to nobody) "UNASSIGNED " in red in place
 // of either, on every variation's row: the reassignment says more; iconKey
 // says what each means, under the grid.
-function ticketRows(tickets, assignments, steps, collaborations = {}, marks = { needed: new Set() }) {
+function ticketRows(tickets, assignments, steps, collaborations = {}, marks = { needed: new Set() }, seats = new Set()) {
   return tickets.map(t => {
     // One line per assignment to this ticket and this row's variation (or to no
     // variation in particular).
@@ -153,7 +159,7 @@ function ticketRows(tickets, assignments, steps, collaborations = {}, marks = { 
     ];
     const held = t.reassigned ? `${UNASSIGNED} ` : t.hold?.waits?.length ? `${waitingOn(t.hold.waits)} ` : t.variation['is-paused'] === true ? `${PAUSED} ` : '';
     return [
-      `${icons.map(icon => icon || ' ').join('')} ${held}${t.url ? link(name, t.url) : name}`,
+      `${icons.map(icon => icon || ' ').join('')}${seats.has(`${t.key} ${t.variation.name}`) ? SEAT : '  '} ${held}${t.url ? link(name, t.url) : name}`,
       String(t.priority ?? NONE) + (t['manual-priority'] != null ? ' 🪪' : ''),
       statusCell(t, steps),
       String(t.points ?? NONE),
