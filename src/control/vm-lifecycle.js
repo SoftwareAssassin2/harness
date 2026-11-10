@@ -42,7 +42,18 @@
 // a VM control has not reached yet waits for the probe instead. It is
 // dropped from vmsUp for the refresh, as a stopping VM is, so no dispatch
 // lands in it mid-refresh (ASS-159); a refresh whose vm:start prints another
-// kind fails, and is backed off. The work runs beside
+// kind fails, and is backed off. So too, by the same rules (idle, reached,
+// its wait logged once), one whose keychain items were saved again since it
+// got its credentials (ASS-350: a rotated key, which no kind change shows,
+// left agents in older VMs failing "Invalid API key"): vm:credentials records
+// each injected item's keychain modification time on the VM's vms.json row
+// (credential-stamps { "<kind>": "<mdat>" }: never a value), and an item whose
+// stamp now (vm:credential-stamps, read at most once per job pass, and only
+// when a VM due the comparison records stamps) differs from the recorded one
+// refreshes it, logged "credentials refreshed (…; <kind> key changed)". A VM
+// recording no stamps (started before ASS-350), or an item either side does not
+// stamp, is not compared — unknown, not changed — until its next start records
+// them. The work runs beside
 // the tick, one job per project at a time, so a slow start (7–30 s) holds up
 // nothing; each start, stop or recreation is logged, and one that fails is
 // logged and tried again after a failing step's backoff (backoff.js: 30
@@ -123,7 +134,7 @@ function declaredVmKind(ctx, id) {
 }
 
 // The project's VMs: name → { ticket, variation, state (its variation's top-level step, in the sprint), run (whether it should), waits (for a slot),
-// kind (its recorded credential kind), busy (an assignment on its variation, its agent started or not; for an inventory-only VM,
+// kind (its recorded credential kind), stamps (its recorded credential-stamps, ASS-350, or null), busy (an assignment on its variation, its agent started or not; for an inventory-only VM,
 // its row's ticket and variation, ASS-349), unlinked (ASS-234: only the
 // inventory knows it, yet its variation is in the sprint — a vm:create that failed before linking it — logged so when it is stopped),
 // paused (ASS-297: the scope of the human pause holding the project, when only that keeps it from running), keep (paused and busy:
@@ -135,7 +146,7 @@ function vmsOf(ctx, state, project) {
   for (const [name, e] of Object.entries(inventoryOf(ctx, project.id))) {
     const unlinked = project.tickets.some(t => t.key.toLowerCase() === e.ticket?.toLowerCase() && t.variations?.some(v => v.name === e.variation && !v['is-deleted']));
     const busy = state.assignments.some(a => a.project === project.id && a['work-item']?.toLowerCase() === e.ticket?.toLowerCase() && a.variation === e.variation);   // ASS-349
-    vms.set(name, { ticket: e.ticket, variation: e.variation, run: false, kind: e['credential-kind'] ?? null, unlinked, busy });
+    vms.set(name, { ticket: e.ticket, variation: e.variation, run: false, kind: e['credential-kind'] ?? null, stamps: e['credential-stamps'] ?? null, unlinked, busy });
   }
   for (const t of project.tickets) for (const v of t.variations ?? []) {
     if (!v.vm?.name) continue;
@@ -184,6 +195,10 @@ const isUp = (ctx, name) => { (ctx.memory.vmsUp ??= new Set()).add(name); ctx.me
 // probe(ctx, name) — whether `name`'s sshd accepts connections yet.
 const probe = (ctx, name) => new Promise((resolve, reject) => execFile('limactl', ['shell', name, '--', 'true'], { env: limaEnv(ctx.env), timeout: 5000 }, error => error ? reject(error) : resolve()));
 
+// changedKeys(recorded, now) — the credential kinds whose keychain stamp both
+// record and differ (ASS-350); none when either is unknown.
+const changedKeys = (recorded, now) => (recorded && now ? Object.keys(now).filter(k => recorded[k] && now[k] && recorded[k] !== now[k]) : []);
+
 // One project's pass, by `status` (limactl list's, read this tick): each VM
 // not yet reached but Running is probed (ASS-169: a VM is `Running` a few
 // seconds before its sshd accepts connections) — silently, so a VM not yet
@@ -192,6 +207,20 @@ const probe = (ctx, name) => new Promise((resolve, reject) => execFile('limactl'
 async function match(ctx, id, vms, r, status, diskHold = false) {
   const up = (ctx.memory.vmsUp ??= new Set());
   const declared = declaredVmKind(ctx, id);
+  // ASS-350 AC4: the keychain items' stamps now, read at most once this pass, and only when asked; null when unreadable (logged once till read again).
+  let stampsNow;
+  const currentStamps = async () => {
+    if (stampsNow !== undefined) return stampsNow;
+    const unread = `vm-stamps/${id}`;
+    try {
+      stampsNow = JSON.parse((await ctx.cli(['vm:credential-stamps', id])) || '{}');
+      ctx.memory.warned.delete(unread);
+    } catch (error) {
+      stampsNow = null;
+      if (!ctx.memory.warned.has(unread)) { ctx.memory.warned.add(unread); ctx.log('error', `${PHASE} ${id}: vm:credential-stamps ${id} failed; no VM's credentials compared with the keychain till it reads: ${error.message}`); }
+    }
+    return stampsNow;
+  };
   for (const [name, vm] of vms) {
     if (vm.keep) continue;   // ASS-297: its project paused, an assignment on it: left as it is till that ends
     if (vm.release && vm.busy) continue;   // ASS-325: released, an assignment on it: left as it is till that ends
@@ -201,7 +230,7 @@ async function match(ctx, id, vms, r, status, diskHold = false) {
     if (vm.run && s === 'Running' && !up.has(name)) {
       try { await probe(ctx, name); isUp(ctx, name); } catch { /* not yet reachable; probed again next job */ }
     }
-    let args, did, refreshing = false, first = null;
+    let args, did, refreshing = false, first = null, changed = [];
     if (vm.release && s == null) continue;   // ASS-325: deleted already
     if (vm.release) [first, args, did] = [s === 'Running' ? ['vm:stop', id, name] : null, ['vm:delete', id, name], `deleted (${vm.ticket} ${vm.variation} at ${vm.state}: released)`];
     else if (vm.run && s == null) [args, did] = [['vm:create', id, vm.ticket, vm.variation], `recreated (${vm.ticket} ${vm.variation} at ${vm.state}; it had been deleted)`];
@@ -223,6 +252,18 @@ async function match(ctx, id, vms, r, status, diskHold = false) {
       ctx.memory.warned.delete(waiting);
       refreshing = true;
       [args, did] = [['vm:start', id, vm.ticket, vm.variation], `credentials refreshed (${vm.ticket} ${vm.variation} at ${vm.state}; ${vm.kind ?? 'no recorded kind'} → ${declared})`];
+    }
+    else if (vm.run && s === 'Running' && up.has(name) && Object.keys(vm.stamps ?? {}).length && (changed = changedKeys(vm.stamps, await currentStamps())).length) {
+      // ASS-350: a keychain item saved again since the VM got its credentials (a rotated key) — refreshed as a kind change is, once idle.
+      const items = `${changed.join(', ')} key${changed.length > 1 ? 's' : ''} changed`;
+      const waiting = `vm-refresh/${name}/stamps/${changed.map(k => `${k}@${stampsNow[k]}`).join(',')}`;
+      if (vm.busy) {
+        if (!ctx.memory.warned.has(waiting)) { ctx.memory.warned.add(waiting); ctx.log(PHASE, `${id} ${name}: credentials to refresh (${items}); waits until it is idle`); }
+        continue;
+      }
+      ctx.memory.warned.delete(waiting);
+      refreshing = true;
+      [args, did] = [['vm:start', id, vm.ticket, vm.variation], `credentials refreshed (${vm.ticket} ${vm.variation} at ${vm.state}; ${items})`];
     }
     else continue;
     // The disk nearly full (ASS-288, disk.js): no VM recreated (a clone) or started; stops and refreshes go on.
