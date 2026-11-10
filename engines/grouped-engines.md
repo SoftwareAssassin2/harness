@@ -56,6 +56,15 @@ human, or that repository's team review), since the ticket's Release comes
 after its tests. It waits for the merge only, not for a later publishing
 pipeline (a promotion after the merge).
 
+Write Execution Plan (grouped/v2 Plan, `write-execution-plan-grouped`) never
+pins a consumer to a digest or tag a producer repository publishes only after
+its merge request merges, when that digest can't be read in the VM (ASS-339):
+it plans the producer's merge request alone and leaves the consumer's pin to
+Renovate or a follow-up ticket. A hand-pinned placeholder digest
+(`sha256:0000…0000`) reads merge-ready but is un-pullable, so Ensure Auto-Merge
+never arms it and the release bounces until the ticket blocks. The flat
+`write-execution-plan` prompt is unchanged.
+
 The Refresh steps (ASS-218; grouped/v2 Build only, `vm:refresh-repositories`,
 on the host) open Build and come before every Automated Testing. Each of
 the VM's repositories that none of the variation's merge requests is in is

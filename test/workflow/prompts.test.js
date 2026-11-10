@@ -296,6 +296,20 @@ test('ASS-116: write-execution-plan-grouped answers the operator\'s rejection at
   assert.doesNotMatch(readFileSync(join(ROOT, 'prompts', 'write-execution-plan', 'prompt.txt'), 'utf8'), /rejection-reason/);
 });
 
+// ASS-339: a plan pinned a consumer to a producer image published only after
+// the producer's merge request merged; the digest was unknowable in the VM, so
+// a placeholder sha256:0000…0000 shipped and Ensure Auto-Merge never armed it.
+test('ASS-339 AC1, AC2, AC3: write-execution-plan-grouped forbids pinning a consumer to a producer digest published only after merge, names the all-zeros placeholder digest symptom; the flat write-execution-plan is unchanged', () => {
+  const text = readFileSync(join(ROOT, 'prompts', 'write-execution-plan-grouped', 'prompt.txt'), 'utf8');
+  assert.match(text, /Never pin a consumer to a digest or tag a producer repository publishes only after its merge request merges/, 'AC1');
+  assert.match(text, /when that digest can't be read here in the VM \(no registry credentials\), plan the producer's merge request alone and leave the consumer's pin to Renovate or a separate follow-up ticket/, 'AC1');
+  assert.match(text, /The pattern to avoid: a placeholder digest \(sha256:0000…0000\) pinned in the consumer — its merge request looks merge-ready but is un-pullable, so ensure-auto-merge can never arm it\./, 'AC2');
+  const grep = text.split('\n').filter(l => l.includes('sha256:0') || l.includes('placeholder digest'));
+  assert.equal(grep.length, 1, 'AC3: one line holds both');
+  assert.match(grep[0], /Never pin a consumer/, 'AC3: the grep returns the new guidance');
+  assert.doesNotMatch(readFileSync(join(ROOT, 'prompts', 'write-execution-plan', 'prompt.txt'), 'utf8'), /sha256:0|placeholder digest/, 'the flat prompt is unchanged');
+});
+
 // The requirements-changed workflow (ASS-79). Revise Acceptance Criteria
 // writes {ticket-folder}/requirements-change.md from the latest description
 // change in requirements-history.jsonl (ticket:sync's, ASS-38) and revises

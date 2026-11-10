@@ -16,6 +16,7 @@ Write the execution plan for ticket {ticket}, variation {variation} of project {
    - "contents": what it contains.
    - "depends-on": the ids it must wait for, else [].
    The harness names each branch; don't. A merge request already Open, Merged or Closed keeps its key, link and status: don't move its work to another repository. To drop one that is not yet created, leave it out and say why in execution-plan-{variation}.md.
+   Never pin a consumer to a digest or tag a producer repository publishes only after its merge request merges: when that digest can't be read here in the VM (no registry credentials), plan the producer's merge request alone and leave the consumer's pin to Renovate or a separate follow-up ticket. The pattern to avoid: a placeholder digest (sha256:0000…0000) pinned in the consumer — its merge request looks merge-ready but is un-pullable, so ensure-auto-merge can never arm it.
    Record it: `{agent-sh} ticket:set-merge-request-plan {project} {ticket} {variation} -`, the JSON on stdin.
 
 The plan holds no spikes, investigations or research steps: every step in it is a change to make. Research belongs in step 2, done before the plan is written.
