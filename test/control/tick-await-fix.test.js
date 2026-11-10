@@ -16,7 +16,7 @@ const ROOT = join(import.meta.dirname, '..', '..');
 const edit = (file, change) => { const json = JSON.parse(readFileSync(file, 'utf8')); change(json); writeFileSync(file, JSON.stringify(json)); };
 const sprint = f => join(f.dir, 'projects', 'p', 'sprints', 'sprint-10', 'sprint.json');
 const grouped = JSON.parse(readFileSync(join(engineDir('grouped-blocked'), 'state-engine.json'), 'utf8'));
-const KEPT = ['await-fix', 'done', 'retry', 'blocked-for-human'];
+const KEPT = ['await-fix', 'resume-step', 'done', 'retry', 'blocked-for-human'];
 
 // The control fixture with ABC-3 A at blocked, waiting on ABC-9 (Blocked for Human, not landed): blocked
 // runs grouped-blocked's own await-fix step and its ends, so the run starts at await-fix.

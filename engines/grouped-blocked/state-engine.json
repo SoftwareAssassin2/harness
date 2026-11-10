@@ -487,7 +487,7 @@
                     "condition": {
                         "exit-code": 0
                     },
-                    "move-to-state": "done"
+                    "move-to-state": "resume-step"
                 },
                 {
                     "condition": {
@@ -504,8 +504,35 @@
             ]
         },
         {
-            "id": "done",
+            "id": "resume-step",
             "sequence": 15,
+            "name": "Find Where to Resume",
+            "description": "The fix landed: the step the ticket resumes at (ASS-343), recorded as the run's resume-at — the fix ticket's declared resume-at, else the earliest step its commits or the ticket's changed work files map to, else the step it blocked at. The parent's return takes it when it is a work step at or before the blocked one (engine.js whyNotResume), else returns to the blocked step as before; whatever the command's exit, the run is done",
+            "record-script-output": true,
+            "action": {
+                "type": "script",
+                "command": "./agent.sh ticket:fix-resume-step {project} {work-item} {variation}"
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "exit-code": 0
+                    },
+                    "move-to-state": "done"
+                },
+                {
+                    "condition": {
+                        "not": {
+                            "exit-code": 0
+                        }
+                    },
+                    "move-to-state": "done"
+                }
+            ]
+        },
+        {
+            "id": "done",
+            "sequence": 16,
             "name": "Done",
             "description": "Fixed, repaired, or nothing wrong any more: the parent follows return-to-state",
             "is-done": true,
@@ -515,7 +542,7 @@
         },
         {
             "id": "retry",
-            "sequence": 16,
+            "sequence": 17,
             "name": "Retry",
             "description": "The fix ticket was closed unmerged, a failed attempt: the parent goes round Blocked again, its attempts counted afresh",
             "is-done": true,
@@ -525,7 +552,7 @@
         },
         {
             "id": "blocked-for-human",
-            "sequence": 17,
+            "sequence": 18,
             "name": "Blocked for Human",
             "description": "No fix could be raised, waited on or made, or 3 fix attempts failed: the parent goes to Blocked for Human, the run's ai-feedback saying why",
             "is-done": true,
