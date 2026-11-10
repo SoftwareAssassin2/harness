@@ -14,7 +14,7 @@ import { controlFixture } from './control-fixture.js';
 import { superviseVms, VM_WAIT } from '../../src/control/vm-lifecycle.js';
 import { tick } from '../../src/control/tick.js';
 import { runSteps } from '../../src/control/steps.js';
-import { dispatch } from '../../src/control/dispatch.js';
+import { dispatch, VM_UP_CEILING, vmUpCeilingMs } from '../../src/control/dispatch.js';
 import { runCli } from '../../src/control/cli.js';
 import { fakeVm } from '../support/fake-vm.js';
 import { engineDir, engineNames } from '../support/engine-walk.js';
@@ -318,6 +318,61 @@ test('ASS-169 AC1-AC4: a VM Running but not yet reachable is probed in the match
     await l.tick();
     assert.equal(l.agents().length, 1, l.f.lines.join('\n'));
     assert.ok(!l.f.lines.some(x => /^error /.test(x)), l.f.lines.join('\n'));
+  } finally {
+    l.f.ctx.stopAgents();
+  }
+});
+
+// ASS-348: past VM_WAIT a step is judged as it stands (ASS-133), but an agent
+// still waits for its VM until control has seen it up — one sent into a VM
+// whose vm:start has not written its credentials yet fails "Not logged in" in
+// seconds and spends a try — and, past VM_UP_CEILING, its variation goes to
+// Blocked, its ai-feedback naming the VM.
+const DISPATCH_WAIT = 'dispatch ABC-3 A generate-solution: waits for its VM abc-3-a to be up before an agent is dispatched into it';
+
+test('ASS-348 AC1, AC2, AC4: a VM still starting past VM_WAIT gets no agent — the step judged as it stands, the dispatch wait logged once — and the tick after it is up dispatches one', async () => {
+  const l = await dispatching({ A: [GENERATING, 'Stopped'] });
+  try {
+    await l.tick();   // vm:start under way beside the tick, not done
+    l.later(VM_WAIT);
+    await l.tick(); await l.tick(); await l.tick();
+    assert.deepEqual(l.agents(), [], l.f.lines.join('\n'));
+    assert.equal(l.f.lines.filter(x => /its VM abc-3-a is not running after 2m; judged as it stands$/.test(x)).length, 1, l.f.lines.join('\n'));
+    assert.equal(l.f.lines.filter(x => x === DISPATCH_WAIT).length, 1, l.f.lines.join('\n'));
+    await l.settle();   // vm:start done: the VM is up
+    assert.ok(l.f.ctx.memory.vmsUp.has('abc-3-a'));
+    await l.tick();
+    assert.equal(l.agents().length, 1, l.f.lines.join('\n'));
+    assert.ok(!l.f.lines.some(x => /^error |tried again/.test(x)), l.f.lines.join('\n'));
+  } finally {
+    l.f.ctx.stopAgents();
+  }
+});
+
+test('ASS-348 AC1, AC3: a VM whose vm:start failed and is backed off gets no agent past VM_WAIT; at VM_UP_CEILING (30 minutes, harness.json vm-up-ceiling-seconds) the variation goes to Blocked, its ai-feedback naming the VM', async () => {
+  assert.equal(VM_UP_CEILING, 30 * 60_000);
+  assert.equal(vmUpCeilingMs({ harness: {} }), VM_UP_CEILING);
+  assert.equal(vmUpCeilingMs({ harness: { 'vm-up-ceiling-seconds': 600 } }), 600_000);
+  const l = await dispatching({ A: [GENERATING, 'Stopped'] }, { fail: args => args[0] === 'vm:start' && 'vm:start: limactl list failed' });
+  try {
+    await l.tick(); await l.settle();
+    assert.ok(l.f.lines.some(x => /^error vm p abc-3-a: vm:start p ABC-3 A failed \(1 in a row; next try in 30s\)/.test(x)), l.f.lines.join('\n'));
+    l.later(VM_WAIT);
+    await l.tick(); await l.tick();
+    assert.deepEqual(l.agents(), [], l.f.lines.join('\n'));
+    assert.equal(l.f.lines.filter(x => x === DISPATCH_WAIT).length, 1, l.f.lines.join('\n'));
+    l.later(VM_UP_CEILING - VM_WAIT - 1000);
+    await l.tick();
+    assert.equal(l.f.variation('A')['harness-status'].state, 'build', l.f.lines.join('\n'));
+    l.later(1000);
+    await l.tick();
+    assert.deepEqual(l.agents(), [], l.f.lines.join('\n'));
+    const v = l.f.variation('A');
+    assert.equal(v['harness-status'].state, 'blocked', l.f.lines.join('\n'));
+    assert.equal(v['ai-feedback-short'], 'VM abc-3-a never came up: not running and reachable after 30m');
+    assert.match(v['ai-feedback-long'], /^VM abc-3-a never came up: .*no agent was sent/);
+    assert.ok(l.f.lines.some(x => /^dispatch ABC-3 A build → blocked .*\(its VM abc-3-a never came up\)$/.test(x)), l.f.lines.join('\n'));
+    assert.equal(l.f.lines.filter(x => x === DISPATCH_WAIT).length, 1, l.f.lines.join('\n'));
   } finally {
     l.f.ctx.stopAgents();
   }
