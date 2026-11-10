@@ -13,7 +13,7 @@ rollback.
 | Backlog, Committed | (plain steps) | |
 | Setup | `grouped-setup` | Check Setup Complete, Create VM, Mark Setup Complete |
 | Plan | `grouped-plan` | Extract Acceptance Criteria, Root Cause Analysis, Review Root Cause Analysis, Write Execution Plan, Write Test Plan, Enrich Automated Test Data, Review Plan |
-| Build | `grouped-build` | Refresh the Reference Repositories, Generate Automated Tests, Generate Solution, Refresh the Reference Repositories Before Testing, Automated Testing, CI Checks, Code Review, Security Review |
+| Build | `grouped-build` | Refresh the Reference Repositories, Generate Automated Tests, Generate Solution, Await Dependencies in Other Repositories, Refresh the Reference Repositories Before Testing, Automated Testing, CI Checks, Code Review, Security Review |
 | Test | `grouped-test` | Local Testing (`grouped-local-testing`), Steps to Test (`grouped-steps-to-test`) |
 | Document | `grouped-document` | Update Documentation, Update Merge Request Details, Check Merge Request Details, Add Screenshots to Merge Request |
 | Review | `grouped-review` | Explain the Change, Risk Assessment, AI Token Expense Check, Payment Gate, Variation Selection |
@@ -34,7 +34,27 @@ both before the match, so a description naming the full subject verbatim
 passes (ASS-302) — and waits for its head pipeline's `.pre` jobs (none, or
 GitHub: no wait). A failure goes back to Update Merge Request Details with
 `merge-request-details-check-<variation>.md`, a failed job's log in it. The
-same format fills the prompt's `{merge-request-title}`.
+same format fills the prompt's `{merge-request-title}`, and `merge-request:create`
+opens each merge request in it (ASS-335): `KEY: title`, or with `"conventional"`
+`type: title (KEY)` — a Bug a `fix`, a Task or Spike a `chore`, else a `feat`;
+`(MR <id>)` before the key when the variation has several — so a CI mr-title
+job passes from the first pipeline and the merge request can merge.
+
+Await Dependencies in Other Repositories (ASS-335; grouped Build only — v2-build
+and the flat engines have none — `merge-request:await-dependencies`, on the
+host, a timer every 5 minutes) sits between Generate Solution and the refresh
+before Automated Testing. A merge request depending on one in its own
+repository is stacked on that one's branch, so its tests see the change; one
+depending on a merge request in another repository is not, and its tests run
+against what that repository has published, which lacks the change until the
+dependency merges. While any such dependency is neither Merged nor Closed
+(read from the forge), the step exits 2, its waiting-exit-code: the ticket
+stays there, polled, no failure counted, never sent back to Generate Solution.
+None waiting (most tickets: no forge asked) exits 0, on to the refresh and the
+tests. The dependency usually merges outside the ticket's own Release (a
+human, or that repository's team review), since the ticket's Release comes
+after its tests. It waits for the merge only, not for a later publishing
+pipeline (a promotion after the merge).
 
 The Refresh steps (ASS-218; grouped/v2 Build only, `vm:refresh-repositories`,
 on the host) open Build and come before every Automated Testing. Each of
