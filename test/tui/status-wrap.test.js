@@ -35,8 +35,11 @@ const project = { id: 'p', name: 'P', stateEngine: 'e', waitForDependencies: tru
 const state = initialState({ projects: [project], workflows: [{ name: 'e', steps }], assignments });
 
 // The grid's lines at `columns`, colors and links off: its top border to its bottom.
+// Tall enough for ABC-1's Status at its narrowest (one key per line) under the
+// key below the grid, which takes two lines at 150 columns since UNASSIGNED
+// joined it (ASS-345).
 function grid(columns) {
-  const out = render(state, { columns, rows: 80, now }).map(strip);
+  const out = render(state, { columns, rows: 90, now }).map(strip);
   return out.slice(out.findIndex(l => /^┌.*┬/.test(l)), out.findLastIndex(l => /^└/.test(l)) + 1);
 }
 // A column's text on every body line, by the header's dividers.
