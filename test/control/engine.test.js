@@ -234,6 +234,48 @@ test('resolveTarget: follow-return-to-state walks the history back, through bloc
   assert.equal(resolveTarget({ 'follow-return-to': true }, step('blocked'), engine, [change('build', 'blocked')]), 'build');   // the older spelling
 });
 
+// ASS-343: a block cleared by a landed fix resumes at the step the fix changed — its run's
+// resume-at (grouped-blocked's resume-step: declared by the fix ticket, else derived from what it
+// changed) — when that is a work step at or before the one it blocked at; else, as before, there.
+const landedAt = (resume, extra = {}) => ({ subEngineDone: true, subEngineState: 'done', structuredOutput: { landed: true, 'resume-at': resume, ...extra } });
+const blockedAtTest = [change('committed', 'plan'), change('plan', 'build'), change('build', 'review'), change('review', 'test'), change('test', 'blocked')];
+
+test('ASS-343 AC1: a landed fix resumes at the upstream step its resume-at names (declared or derived alike), not the step it blocked at', () => {
+  const exit = { 'follow-return-to-state': true };
+  assert.equal(resolveTarget(exit, step('blocked'), engine, blockedAtTest, landedAt('plan', { 'resume-source': 'declared' })), 'plan');
+  assert.equal(resolveTarget(exit, step('blocked'), engine, blockedAtTest, landedAt('build', { 'resume-source': 'commits' })), 'build');
+  assert.equal(resolveTarget(exit, step('blocked'), engine, blockedAtTest, landedAt('review', { 'resume-source': 'data' })), 'review');
+  // nextState takes it there, its visits counted afresh (the move is the fix-landed clear): plan at 3/3 is no redirect.
+  const plannedOut = [change('committed', 'plan'), change('plan', 'plan'), change('plan', 'plan'), ...blockedAtTest.slice(1)];
+  assert.deepEqual(nextState(step('blocked'), engine, landedAt('plan'), plannedOut)?.to, 'plan');
+});
+
+test('ASS-343 AC3: a landed fix for the blocked step itself, or a resume-at control may not take, resumes at the step it blocked at', () => {
+  const exit = { 'follow-return-to-state': true };
+  assert.equal(resolveTarget(exit, step('blocked'), engine, blockedAtTest, landedAt('test')), 'test', 'the blocked step itself');
+  assert.equal(resolveTarget(exit, step('blocked'), engine, blockedAtTest, landedAt(null)), 'test', 'nothing derivable');
+  assert.equal(resolveTarget(exit, step('blocked'), engine, blockedAtTest, { subEngineDone: true, subEngineState: 'done', structuredOutput: { landed: true } }), 'test', 'no resume-step output');
+  for (const bad of ['gate', 'done', 'blocked', 'blocked-for-human', 'committed', 'nowhere', 'check-health', '', 3])
+    assert.equal(resolveTarget(exit, step('blocked'), engine, blockedAtTest, landedAt(bad)), 'test', `resume-at ${bad}`);
+  // Only a landed fix rewinds: a retry, a repair in place or nothing wrong (landed not true) goes back as before.
+  assert.equal(resolveTarget(exit, step('blocked'), engine, blockedAtTest, { subEngineDone: true, subEngineState: 'done', structuredOutput: { 'resume-at': 'plan' } }), 'test');
+  assert.equal(resolveTarget(exit, step('blocked'), engine, blockedAtTest, { subEngineDone: true, subEngineState: 'retry', structuredOutput: { landed: true, 'resume-at': 'plan' } }), 'test');
+});
+
+test('ASS-343: whyNotResume allows a work step at or before the blocked step, and says why not for any other', () => {
+  const { whyNotResume, returnTo } = control;
+  assert.equal(whyNotResume(engine, 'test', 'plan'), null);
+  assert.equal(whyNotResume(engine, 'test', 'test'), null);
+  assert.equal(whyNotResume(engine, 'build', 'review'), 'review comes after build, the step it blocked at');
+  assert.equal(whyNotResume(engine, 'test', 'nowhere'), 'nowhere is no step of the engine');
+  assert.equal(whyNotResume(engine, 'test', 'check-health'), 'check-health is no step of the engine', 'a *-steps list is no place to resume');
+  assert.equal(whyNotResume(engine, 'test', 'done'), 'done is a done step');
+  assert.equal(whyNotResume(engine, 'test', 'blocked'), 'blocked is a blocked or detour state');
+  assert.equal(whyNotResume(engine, 'test', 'committed'), 'committed does no work (its action is none)');
+  assert.equal(whyNotResume(engine, 'test', null), 'it names no step');
+  assert.equal(returnTo('blocked', engine, blockedAtTest), 'test');
+});
+
 test('visitsInto counts arrivals at the top level, plus the state the history starts in', () => {
   const changes = [change('plan', 'build'), change('build', 'review'), change('review', 'build')];
   assert.equal(visitsInto(changes, 'build'), 2);

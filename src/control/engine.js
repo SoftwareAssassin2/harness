@@ -92,7 +92,7 @@ export const firstExit = (step, facts) => (step['exit-events'] ?? []).find(e => 
 // return-to-state when it has one; else, when that step follows the
 // return-to-state itself (as blocked and blocked-for-human do), the walk goes
 // on to the step before it; else it is that step. Null when history does not say.
-function returnTo(stateId, engine, stateChanges) {
+export function returnTo(stateId, engine, stateChanges) {
   for (let at = stateId, i = stateChanges.length; ;) {
     i = stateChanges.findLastIndex((c, k) => k < i && c['to-state'] === at);
     if (i < 0) return null;
@@ -110,13 +110,47 @@ function returnTo(stateId, engine, stateChanges) {
 // move-to-state-from-human-review the same, from the human's choice
 // (facts.humanReview: a Human Review rejection's return-to, ASS-228);
 // move-to-state; else follow-return-to-state (or the older
-// follow-return-to), see returnTo. Null when it cannot be told.
+// follow-return-to), see returnTo — or, on a block cleared by a landed fix,
+// the step its run's resume-at names when whyNotResume allows it (ASS-343).
+// Null when it cannot be told.
 export function resolveTarget(exit, step, engine, stateChanges = [], facts = {}) {
   const output = exit['move-to-state-from-structured-output'], choice = exit['move-to-state-from-human-review'];
   const field = output ?? choice, named = field && (output ? facts.structuredOutput : facts.humanReview)?.[field];
   if (field) return stepOf(engine, named) ? named : exit['move-to-state'] ?? null;
   if (exit['move-to-state']) return exit['move-to-state'];
-  if (exit['follow-return-to-state'] || exit['follow-return-to']) return returnTo(step.id, engine, stateChanges);
+  if (exit['follow-return-to-state'] || exit['follow-return-to']) {
+    const back = returnTo(step.id, engine, stateChanges), wanted = resumeAt(facts);
+    return wanted !== undefined && back != null && whyNotResume(engine, back, wanted) == null ? wanted : back;
+  }
+  return null;
+}
+
+// resumeAt(facts) — the step a block cleared by a landed fix (clearedByFix)
+// asks to resume at (ASS-343): its run's structured-output resume-at
+// (grouped-blocked's resume-step, ticket:fix-resume-step); undefined for any
+// other move, or when it names none.
+export const resumeAt = facts => (clearedByFix(facts) && facts.structuredOutput['resume-at'] != null ? facts.structuredOutput['resume-at'] : undefined);
+
+// whyNotResume(engine, back, wanted) — why a ticket whose fix landed may not
+// resume at `wanted` instead of `back`, the step it blocked at, which the
+// return-to-state walk (returnTo) would send it to; null when it may (ASS-343).
+// It may resume at a step of the engine's `steps` that comes at or before
+// `back` in their list order and does real work: no done step, blocked or
+// detour state (sequence 0, or one that follows the return-to-state:
+// Blocked, Self-Healing, Requirements Changed), and no step of a human or of
+// nothing (Backlog, Committed). Earlier than `back`, the steps after it run
+// again, so what the fix changed is made afresh.
+export function whyNotResume(engine, back, wanted) {
+  const steps = engine?.steps ?? [];
+  if (typeof wanted !== 'string' || wanted === '') return 'it names no step';
+  const at = steps.findIndex(s => s.id === wanted), from = steps.findIndex(s => s.id === back);
+  if (at < 0) return `${wanted} is no step of the engine`;
+  if (from < 0) return `${back}, the step it blocked at, is no step of the engine`;
+  const s = steps[at];
+  if (s['is-done'] === true) return `${wanted} is a done step`;
+  if (s['is-blocked-state'] === true || s.sequence === 0 || s['follow-return-to-state'] || s['follow-return-to']) return `${wanted} is a blocked or detour state`;
+  if (['none', 'human'].includes(s.action?.type)) return `${wanted} does no work (its action is ${s.action.type})`;
+  if (at > from) return `${wanted} comes after ${back}, the step it blocked at`;
   return null;
 }
 

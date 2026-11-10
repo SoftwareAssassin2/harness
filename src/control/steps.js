@@ -1,7 +1,7 @@
 // Phase 3: the steps no agent works — `none`, `script` and `state-engine`
 // actions — of every sprint variation and every state engine run, each moved
 // on while its exits hold (backlog → committed → … in one tick).
-import { stepOf, engineSteps, nextState, pairedStatus, isManual, isDoneStep, isActive, answersGap, clearedByFix, FIX_LANDED } from './engine.js';
+import { stepOf, engineSteps, nextState, pairedStatus, isManual, isDoneStep, isActive, answersGap, clearedByFix, FIX_LANDED, resumeAt, whyNotResume } from './engine.js';
 import { enginesFor } from './state.js';
 import { rankSprint, rankBacklog } from './rank.js';
 import { planFor, slotKind } from './plan.js';
@@ -286,6 +286,11 @@ async function runVariation(ctx, state, project, key, name) {
         // A block cleared by a landed fix (ASS-309) records the fix-landed cause, so the visit window
         // restarts — as does the cause the exit itself names (ASS-315: merge-gate-red, on release's rebuild exit).
         if (!await move(next, clearedByFix(facts) ? FIX_LANDED : next.exit?.cause)) return;   // gated: the run stays until the human opens the gate, then goes as orphaned (runTransient)
+        // Where a landed fix resumes it (ASS-343): the step its run's resume-at names, when engine.js whyNotResume allows it.
+        const resume = resumeAt(facts);
+        if (resume !== undefined) ctx.log(PHASE, resume === next.to
+          ? `${who}: the fix landed; resumes at ${resume}: ${facts.structuredOutput['resume-why'] ?? 'no reason given'}`
+          : `${who}: the fix landed; resume-at ${resume} not taken (${whyNotResume(engine, next.to, resume) ?? 'its return could not be told'}), resumes at ${next.to}`);
         // Why it went there, when the run says (ai-feedback-short/-long in its output; ASS-75: Create VM's
         // out-of-disk reason, for Blocked for Human): the variation's health, set after the move, which clears it.
         const why = run['structured-output'];
