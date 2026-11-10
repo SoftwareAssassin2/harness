@@ -16,8 +16,8 @@ set -euo pipefail
 #     steps whose command runs it, engines/<name>/ to the top-level step
 #     running that engine;
 #   data — files of the ticket's work folder (data/projects/<project>/work/
-#     <KEY>) written since the variation entered await-fix (its
-#     state-changes), mapped to the step that writes them: a step's
+#     <KEY>) written since the wait began (its wait-began.at, else when it
+#     entered await-fix in its state-changes), mapped to the step that writes them: a step's
 #     file-updated exits, and automated-tests-<variation>.json to
 #     generate-automated-tests;
 #   none — the step it blocked at (engine.js returnTo).

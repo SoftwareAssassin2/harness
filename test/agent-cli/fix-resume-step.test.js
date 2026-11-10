@@ -138,6 +138,18 @@ test('ASS-343 AC1: derived from the work folder — a file changed since the wai
   assert.deepEqual(Object.values(await f.resume()).slice(0, 2), ['plan', 'commits']);
 });
 
+test('ASS-343: the wait\'s start is the variation\'s wait-began.at (ticket:wait-on, ASS-342) when it has one, before its entry into await-fix', async () => {
+  const f = blocked();
+  f.fixTicket();
+  f.work('execution-plan-A.md', '2026-11-10T12:30:00Z');                                             // after the entry into await-fix
+  assert.equal((await f.resume())['resume-source'], 'data');
+  const sprint = join(f.dir, 'projects', 'p', 'sprints', 'sprint-10', 'sprint.json');
+  const s = JSON.parse(readFileSync(sprint, 'utf8'));
+  s.features[0].variations[0]['wait-began'] = { at: '2026-11-10T13:00:00Z', inputs: {} };
+  writeFileSync(sprint, JSON.stringify(s));
+  assert.deepEqual(Object.values(await f.resume()).slice(0, 2), ['release', 'none'], 'written before the wait began');
+});
+
 test('ASS-343: always exits 0 — a ticket or variation it cannot find, or one waiting on nothing, is no step found', async () => {
   const f = blocked();
   assert.deepEqual(await f.resume('p', 'ABC-3', 'Z'), { 'resume-at': null, 'resume-source': 'none', 'resume-why': 'the step it blocked at cannot be told', 'resume-ignored': [] });

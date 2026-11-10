@@ -179,9 +179,10 @@ changed to the steps that use it: the files of its `<KEY>:` commits on its
 project's default branch (`prompts/<name>/` to the steps running that prompt,
 `src/agent-cli/<family>/<command>.sh|.js` to the steps whose command runs it,
 `engines/<name>/` to the group running that engine), and the files of the
-ticket's work folder written since it entered await-fix (a step's
-`file-updated` exits, such as `execution-plan-<V>.md` to Write Execution
-Plan, and `automated-tests-<V>.json` to Generate Automated Tests). Each is
+ticket's work folder written since the wait began (`wait-began.at`, else
+its entry into await-fix), mapped by a step's `file-updated` exits
+(`execution-plan-<V>.md` to Write Execution Plan) and by
+`automated-tests-<V>.json` to Generate Automated Tests. Each is
 lifted to its top-level group; the earliest at or before the blocked step
 wins. Control (engine.js `resolveTarget`) takes `resume-at` on the
 fix-landed return only when `whyNotResume` allows it: a step of the engine's

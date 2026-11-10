@@ -56,10 +56,11 @@ const ownFile = (file, values) => (file.includes('{variation}') ? file : file.re
 
 const escape = text => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
-// waitBegan(variation) — when the variation entered await-fix (its latest change into it, at any depth), in ms; undefined when its history does not say.
+// waitBegan(variation) — when the wait began, in ms: its wait-began.at (ticket:wait-on, ASS-342), else
+// when it entered await-fix (its latest change into it, at any depth); undefined when neither says.
 function waitBegan(variation) {
   const into = c => { for (let s = c; s; s = s['sub-state-change']) if (s['to-state'] === 'await-fix') return true; return false; };
-  const at = Date.parse((variation?.['state-changes'] ?? []).findLast(into)?.timestamp ?? '');
+  const at = Date.parse(variation?.['wait-began']?.at ?? (variation?.['state-changes'] ?? []).findLast(into)?.timestamp ?? '');
   return Number.isNaN(at) ? undefined : at;
 }
 
