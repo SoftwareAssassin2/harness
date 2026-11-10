@@ -2,7 +2,7 @@
 // data, fetch the sprint's tickets and merge requests and the backlog's
 // tickets (and, on a comment cycle, their Jira comments), and hand them to the
 // agent-cli. It writes no JSON itself: every mutation is an agent.sh call
-// (ticket:snapshot-day, ticket:sync, ticket:sync-jira-comments,
+// (ticket:snapshot-day, ticket:sync, ticket:sync-outside, ticket:sync-jira-comments,
 // project:set-ticket-system-account-id, project:set-last-data-download), so
 // the file rules live in one place.
 import { readFileSync, writeFileSync, mkdtempSync, rmSync, existsSync } from 'node:fs';
@@ -63,6 +63,17 @@ import { dataDir } from '../data-folder.js';
 //    `ticket:sync <project> backlog`. A ticket the read does not return
 //    (deleted in Jira, or not visible) is left as it is; a read that fails is
 //    logged and the cycle goes on. Nothing missing, no read and no sync.
+// 3c. Outside dependencies (ASS-355): every key the sprint file's and
+//    backlog.json's tickets (not soft deleted, as the syncs above left them)
+//    depend on that neither holds — a ticket assigned to a teammate, say —
+//    read by key (adapters.jira.fetchTicketsByKey, batched, views false: its
+//    status and assignee alone are wanted) whoever holds it, to `ticket:
+//    sync-outside <project> <file>` with { fetched-at, keys, tickets: [{ key,
+//    title, url, ticket-system-status, ticket-system-assignment }] }, which
+//    keeps data/projects/<p>/outside-tickets.json (control judges the
+//    dependencies against it). Nothing wanted, no read — and no write unless
+//    the file still lists some, emptied then. A read that fails is logged
+//    and the file kept as it is.
 // 4. The off-board tickets (adapters.offBoard, off-board.js), when the project
 //    has an off-board work source: at Backlog to the backlog, the rest to the
 //    sprint with their own scan, the same two calls — but a Done one not
@@ -77,7 +88,7 @@ import { dataDir } from '../data-folder.js';
 // just before the read): a status control sets on a sprint ticket while the
 // merge requests are looked up is newer than the list, and ticket:sync keeps
 // it (ASS-128).
-// The Jira steps (2, 3, 3b, 5) only for a project with a jira work source; one with
+// The Jira steps (2, 3, 3b, 3c, 5) only for a project with a jira work source; one with
 // only an off-board source (the harness's own) syncs those tickets alone.
 // Fails before anything runs when the project has neither.
 export async function runCycle({ root, project, now = new Date(), adapters, exec, comments, lookups = false, dryRun = false, log = () => {} }) {
@@ -94,7 +105,7 @@ export async function runCycle({ root, project, now = new Date(), adapters, exec
   const tmp = mkdtempSync(join(tmpdir(), 'downloader-'));
   // call(args, payload?) — one agent.sh command, its JSON payload written to a file passed as the last argument.
   const call = async (args, payload) => {
-    const file = payload === undefined ? null : join(tmp, `${args[2]}.json`);
+    const file = payload === undefined ? null : join(tmp, `${args[2] ?? args[0].split(':').pop()}.json`);
     if (file) writeFileSync(file, JSON.stringify(payload, null, 2));
     if (dryRun) {
       log(`would run: agent.sh ${args.join(' ')}${file ? ` ${file}` : ''}`);
@@ -158,6 +169,8 @@ export async function runCycle({ root, project, now = new Date(), adapters, exec
       log(`backlog: ${backlog.length} tickets`);
       await call(['ticket:sync', project, 'backlog'], { 'fetched-at': fetchedAt, tickets: backlog });
       await refetchMissing({ project, board, sprint, sprintName: sprintData.name, sprintData, backlogData: existsSync(join(projects, project, 'backlog.json')) ? read('backlog.json') : {}, fetched: jiraKeys, call, jira: adapters.jira, exec, log });
+      const current = file => (existsSync(join(projects, project, file)) ? read(file) : {});   // as the syncs above left it
+      await syncOutside({ project, board, tickets: [...(sprint === undefined ? [] : ['features', 'bugs', 'spikes'].flatMap(a => current(sprintFile)[a] ?? [])), ...(current('backlog.json').tickets ?? [])], recorded: current('outside-tickets.json').tickets ?? [], call, jira: adapters.jira, exec, log });
     }
 
     // 4. The off-board tickets (src/off-board, the harness's own): at Backlog
@@ -220,6 +233,28 @@ async function refetchMissing({ project, board, sprint, sprintName, sprintData, 
   log(`by key: ${inSprint.length + inBacklog.length} tickets not in the searches, ${tickets.length} read${unread ? `, ${unread} left as they are` : ''}`);
   if (toSprint.length) await call(['ticket:sync', project, 'sprint'], { 'fetched-at': fetchedAt, tickets: toSprint, 'merge-requests': [] });
   if (toBacklog.length) await call(['ticket:sync', project, 'backlog'], { 'fetched-at': fetchedAt, tickets: toBacklog });
+}
+
+// syncOutside: step 3c (ASS-355).
+async function syncOutside({ project, board, tickets, recorded, call, jira, exec, log }) {
+  const up = k => String(k ?? '').toUpperCase();
+  const live = tickets.filter(t => t?.key && t['is-deleted'] !== true);
+  const held = new Set(live.map(t => up(t.key)));
+  const keys = [...new Set(live.flatMap(t => t.dependencies ?? []).map(up))].filter(k => k && !held.has(k));
+  const fetchedAt = new Date().toISOString();
+  if (!keys.length) {
+    if (recorded.length) await call(['ticket:sync-outside', project], { 'fetched-at': fetchedAt, keys: [], tickets: [] });
+    return;
+  }
+  let read;
+  try {
+    read = await jira.fetchTicketsByKey({ site: board.site, storyPointsField: board.storyPointsField, keys, views: false }, exec);
+  } catch (err) {
+    return log(`outside dependencies: ${keys.length} could not be read: ${String(err.message ?? err).split('\n')[0]}`);
+  }
+  log(`outside dependencies: ${keys.length} depended on, ${read.length} read`);
+  const fields = t => ({ key: t.key, title: t.title ?? '', url: t.url ?? null, 'ticket-system-status': t['ticket-system-status'] ?? null, 'ticket-system-assignment': t['ticket-system-assignment'] ?? null });
+  await call(['ticket:sync-outside', project], { 'fetched-at': fetchedAt, keys, tickets: read.map(fields) });
 }
 
 // The last thing recordAccount logged, by projects folder and project: a

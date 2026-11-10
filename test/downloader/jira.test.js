@@ -53,12 +53,15 @@ test('fetchSprintTickets flattens an ADF description, reads the site\'s story-po
   ];
   const fake = { calls: [], run: async (cmd, args) => { fake.calls.push([cmd, ...args]); return args[2] === 'search' ? JSON.stringify(issues) : JSON.stringify({ key: args[3], fields: {} }); } };
   const tickets = await fetchSprintTickets({ ...board, sprintId: 10, storyPointsField: 'customfield_10028' }, fake.run);
-  assert.deepEqual(fake.calls.slice(1), [['acli', 'jira', 'workitem', 'view', 'EX-3', '--fields', 'customfield_10028,issuelinks', '--json']]);   // EX-2, EX-4 carried both fields: no view (ASS-322)
+  assert.deepEqual(fake.calls.slice(1), [
+    ['acli', 'jira', 'workitem', 'view', 'EX-3', '--fields', 'customfield_10028,issuelinks', '--json'],   // EX-2, EX-4 carried both fields: no view (ASS-322)
+    ['acli', 'jira', 'workitem', 'view', 'EX-3', '--fields', 'issuelinks', '--json'],                       // ASS-355: the view printed no issuelinks; asked alone
+  ]);
   assert.doesNotMatch(fake.calls[0].join(' '), /customfield/);   // acli's search takes no custom field; the value is read when it comes anyway
   assert.doesNotMatch(fake.calls[0].join(' '), /customfield_10016/);
   assert.deepEqual(tickets.map(t => [t.key, t.description, t['issue-type'], t.points, t['ticket-system-assignment'], t['ticket-system-priority'], t['sprint-tag'], t.dependencies]), [
     ['EX-2', 'First line.\nItem', 'Bug', 3, null, null, 'Sprint 10', []],
-    ['EX-3', '', 'Story', null, 'Ann Lee', 'High', null, []],
+    ['EX-3', '', 'Story', null, 'Ann Lee', 'High', null, undefined],   // ASS-355: links never printed are unread, not []
     ['EX-4', 'Plain EX-4', 'Spike', null, 'Ann Lee', 'High', 'Sprint 10', []],
   ]);
 });
@@ -77,7 +80,7 @@ test('fetchSprintTickets without a Jira sprint id takes the open sprint; the spr
   const fake = acli([issue('EX-4', { sprint: undefined, customfield_10016: undefined, issuelinks: undefined })]);
   const tickets = await fetchSprintTickets({ ...board, sprintName: 'EX Sprint 11 - Beta' }, fake.run);
   assert.equal(fake.calls[0][fake.calls[0].indexOf('--jql') + 1], 'project = EX AND assignee = currentUser() AND sprint in openSprints() AND issuetype not in subTaskIssueTypes()');
-  assert.deepEqual(tickets.map(t => [t.key, t['sprint-tag'], t.points, t.dependencies]), [['EX-4', 'EX Sprint 11 - Beta', null, []]]);
+  assert.deepEqual(tickets.map(t => [t.key, t['sprint-tag'], t.points, t.dependencies]), [['EX-4', 'EX Sprint 11 - Beta', null, undefined]]);   // ASS-355: the view printed no issuelinks: unread
 });
 
 test('fetchComments lists a ticket\'s comments with acli, every page, as { id, author, created, updated, body } with an ADF body flattened; wrapped, bare or empty output', async () => {
@@ -256,4 +259,45 @@ test('ASS-344: fetchSignedInAccountId reads the account id from acli jira auth s
   }
   assert.equal(await fetchSignedInAccountId(fake({ 'jira auth status': 'Authenticated', 'jira workitem search': '[]' }).run), null);
   await assert.rejects(fetchSignedInAccountId(fake({ 'jira auth status': 'Authenticated', 'jira workitem search': new Error('acli: 401') }).run), /401/);
+});
+
+// ASS-355: a "Blocks" link could fail to reach a ticket's dependencies. acli's
+// search never returns issuelinks, so they come from the per-ticket view; a
+// view that printed the points but no issuelinks key at all (acli honouring
+// one field of a list, say) was read as no links — [] — which ticket:sync
+// wrote over the recorded dependencies. Now such links are asked for alone,
+// and left unread when that prints none either.
+test('ASS-355: a view that prints no issuelinks key has the links asked for alone; found there, they are the dependencies; never printed, they stay unread', async () => {
+  const calls = [];
+  const answer = { 'customfield_10016,issuelinks': { customfield_10016: 5 }, issuelinks: { issuelinks: [{ type: { name: 'Blocks', inward: 'is blocked by', outward: 'blocks' }, inwardIssue: { key: 'EX-301' } }] } };
+  const run = async (cmd, args) => {
+    calls.push(args.join(' '));
+    if (args[2] === 'search') return JSON.stringify([issue('EX-201', { customfield_10016: undefined, issuelinks: undefined })]);
+    return JSON.stringify({ key: args[3], fields: answer[args[5]] });
+  };
+  const [ticket] = await fetchSprintTickets({ ...board, sprintId: 1 }, run);
+  assert.deepEqual(calls.slice(1), ['jira workitem view EX-201 --fields customfield_10016,issuelinks --json', 'jira workitem view EX-201 --fields issuelinks --json']);
+  assert.deepEqual([ticket.points, ticket.dependencies], [5, ['EX-301']]);
+  answer.issuelinks = {};
+  const [unread] = await fetchSprintTickets({ ...board, sprintId: 1 }, run);
+  assert.equal('dependencies' in unread, false);
+  assert.equal(unread.points, 5);
+});
+
+test('ASS-355: a Blocks link counts by its type\'s name or its inward wording in any case; outward and other types do not', async () => {
+  const links = [
+    { type: { name: 'Blocks', inward: 'is held up by', outward: 'holds up' }, inwardIssue: { key: 'EX-1' } },
+    { type: { name: 'Dependency', inward: 'Is Blocked By', outward: 'blocks' }, inwardIssue: { key: 'EX-2' } },
+    { type: { name: 'Blocks', inward: 'is blocked by', outward: 'blocks' }, outwardIssue: { key: 'EX-3' } },
+    { type: { name: 'Relates', inward: 'relates to', outward: 'relates to' }, inwardIssue: { key: 'EX-4' } },
+  ];
+  const [ticket] = await fetchSprintTickets({ ...board, sprintId: 1 }, acli([issue('EX-9', { issuelinks: links })]).run);
+  assert.deepEqual(ticket.dependencies, ['EX-1', 'EX-2']);
+});
+
+test('ASS-355 AC2: fetchTicketsByKey with views false reads each ticket\'s status and assignee in the batched search alone — no per-ticket view', async () => {
+  const fake = acli([issue('EX-301', { customfield_10016: undefined, issuelinks: undefined, assignee: { accountId: 'acc-bea', displayName: 'A Teammate' }, status: { name: 'In Review' } })]);
+  const [ticket] = await fetchTicketsByKey({ site: board.site, keys: ['EX-301'], views: false }, fake.run);
+  assert.equal(fake.calls.length, 1);
+  assert.deepEqual([ticket.key, ticket['ticket-system-status'], ticket['ticket-system-assignment'], 'points' in ticket, 'dependencies' in ticket], ['EX-301', 'In Review', 'A Teammate', false, false]);
 });

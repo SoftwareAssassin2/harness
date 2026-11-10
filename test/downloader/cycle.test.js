@@ -555,3 +555,55 @@ test('ASS-344: the signed-in account id is read once a cycle, before any sync, a
   await runCycle({ root: root({ jira: false }), project: 'p', now: new Date(ISO), adapters: { ...off, offBoard: { fetchTickets: async () => [] } }, exec: quiet.exec, log: () => {} });
   assert.ok(!quiet.calls.some(x => x.args[0] === 'project:set-ticket-system-account-id'));
 });
+
+// ASS-355: outside dependencies. A key a sprint or backlog ticket depends on
+// that neither holds — assigned to a teammate, say — is read by key each
+// cycle and kept in outside-tickets.json, for control to judge the hold by.
+test('ASS-355 AC2: each key the sprint\'s and backlog\'s tickets depend on that neither holds is read by key, batched, with no per-ticket view, and handed to ticket:sync-outside; soft-deleted tickets\' dependencies and held keys are not', async () => {
+  const dir = root({ last: ISO, offBoard: false });
+  const p = join(dir, 'data', 'projects', 'p');
+  writeFileSync(join(p, 'sprints', 'sprint-10', 'sprint.json'), JSON.stringify({ name: 'S10', features: [{ key: 'EX-1', dependencies: ['ex-301', 'EX-2'] }, { key: 'EX-2', dependencies: [] }, { key: 'EX-5', 'is-deleted': true, dependencies: ['EX-55'] }], bugs: [], spikes: [] }));
+  writeFileSync(join(p, 'backlog.json'), JSON.stringify({ tickets: [{ key: 'EX-9', dependencies: ['EX-77', 'EX-301', 'EX-1'] }] }));
+  const a = adapters(), asked = [], calls = [];
+  a.jira.fetchSprintTickets = async () => [{ key: 'EX-1' }, { key: 'EX-2' }];
+  a.jira.fetchTicketsByKey = async opts => { asked.push(opts); return [{ key: 'EX-301', title: 'A model', description: 'x', url: 'https://x.atlassian.net/browse/EX-301', 'ticket-system-status': 'In Progress', 'ticket-system-assignment': 'A Teammate', points: 3 }]; };
+  const exec = async (file, args) => { calls.push([args[0], ...(args.at(-1)?.endsWith?.('.json') && existsSync(args.at(-1)) ? [JSON.parse(readFileSync(args.at(-1), 'utf8'))] : [])]); return ''; };
+  const lines = [];
+  await runCycle({ root: dir, project: 'p', now: new Date(ISO), adapters: a, exec, log: l => lines.push(l) });
+  assert.deepEqual(asked, [{ site: 'https://x.atlassian.net', storyPointsField: 'customfield_10028', keys: ['EX-301', 'EX-77'], views: false }]);
+  const [, payload] = calls.find(c => c[0] === 'ticket:sync-outside');
+  assert.deepEqual([payload.keys, payload.tickets], [['EX-301', 'EX-77'], [{ key: 'EX-301', title: 'A model', url: 'https://x.atlassian.net/browse/EX-301', 'ticket-system-status': 'In Progress', 'ticket-system-assignment': 'A Teammate' }]]);
+  assert.ok(lines.includes('outside dependencies: 2 depended on, 1 read'), lines.join('\n'));
+  assert.ok(calls.findIndex(c => c[0] === 'ticket:sync-outside') < calls.findIndex(c => c[0] === 'project:set-last-data-download'));
+});
+
+test('ASS-355 AC2: nothing depended on outside, nothing read — no write unless outside-tickets.json still lists some, which is emptied; a failing read is logged and the file kept', async () => {
+  const dir = root({ last: ISO, offBoard: false });
+  const p = join(dir, 'data', 'projects', 'p');
+  const run = async (jiraFetch, lines = []) => {
+    const a = adapters(), calls = [];
+    a.jira.fetchTicketsByKey = jiraFetch;
+    await runCycle({ root: dir, project: 'p', now: new Date(ISO), adapters: a, exec: async (file, args) => { calls.push(args); return ''; }, log: l => lines.push(l) });
+    return calls.map(c => c[0]);
+  };
+  const never = async () => { throw new Error('not to be called'); };
+  assert.ok(!(await run(never)).includes('ticket:sync-outside'));
+  writeFileSync(join(p, 'outside-tickets.json'), JSON.stringify({ tickets: [{ key: 'EX-301' }] }));
+  assert.ok((await run(never)).includes('ticket:sync-outside'));
+  writeFileSync(join(p, 'sprints', 'sprint-10', 'sprint.json'), JSON.stringify({ name: 'S10', features: [{ key: 'EX-1', dependencies: ['EX-301'] }] }));
+  const lines = [];
+  const calls = await run(async () => { throw new Error('acli: 503\nmore'); }, lines);
+  assert.ok(!calls.includes('ticket:sync-outside'));
+  assert.ok(lines.includes('outside dependencies: 1 could not be read: acli: 503'), lines.join('\n'));
+  assert.ok(calls.includes('project:set-last-data-download'));
+});
+
+test('ASS-355 AC2: with the real adapter on a fake acli and the real agent.sh, a teammate\'s ticket the sprint ticket is blocked by is written to outside-tickets.json', async () => {
+  const blocked = { ...jiraIssue('EX-1', ME), fields: { ...jiraIssue('EX-1', ME).fields, issuelinks: [{ type: { name: 'Blocks', inward: 'is blocked by', outward: 'blocks' }, inwardIssue: { key: 'EX-301' } }] } };
+  const teammate = { ...jiraIssue('EX-301', BEA), fields: { ...jiraIssue('EX-301', BEA).fields, status: { name: 'In Review' } } };
+  const r = await realCycle({ sprint: [held('EX-1')], issues: { 'EX-1': blocked, 'EX-301': teammate }, mine: ['EX-1'] });
+  assert.deepEqual(r.sprint.features.find(t => t.key === 'EX-1').dependencies, ['EX-301']);
+  const outside = JSON.parse(readFileSync(join(r.p, 'outside-tickets.json'), 'utf8'));
+  assert.deepEqual(outside.tickets, [{ key: 'EX-301', title: 'Summary EX-301', url: 'https://x.atlassian.net/browse/EX-301', 'ticket-system-status': 'In Review', 'ticket-system-assignment': 'Bea Other' }]);
+  assert.equal(r.acli.filter(c => / view /.test(c)).length, 0, 'no per-ticket view');
+});

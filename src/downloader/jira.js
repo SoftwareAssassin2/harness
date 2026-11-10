@@ -18,7 +18,12 @@
 // ticket:sync keeps the points the harness has. The same per-ticket view also
 // reads issuelinks (one call, both fields), so a ticket's "is blocked by"
 // dependencies — which acli's search never returns — come from it too; a view
-// that fails (throws, or prints no JSON) leaves both out, unread (ASS-322).
+// that fails (throws, or prints no JSON) leaves both out, unread (ASS-322). A
+// view that prints the points but no issuelinks key at all has not read the
+// links (Jira prints [] for none): they are asked for alone, and left out,
+// unread, when that prints none either — before ASS-355 they were taken as
+// [], which ticket:sync wrote over a ticket's recorded dependencies. A Blocks
+// link counts by its type's name as well as its inward wording.
 // (Open: acli's `view --fields a,b` multi-field list and its --json issuelinks
 // shape are verified for search/single-field, not for this combined view.)
 //
@@ -78,10 +83,10 @@ export function fetchBacklogTickets({ site, projectKey, storyPointsField }, run)
 // not a Jira key, is left out, never thrown. Only tickets whose key was asked
 // for come back (a ticket moved to another project answers with its new key,
 // which is not this one). No keys, no acli call.
-export async function fetchTicketsByKey({ site, keys, storyPointsField }, run) {
+export async function fetchTicketsByKey({ site, keys, storyPointsField, views = true }, run) {
   const wanted = [...new Set(keys.filter(k => ISSUE_KEY.test(k)).map(k => k.toUpperCase()))];
   const ask = async batch => {
-    const tickets = await search({ site, storyPointsField, jql: `key in (${batch.join(', ')})` }, run);
+    const tickets = await search({ site, storyPointsField, jql: `key in (${batch.join(', ')})`, views }, run);
     return tickets.filter(t => batch.includes(String(t.key).toUpperCase()));
   };
   const tickets = [];
@@ -171,7 +176,7 @@ export async function fetchActiveSprints({ boardId }, run) {
   return listed(out, 'sprints').map(s => ({ id: s.id, name: s.name, start: date(s.startDate), end: date(s.endDate) }));
 }
 
-async function search({ site, storyPointsField = DEFAULT_STORY_POINTS_FIELD, sprintName = null, jql }, run) {
+async function search({ site, storyPointsField = DEFAULT_STORY_POINTS_FIELD, sprintName = null, jql, views = true }, run) {
   const out = await run('acli', ['jira', 'workitem', 'search', '--jql', jql, '--fields', FIELDS.join(','), '--paginate', '--json']);
   const tickets = [];
   for (const issue of listed(out, 'issues')) {
@@ -179,14 +184,23 @@ async function search({ site, storyPointsField = DEFAULT_STORY_POINTS_FIELD, spr
     const f = issue.fields ?? {};
     const needPoints = f[storyPointsField] === undefined;
     const needLinks = f.issuelinks === undefined;
-    if (needPoints || needLinks) {
-      const fields = await viewFields(issue.key, storyPointsField, run);
+    if (!views) {
+      if (needPoints) delete t.points;
+      if (needLinks) delete t.dependencies;
+    } else if (needPoints || needLinks) {
+      const fields = await viewFields(issue.key, [storyPointsField, 'issuelinks'], run);
       if (fields === undefined) {
         if (needPoints) delete t.points;
         if (needLinks) delete t.dependencies;
       } else {
         if (needPoints) t.points = typeof fields[storyPointsField] === 'number' ? fields[storyPointsField] : null;
-        if (needLinks) t.dependencies = dependenciesOf(fields.issuelinks);
+        if (needLinks) {
+          // ASS-355: a view that printed no issuelinks at all (acli honouring one field of the list, say) has not read
+          // them — Jira prints [] for none — so they are asked for alone; still none, they stay unread, never [].
+          const links = fields.issuelinks !== undefined ? fields.issuelinks : (await viewFields(issue.key, ['issuelinks'], run))?.issuelinks;
+          if (links === undefined) delete t.dependencies;
+          else t.dependencies = dependenciesOf(links);
+        }
       }
     }
     tickets.push(t);
@@ -194,14 +208,14 @@ async function search({ site, storyPointsField = DEFAULT_STORY_POINTS_FIELD, spr
   return tickets;
 }
 
-// viewFields(key, field, run) → the ticket's `fields` object as acli's view
+// viewFields(key, fields, run) → the ticket's `fields` object as acli's view
 // prints it (the REST shape, key + fields; or a list holding it), carrying the
-// story-points field and issuelinks (one call). `{}` when the view prints a
-// value without those fields; undefined when the view fails or prints no JSON,
-// so the caller leaves the missing fields unread.
-async function viewFields(key, field, run) {
+// fields asked for (the story-points field and issuelinks: one call). `{}`
+// when the view prints a value without those fields; undefined when the view
+// fails or prints no JSON, so the caller leaves the missing fields unread.
+async function viewFields(key, fields, run) {
   try {
-    const values = jsonValues(await run('acli', ['jira', 'workitem', 'view', key, '--fields', `${field},issuelinks`, '--json']));
+    const values = jsonValues(await run('acli', ['jira', 'workitem', 'view', key, '--fields', fields.join(','), '--json']));
     if (values.length === 0) return undefined;   // empty / no JSON: unread, not {}
     const [data] = values;
     const issue = Array.isArray(data) ? data.find(i => i?.key === key) : data;
@@ -213,9 +227,12 @@ async function viewFields(key, field, run) {
 
 // dependenciesOf(links) → the keys an inward "is blocked by" link points at,
 // from acli's REST issuelinks shape; outward "blocks" and other link types
-// (e.g. "relates to") are not dependencies.
-function dependenciesOf(links) {
-  return (links ?? []).filter(l => l.inwardIssue && l.type?.inward === 'is blocked by').map(l => l.inwardIssue.key);
+// (e.g. "relates to") are not dependencies. A link of the Blocks type counts
+// whatever its inward wording, and the wording in any case (ASS-355: a site
+// may rename "is blocked by"; "EX-1 Blocks EX-2" is EX-2's inward link to EX-1).
+export function dependenciesOf(links) {
+  const blocking = type => /^blocks$/i.test(type?.name ?? '') || /^is blocked by$/i.test(type?.inward ?? '');
+  return (links ?? []).filter(l => l.inwardIssue?.key && blocking(l.type)).map(l => l.inwardIssue.key);
 }
 
 // The items in acli's output: an array, or { <field> }, or nothing at all.
