@@ -335,7 +335,11 @@ Blocked for Human, saying what was found and what to do.
   Blocked (once it waits on its fix) and Blocked for Human. Anywhere else
   (Backlog, Committed, Release, QA, Done) it is not needed: stopped. A paused
   variation or ticket (`is-paused`) and a set-aside one (lost Variation
-  Selection) have theirs stopped too. Control matches the VMs to this once per
+  Selection) have theirs stopped too. A VM to be stopped, for any of these
+  reasons (or waiting for a slot, or gone from the sprint), while an
+  assignment is on its variation is left running until that ends — logged
+  once, `waits until its agent finishes` — so its agent is never killed
+  mid-step (ASS-349). Control matches the VMs to this once per
   loop (`src/control/vm-lifecycle.js`), so a move by hand in the TUI is
   followed; `move_to` and the TUI do nothing of their own.
 - **Released (ASS-325).** A step may instead say `released`: the variation's
