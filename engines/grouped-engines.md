@@ -182,9 +182,17 @@ project's default branch (`prompts/<name>/` to the steps running that prompt,
 ticket's work folder written since the wait began (`wait-began.at`, else
 its entry into await-fix), mapped by a step's `file-updated` exits
 (`execution-plan-<V>.md` to Write Execution Plan) and by
-`automated-tests-<V>.json` to Generate Automated Tests. Each is
+`automated-tests-<V>.json` to Generate Automated Tests. The commits read
+are the waited-on fix's and, for a ticket blocked more than once, each
+earlier landed fix's in the variation's `blocks` (ASS-347: `landed: true`;
+one with `landed: false` adds nothing). A step an earlier fix maps to counts
+only while the ticket has not entered that step again since that block
+ended (its `timestamp`). If it has, the step's output already carries the
+fix, and the step goes to `resume-ignored` saying so. With earlier fixes in
+play, each `resume-ignored` entry from commits or a declaration carries its
+`fix` key. Each is
 lifted to its top-level group; the earliest at or before the blocked step
-wins. Control (engine.js `resolveTarget`) takes `resume-at` on the
+wins, and `resume-why` names the fix and file that won. Control (engine.js `resolveTarget`) takes `resume-at` on the
 fix-landed return only when `whyNotResume` allows it: a step of the engine's
 `steps`, at or before the step the return-to-state walk names, doing real
 work — no done step, Blocked, detour or other sequence-0 state, nor a `none`
