@@ -355,6 +355,15 @@ Blocked for Human, saying what was found and what to do.
   Blocked, then Build), the VM is recreated (`vm:create`), as any deleted VM
   is. None of the repo's engines sets it; a project turns it on in its own
   engine, on a step that needs no VM (QA).
+- **Waiting for a VM (ASS-133, ASS-159, ASS-348).** A step that runs in the
+  VM is not judged while control has not yet seen the VM up (Running and
+  reached by a probe), for at most 2 minutes; then it is judged as it stands.
+  An agent is never dispatched into it until it is up, however long that
+  takes: one sent in before `vm:start` has written its credentials fails "Not
+  logged in" and spends a try. Its wait is logged once. A VM still not up
+  after `vm-up-ceiling-seconds` in harness.json (default 1800: 30 minutes)
+  sends its variation to Blocked, or to Blocked for Human from Blocked. The
+  variation's ai-feedback names the VM and says it never came up.
 - **The inventory.** `data/projects/<p>/vms.json` (untracked) holds each VM of the
   project: ticket, variation, state, disk bytes, last accessed (started or
   stopped). `vm:inventory <p>` reconciles it with `limactl list` and the sprint

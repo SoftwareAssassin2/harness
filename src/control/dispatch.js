@@ -6,7 +6,7 @@
 // process has said it).
 import { existsSync, readFileSync, mkdirSync, appendFileSync } from 'node:fs';
 import { join, dirname, resolve } from 'node:path';
-import { stepOf, engineSteps, resolveTarget, isActive } from './engine.js';
+import { stepOf, engineSteps, resolveTarget, isActive, isManual } from './engine.js';
 import { enginesFor, heldKinds } from './state.js';
 import { planFor, grooming, refinementDue, seatsOf } from './plan.js';
 import { rankBacklog } from './rank.js';
@@ -413,16 +413,58 @@ function workspaceFree(ctx, state, step, project, key, variation) {
 const takeWorkspace = (ctx, step, project, key, variation) =>
   (inContainer(step, project) && key != null ? ctx.cli(['code:checkout-in-workspace', project.id, key, variation]) : Promise.resolve());
 
-// vmDown(ctx, state, step, project, key, variation, at) — a run-location: vm
-// step's agent waits while the ticket variation's VM is not up: the wait its
-// steps are judged under (vm-lifecycle.js awaitsVm, ASS-133), at most VM_WAIT,
-// logged once. Never sent into a down VM — after an outage, say — to fail in
-// seconds and spend the step's tries (ASS-159: ASS-158 blocked so).
-const vmDown = (ctx, state, step, project, key, variation, at) => {
+// vmDown(ctx, state, step, project, key, variation, at) — whether a
+// run-location: vm step's agent waits for the ticket variation's VM: so long
+// as control has not seen it up (memory.vmsUp: Running and reached, ASS-169),
+// it is never sent into it — after an outage (ASS-159: ASS-158 blocked so), or
+// while it still starts or its vm:start is backed off (ASS-348: an agent sent
+// into a VM whose credentials vm:start has not written yet fails "Not logged
+// in" in seconds, and spends one of the step's tries). For VM_WAIT that is the
+// wait its steps are judged under (vm-lifecycle.js awaitsVm, ASS-133), logged
+// there; past it the steps are judged as they stand, but the agent still
+// waits, logged once more per wait; once the wait reaches vmUpCeilingMs, the
+// variation goes to Blocked instead (neverUp).
+async function vmDown(ctx, state, step, project, key, variation, at) {
   if (!runsInVm(step)) return false;
-  const v = found(state, { project, 'work-item': key, variation });
-  return awaitsVm(ctx, state, v.project, v.variation, `${key} ${variation} ${at}`);
-};
+  const v = found(state, { project, 'work-item': key, variation }), who = `${key} ${variation} ${at}`;
+  if (awaitsVm(ctx, state, v.project, v.variation, who)) return true;
+  const name = v.variation?.vm?.name, w = ctx.memory.vmWaits?.get(name);
+  if (!name || ctx.memory.vmsUp?.has(name) || !w?.over) return false;   // up, or not a VM its step runs (no wait)
+  const ceiling = vmUpCeilingMs(state);
+  if (ctx.now().getTime() - w.since >= ceiling) await neverUp(ctx, v, name, ceiling);
+  else if (!w.dispatching) { w.dispatching = true; ctx.log(PHASE, `${who}: waits for its VM ${name} to be up before an agent is dispatched into it`); }
+  return true;
+}
+
+// vmUpCeilingMs(state) — how long a VM may take to come up before its
+// variation goes to Blocked (vmDown, ASS-348), in ms: harness.json's
+// vm-up-ceiling-seconds, else VM_UP_CEILING — far longer than any normal
+// start (62–150 s seen, more queued behind the project's other VM jobs). Read
+// through state.harness, which is the raw file, so the default applies with
+// the key absent.
+export const VM_UP_CEILING = 30 * 60_000;
+export const vmUpCeilingMs = state => (state.harness['vm-up-ceiling-seconds'] != null ? state.harness['vm-up-ceiling-seconds'] * 1000 : VM_UP_CEILING);
+
+// neverUp(ctx, at, name, ceiling) — the variation (`at`, found's) whose VM
+// `name` did not come up within `ceiling` goes to Blocked — Blocked for Human
+// when at Blocked already, as blockFailing sends a failing step inside it —
+// when its engine has that step, it is a sprint ticket's and not worked by
+// hand; its health (ai-feedback, short and long, set after the move, which
+// clears it) naming the VM and that it never came up. Its wait is dropped, so
+// a step there that runs in the VM waits afresh. Otherwise it waits on.
+async function neverUp(ctx, at, name, ceiling) {
+  const { project, ticket, variation, engine, backlog } = at;
+  const from = variation['harness-status']?.state, to = from === 'blocked' ? 'blocked-for-human' : 'blocked';
+  if (backlog || isManual(ticket) || from === 'blocked-for-human' || !stepOf(engine, to)) return;
+  const why = `its VM ${name} never came up`;
+  const short = `VM ${name} never came up: not running and reachable after ${held(ceiling)}`;
+  const long = `${short}. Control dispatches no agent into a VM until it has seen it running and reached it (ASS-348), so no agent was sent; look at the VM's starts in the control log (vm:start failing, or still starting).`;
+  await ctx.attempt(PHASE, `${ticket.key} ${variation.name}`, async () => {
+    if (!await moveTicket(ctx, PHASE, project, ticket, variation, to, why)) return;
+    ctx.memory.vmWaits?.delete(name);
+    await ctx.cli(['ticket:set-ai-feedback', project.id, ticket.key, variation.name, short, long]);
+  });
+}
 
 // heldOnFailure(ctx, key, fn) — fn, a dispatch; when it throws (the workspace
 // would not take the branch, an agent would not start…), the item is held a
@@ -479,7 +521,8 @@ function waitsOnAnswer(ctx, state) {
 // agent are fewer than max-tickets-in-grooming, harness.json's over every
 // project and its project.json's over its own (plan.js grooming; ASS-87,
 // ASS-129: none set, no limit; 0, none). An item held after failing (backoff.js) waits its turn,
-// and a run's or sprint step's in the variation's VM while that VM is not up (vmDown); a run for
+// and a run's or sprint step's in the variation's VM while control has not seen that VM up, however long —
+// past a ceiling the variation goes to Blocked instead (vmDown, ASS-348); a run for
 // a ticket at its spending limit (spend.js overSpent, ASS-191; its running agents' spend so far counted, ASS-270) waits, as the plan holds the ticket's steps.
 // A fast-tracked ticket's run or step left without an agent, max-agents full,
 // is remembered as waiting for an agent seat (fast-track.js, ASS-83); its
@@ -528,7 +571,7 @@ export async function dispatch(ctx, state) {
     if (context.workItem != null && overSpent(found(state, { project: run.project, 'work-item': context.workItem }).ticket, state.harness, project.json, runningOn(state.running, run.project, context.workItem))) continue;
     const key = runKey(run.id, run.state);
     if (waiting(ctx.memory, key, ctx.now().getTime())) continue;   // failing: held a while (backoff.js)
-    if (vmDown(ctx, state, step, run.project, context.workItem, context.variation, run.state)) continue;
+    if (await vmDown(ctx, state, step, run.project, context.workItem, context.variation, run.state)) continue;
     const pays = await paymentFor(ctx, limited, project, step, context.workItem, context.variation, limit === 'api');
     if (!pays) continue;
     // Its ticket at Committed, waiting for what it depends on (ASS-195): the same predicate steps.js holds it with.
@@ -593,7 +636,7 @@ export async function dispatch(ctx, state) {
       if (isPaused(state, project.id, item.key, item.variation)) continue;
       const key = ticketKey(project.id, item.key, item.variation, item.state);
       if (waiting(ctx.memory, key, ctx.now().getTime())) continue;   // failing: held a while (backoff.js)
-      if (vmDown(ctx, state, step, project.id, item.key, item.variation, item.state)) continue;
+      if (await vmDown(ctx, state, step, project.id, item.key, item.variation, item.state)) continue;
       const pays = await paymentFor(ctx, limited, project, step, item.key, item.variation);
       if (!pays) continue;
       const at = found(state, { project: project.id, 'work-item': item.key, variation: item.variation });

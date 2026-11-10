@@ -57,7 +57,9 @@
 // (ASS-169) — is not judged (steps.js, awaitsVm) until it is, for at most
 // VM_WAIT; then it is, as it stands — unless it waits for a slot, when it is
 // not judged until it holds one and its VM is up. Nor, under the same wait, is an agent
-// dispatched into it (dispatch.js vmDown, ASS-159); limactl list is read in
+// dispatched into it (dispatch.js vmDown, ASS-159) — nor after it, until the
+// VM is up, or the variation goes to Blocked once it has waited past a
+// ceiling (ASS-348: 30 minutes, harness.json's vm-up-ceiling-seconds); limactl list is read in
 // the tick to drop VMs no longer Running; the project's match job probes
 // each Running VM not yet in vmsUp before using it.
 import { execFile } from 'node:child_process';
@@ -84,7 +86,8 @@ const waitsForSlot = (plan, ticket, variation) => plan.waiting.some(w => w.key =
 // step waits this tick for its VM (see the module comment); its wait, and its
 // end at VM_WAIT, logged once each. memory.vmsUp: the names control has
 // reached — seen Running by limactl list and reached by a probe (ASS-169),
-// or that it started or recreated itself; memory.vmWaits: name → { since, over },
+// or that it started or recreated itself; memory.vmWaits: name → { since, over,
+// dispatching (dispatch.js vmDown's own wait past VM_WAIT logged, ASS-348) },
 // dropped once the VM is up or should not run.
 export const VM_WAIT = 2 * 60_000;
 export function awaitsVm(ctx, state, project, variation, who) {
