@@ -14,6 +14,8 @@ set -euo pipefail
 # fetched without the key, an off-board one, gets none and keeps what it has).
 # The signed-in user's account id to compare it with is the project folder's
 # ticket-system-account-id file (project:set-ticket-system-account-id).
+# A sprint ticket reassigned away from that account (ASS-345) is held: see
+# reassignment, below.
 # It is merged, in one locked write, into the
 # project's active sprint file (data/projects/<project>/sprints/sprint-<n>/
 # sprint.json; features, bugs or spikes by issue-type, a ticket moving to the
@@ -58,8 +60,39 @@ set -euo pipefail
 # the file's merge requests for its key or []. A ticket worked by hand
 # (ASS-166, ticket:set-manual's worked-manually) takes a changed description
 # as it is, nothing held or paused, and in the backlog is not sent back to its
-# first step: control leaves it alone. Tickets in the file but not in
-# the fetch are left as they are but for their recorded merge requests,
+# first step: control leaves it alone.
+#
+# The reassignment hold (ASS-345). Only when the project has a
+# ticket-system-account-id file and the fetched sprint ticket carries
+# ticket-system-assignment-id (a Jira ticket; an off-board one never does):
+# a ticket already there whose previous id was that account and whose fetched
+# one is anything else, another person or null, gets reassigned { to (the new
+# ticket-system-assignment, null when unassigned), "to-id" (its id or null),
+# "detected-at", "paused-variations" } — on the whole ticket — and each of its
+# variations not deleted, not at a done step (is-done in its state-engine) and
+# not paused is paused and listed there. Two pauses are taken over too, so
+# nothing lifts them while the ticket is someone else's: one control's
+# fast-track pre-emption set (its paused-for-fast-track and preempted-seat
+# marks go, so control never resumes it, ASS-83), and one this ticket's
+# pending-requirements-change holds (listed in both: either release leaves it
+# paused while the other still holds it — ticket:keep-current and
+# ticket:take-new skip a name the reassignment lists). A pause the operator
+# set is not listed. A ticket worked by hand (worked-manually) or with every
+# live variation at a done step gets no mark and nothing paused, as does a
+# ticket first seen assigned to someone else (its previous id was never the
+# account's). One already marked and fetched assigned to yet another id has
+# to, to-id and detected-at updated, its paused-variations kept. Fetched
+# assigned back to the account, the mark goes and each variation it lists
+# that is still paused is unpaused — but for one the
+# pending-requirements-change also lists; a pause the operator added since
+# stays. The operator's own ticket:set-paused, either way, takes the variation
+# out of paused-variations (the pause, or its lifting, becomes theirs), so a
+# later reassign-back leaves it alone; the mark itself stays until the ticket
+# comes back. Backlog tickets take only the fields. Control needs nothing
+# more: a paused variation is held (control/engine.js isHeld), its agent
+# ended.
+#
+# Tickets in the file but not in the fetch are left as they are but for their recorded merge requests,
 # refreshed from the scan by url (ASS-122): taking a ticket out of a sprint is
 # control's call, not the downloader's. A ticket soft deleted (ASS-104,
 # ticket:delete: is-deleted and its deleted-timestamp) stays so: an update
@@ -122,6 +155,18 @@ if [[ "$target" == sprint && -n "$engine" ]] && engine_file="$(engine_path "$eng
     | from_entries' "$engine_file")"
 fi
 
+# The reassignment hold's inputs (ASS-345): the signed-in account id (JSON,
+# null without the file or with it empty), and { "<engine>": [<its is-done
+# step ids>] } for every engine the project sees, its own over engines/'s.
+account=null done_steps='{}'
+if [[ "$target" == sprint ]]; then
+  [[ ! -f "$projects/$project/ticket-system-account-id" ]] || account="$(jq -Rs 'sub("\\s+$"; "") | if . == "" then null else . end' "$projects/$project/ticket-system-account-id")"
+  if [[ "$account" != null ]]; then
+    mapfile -t engine_list < <(engine_files "$project")
+    [[ ${#engine_list[@]} -eq 0 ]] || done_steps="$(jq -n 'reduce inputs as $e ({}; .[input_filename | split("/") | .[-2]] = [$e.steps[]? | select(.["is-done"] == true) | .id])' "${engine_list[@]}" 2>/dev/null || echo '{}')"
+  fi
+fi
+
 # The tickets the other file lists deleted: { "<lower-case key>": <deleted-timestamp> }.
 if [[ "$target" == sprint ]]; then other="$projects/$project/backlog.json"; else other="$(jq -r 'first(.list[] | select(.["is-active"]) | "sprints/sprint-\(.number)/sprint.json") // empty' "$projects/$project/sprints.json" 2>/dev/null || true)"; other="${other:+$projects/$project/$other}"; fi
 gone='{}'
@@ -164,7 +209,7 @@ done <<< "$changes"
 # one the write changes is a delivered ticket's new description, commented on below.
 notified="$(jq -c '[(.features, .bugs, .spikes) // [] | .[] | { key, value: .["requirements-change-notified"] }] | from_entries' "$json")"
 
-update_json "$json" --slurpfile in "$file" --arg target "$target" --arg state "$state" --arg engine "$engine" --argjson resting "${resting:-[]}" --argjson seeds "$seeds" --argjson gone "$gone" --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '
+update_json "$json" --slurpfile in "$file" --arg target "$target" --arg state "$state" --arg engine "$engine" --argjson resting "${resting:-[]}" --argjson seeds "$seeds" --argjson gone "$gone" --argjson account "$account" --argjson done "$done_steps" --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '
   def lc: ascii_downcase;
   def arr_of: if $target != "sprint" then "tickets" elif .["issue-type"] == "Bug" then "bugs" elif .["issue-type"] == "Spike" then "spikes" else "features" end;
   def arrays: if $target == "sprint" then "features", "bugs", "spikes" else "tickets" end;
@@ -249,6 +294,31 @@ update_json "$json" --slurpfile in "$file" --arg target "$target" --arg state "$
       | .["pending-requirements-change"] = { description: $t.description, "detected-at": (now | floor | todate),
           "paused-variations": ((.["pending-requirements-change"]["paused-variations"] // []) + $paused | unique) }
     end;
+  # The reassignment hold (ASS-345, see the header): $old the ticket as it
+  # was, $t the fetched one, $manual whether it is worked by hand; applied to
+  # the merged sprint ticket, after held.
+  def at_done: .["harness-status"].state as $s | any($done[.["harness-status"]["state-engine"] // $engine][]?; . == $s);
+  def reassignment($old; $t; $manual):
+    if $account == null or ($t | has("ticket-system-assignment-id") | not) then .
+    else $t["ticket-system-assignment-id"] as $to
+      | (.["pending-requirements-change"]["paused-variations"] // []) as $req
+      | if $to == $account then
+          if .reassigned == null then . else
+            .reassigned["paused-variations"] as $listed
+            | .variations |= (if . == null then . else map(if (.name | IN($listed[])) and (.name | IN($req[]) | not) and .["is-paused"] == true then .["is-paused"] = false else . end) end)
+            | del(.reassigned)
+          end
+        elif .reassigned != null then
+          if $to == $old["ticket-system-assignment-id"] then .
+          else .reassigned += { to: $t["ticket-system-assignment"], "to-id": $to, "detected-at": (now | floor | todate) } end
+        elif $old["ticket-system-assignment-id"] == $account and ($manual | not) and any(.variations // [] | .[]; (.["is-deleted"] | not) and (at_done | not)) then
+          def holds: (.["is-deleted"] | not) and (at_done | not)
+            and ((.["is-paused"] | not) or .["paused-for-fast-track"] != null or (.name | IN($req[])));
+          [.variations // [] | .[] | select(holds) | .name] as $paused
+          | .variations |= (if . == null then . else map(if holds then .["is-paused"] = true | del(.["paused-for-fast-track"], .["preempted-seat"]) else . end) end)
+          | .reassigned = { to: $t["ticket-system-assignment"], "to-id": $to, "detected-at": (now | floor | todate), "paused-variations": $paused }
+        else . end
+    end;
   # A changed backlog variation at a resting step of its refinement engine back at its first step (ASS-144 Q7), the move recorded
   # with cause "requirements-changed" (ASS-42: no exit of a step made it; see sprint.bash).
   def restarted:
@@ -281,6 +351,7 @@ update_json "$json" --slurpfile in "$file" --arg target "$target" --arg state "$
             | points_merged($old.t; $t)
             | dependencies_merged($old.t; $t)
             | if $target == "sprint" and $old.t.description != $t.description and ($manual | not) then .description = $old.t.description | held($t) else . end
+            | if $target == "sprint" then reassignment($old.t; $t; $manual) else . end
             | if (.["dismissed-requirements-change"] // $t.description) != $t.description then del(.["dismissed-requirements-change"]) else . end
             | if $scan == [] then . else .variations |= (if . == null then . else scanned($key; $scan) end) end
             | if $changed then .["changed-at"] = $at
