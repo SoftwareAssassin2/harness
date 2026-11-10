@@ -9,8 +9,9 @@ set -euo pipefail
 # once its pipeline passes and its approvals are in, never before (`glab mr
 # merge --auto-merge`, or its API for a planned one; gh's auto-merge with a
 # merge commit on GitHub). One whose dependencies have not all merged waits
-# (ASS-81): set now, it would merge into its dependency's branch; Team Code
-# Review's check sees it unset and runs this again. Prints { "iid",
+# (ASS-81): set now, it would merge into its dependency's branch. Team Code
+# Review's check counts it as needing nothing meanwhile (ASS-351) and, once
+# the dependency has merged, sees it unset and runs this again. Prints { "iid",
 # "auto-merge": true } for each one set or set already. The first refused
 # stops it, failing, before any later one; a re-run resumes. Fails when the
 # variation has no merge request, or the project, ticket or variation is

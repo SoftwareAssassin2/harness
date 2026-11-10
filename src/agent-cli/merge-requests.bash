@@ -39,7 +39,8 @@ MR_ROW='def same_mr($m): if $m.id != null then .id == $m.id else .id == null and
 # depends-on names that are not done, in any repository (one named but not
 # in $all is nothing to wait for). merge-request:await-dependencies keeps
 # those in another repository (ASS-335); merge-request:check holds back a
-# failed pipeline while there are any (ASS-346).
+# failed pipeline while there are any (ASS-346), and counts an Open one with
+# any as needing nothing from Ensure Auto-Merge yet (ASS-351).
 MR_DEPS='def done: .status | IN("Merged", "Closed");
   def unmerged_deps($all): . as $m | [ $m["depends-on"][]? as $d | first($all[] | select(.id == $d)) // empty | select(done | not) ];'
 

@@ -223,7 +223,8 @@ test('AC5 example: merge-request:ensure-auto-merge sets auto-merge in depends-on
   assert.deepEqual(autoMerged(f), [7, 9]);                       // !8 waits on !7
   view(f, 'app', 7, { merge_when_pipeline_succeeds: true });
   view(f, 'lib', 9, { merge_when_pipeline_succeeds: true });
-  assert.deepEqual(await check(), { 'needs-attention': false, reasons: [], 'auto-merge': false, merged: false });   // so Ensure Auto-Merge runs again
+  // !8 waits on !7, unmerged: nothing for Ensure Auto-Merge to do yet, so Team Code Review just waits (ASS-351).
+  assert.deepEqual(await check(), { 'needs-attention': false, reasons: [], 'auto-merge': true, merged: false });
   // !7 merges: !8 is retargeted to master, then set.
   view(f, 'app', 7, { state: 'merged' });
   f.forge.route('glab', /^api projects\/g%2Fapp\/merge_requests\/8 --hostname gitlab.com -X PUT -f target_branch=master$/, { out: {}, touch: 'retargeted' });
@@ -834,4 +835,117 @@ test('ASS-346 AC4: on GitHub, once the dependency merged, the failed workflow ru
   prView(g, 12, { statusCheckRollup: [{ __typename: 'StatusContext', context: 'ci/external', state: 'ERROR', startedAt: '2026-11-10T10:00:00Z', targetUrl: 'https://ci.example.com/1' }] });
   assert.deepEqual((await checked(g)).reasons, ['build-failed']);
   assert.deepEqual(reruns(g), []);
+});
+
+// ASS-351: Team Code Review waits for approvals without bouncing through
+// Ensure Auto-Merge. auto-merge is true when every merge request not Closed is
+// Merged, set to auto-merge, or Open and waiting on a dependency not yet
+// merged (MR_DEPS unmerged_deps): Ensure Auto-Merge has nothing to set now. An
+// Open one set to auto-merge with nothing of its own to act on records when it
+// started waiting (approval-wait-since); past harness.json's
+// approval-wait-days (3 by default), the check says so, naming them.
+const daysAgo = days => new Date(Date.now() - days * 86400e3).toISOString();
+const withHarness = (f, harness) => {
+  const file = join(f.dir, 'harness.json');
+  writeFileSync(file, JSON.stringify(harness));
+  return async () => JSON.parse((await run(AGENT, ['merge-request:check', 'p', 'ABC-5', 'A'], { env: { ...process.env, PROJECTS_DIR: f.dir, PATH: f.forge.path, HARNESS_FILE: file } })).stdout);
+};
+const WAITING = { 'needs-attention': false, reasons: [], 'auto-merge': true, merged: false };
+
+test('ASS-351 AC1: auto-merge is true while every Open MR is set to auto-merge or waits on a dependency not yet merged — so Ensure Auto-Merge is not asked again — and false while one could be set and is not', async () => {
+  const f = await example();
+  const check = async () => JSON.parse((await f.agent('merge-request:check', 'p', 'ABC-5', 'A')).stdout);
+  // Nothing set yet: !7 and !9 could be.
+  assert.deepEqual(await check(), { 'needs-attention': false, reasons: [], 'auto-merge': false, merged: false });
+  // !7 and !9 set; !8 waits on !7, unmerged: nothing for Ensure Auto-Merge to do.
+  view(f, 'app', 7, { merge_when_pipeline_succeeds: true });
+  view(f, 'lib', 9, { merge_when_pipeline_succeeds: true });
+  assert.deepEqual(await check(), WAITING);
+  // Each set one records when it started waiting; the dependent one, waiting on another, does not.
+  const since = f.mrs().map(m => m['approval-wait-since'] ?? null);
+  assert.ok(since[0] && since[2] && since[1] === null, JSON.stringify(f.mrs()));
+  assert.deepEqual(await check(), WAITING);
+  assert.deepEqual(f.mrs().map(m => m['approval-wait-since'] ?? null), since, 'kept, not moved on, by a later poll');
+  // !9 not set (its auto-merge cancelled), waiting on nothing: Ensure Auto-Merge has work again.
+  view(f, 'lib', 9, {});
+  assert.deepEqual(await check(), { 'needs-attention': false, reasons: [], 'auto-merge': false, merged: false });
+  assert.equal(f.mrs()[2]['approval-wait-since'], null, 'cleared once it is not waiting');
+  // A dependency recorded but not yet created leaves its dependent waiting, but is no auto-merge itself.
+  const n = await planned([{ id: 1, repository: LIB }, { id: 2, repository: APP, 'depends-on': [1] }]);
+  n.record({ 2: { status: 'Open', key: '!9', base: 'master' } });
+  view(n, 'app', 9, {});
+  assert.equal(JSON.parse((await n.agent('merge-request:check', 'p', 'ABC-5', 'A')).stdout)['auto-merge'], false);
+});
+
+test('ASS-351 AC2: once the dependency merges, the MR waiting on it and not yet set makes auto-merge false — Ensure Auto-Merge sets it, once — and waiting resumes', async () => {
+  const f = await example();
+  const check = async () => JSON.parse((await f.agent('merge-request:check', 'p', 'ABC-5', 'A')).stdout);
+  view(f, 'app', 7, { merge_when_pipeline_succeeds: true });
+  view(f, 'lib', 9, { merge_when_pipeline_succeeds: true });
+  assert.deepEqual(await check(), WAITING);
+  view(f, 'app', 7, { state: 'merged' });
+  f.forge.route('glab', /^api projects\/g%2Fapp\/merge_requests\/8 --hostname gitlab.com -X PUT -f target_branch=master$/, { out: {}, touch: 'retargeted' });
+  view(f, 'app', 8, { target_branch: 'master' }, { when: 'retargeted' });
+  assert.deepEqual(await check(), { 'needs-attention': false, reasons: [], 'auto-merge': false, merged: false });
+  await f.agent('merge-request:ensure-auto-merge', 'p', 'ABC-5', 'A');
+  assert.deepEqual(autoMerged(f), [8]);                          // !9 set already, not set again
+  view(f, 'app', 8, { target_branch: 'master', merge_when_pipeline_succeeds: true }, { when: 'retargeted' });
+  assert.deepEqual(await check(), WAITING);
+  assert.ok(f.mrs()[1]['approval-wait-since'], 'its own wait starts now');
+});
+
+test('ASS-351 AC3: a real problem on a waiting MR — open threads, a failed pipeline not waiting on a dependency, a needed rebase — still needs attention, and a set MR with one stops its approval wait', async () => {
+  const f = await example();
+  const check = async () => JSON.parse((await f.agent('merge-request:check', 'p', 'ABC-5', 'A')).stdout);
+  view(f, 'app', 7, { merge_when_pipeline_succeeds: true });
+  view(f, 'lib', 9, { merge_when_pipeline_succeeds: true });
+  await check();
+  view(f, 'app', 8, { target_branch: 'change/ABC-5-1', blocking_discussions_resolved: false });
+  assert.deepEqual(await check(), { 'needs-attention': true, reasons: ['open-threads'], 'auto-merge': true, merged: false });
+  view(f, 'app', 8, { target_branch: 'change/ABC-5-1', has_conflicts: true });
+  assert.deepEqual((await check()).reasons, ['needs-rebase']);
+  view(f, 'app', 8, { target_branch: 'change/ABC-5-1' });
+  view(f, 'lib', 9, { merge_when_pipeline_succeeds: true, head_pipeline: { status: 'failed' } });
+  assert.deepEqual(await check(), { 'needs-attention': true, reasons: ['build-failed'], 'auto-merge': true, merged: false });
+  assert.equal(f.mrs()[2]['approval-wait-since'], null);
+  assert.ok(f.mrs()[0]['approval-wait-since']);
+});
+
+test('ASS-351 AC4: an MR set to auto-merge that has waited past approval-wait-days (3 by default, from harness.json) makes the check say approval-wait-expired, naming those still needing approval, with feedback for Blocked for Human', async () => {
+  const f = await example();
+  view(f, 'app', 7, { merge_when_pipeline_succeeds: true });
+  view(f, 'lib', 9, { merge_when_pipeline_succeeds: true });
+  f.record({ 1: { url: `${APP}/-/merge_requests/7`, 'approval-wait-since': daysAgo(4) }, 3: { url: `${LIB}/-/merge_requests/9`, 'approval-wait-since': daysAgo(1) } });
+  const check = withHarness(f, {});
+  const out = await check();
+  assert.equal(out['approval-wait-expired'], true);
+  assert.deepEqual(out['awaiting-approval'], [{ id: 1, key: '!7', url: `${APP}/-/merge_requests/7`, since: f.mrs()[0]['approval-wait-since'] }]);
+  assert.equal(out['ai-feedback-short'], 'Waited over 3 days for approval: MR 1 (!7)');
+  assert.match(out['ai-feedback-long'], /MR 1 \(!7\) https:\/\/gitlab.com\/g\/app\/-\/merge_requests\/7, waiting since /);
+  assert.match(out['ai-feedback-long'], /Waiting for those before them to merge: MR 2 \(!8\)\./);
+  assert.match(out['ai-feedback-long'], /choose Resolved/);
+  // Both past the bound: both named.
+  f.record({ 3: { 'approval-wait-since': daysAgo(3.5) } });
+  assert.deepEqual((await check())['awaiting-approval'].map(m => m.key), ['!7', '!9']);
+  // A longer bound from harness.json: still waiting.
+  assert.deepEqual(await withHarness(f, { 'approval-wait-days': 5 })(), WAITING);
+  // A bad one: the default, said on stderr.
+  const bad = await run(AGENT, ['merge-request:check', 'p', 'ABC-5', 'A'], { env: { ...process.env, PROJECTS_DIR: f.dir, PATH: f.forge.path, HARNESS_FILE: (writeFileSync(join(f.dir, 'bad.json'), '{"approval-wait-days": "soon"}'), join(f.dir, 'bad.json')) } });
+  assert.equal(JSON.parse(bad.stdout)['approval-wait-expired'], true);
+  assert.match(bad.stderr, /approval-wait-days must be a positive number of days; 3 used/);
+  // The variation entered its step (a Release resumed from Blocked for Human) a day ago: the wait counts from then.
+  const sprint = JSON.parse(readFileSync(f.file, 'utf8'));
+  sprint.features[0].variations[0]['state-changes'] = [
+    { 'from-state': 'blocked-for-human', 'to-state': 'release', timestamp: daysAgo(1).replace(/\.\d+Z$/, 'Z') },
+    { 'from-state': 'release', 'to-state': 'release', 'sub-state-change': { 'from-state': 'take-out-of-draft-mode', 'to-state': 'team-code-review' }, timestamp: daysAgo(0.9) },
+  ];
+  writeFileSync(f.file, JSON.stringify(sprint, null, 4));
+  assert.deepEqual(await check(), WAITING);
+  // Something to act on: no expiry, whatever the wait.
+  sprint.features[0].variations[0]['state-changes'] = [];
+  writeFileSync(f.file, JSON.stringify(sprint, null, 4));
+  view(f, 'app', 8, { target_branch: 'change/ABC-5-1', blocking_discussions_resolved: false });
+  const attention = await check();
+  assert.equal(attention['needs-attention'], true);
+  assert.equal(attention['approval-wait-expired'], undefined);
 });
