@@ -56,6 +56,36 @@ human, or that repository's team review), since the ticket's Release comes
 after its tests. It waits for the merge only, not for a later publishing
 pipeline (a promotion after the merge).
 
+It says why a dependency is not merging (ASS-359). Each `waiting` entry it
+prints has `needs`, read from the dependency's forge, in this order:
+`not-created` (planned, never opened), `draft`, `build-failed` (its head
+pipeline failed or was canceled; on GitHub a failed check), `open-threads`
+(unresolved blocking threads; on GitHub changes requested), `needs-rebase`
+(conflicts, or behind its target), `needs-approval` (GitLab's
+`approvals_left` above 0; GitHub's review decision `REVIEW_REQUIRED`) — or
+`[]` when it only waits to be merged (set to auto-merge, say), which keeps
+polling silently as before. While any dependency needs something, the step
+writes the operator's feedback on the variation (`ai-feedback-short` and
+`-long`, the TUI's Health on the sprint grid and the ticket screen), naming
+each by repository, key and url in plain words, for example "acme/api !12
+https://…/merge_requests/12: is a draft; its pipeline failed (lint); it needs
+1 approval. MR 2 depends on it." The needs it last wrote are kept on the
+variation (`awaited-dependency-needs`), so the feedback is written, and said
+once in control's log, only when they change, not on every poll; once nothing
+needs action it is cleared (only when it is still this step's own). A move
+within Build's run does not clear the feedback; leaving Build does.
+
+Every dependency it waits on is a planned merge request of the same variation,
+so one `not-created` is one Generate Solution never opened (its agent killed
+before it got there, say), which nothing else will ever create. That one is
+not waited on: the step exits 3, and grouped-build's exit for it sends the run
+back to Generate Solution — a visit there, under its max-visits (5), after
+which the run ends at Blocked as any other loop does. The feedback names the
+merge request never created, and a control line in
+`execution-plan-<variation>.md` tells Generate Solution which to build and
+record. Any other failure of the command exits 1, never 2 or 3, so it matches
+no exit and is tried again where it is.
+
 Write Execution Plan (grouped/v2 Plan, `write-execution-plan-grouped`) never
 pins a consumer to a digest or tag a producer repository publishes only after
 its merge request merges, when that digest can't be read in the VM (ASS-339):
