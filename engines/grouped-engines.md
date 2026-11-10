@@ -167,6 +167,37 @@ Blocked for Human, saying the ticket needs that project's access — it
 belongs in that project or must be done on the Mac. Nothing else ever
 adds a repository, and none is ever removed.
 
+Where a landed fix resumes the ticket (ASS-343): declared, else derived, else
+the step it blocked at. Once await-fix says landed, Find Where to Resume
+(`resume-step`, `ticket:fix-resume-step`, on the host) records the run's
+`resume-at`, `resume-source` (declared, commits, data or none), `resume-why`
+and `resume-ignored`, and the run is done whatever its exit. Declared is the
+fix ticket's own `resume-at:` front matter (`off-board.sh ticket:create
+--resume-at <step>`, which create-ticket-grouped's writer passes when the fix
+changes an earlier step than the blocked one). Derived maps what the fix
+changed to the steps that use it: the files of its `<KEY>:` commits on its
+project's default branch (`prompts/<name>/` to the steps running that prompt,
+`src/agent-cli/<family>/<command>.sh|.js` to the steps whose command runs it,
+`engines/<name>/` to the group running that engine), and the files of the
+ticket's work folder written since it entered await-fix (a step's
+`file-updated` exits, such as `execution-plan-<V>.md` to Write Execution
+Plan, and `automated-tests-<V>.json` to Generate Automated Tests). Each is
+lifted to its top-level group; the earliest at or before the blocked step
+wins. Control (engine.js `resolveTarget`) takes `resume-at` on the
+fix-landed return only when `whyNotResume` allows it: a step of the engine's
+`steps`, at or before the step the return-to-state walk names, doing real
+work — no done step, Blocked, detour or other sequence-0 state, nor a `none`
+or `human` step such as Backlog or Committed. Else it returns to the blocked
+step, as before. The log says which: `the fix landed; resumes at <step>:
+<why>`. A resume upstream needs nothing reset: the clearing move's
+`fix-landed` cause restarts the visit counts, a script step's "already ran"
+memory is per state change, and each group's run starts afresh at its
+first step, so a resume at Plan writes the execution plan again (Write
+Execution Plan leaves only once the file was written in its turn), and Build
+generates the solution again. A resume at a planning step waits for a
+planning slot as any move into one does. The current engines' `blocked`
+has no resume step: it resumes where it blocked, as before.
+
 A project issue raises a bug only for a failure on the latest master
 (ASS-163, the operator's decision box). Troubleshoot names the failing check
 (repository, CI job, assertion); Check on the Latest Master
