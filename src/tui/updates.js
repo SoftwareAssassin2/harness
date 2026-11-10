@@ -1,13 +1,15 @@
 // The updates screen's summary: the sprint written the way the team sees the
 // work on the board (ASS-332) — each ticket variation that changed since a
 // moment, or is not yet Done, once, under the ticket system's status it has
-// now, in plain words, closed by a line netting the change since then. Plain
-// text, paste-ready; each key linked to its ticket's url only for display.
-// Pure; app.js owns the screen.
+// now, in plain words, closed by a line netting the change since then. A
+// ticket paused on purpose is On Hold, apart from those stopped by a problem
+// (ASS-352). Plain text, paste-ready; each key linked to its ticket's url
+// only for display. Pure; app.js owns the screen.
 
 import { wrap, link } from './text.js';
 import { enginesOf } from './status.js';
 import { statusOf, inPlanning, isHeld, changePath } from '../control/engine.js';
+import { reassignedTo } from './ticket.js';
 
 const TYPES = ['features', 'bugs', 'spikes'];
 const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
@@ -23,8 +25,8 @@ export function lastWeekdayMorning(now) {
 }
 
 // The board's columns in its order, each with what it means to the team; In
-// Progress is split three ways (see progressSince). Any other status follows
-// these, by name, with no meaning of its own.
+// Progress is split three ways and On Hold two (see progressSince). Any other
+// status follows these, by name, with no meaning of its own.
 const BOARD = [
   ['Done', 'Finished and accepted.'],
   ['In Testing', 'The work is done and being verified.'],
@@ -32,9 +34,15 @@ const BOARD = [
   ['In Progress: planning', 'Being analyzed and planned before any code.'],
   ['In Progress: held on purpose', 'Started, then held until something else is ready.'],
   ['To Do', 'Committed to the sprint, not started yet.'],
-  ['On Hold', 'Stopped until a problem is fixed.'],
+  ['On Hold', 'Paused on purpose, or stopped until a problem is fixed.'],
+];
+// On Hold's sub-groups in their order, each with what it means (ASS-352).
+const ON_HOLD_GROUPS = [
+  ['Paused on purpose', 'Held until resumed.'],
+  ['Stopped until a problem is fixed', 'Blocked, not paused.'],
 ];
 const IN_PROGRESS = 'In Progress', ON_HOLD = 'On Hold', IN_TESTING = 'In Testing', DONE = 'Done';
+const [PAUSED_ON_PURPOSE, STOPPED] = ON_HOLD_GROUPS.map(([name]) => name);
 
 // A side of a state change ('from-state' or 'to-state') as a status chain,
 // each level { state-engine, state, step }, for the helpers that read one.
@@ -70,39 +78,54 @@ function stoppedAt(engines, v) {
 
 // progressSince({ sprint, workflows, since }) — { sections, net } (ASS-332).
 // `workflows` are the loaded engines (load.js loadWorkflows); `since` ms since
-// the epoch. sections, [{ title, bullets: [{ key, url, text }] }], the empty
-// ones left out: every variation not soft-deleted that changed state after
-// `since`, or that is not Done, once, under its status now, in BOARD order.
+// the epoch. sections, [{ title, bullets: [{ key, url, text }], groups? }],
+// the empty ones left out: every variation not soft-deleted that changed
+// state after `since`, or that is not Done, once, under its status now, in
+// BOARD order. On Hold's also has `groups`, its sub-groups [{ title, bullets
+// }] in ON_HOLD_GROUPS order, the empty ones left out; its bullets are theirs.
 //
 // Its status is the one its step pairs with (pairedOf), the ticket system's
 // (ticket-system-status) when its step pairs with none; when the two differ
 // — a transition the ticket system refused, or one not made yet — the line
-// says the board may still show the ticket system's. In Progress is split:
-// held on purpose when control holds it (isHeld: paused, or worked by hand)
-// or a ticket it depends on in the sprint is not Done yet; planning at a
-// planning-stage step (inPlanning); else building.
+// says the board may still show the ticket system's. A variation paused on
+// purpose (ASS-352: pausedOnPurpose — the operator's pause, a requirements
+// change's or a reassignment's, not control's for a fast-track) and not Done
+// is On Hold, under Paused on purpose, whatever its step; one On Hold and not
+// paused is under Stopped until a problem is fixed. A paused one that is
+// Done stays under Done. In Progress is split: held on purpose when control
+// holds it otherwise (isHeld: worked by hand, or paused to free a seat for a
+// fast-track) or a ticket it depends on in the sprint is not Done yet;
+// planning at a planning-stage step (inPlanning); else building.
 //
 // Each text is "<KEY>: <title>. <note>", the note where it is and why it
 // waits, in plain words from the engines' step names and the keys it waits
 // on — never a step id, an engine name or free text written by an agent. In
 // quarantine: the step it stopped at, then the fix it waits on (waits-on),
 // that a person must look at it (an is-blocked-state step) or that it is
-// being looked into. Elsewhere: the step it is at (whereOf), paused when it
-// is, then the dependencies it waits for.
+// being looked into. Elsewhere: the step it is at (whereOf), paused (for
+// which fast-tracked ticket, when that is why) or worked by hand when it is,
+// then the dependencies it waits for. A ticket reassigned away from the
+// operator (ASS-345) says first who it went to, or that no one has it.
 //
 // net nets the change since `since`: the holds cleared (moves out of
-// quarantine), the On Hold count then and now, how many are being built or
-// planned now and then, how many are In Testing, and how many reached Done.
-// A variation's status then is the one its step then pairs with — where its
-// first change since moved it from, else where it is now — held or not as it
-// is now, the ticket system's status then not being kept.
+// quarantine), the On Hold count then and now and how many of now's are
+// paused on purpose, how many are being built or planned now and then, how
+// many are In Testing, and how many reached Done; the paused on purpose
+// counted only as On Hold. A variation's status then is the one its step
+// then pairs with — where its first change since moved it from, else where
+// it is now — held or not as it is now, the ticket system's status then not
+// being kept. No history of pauses is kept (is-paused is set and cleared in
+// place, with no state change), so a variation counts as paused on purpose
+// then only when it is now and has had no state change since: a paused one
+// does not move, so one that moved since was running at some point after
+// `since` and is taken as not paused then (its pause may be older, unseen).
 export function progressSince({ sprint, workflows, since }) {
   const engines = enginesOf(workflows);
   const tickets = TYPES.flatMap(type => sprint?.[type] ?? []);
   const live = t => (t.variations ?? []).filter(v => v['is-deleted'] !== true);
   const after = c => Boolean(c.timestamp) && Date.parse(c.timestamp) > since;
   const groups = new Map();
-  let cleared = 0, onHoldThen = 0, onHoldNow = 0, activeThen = 0, activeNow = 0, testing = 0, reachedDone = 0;
+  let cleared = 0, onHoldThen = 0, onHoldNow = 0, pausedNow = 0, activeThen = 0, activeNow = 0, testing = 0, reachedDone = 0;
 
   // A chain's status on the board, and its In Progress split for a variation held or not.
   const boardOf = (t, chain) => pairedOf(chain) ?? t['ticket-system-status'];
@@ -110,6 +133,10 @@ export function progressSince({ sprint, workflows, since }) {
     : `${IN_PROGRESS}: ${held ? 'held on purpose' : inPlanning({ chain }) ? 'planning' : 'building'}`);
   // Done with: the ticket system says so, or a live variation's step pairs with Done.
   const isDone = t => t['ticket-system-status'] === DONE || live(t).some(v => pairedOf(statusOf(engines, undefined, v).chain) === DONE);
+  // Paused on purpose (ASS-352): the ticket, or the variation not by control
+  // to free a seat for a fast-track (paused-for-fast-track). A requirements
+  // change's hold and a reassignment's set is-paused too, so they count.
+  const pausedOnPurpose = (t, v) => t['is-paused'] === true || (v['is-paused'] === true && !v['paused-for-fast-track']);
   const unfinished = t => (t.dependencies ?? []).filter(key => {
     const dependency = tickets.find(d => d.key.toUpperCase() === String(key).toUpperCase());
     return dependency && !isDone(dependency);   // one not in the sprint cannot be judged: it holds nothing
@@ -125,62 +152,78 @@ export function progressSince({ sprint, workflows, since }) {
       const status = boardOf(t, chain);
       const then = changes.length ? sideOf(engines, changes[0], 'from-state').chain : chain;
       const statusThen = pairedOf(then) ?? t['ticket-system-status'];
+      // Paused on purpose now and (no pause history: see above) then; a Done one stays Done.
+      const onPurpose = pausedOnPurpose(t, v) && status !== DONE;
+      const onPurposeThen = pausedOnPurpose(t, v) && !changes.length && statusThen !== DONE;
       cleared += changes.filter(c => quarantined(sideOf(engines, c, 'from-state').chain) && !quarantined(sideOf(engines, c, 'to-state').chain)).length;
-      onHoldThen += statusThen === ON_HOLD;
-      onHoldNow += status === ON_HOLD;
-      activeThen += statusThen === IN_PROGRESS && !held;
-      activeNow += status === IN_PROGRESS && !held;
-      testing += status === IN_TESTING;
+      onHoldThen += onPurposeThen || statusThen === ON_HOLD;
+      onHoldNow += onPurpose || status === ON_HOLD;
+      pausedNow += onPurpose;
+      activeThen += statusThen === IN_PROGRESS && !held && !onPurposeThen;
+      activeNow += status === IN_PROGRESS && !held && !onPurpose;
+      testing += status === IN_TESTING && !onPurpose;
       reachedDone += status === DONE && statusThen !== DONE;
       if (!changes.length && status === DONE) continue;
 
-      const paused = isHeld(t, v) ? (v['is-paused'] === true || t['is-paused'] === true ? 'paused' : 'worked by hand') : null;
+      const fastTrack = !pausedOnPurpose(t, v) && v['is-paused'] === true ? v['paused-for-fast-track'] : null;
+      const paused = isHeld(t, v)
+        ? (fastTrack ? `paused for fast-tracked ${fastTrack}` : v['is-paused'] === true || t['is-paused'] === true ? 'paused' : 'worked by hand')
+        : null;
       const where = quarantined(chain) ? stoppedAt(engines, v) : whereOf(chain);
       const why = quarantined(chain)
         ? (v['waits-on']?.ticket ? `waiting for a fix in ${v['waits-on'].ticket}` : chain.some(l => l.step?.['is-blocked-state']) ? 'needs a person to look at it' : 'being looked into')
         : waits.length ? `waits for ${waits.join(', ')} to finish` : null;
       const at = where ? `${quarantined(chain) ? 'stopped at' : paused ? `${paused} at` : 'at'} the ${where} step` : paused;
-      const note = [at, why].filter(Boolean).join(', ');
+      const reassigned = reassignedTo(t);   // "Reassigned to <name>" or "Unassigned" (ASS-345)
+      const note = [reassigned && reassigned[0].toLowerCase() + reassigned.slice(1), at, why].filter(Boolean).join(', ');
       const board = t['ticket-system-status'];
       const mismatch = board && pairedOf(chain) && board !== pairedOf(chain) ? ` (board may still show ${board})` : '';
       const title = /[.!?]$/.test(t.title ?? '') ? t.title : `${t.title}.`;
       const key = variations.length > 1 ? `${t.key}.${v.name}` : t.key;
       const text = `${key}: ${title}${note ? ` ${note[0].toUpperCase()}${note.slice(1)}.` : ''}${mismatch}`;
-      const group = splitOf(status, chain, held) ?? 'No status';
+      const group = onPurpose ? `${ON_HOLD}/${PAUSED_ON_PURPOSE}` : status === ON_HOLD ? `${ON_HOLD}/${STOPPED}` : splitOf(status, chain, held) ?? 'No status';
       groups.set(group, [...(groups.get(group) ?? []), { key, url: t.url, text }]);
     }
   }
 
+  // On Hold's sub-groups, the empty ones left out, under one On Hold heading counting them all.
+  const titled = ([name, meaning], bullets) => ({ title: `${name} (${bullets.length})${meaning ? `. ${meaning}` : ''}`, bullets });
+  const onHold = ON_HOLD_GROUPS.filter(([name]) => groups.has(`${ON_HOLD}/${name}`)).map(g => titled(g, groups.get(`${ON_HOLD}/${g[0]}`)));
+  for (const [name] of ON_HOLD_GROUPS) groups.delete(`${ON_HOLD}/${name}`);
+  if (onHold.length) groups.set(ON_HOLD, onHold.flatMap(g => g.bullets));
   const order = name => (BOARD.findIndex(([n]) => n === name) + BOARD.length + 1) % (BOARD.length + 1);
   const sections = [...groups.entries()]
     .toSorted(([a], [b]) => order(a) - order(b) || a.localeCompare(b))
-    .map(([name, bullets]) => {
-      const meaning = BOARD.find(([n]) => n === name)?.[1];
-      return { title: `${name} (${bullets.length})${meaning ? `. ${meaning}` : ''}`, bullets };
-    });
+    .map(([name, bullets]) => ({ ...titled([name, BOARD.find(([n]) => n === name)?.[1]], bullets), ...(name === ON_HOLD ? { groups: onHold } : {}) }));
   const moment = new Date(since);
   const day = moment.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', timeZone: 'UTC' });
   const trend = activeNow > activeThen ? 'up from' : activeNow < activeThen ? 'down from' : 'as many as';
   const net = `Net since ${day.replace(/^(\w+),/, '$1')}, ${moment.toISOString().slice(11, 16)} UTC: `
-    + `${plural(cleared, 'hold')} cleared; On Hold went from ${plural(onHoldThen, 'ticket')} to ${onHoldNow}. `
+    + `${plural(cleared, 'hold')} cleared; On Hold went from ${plural(onHoldThen, 'ticket')} to ${onHoldNow}`
+    + `${!pausedNow ? '' : onHoldNow === 1 ? ', paused on purpose' : `, ${pausedNow} of them paused on purpose`}. `
     + `${plural(activeNow, 'ticket')} ${activeNow === 1 ? 'is' : 'are'} actively being built or planned, ${trend} ${activeThen}. `
     + `${testing} in testing, ${reachedDone} reached Done.`;
   return { sections, net };
 }
 
 // The update as lines `width` columns wide: each section's title over its
-// bullets ("- "), a blank line between, then the net line. The text is plain
+// bullets ("- "), a blank line between, then the net line; a section with
+// groups (On Hold, ASS-352) has each group's title over its bullets beneath
+// its own, indented two columns. The text is plain
 // (ASS-332: paste-ready); for display only, each key is linked to its
 // ticket's url when the sprint has one (ASS-86), and a line too long for the
 // screen wraps under its own text.
+const bulletLines = (bullets, width, indent = '') => bullets.flatMap(({ key, url, text }) => {
+  const shown = url ? `${link(key, url)}${text.slice(key.length)}` : text;
+  return wrap(shown, Math.max(10, width - indent.length - 2)).map((line, j) => indent + (j ? '  ' : '- ') + line);
+});
 export const progressLines = ({ sections, net }, width) => [
   ...(sections.length ? [] : ['Nothing on the sprint has moved since then.']),
-  ...sections.flatMap(({ title, bullets }, i) => [
+  ...sections.flatMap(({ title, bullets, groups }, i) => [
     ...(i ? [''] : []), ...wrap(title, width),
-    ...bullets.flatMap(({ key, url, text }) => {
-      const shown = url ? `${link(key, url)}${text.slice(key.length)}` : text;
-      return wrap(shown, Math.max(10, width - 2)).map((line, j) => (j ? '  ' : '- ') + line);
-    }),
+    ...(groups
+      ? groups.flatMap(g => [...wrap(g.title, Math.max(10, width - 2)).map(line => `  ${line}`), ...bulletLines(g.bullets, width, '  ')])
+      : bulletLines(bullets, width)),
   ]),
   '', ...wrap(net, width),
 ];

@@ -87,9 +87,8 @@ test('each ticket is listed once, under its board status now, in board order, ea
     'In Testing (1). The work is done and being verified.',
     'In Progress: building (1). Code is written or being written, and tests are running.',
     'In Progress: planning (1). Being analyzed and planned before any code.',
-    'In Progress: held on purpose (1). Started, then held until something else is ready.',
     'To Do (1). Committed to the sprint, not started yet.',
-    'On Hold (2). Stopped until a problem is fixed.',
+    'On Hold (3). Paused on purpose, or stopped until a problem is fixed.',
     'In Review (1)',
   ]);
   const keys = progress.sections.flatMap(s => s.bullets.map(b => b.key));
@@ -103,10 +102,11 @@ test('the status is the ticket system\'s, else the one its step pairs with; one 
   assert.deepEqual(unpaired.sections.map(s => s.title), ['Selected (1)']);
 });
 
-test('in progress splits into building, planning (a planning-stage step) and held on purpose (paused, or waiting on its dependencies) (ASS-332)', () => {
+test('in progress splits into building, planning (a planning-stage step) and held on purpose (waiting on its dependencies); a paused one is On Hold (ASS-332, ASS-352)', () => {
   assert.deepEqual(group('In Progress: building').bullets.map(b => b.key), ['PRJ-4']);
   assert.deepEqual(group('In Progress: planning').bullets.map(b => b.key), ['PRJ-5']);
-  assert.deepEqual(group('In Progress: held on purpose').bullets.map(b => b.key), ['PRJ-6']);
+  assert.equal(group('In Progress: held on purpose'), undefined);
+  assert.deepEqual(group('On Hold').groups[0].bullets.map(b => b.key), ['PRJ-6']);
   const waiting = progressSince({ sprint: { features: [
     ticket('PRJ-30', 'First', { 'ticket-system-status': 'In Testing' }, [['build/run-tests', 'qa', after(1)]]),
     ticket('PRJ-31', 'Second', { 'ticket-system-status': 'In Progress', dependencies: ['PRJ-30'] }, [['committed', 'setup', after(2)]]),
@@ -118,9 +118,9 @@ test('each line is the key, title and where it is in plain words, with why when 
   assert.deepEqual(texts('Done'), ['PRJ-1: Shipped it.']);
   assert.deepEqual(texts('In Testing'), ['PRJ-3: Being verified. At the QA step.']);
   assert.deepEqual(texts('In Progress: planning'), ['PRJ-5: Planning it. At the Review the Plan step.']);
-  assert.deepEqual(texts('In Progress: held on purpose'), ['PRJ-6: Held back. Paused at the Write the Plan step, waits for PRJ-3 to finish.']);
   assert.deepEqual(texts('To Do'), ['PRJ-7: Queued. Waits for PRJ-5 to finish.']);
   assert.deepEqual(texts('On Hold'), [
+    'PRJ-6: Held back. Paused at the Write the Plan step, waits for PRJ-3 to finish.',
     'PRJ-8: Stuck. Stopped at the Generate Tests step, waiting for a fix in PRJ-9.',
     'PRJ-10: Needs a person. Stopped at the Run Automated Tests step, needs a person to look at it.',
   ]);
@@ -137,7 +137,7 @@ test('a ticket whose board status differs from the one its step pairs with is pl
 });
 
 test('a closing line nets the change since the moment: holds cleared, On Hold then and now, active then and now, in testing and reached Done (ASS-332)', () => {
-  assert.equal(progress.net, 'Net since Fri Nov 6, 04:00 UTC: 1 hold cleared; On Hold went from 1 ticket to 2. 2 tickets are actively being built or planned, down from 5. 1 in testing, 1 reached Done.');
+  assert.equal(progress.net, 'Net since Fri Nov 6, 04:00 UTC: 1 hold cleared; On Hold went from 2 tickets to 3, 1 of them paused on purpose. 2 tickets are actively being built or planned, down from 5. 1 in testing, 1 reached Done.');
 });
 
 test('a ticket with more than one variation is listed by variation; nothing to list says so (ASS-332)', () => {
@@ -160,6 +160,90 @@ test('the lines are plain text with "- " bullets, the key linked when the sprint
   assert.ok(progressLines(linked, 200).includes(`- ${link('PRJ-1', 'http://t/1')}: Shipped it.`));
   const narrow = progressLines(progress, 30);
   assert.ok(narrow.every(l => visible(l) <= 30), narrow.join('\n'));
-  const first = narrow.findIndex(l => l.startsWith('- PRJ-10'));
-  assert.match(narrow[first + 1], /^ {2}\S/);
+  const first = narrow.findIndex(l => l.startsWith('  - PRJ-10'));
+  assert.match(narrow[first + 1], /^ {4}\S/, 'under On Hold\'s sub-group, indented two more');
+});
+
+// ASS-352: a ticket paused on purpose — by the operator, a requirements
+// change's hold or a reassignment's — is On Hold, apart from one stopped by a
+// problem, whatever its step; control's pause to free a seat for a fast-track is not.
+const paused = { 'is-paused': true };
+const pausedSprint = {
+  features: [
+    ticket('PRJ-50', 'Verify later', { 'ticket-system-status': 'In Testing' }, [['build/run-tests', 'qa', before]], undefined, paused),
+    ticket('PRJ-51', 'Not started', { 'ticket-system-status': 'To Do', 'is-paused': true, dependencies: ['PRJ-50'] }, [], 'committed'),
+    ticket('PRJ-52', 'Mid build', { 'ticket-system-status': 'In Progress' }, [['committed', 'build/run-tests', before]], undefined, paused),
+    ticket('PRJ-55', 'Went to someone', { 'ticket-system-status': 'In Progress', reassigned: { to: 'Sam Lee', 'detected-at': '2026-11-05T10:00:00Z', 'paused-variations': ['A'] } }, [['committed', 'build/gen-tests', before]], undefined, paused),
+    ticket('PRJ-56', 'Went to no one', { 'ticket-system-status': 'In Progress', reassigned: { to: null, 'detected-at': '2026-11-05T10:00:00Z', 'paused-variations': ['A'] } }, [['committed', 'plan/write-plan', before]], undefined, paused),
+    ticket('PRJ-57', 'Made room', { 'ticket-system-status': 'In Progress' }, [['committed', 'build/gen-tests', before]], undefined, { 'is-paused': true, 'paused-for-fast-track': 'PRJ-99' }),
+    ticket('PRJ-58', 'By hand', { 'ticket-system-status': 'In Progress', 'worked-manually': { by: 'someone', since: '2026-11-05T10:00:00Z' } }, [['committed', 'setup', before]]),
+    ticket('PRJ-59', 'Paused and done', { 'ticket-system-status': 'Done' }, [['qa', 'done', after(1)]], undefined, paused),
+    ticket('PRJ-60', 'Requirements changed', { 'ticket-system-status': 'In Progress', 'pending-requirements-change': { description: 'new' } }, [['build/gen-tests', 'reqs-changed', before]], undefined, paused),
+    ticket('PRJ-61', 'Paused after moving', { 'ticket-system-status': 'In Testing' }, [['build/run-tests', 'qa', after(2)]], undefined, paused),
+  ],
+  bugs: [
+    ticket('PRJ-53', 'Blocked and paused', { 'ticket-system-status': 'On Hold' }, [['committed', 'build/gen-tests', before], ['build/gen-tests', 'blocked/await-fix', before]], undefined, { ...paused, 'waits-on': { project: 'prj', ticket: 'PRJ-9' } }),
+    ticket('PRJ-54', 'Needs a look', { 'ticket-system-status': 'On Hold' }, [['committed', 'build/run-tests', before], ['build/run-tests', 'blocked-for-human', after(1)]]),
+  ],
+};
+const held = progressSince({ sprint: pausedSprint, workflows, since });
+const heldSection = title => held.sections.find(s => s.title.startsWith(`${title} (`));
+const onHold = held.sections.find(s => s.title.startsWith('On Hold ('));
+const subGroup = name => onHold.groups.find(g => g.title.startsWith(`${name} (`));
+
+test('a ticket paused on purpose at any step, not Done, is On Hold under Paused on purpose, its note still saying where it is paused and what it waits for (ASS-352 AC1)', () => {
+  assert.deepEqual(subGroup('Paused on purpose').bullets.map(b => b.text), [
+    'PRJ-50: Verify later. Paused at the QA step.',                                       // In Testing's step
+    'PRJ-51: Not started. Paused, waits for PRJ-50 to finish.',                           // To Do's, the ticket paused
+    'PRJ-52: Mid build. Paused at the Run Automated Tests step.',                          // In Progress's
+    'PRJ-55: Went to someone. Reassigned to Sam Lee, paused at the Generate Tests step.',  // reassigned away (ASS-345)
+    'PRJ-56: Went to no one. Unassigned, paused at the Write the Plan step.',
+    'PRJ-60: Requirements changed. Stopped at the Build step, being looked into.', // a requirements change's hold
+    'PRJ-61: Paused after moving. Paused at the QA step.',
+    'PRJ-53: Blocked and paused. Stopped at the Generate Tests step, waiting for a fix in PRJ-9.', // a blocked step, its fix noted
+  ]);
+  for (const title of ['In Testing', 'To Do', 'In Progress: building', 'In Progress: planning']) assert.equal(heldSection(title), undefined, title);
+});
+
+test('On Hold has Paused on purpose then Stopped until a problem is fixed, each counted and saying what it means, the heading their sum; a blocked and paused ticket once; an empty one left out (ASS-352 AC2)', () => {
+  assert.equal(onHold.title, 'On Hold (9). Paused on purpose, or stopped until a problem is fixed.');
+  assert.deepEqual(onHold.groups.map(g => g.title), [
+    'Paused on purpose (8). Held until resumed.',
+    'Stopped until a problem is fixed (1). Blocked, not paused.',
+  ]);
+  assert.deepEqual(subGroup('Stopped until a problem is fixed').bullets.map(b => b.key), ['PRJ-54']);
+  assert.deepEqual(onHold.bullets.map(b => b.key), onHold.groups.flatMap(g => g.bullets.map(b => b.key)));
+  const keys = held.sections.flatMap(s => s.bullets.map(b => b.key));
+  assert.equal(keys.filter(k => k === 'PRJ-53').length, 1);
+  assert.equal(new Set(keys).size, keys.length);
+  const onlyStopped = progressSince({ sprint: { bugs: [pausedSprint.bugs[1]] }, workflows, since }).sections[0];
+  assert.deepEqual(onlyStopped.groups.map(g => g.title), ['Stopped until a problem is fixed (1). Blocked, not paused.']);
+  const onlyPaused = progressSince({ sprint: { features: [pausedSprint.features[0]] }, workflows, since }).sections[0];
+  assert.deepEqual(onlyPaused.groups.map(g => g.title), ['Paused on purpose (1). Held until resumed.']);
+  const lines = progressLines(held, 200);
+  const at = lines.indexOf(onHold.title);
+  assert.deepEqual(lines.slice(at, at + 3), [onHold.title, '  Paused on purpose (8). Held until resumed.', '  - PRJ-50: Verify later. Paused at the QA step.']);
+  assert.ok(lines.includes('  Stopped until a problem is fixed (1). Blocked, not paused.'));
+});
+
+test('In Progress: held on purpose keeps only the ones worked by hand or waiting on a dependency, and control\'s pause for a fast-track (ASS-352 AC3)', () => {
+  assert.deepEqual(heldSection('In Progress: held on purpose').bullets.map(b => b.text), [
+    'PRJ-57: Made room. Paused for fast-tracked PRJ-99 at the Generate Tests step.',
+    'PRJ-58: By hand. Worked by hand at the Setup step.',
+  ]);
+  assert.ok(!subGroup('Paused on purpose').bullets.some(b => b.key === 'PRJ-57'), 'a fast-track\'s pause is not on purpose');
+});
+
+test('the net line counts the paused on purpose as On Hold now and then, says how many of now\'s are, and leaves them out of the other counts (ASS-352 AC4)', () => {
+  // Then: the seven paused now with no state change since (PRJ-61 moved since, so it was running then);
+  // now: those, PRJ-61 and PRJ-54. Paused PRJ-61 is not in testing; only PRJ-54 was being built then.
+  assert.equal(held.net, 'Net since Fri Nov 6, 04:00 UTC: 0 holds cleared; On Hold went from 7 tickets to 9, 8 of them paused on purpose. 0 tickets are actively being built or planned, down from 1. 0 in testing, 1 reached Done.');
+  const one = progressSince({ sprint: { features: [pausedSprint.features[0]] }, workflows, since });
+  assert.match(one.net, /On Hold went from 1 ticket to 1, paused on purpose\. .* 0 in testing,/);
+  const none = progressSince({ sprint: { bugs: [pausedSprint.bugs[1]] }, workflows, since });
+  assert.match(none.net, /On Hold went from 0 tickets to 1\. /);
+});
+
+test('a paused ticket that is Done is still listed under Done (ASS-352 AC5)', () => {
+  assert.deepEqual(heldSection('Done').bullets.map(b => b.key), ['PRJ-59']);
 });
