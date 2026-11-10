@@ -133,7 +133,11 @@ alike; a fix that lands ends the stay, the step it returns to its proof — it
 has landed once its ticket is Done with a merge step anywhere in a live
 variation's state changes, top level or nested in a `sub-state-change` at any
 depth, as a grouped fix ticket's own merge is, in its Release sub-engine's run
-(ASS-309); an environment issue repaired in place, else Blocked for Human. It never
+(ASS-309), or, Done with no merge step (a ticket built by hand and committed
+straight to the default branch), once a commit whose subject starts with its
+key and a colon (`<KEY>:`, the key exactly) is reachable from the default
+branch of its project's local-pc workspace, locally or on origin as last
+fetched; a workspace that cannot be read finds none (ASS-340); an environment issue repaired in place, else Blocked for Human. It never
 resumes as if fixed when no fix can be raised or waited on: an empty fix key
 carries a no-ticket-reason (analysis-did-not-hold or create-failed) and a
 one-line why, kept in `blocks`; create-failed or no reason retries the write

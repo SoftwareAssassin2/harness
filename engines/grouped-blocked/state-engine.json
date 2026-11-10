@@ -473,7 +473,7 @@
             "id": "await-fix",
             "sequence": 14,
             "name": "Await the Fix",
-            "description": "Wait until the fix ticket is Done and merged, polling while it is not (exit 1, its waiting-exit-code: no failure, ASS-253); one closed unmerged is a failed attempt: Blocked again, afresh; nothing to wait on is Blocked for Human (AC7)",
+            "description": "Wait until the fix ticket is Done and merged (or Done with a <KEY>: commit on its project's default branch, ASS-340), polling while it is not (exit 1, its waiting-exit-code: no failure, ASS-253); one closed unmerged is a failed attempt: Blocked again, afresh; nothing to wait on is Blocked for Human (AC7)",
             "record-script-output": true,
             "action": {
                 "type": "script",

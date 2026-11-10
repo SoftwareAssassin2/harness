@@ -3,7 +3,9 @@
 // and merged (0), closed without a merge (3), or not yet (1).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync, writeFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fixture } from './harness-fixture.js';
 
@@ -68,6 +70,52 @@ test('ticket:fix-landed: a merge step nested in a sub-state-change, at any depth
   // Nothing merged at any depth — it reached the merge step but never moved out of it: Done without its fix merged, as before.
   done(release({ 'state-engine': 'v2-release', 'from-state': 'raise-pull-request', 'to-state': 'merge-pull-request' }));
   assert.equal(await landed(), 3);
+});
+
+// ASS-340 AC1: a fix ticket built by hand and committed straight to its project's default branch reaches Done with
+// no merge step in its history; a commit whose subject starts "<KEY>:" reachable from that branch (the project's
+// local-pc workspace, its default branch origin's: main here, not master) landed it — locally or on origin as fetched.
+// AC2: without one — another key that only starts the same, a commit on another branch, or a workspace that cannot be
+// read — it is Done without its fix merged, as before.
+test('ticket:fix-landed: a Done fix with no merge step landed when a "<KEY>:" commit is on its project\'s default branch (ASS-340)', async () => {
+  const f = waiting();
+  await f.agent('ticket:wait-on', 'p', 'ABC-3', 'A', 'Q-1');
+  const landed = () => exitOf(f.agent('ticket:fix-landed', 'p', 'ABC-3', 'A'));
+  f.fix({ 'ticket-system-status': 'Done', variations: [{ name: 'A', 'harness-status': { state: 'done' }, 'state-changes': [{ 'from-state': 'backlog', 'to-state': 'plan' }] }] });
+  const tmp = mkdtempSync(join(tmpdir(), 'fix-landed-'));
+  const origin = join(tmp, 'origin.git'), ws = join(tmp, 'workspace');
+  const git = (...args) => execFileSync('git', ['-C', ws, ...args], { stdio: 'ignore' });
+  const commit = message => git('-c', 'user.email=t@example.com', '-c', 'user.name=T', 'commit', '-q', '--allow-empty', '-m', message);
+  const folder = dir => {
+    const project = join(f.dir, 'projects', 'q', 'project.json');
+    writeFileSync(project, JSON.stringify({ ...JSON.parse(readFileSync(project, 'utf8')), 'local-environments': [{ name: 'local-pc', type: 'local-pc', folder: dir }] }));
+  };
+  assert.equal(await landed(), 3);                                                             // q has no workspace: not landed
+  folder(tmp);
+  assert.equal(await landed(), 3);                                                             // not a git checkout: not landed
+  execFileSync('git', ['init', '-q', '--bare', '--initial-branch=main', origin]);
+  execFileSync('git', ['clone', '-q', origin, ws], { stdio: 'ignore' });
+  commit('first');
+  git('push', '-q', '-u', 'origin', 'main');
+  git('remote', 'set-head', 'origin', 'main');
+  folder(ws);
+  commit('Q-10: another ticket whose key starts the same');
+  commit('Fix Q-1: the key, but not first');
+  assert.equal(await landed(), 3);
+  git('checkout', '-q', '-b', 'side');
+  commit('Q-1: the fix, on another branch');
+  assert.equal(await landed(), 3);
+  git('push', '-q', 'origin', 'side:main');                                                    // on origin's main, as last fetched; not the local main
+  git('fetch', '-q', 'origin');
+  assert.equal(await landed(), 0);
+  git('checkout', '-q', 'main');
+  git('update-ref', '-d', 'refs/remotes/origin/main');
+  assert.equal(await landed(), 3);                                                             // on neither main
+  git('merge', '-q', '--ff-only', 'side');                                                     // committed straight to the local main
+  assert.equal(await landed(), 0);
+  assert.deepEqual(JSON.parse((await f.agent('ticket:fix-landed', 'p', 'ABC-3', 'A')).stdout), { 'waits-on': { project: 'q', ticket: 'Q-1' }, status: 'Done', landed: true });
+  f.fix({ 'ticket-system-status': 'In Progress' });
+  assert.equal(await landed(), 1);                                                             // its commit alone does not land a ticket not yet Done
 });
 
 // ASS-107 AC6 (operator, 2026-10-24): as every state's, the count is per stay — it starts again each time the
