@@ -707,3 +707,124 @@ test('ASS-202 AC2: a backlog sync of a reopened ticket (fetched Backlog, entry D
   assert.equal(t.variations[0]['harness-status'].state, 'groom');
   assert.match(t['changed-at'], /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$/);
 });
+
+// ASS-345: the reassignment hold. p's signed-in account is acc-me
+// (project:set-ticket-system-account-id's file); ABC-1, at `states` (as
+// sprintAt), and the backlog's ABC-9 are assigned to it. mine/bea/nobody the
+// fetched assignment fields; agent runs another agent-cli command on dir.
+const ME = { 'ticket-system-assignment': 'Me', 'ticket-system-assignment-id': 'acc-me' };
+const BEA = { 'ticket-system-assignment': 'Bea Other', 'ticket-system-assignment-id': 'acc-bea' };
+const CAL = { 'ticket-system-assignment': 'Cal Third', 'ticket-system-assignment-id': 'acc-cal' };
+const NOBODY = { 'ticket-system-assignment': null, 'ticket-system-assignment-id': null };
+function assigned(states, extra = {}, { account = 'acc-me' } = {}) {
+  const dir = projects();
+  sprintAt(dir, states, { ...ME, ...extra });
+  const b = backlog(dir);
+  Object.assign(b.tickets[0], ME);
+  writeFileSync(join(dir, 'p', 'backlog.json'), JSON.stringify(b));
+  if (account != null) writeFileSync(join(dir, 'p', 'ticket-system-account-id'), account);
+  return dir;
+}
+const toAbc1 = (dir, who, extra = {}) => sync(dir, 'p', 'sprint', file(dir, { tickets: [fetched('ABC-1', { ...who, ...extra })] }));
+const pausedOf = t => Object.fromEntries(t.variations.map(v => [v.name, v['is-paused']]));
+const agent = (dir, ...args) => run(AGENT, args, { env: { ...process.env, PROJECTS_DIR: dir, ACLI_DISABLED: '1' } });
+
+test('ASS-345 AC1: a sprint ticket reassigned from the signed-in account to another person is marked reassigned with that person\'s name and id, and each variation worked is paused and listed — not one the operator paused, deleted or at a done step', async () => {
+  const dir = assigned({ A: ['generate-solution'], B: ['enrich-ac', true], C: ['done'], D: ['generate-solution', false, true] });
+  await toAbc1(dir, BEA);
+  const t = abc1(dir);
+  assert.deepEqual([t['ticket-system-assignment'], t['ticket-system-assignment-id']], ['Bea Other', 'acc-bea']);
+  assert.deepEqual({ ...t.reassigned, 'detected-at': undefined }, { to: 'Bea Other', 'to-id': 'acc-bea', 'detected-at': undefined, 'paused-variations': ['A'] });
+  assert.match(t.reassigned['detected-at'], /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$/);
+  assert.deepEqual(pausedOf(t), { A: true, B: true, C: false, D: false });
+  // The same holder again changes nothing; yet another person updates who, keeping paused-variations.
+  await toAbc1(dir, BEA);
+  assert.deepEqual(abc1(dir).reassigned, t.reassigned);
+  await toAbc1(dir, CAL);
+  const again = abc1(dir);
+  assert.deepEqual([again.reassigned.to, again.reassigned['to-id'], again.reassigned['paused-variations']], ['Cal Third', 'acc-cal', ['A']]);
+  assert.deepEqual(pausedOf(again), { A: true, B: true, C: false, D: false });
+});
+
+test('ASS-345 AC2: a sprint ticket unassigned from the signed-in account is marked reassigned to nobody — to and to-id null — and its worked variation paused', async () => {
+  const dir = assigned({ A: ['generate-solution'], E: ['backlog'] });
+  await toAbc1(dir, NOBODY);
+  const t = abc1(dir);
+  assert.deepEqual([t.reassigned.to, t.reassigned['to-id'], t.reassigned['paused-variations']], [null, null, ['A', 'E']]);
+  assert.deepEqual(pausedOf(t), { A: true, E: true });
+});
+
+test('ASS-345 AC3: assigned back to the signed-in account, the mark goes and only the variations it paused are unpaused; one the operator paused before stays paused', async () => {
+  const dir = assigned({ A: ['generate-solution'], B: ['generate-solution', true] });
+  await toAbc1(dir, BEA);
+  assert.deepEqual([abc1(dir).reassigned['paused-variations'], pausedOf(abc1(dir))], [['A'], { A: true, B: true }]);
+  await toAbc1(dir, ME);
+  const t = abc1(dir);
+  assert.equal('reassigned' in t, false);
+  assert.deepEqual(pausedOf(t), { A: false, B: true });
+  assert.deepEqual([t['ticket-system-assignment'], t['ticket-system-assignment-id']], ['Me', 'acc-me']);
+});
+
+test('ASS-345: the operator\'s own ticket:set-paused on a reassigned ticket\'s variation takes it out of paused-variations — an unpause runs, a re-pause stays when the ticket comes back; the mark stays until then', async () => {
+  const dir = assigned({ A: ['generate-solution'], E: ['generate-solution'], F: ['generate-solution'] });
+  await toAbc1(dir, NOBODY);
+  assert.deepEqual(abc1(dir).reassigned['paused-variations'], ['A', 'E', 'F']);
+  await agent(dir, 'ticket:set-paused', 'p', 'ABC-1', 'E', 'false');
+  await agent(dir, 'ticket:set-paused', 'p', 'ABC-1', 'F', 'true');
+  let t = abc1(dir);
+  assert.deepEqual([t.reassigned['paused-variations'], pausedOf(t)], [['A'], { A: true, E: false, F: true }]);
+  await toAbc1(dir, ME);
+  t = abc1(dir);
+  assert.equal('reassigned' in t, false);
+  assert.deepEqual(pausedOf(t), { A: false, E: false, F: true });
+});
+
+test('ASS-345: a reassignment takes over control\'s fast-track pause (its marks go, so control never resumes it) and shares a pending requirements change\'s, which keeps it paused until both let go', async () => {
+  const dir = assigned({ A: ['generate-solution'], G: ['generate-solution', true] });
+  const s = sprint(dir);
+  Object.assign(s.features[0].variations[1], { 'paused-for-fast-track': 'ABC-7', 'preempted-seat': 'agents' });
+  writeFileSync(join(dir, 'p', 'sprints', 'sprint-10', 'sprint.json'), JSON.stringify(s));
+  await toAbc1(dir, BEA, { description: 'New requirements' });
+  let t = abc1(dir);
+  assert.deepEqual([t['pending-requirements-change']['paused-variations'], t.reassigned['paused-variations']], [['A'], ['A', 'G']]);
+  assert.deepEqual([t.variations[1]['paused-for-fast-track'], t.variations[1]['preempted-seat']], [undefined, undefined]);
+  // Back to the operator: the change still holds A; G, the fast-track pause taken over, runs.
+  await toAbc1(dir, ME, { description: 'New requirements' });
+  t = abc1(dir);
+  assert.deepEqual([('reassigned' in t), pausedOf(t)], [false, { A: true, G: false }]);
+  await agent(dir, 'ticket:keep-current', 'p', 'ABC-1');
+  assert.deepEqual(pausedOf(abc1(dir)), { A: false, G: false });
+  // The other order: Keep current while still reassigned leaves A paused.
+  const other = assigned({ A: ['generate-solution'] });
+  await toAbc1(other, BEA, { description: 'New requirements' });
+  await agent(other, 'ticket:keep-current', 'p', 'ABC-1');
+  t = abc1(other);
+  assert.deepEqual([t['pending-requirements-change'], t.reassigned['paused-variations'], pausedOf(t)], [undefined, ['A'], { A: true }]);
+});
+
+test('ASS-345 AC4: a ticket worked by hand, a ticket at a done step and a backlog ticket each take only the field update when reassigned: no mark, nothing paused', async () => {
+  const dir = assigned({ A: ['generate-solution'] }, MANUAL);
+  await toAbc1(dir, BEA);
+  let t = abc1(dir);
+  assert.deepEqual([t['ticket-system-assignment-id'], 'reassigned' in t, pausedOf(t)], ['acc-bea', false, { A: false }]);
+  const done = assigned({ A: ['done'], B: ['generate-solution', false, true] });
+  await toAbc1(done, NOBODY);
+  t = abc1(done);
+  assert.deepEqual([t['ticket-system-assignment-id'], 'reassigned' in t, pausedOf(t)], [null, false, { A: false, B: false }]);
+  await sync(done, 'p', 'backlog', file(done, { tickets: [fetched('ABC-9', BEA)] }));
+  const [b] = backlog(done).tickets;
+  assert.deepEqual([b['ticket-system-assignment'], b['ticket-system-assignment-id'], 'reassigned' in b, b.variations[0]['is-paused']], ['Bea Other', 'acc-bea', false, undefined]);
+});
+
+test('ASS-345: nothing is held without a recorded account id, for a ticket fetched without an assignment id (off-board), or for one first seen already someone else\'s', async () => {
+  const none = assigned({ A: ['generate-solution'] }, {}, { account: null });
+  await toAbc1(none, BEA);
+  assert.deepEqual(['reassigned' in abc1(none), pausedOf(abc1(none))], [false, { A: false }]);
+  const offBoard = assigned({ A: ['generate-solution'] });
+  await toAbc1(offBoard, { 'ticket-system-assignment': null });
+  assert.deepEqual(['reassigned' in abc1(offBoard), pausedOf(abc1(offBoard)), abc1(offBoard)['ticket-system-assignment-id']], [false, { A: false }, 'acc-me']);
+  const theirs = assigned({ A: ['generate-solution'] }, BEA);
+  await toAbc1(theirs, CAL);
+  await toAbc1(theirs, NOBODY);
+  assert.deepEqual(['reassigned' in abc1(theirs), pausedOf(abc1(theirs))], [false, { A: false }]);
+});
