@@ -344,7 +344,8 @@ Blocked for Human, saying what was found and what to do.
   (Backlog, Committed, Release, QA, Done) it is not needed: stopped. A paused
   variation or ticket (`is-paused`) and a set-aside one (lost Variation
   Selection) have theirs stopped too. A VM to be stopped, for any of these
-  reasons (or waiting for a slot, or gone from the sprint), while an
+  reasons (or waiting for a slot, or for a ticket it depends on (ASS-355),
+  or gone from the sprint), while an
   assignment is on its variation is left running until that ends — logged
   once, `waits until its agent finishes` — so its agent is never killed
   mid-step (ASS-349). Control matches the VMs to this once per
@@ -411,6 +412,44 @@ Blocked for Human, saying what was found and what to do.
   needed again is recreated from the golden image (`vm:create`, by Setup or by
   control), and the variation's `vm.recreated-at` says so: work that lived
   only on the old disk is lost.
+
+## Waiting on another ticket (ASS-195, ASS-355)
+
+In a project whose project.json says `"wait-for-dependencies": true`, a sprint
+variation whose ticket depends on a ticket that is not done is held at the
+step it is on, at the top level or anywhere in a run beneath it. Control
+(`src/control/dependencies.js`, `dependencyHold`) dispatches no agent for it,
+starts no step script, sub-engine run or move, gives it no planning or
+in-progress slot and no agent seat (the next ticket takes the slot), and stops
+its VM as for a variation waiting for a slot. An agent already running when
+the hold begins finishes its turn; its VM is stopped only once that agent has
+finished (ASS-349). When every dependency is done the variation goes on at the
+same step: it never moved, so no step re-runs and no visit is spent.
+
+- **Never held:** a done step (at any level of the status, so a run at its
+  own done step lets its group step move on) and the steps where only a
+  person acts: a human step at any level (Blocked for Human, Human Review,
+  the Payment Gate, Variation Selection, any human-action step), a gate
+  waiting on a human once its work is done, and a `none` step whose every
+  exit reads the ticket-system status alone (QA Testing, top level or in
+  `grouped-qa`). Everything else is held: Backlog, Committed, Setup through
+  Release, Blocked, Self Healing.
+- **Where a dependency is found:** the project's sprint, its backlog,
+  another loaded project's sprint or backlog, then the project's
+  `outside-tickets.json`. The Jira downloader writes that file each cycle
+  (`ticket:sync-outside`) with `{ key, title, url, ticket-system-status,
+  ticket-system-assignment }` for every key a sprint or backlog ticket depends
+  on that neither holds, read by key (assigned to a teammate, say). A key
+  found nowhere holds nothing.
+- **When it is done:** its ticket-system status is the status paired with
+  the `is-done` step of the execution engine of the project it belongs to,
+  read from the engine and never assumed to be "Done". For an outside ticket
+  that is the dependent's project. A sprint dependency with any variation at
+  an is-done step is done too.
+- **Shown:** the sprint row starts `WAITING ON <KEY>, <KEY>` in gold, in
+  place of `PAUSED`. The Status cell says `waits on …`, the ticket screen
+  lists each dependency with its status and assignee, and the progress update
+  puts the variation under On Hold's "Waiting on another ticket" group.
 
 ## Merge requests
 

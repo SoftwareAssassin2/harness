@@ -5,9 +5,11 @@ set -euo pipefail
 # Writes data/projects/<project>/project.json's wait-for-dependencies: true for
 # on, false for off (absent is off; PROJECTS_DIR overrides the projects folder,
 # used by tests). Control reads it every tick (ASS-195, dependencies.js holdOf):
-# while it is on, a sprint variation at Committed whose ticket depends on a
-# same-project ticket that is not Done stays at Committed; the dashboard shows
-# it too. Fails, writing nothing, on an unknown project or value.
+# while it is on, a sprint variation whose ticket depends on a ticket that is
+# not done — in the sprint, the backlog, another project or the downloader's
+# outside-tickets.json — is held at its step, any but a done or a person's one,
+# with no slot, seat or running VM (ASS-355; ASS-195 held at Committed alone);
+# the dashboard shows it too. Fails, writing nothing, on an unknown project or value.
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../json-file.bash"
 projects="${PROJECTS_DIR:-$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../../../data/projects}"
 

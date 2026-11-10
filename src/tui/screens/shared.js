@@ -280,8 +280,8 @@ function further(a, b) {
 // sub-status's ("Local Testing (1, 1) › Take Screenshots (1, 1)"), named from
 // its own state engine (the ticket's status, see sprintTickets); a state no
 // engine names shows as its id. `steps` are the project's engine's. Then what
-// it waits for of the tickets it depends on (ASS-195, its `hold`):
-// "Committed — waits on ASS-180, ASS-181", in dependency order; or, with
+// it waits for of the tickets it depends on (ASS-195, ASS-355, its `hold`):
+// "Build — waits on ASS-180, ASS-181", in dependency order; or, with
 // none holding it, the keys it cannot wait for and why — "Committed — ignores
 // ASS-9 (unknown)". Nothing when it waits for nothing. One line: the ticket
 // screen's Status field; the sprint grid wraps it (statusCell, ASS-326).
