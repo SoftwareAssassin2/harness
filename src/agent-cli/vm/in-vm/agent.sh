@@ -12,6 +12,8 @@
 # so an open, idle one cannot hold it up. The forwarder's URL and the token are on
 # tmpfs, written at every start: /run/harness/agent-url and agent-token
 # (AGENT_FORWARDER_URL and AGENT_TOKEN_FILE override them, for tests).
+# The arguments go to jq after "--" (ASS-336), so a "--"-leading one, such as
+# question:ask's --blocking, is sent as it is, never taken as a jq option.
 # Needs curl, jq and base64.
 set -uo pipefail
 url="${AGENT_FORWARDER_URL:-$(cat /run/harness/agent-url 2>/dev/null)}"
@@ -25,9 +27,9 @@ if takes_stdin "${1:-}"; then
   pad="${stdin##*[!=]}"
   (( ${#stdin} / 4 * 3 - ${#pad} <= STDIN_CAP )) || { echo "agent.sh: stdin is over 1 MB: not sent" >&2; exit 1; }
   # Through jq's stdin, not an argument: Linux caps one argument at 128 KB.
-  body="$(jq -cR --arg t "$token" '{ token: $t, argv: $ARGS.positional, stdin: . }' --args "$@" <<<"$stdin")"
+  body="$(jq -cR --arg t "$token" '{ token: $t, argv: $ARGS.positional, stdin: . }' --args -- "$@" <<<"$stdin")"
 else
-  body="$(jq -cn --arg t "$token" '{ token: $t, argv: $ARGS.positional }' --args "$@")"
+  body="$(jq -cn --arg t "$token" '{ token: $t, argv: $ARGS.positional }' --args -- "$@")"
 fi
 rc=1
 while IFS= read -r line; do
