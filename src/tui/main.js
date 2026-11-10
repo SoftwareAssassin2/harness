@@ -23,6 +23,8 @@ import { settlePending, refused } from './screens/agents.js';
 import { refinementSteps } from './status.js';
 import { listMemories, deleteMemory, memoryHealthy } from '../agents/memory.js';
 import { dataDir } from '../data-folder.js';
+import { claim, release, runs, harnessHome } from '../single-instance.js';
+import { stopDead } from './single.js';
 
 const ROOT = join(import.meta.dirname, '..', '..');
 const DATA = dataDir(ROOT);
@@ -34,6 +36,15 @@ if (!stdin.isTTY) {
   console.error('tui: needs an interactive terminal');
   process.exit(1);
 }
+
+// One dashboard at a time (ASS-338): before anything is loaded or started,
+// this one claims run-tui.pid under HARNESS_HOME; while another dashboard
+// holds it, this one stops dead (single.js: the red message until Ctrl-C) —
+// no control, downloader, watcher, poller or chat, no key handled. The claim
+// is released on every exit, a restart's 75 too, so tui.sh's next start finds it free.
+const CLAIM = join(harnessHome(), 'run-tui.pid');
+if (!claim(CLAIM, { owner: runs('tui/main.js') }).claimed) await stopDead({ stdin, stdout });
+process.on('exit', () => release(CLAIM));
 
 let state = { ...initialState({
   projects: loadProjects(join(DATA, 'projects')),

@@ -19,6 +19,13 @@
 // hand first; the stop lands within one nap. One line per action on stdout: "<ISO time> <project>
 // <what>". PROJECTS_DIR and HARNESS_JSON override the projects folder and
 // harness.json, used by tests.
+//
+// One downloader at a time (ASS-338), a second line of defence behind the
+// dashboard's own claim: on start it claims run-downloader.pid under
+// $HARNESS_HOME (~/.harness by default; see single-instance.js) and, while
+// that names another live downloader, says so and exits 1 before any cycle;
+// a file whose process is gone or isn't a downloader is taken over. It is
+// removed as this one exits.
 import { execFile } from 'node:child_process';
 import { readdirSync, readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
@@ -28,6 +35,7 @@ import * as github from './github.js';
 import * as offBoard from './off-board.js';
 import { runCycle } from './cycle.js';
 import { dataDir } from '../data-folder.js';
+import { claim, release, runs, harnessHome } from '../single-instance.js';
 
 const ROOT = join(import.meta.dirname, '..', '..');
 const PROJECTS = process.env.PROJECTS_DIR ?? join(dataDir(ROOT), 'projects');
@@ -43,6 +51,14 @@ const exec = (file, args) => new Promise((resolve, reject) => {
   });
 });
 const say = (project, text) => console.log(`${new Date().toISOString()} ${project} ${text}`);
+
+const PIDFILE = join(harnessHome(), 'run-downloader.pid');
+const held = claim(PIDFILE, { owner: runs('downloader/main.js') });
+if (!held.claimed) {
+  console.error(`downloader: already running as pid ${held.pid} (${PIDFILE})`);
+  process.exit(1);
+}
+process.on('exit', () => release(PIDFILE));
 
 // The projects to download: those with a jira work source with a url — one
 // per board: a later project (by name) on a board an earlier one has is

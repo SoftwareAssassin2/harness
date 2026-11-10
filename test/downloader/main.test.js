@@ -48,19 +48,20 @@ const harnessJson = minutes => { const f = join(mkdtempSync(join(tmpdir(), 'hj-'
 const read = (dir, ...p) => JSON.parse(readFileSync(join(dir, ...p), 'utf8'));
 
 // The downloader, started with these arguments; its stdout and stderr lines, and a promise of its exit. Its
-// process group is killed when its test ends, passed or failed (ASS-109).
+// process group is killed when its test ends, passed or failed (ASS-109). Its HARNESS_HOME is a folder of its
+// own (or `home`), so its run-downloader.pid (ASS-338) never meets a real running harness's.
 const groups = [];
 afterEach(() => { for (const pid of groups.splice(0)) try { process.kill(-pid, 'SIGKILL'); } catch { /* ended */ } });
-function start(dir, args, minutes = 60, bin = fakeBin()) {
+function start(dir, args, minutes = 60, bin = fakeBin(), home = mkdtempSync(join(tmpdir(), 'harness-home-'))) {
   const harness = harnessJson(minutes);
-  const env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, PROJECTS_DIR: dir, HARNESS_JSON: harness };
+  const env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, PROJECTS_DIR: dir, HARNESS_JSON: harness, HARNESS_HOME: home };
   const child = spawn(HARNESS, ['downloader', ...args], { stdio: ['pipe', 'pipe', 'pipe'], env, detached: true });
   groups.push(child.pid);
   const out = [], err = [];
   createInterface({ input: child.stdout }).on('line', l => out.push(l));
   createInterface({ input: child.stderr }).on('line', l => err.push(l));
   const exit = new Promise(resolve => child.once('close', (code, signal) => resolve({ code, signal })));
-  return { child, out, err, exit, harness };
+  return { child, out, err, exit, harness, home };
 }
 
 test('harness.sh downloader --once runs one cycle for each project with a jira source (one per board) or an off-board one, writing through the agent-cli, and exits', async () => {
@@ -151,4 +152,45 @@ test('a recorded merge request that cannot be read keeps every record as it is, 
   assert.equal((await exit).code, 0);
   assert.deepEqual(recordedMrs(dir), before);
   assert.ok(out.some(l => l.includes(`p ${MR(404)}: merge request skipped: `) && l.endsWith('404 Not Found')), out.join('\n'));
+});
+
+// ASS-338: a live process that ps shows running a downloader/main.js — the other downloader.
+function otherDownloader() {
+  const dir = mkdtempSync(join(tmpdir(), 'dl-other-'));
+  mkdirSync(join(dir, 'downloader'));
+  writeFileSync(join(dir, 'downloader', 'main.js'), 'setTimeout(() => {}, 600000);');
+  const child = spawn(process.execPath, [join(dir, 'downloader', 'main.js')], { stdio: 'ignore', detached: true });
+  groups.push(child.pid);
+  return child.pid;
+}
+
+test('ASS-338 AC3: while another downloader runs (run-downloader.pid under HARNESS_HOME names it), the downloader says so and exits non-zero, syncing nothing', async () => {
+  const dir = projects();
+  const home = mkdtempSync(join(tmpdir(), 'harness-home-'));
+  const other = otherDownloader();
+  writeFileSync(join(home, 'run-downloader.pid'), `${other}\n`);
+  const before = readFileSync(join(dir, 'p', 'last-data-download'), 'utf8');
+  const { out, err, exit } = start(dir, ['--once'], 60, fakeBin(), home);
+  const { code } = await exit;
+  assert.notEqual(code, 0);
+  assert.deepEqual(err, [`downloader: already running as pid ${other} (${join(home, 'run-downloader.pid')})`]);
+  assert.deepEqual(out, []);
+  assert.equal(readFileSync(join(dir, 'p', 'last-data-download'), 'utf8'), before, 'nothing synced');
+  assert.ok(!existsSync(join(dir, 'p', 'sprints', 'days')));
+  assert.equal(readFileSync(join(home, 'run-downloader.pid'), 'utf8'), `${other}\n`);
+});
+
+test('ASS-338 AC3: a run-downloader.pid whose process is gone, or is not a downloader, is stale: the downloader takes it over, runs, and removes it as it exits', async () => {
+  for (const stale of [999999, process.pid]) {
+    const dir = projects();
+    const home = mkdtempSync(join(tmpdir(), 'harness-home-'));
+    writeFileSync(join(home, 'run-downloader.pid'), `${stale}\n`);
+    const { child, out, exit } = start(dir, [], 60, fakeBin(), home);
+    assert.ok(await until(() => out.some(l => / p backlog: /.test(l))), out.join('\n'));
+    const held = Number(readFileSync(join(home, 'run-downloader.pid'), 'utf8'));
+    assert.ok(held && held !== stale, `taken over from ${stale}`);
+    child.stdin.end();
+    assert.deepEqual(await exit, { code: 0, signal: null });
+    assert.equal(existsSync(join(home, 'run-downloader.pid')), false);
+  }
 });
