@@ -10,6 +10,7 @@ import { below, headerLines, platform } from './frame.js';
 import { NONE, feedback, agentLines, liveAssignments, ticketMarks, sprintMark, markDot, GLYPHS, move, green, red, gold, gray, sprintTickets, statusCell, ticketAgents, chatSpend } from './shared.js';
 import { openTicket } from './ticket.js';
 import { isHeld } from '../../control/engine.js';
+import { slotKind } from '../../control/plan.js';
 
 const TABLE_HEADERS = ['Ticket', 'Priority', 'Status', 'Points', 'Build', 'Dev', 'Testing', 'MR', 'Total Token Spend', 'Assignee', 'Health', 'Agents'];
 // The Ticket column is the most important one (ASS-207): it keeps at least the
@@ -64,10 +65,25 @@ function layout(state, { columns = 0, rows = Infinity, now = 0 }) {
   const [selected, scroll] = gridAt(state, ticketGrid, tickets, done);
   // The same rows and fit as ticketGrid's: boxTable lays them out alike.
   const table = boxTable(TABLE_HEADERS, cells.length ? cells : [['No tickets in this sprint']], {
-    ...fit, height: ticketGrid.bodyHeight + 4, scroll, dashed: true,
+    ...fit, height: ticketGrid.bodyHeight + 4, scroll, dashed: true, separators: boundaries(tickets),
     selected: state.focus === 'tickets' && ticketGrid.rows.length ? selected : undefined,
   });
   return { tickets, steps, done, ticketGrid, table, key, room: Math.max(0, free), selected, scroll };
+}
+
+// The grid's section lines (ASS-358), for boxTable's `separators`: solid
+// green under the last Done row (its step is-done), when other rows follow; solid blue, labelled,
+// over the first planning-pool row below the last in-progress-pool one
+// (slotKind; rows in neither pool — done, blocked, queued — are skipped).
+// Every other line between rows stays dashed.
+const DONE_LINE = { color: '32' };
+const POOL_LINE = { color: '34', text: 'planning ↓ · ↑ in progress' };
+function boundaries(tickets) {
+  const kinds = tickets.map(t => slotKind(t.step, t.status));
+  const doneEnd = tickets.findLastIndex(t => t.step?.['is-done'] === true) + 1;
+  const progress = kinds.lastIndexOf('progress');
+  const planning = progress < 0 ? -1 : kinds.indexOf('planning', progress);
+  return i => (i === doneEnd ? DONE_LINE : i === planning ? POOL_LINE : null);
 }
 
 const PAUSED = '\x1b[34mPAUSED\x1b[0m';   // blue, before a paused variation's key (ASS-259)

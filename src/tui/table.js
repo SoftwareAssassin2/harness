@@ -82,7 +82,7 @@ export function tableLayout(headers, rows, { columns, stretch, min = 0, shrink =
   return { widths, cells };
 }
 
-// boxTable(headers, rows, { columns, stretch, min, shrink, height, scroll, selected, dashed }) — each row is an
+// boxTable(headers, rows, { columns, stretch, min, shrink, height, scroll, selected, dashed, separators }) — each row is an
 // array of cells, laid out by tableLayout (its widths, `stretch`, `min` and
 // `shrink`). Rows are separated by a blank line, or with `dashed` (ASS-243) a dim
 // gray line of dashes every four columns, indented — the same one line. A line
@@ -91,7 +91,12 @@ export function tableLayout(headers, rows, { columns, stretch, min = 0, shrink =
 // `scroll` (no further than lastStart), lines that do not fit are left out, and
 // when rows are hidden the right border carries a scrollbar thumb. Row
 // `selected` is shown in reverse video.
-export function boxTable(headers, rows, { columns, stretch, min = 0, shrink = [], height = Infinity, scroll = 0, selected, dashed = false }) {
+// With `separators` (ASS-358), a function of a row's index, the line before
+// row i (never the first) is restyled where it returns { color, text }: a
+// solid line like the inner border (├─┤, as wide) in `color` (an SGR code, '32' green),
+// `text`, if any, centred in it and cut to fit — still one line, so the
+// height, scroll and selection maths are unchanged. null keeps the usual line.
+export function boxTable(headers, rows, { columns, stretch, min = 0, shrink = [], height = Infinity, scroll = 0, selected, dashed = false, separators = () => null }) {
   const bodyHeight = Math.max(0, height - 4);
   const { widths, cells } = tableLayout(headers, rows, { columns, stretch, min, shrink });
   const last = lastStart(cells, bodyHeight);
@@ -106,10 +111,16 @@ export function boxTable(headers, rows, { columns, stretch, min = 0, shrink = []
   const highlight = text => `│\x1b[7m${text.slice(1, -1).replaceAll('\x1b[0m', '\x1b[0m\x1b[7m')}\x1b[0m│`;
   const inner = widths.reduce((sum, w) => sum + w + 3, -1);
   const separator = dashed ? `│\x1b[90m${pad('   -'.repeat(Math.floor((inner - 1) / 4)), inner)}\x1b[0m│` : line(headers.map(() => ''), ' ');
+  const solid = ({ color, text = '' }) => {
+    const label = text && inner > 2 ? ` ${fit(text, inner - 2)} ` : '';
+    const left = Math.floor((inner - visible(label)) / 2);
+    return `├\x1b[${color}m${'─'.repeat(left)}${label}${'─'.repeat(inner - left - visible(label))}\x1b[0m┤`;
+  };
+  const before = i => { const style = separators(i); return style ? solid(style) : separator; };
   const body = cells.slice(start).flatMap((r, n) => Array.from(
     { length: Math.max(...r.map(c => c.length)) + (n ? 1 : 0) },
     (_, k) => {
-      if (n && !k) return separator;
+      if (n && !k) return before(start + n);
       const text = line(r.map(c => c[k - (n ? 1 : 0)] ?? ''), ' ');
       return start + n === selected ? highlight(text) : text;
     },

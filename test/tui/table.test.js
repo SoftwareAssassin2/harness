@@ -225,3 +225,51 @@ test('ASS-243 AC2: a dashed table takes the same lines, scrolls and selects as a
   assert.equal(selected[4], DASHES);                                                  // the dashes are not reversed
   assert.ok(selected[5].includes('\x1b[7m'));
 });
+
+// ASS-358: separators restyles chosen lines between rows: solid, colored, a centred label.
+const SOLID_GREEN = `├\x1b[32m${'─'.repeat(28)}\x1b[0m┤`;
+const LABEL = 'planning ↓ · ↑ in progress';
+const stripped = s => s.replace(/\x1b\[[0-9;]*m/g, '');
+
+test('ASS-358: separators draws a solid colored line before the rows it names, as wide as the inner border; null keeps the dashes', () => {
+  const out = boxTable(headers, five, { columns: 30, stretch: 0, dashed: true, separators: i => (i === 2 ? { color: '32' } : null) });
+  assert.equal(out[4], DASHES);
+  assert.equal(out[6], SOLID_GREEN);
+  assert.equal(out[8], DASHES);
+  assert.equal(stripped(out[6]).length, stripped(out[2]).length);                  // the inner border's width
+  for (const line of out) assert.equal(visible(line), 30);
+  const blank = boxTable(headers, five, { columns: 30, stretch: 0, separators: () => null });
+  assert.deepEqual(blank, boxTable(headers, five, { columns: 30, stretch: 0 }));   // no style: as before
+  assert.equal(boxTable(headers, five, { columns: 30, stretch: 0, separators: () => ({ color: '32' }) })[3], '│ A-1            1        x  │');   // never above the first row
+});
+
+test('ASS-358: a separator\'s text is centred in its line, in its color; cut to fit a narrow table', () => {
+  const wide = boxTable(headers, five, { columns: 40, stretch: 0, dashed: true, separators: i => (i === 1 ? { color: '34', text: LABEL } : null) });
+  assert.equal(wide[4], `├\x1b[34m───── ${LABEL} ─────\x1b[0m┤`);
+  const text = stripped(wide[4]).slice(1, -1);
+  const [left, right] = text.split(` ${LABEL} `);
+  assert.ok(Math.abs(left.length - right.length) <= 1 && /^─+$/.test(left + right), text);
+  assert.equal(visible(wide[4]), 40);
+  for (const columns of [30, 20, 12, 8]) {
+    const out = boxTable(['A'], [['x'], ['y']], { columns, stretch: 0, dashed: true, separators: () => ({ color: '34', text: LABEL }) });
+    assert.equal(out.length, 7, String(columns));                                 // one line, still
+    assert.equal(visible(out[4]), columns, out[4]);
+    assert.match(out[4], /^├\x1b\[34m.*\x1b\[0m┤$/);
+    assert.match(stripped(out[4]), columns >= 30 ? new RegExp(LABEL) : /^├ pla[^─]*… ┤$/);
+  }
+});
+
+test('ASS-358: a restyled table takes the same lines, scrolls and selects as a dashed one; the solid line is never reversed and carries the thumb', () => {
+  const styled = i => (i === 1 ? { color: '32' } : i === 3 ? { color: '34', text: LABEL } : null);
+  for (const options of [{ height: 9, scroll: 1 }, { height: 9, scroll: 99 }, { height: 10, scroll: 99 }, { height: 13 }, { selected: 1 }, { selected: 3 }]) {
+    const dashed = boxTable(headers, five, { columns: 30, stretch: 0, ...options, dashed: true });
+    const solid = boxTable(headers, five, { columns: 30, stretch: 0, ...options, dashed: true, separators: styled });
+    assert.equal(solid.length, dashed.length);
+    assert.deepEqual(keys(solid), keys(dashed));
+    assert.equal(bar(solid).replaceAll('┤', '│'), bar(dashed));
+    assert.deepEqual(solid.filter(l => l.includes('\x1b[7m')), dashed.filter(l => l.includes('\x1b[7m')));
+  }
+  const scrolled = boxTable(headers, five, { columns: 30, stretch: 0, height: 9, scroll: 1, dashed: true, separators: i => (i <= 2 ? { color: '32' } : null) });
+  assert.match(scrolled[3], /A-2/);                                               // the line above the first row shown is not drawn
+  assert.equal(scrolled[4], `├\x1b[32m${'─'.repeat(28)}\x1b[0m█`);                 // the thumb takes its border
+});
