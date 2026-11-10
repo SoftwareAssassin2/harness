@@ -48,9 +48,15 @@
 // left agents in older VMs failing "Invalid API key"): vm:credentials records
 // each injected item's keychain modification time on the VM's vms.json row
 // (credential-stamps { "<kind>": "<mdat>" }: never a value), and an item whose
-// stamp now (vm:credential-stamps, read at most once per job pass, and only
-// when a VM due the comparison records stamps) differs from the recorded one
-// refreshes it, logged "credentials refreshed (…; <kind> key changed)". A VM
+// stamp now (vm:credential-stamps, read only when a VM due the comparison
+// records stamps, and at most once per harness.json's
+// credential-stamp-interval-seconds, 300 by default — ASS-356: read every pass,
+// every tick, it was thousands of keychain lookups a day — the stamps cached
+// in control memory meanwhile, and a failed read tried again only after the
+// interval) is later than the recorded one refreshes it, logged "credentials
+// refreshed (…; <kind> key changed)" — later, not merely different, so stamps
+// cached before a start or refresh, older than those it recorded, never
+// refresh that VM again. A VM
 // recording no stamps (started before ASS-350), or an item either side does not
 // stamp, is not compared — unknown, not changed — until its next start records
 // them. The work runs beside
@@ -182,10 +188,11 @@ export async function superviseVms(ctx, state) {
     if (status.get(name) !== 'Running') ctx.memory.vmsUp?.delete(name);
     if (!vm.run) ctx.memory.vmWaits?.delete(name);
   }
+  const stampEvery = (state.harness?.['credential-stamp-interval-seconds'] ?? CREDENTIAL_STAMP_INTERVAL) * 1000;   // ASS-356
   for (const [project, vms] of projects) {
     const r = jobs.get(project.id) ?? { job: null, held: new Map() };
     jobs.set(project.id, r);
-    r.job ??= match(ctx, project.id, vms, r, status, diskHeld(state)).catch(error => ctx.log('error', `${PHASE} ${project.id}: ${error.message}`)).finally(() => { r.job = null; });
+    r.job ??= match(ctx, project.id, vms, r, status, diskHeld(state), stampEvery).catch(error => ctx.log('error', `${PHASE} ${project.id}: ${error.message}`)).finally(() => { r.job = null; });
   }
 }
 
@@ -195,32 +202,47 @@ const isUp = (ctx, name) => { (ctx.memory.vmsUp ??= new Set()).add(name); ctx.me
 // probe(ctx, name) — whether `name`'s sshd accepts connections yet.
 const probe = (ctx, name) => new Promise((resolve, reject) => execFile('limactl', ['shell', name, '--', 'true'], { env: limaEnv(ctx.env), timeout: 5000 }, error => error ? reject(error) : resolve()));
 
-// changedKeys(recorded, now) — the credential kinds whose keychain stamp both
-// record and differ (ASS-350); none when either is unknown.
-const changedKeys = (recorded, now) => (recorded && now ? Object.keys(now).filter(k => recorded[k] && now[k] && recorded[k] !== now[k]) : []);
+// changedKeys(recorded, now) — the credential kinds both stamp whose keychain
+// stamp now is later than the recorded one (ASS-350; ASS-356: later, not merely
+// different — mdat is a fixed-width YYYYMMDDhhmmssZ, so it sorts by time — so
+// stamps cached before a VM's start or refresh, older than those it recorded,
+// are never a change); none when either is unknown.
+const changedKeys = (recorded, now) => (recorded && now ? Object.keys(now).filter(k => recorded[k] && now[k] && now[k] > recorded[k]) : []);
+
+// stampsOf(ctx, id, every) — the project's keychain item stamps (ASS-356):
+// memory.vmStamps' id → { at, stamps } when read less than `every` ms ago,
+// else read again (vm:credential-stamps) and cached with the time; stamps
+// null when the read failed — logged once till a read succeeds, and not tried
+// again till `every` has passed.
+export const CREDENTIAL_STAMP_INTERVAL = 300;
+async function stampsOf(ctx, id, every) {
+  const cache = (ctx.memory.vmStamps ??= new Map()), now = ctx.now().getTime();
+  const c = cache.get(id);
+  if (c && now - c.at < every) return c.stamps;
+  const unread = `vm-stamps/${id}`;
+  let stamps;
+  try {
+    stamps = JSON.parse((await ctx.cli(['vm:credential-stamps', id])) || '{}');
+    ctx.memory.warned.delete(unread);
+  } catch (error) {
+    stamps = null;
+    if (!ctx.memory.warned.has(unread)) { ctx.memory.warned.add(unread); ctx.log('error', `${PHASE} ${id}: vm:credential-stamps ${id} failed; no VM's credentials compared with the keychain till it reads: ${error.message}`); }
+  }
+  cache.set(id, { at: now, stamps });
+  return stamps;
+}
 
 // One project's pass, by `status` (limactl list's, read this tick): each VM
 // not yet reached but Running is probed (ASS-169: a VM is `Running` a few
 // seconds before its sshd accepts connections) — silently, so a VM not yet
 // reachable is simply tried again next job, same as one still starting; then
 // each VM started, recreated, stopped, refreshed or deleted (ASS-325) as it should be (not while backed off).
-async function match(ctx, id, vms, r, status, diskHold = false) {
+async function match(ctx, id, vms, r, status, diskHold = false, stampEvery = CREDENTIAL_STAMP_INTERVAL * 1000) {
   const up = (ctx.memory.vmsUp ??= new Set());
   const declared = declaredVmKind(ctx, id);
-  // ASS-350 AC4: the keychain items' stamps now, read at most once this pass, and only when asked; null when unreadable (logged once till read again).
+  // ASS-350 AC4, ASS-356: the keychain items' stamps now — read only when a VM is due the comparison, and at most once per `stampEvery` ms (stampsOf's cache); null when unreadable.
   let stampsNow;
-  const currentStamps = async () => {
-    if (stampsNow !== undefined) return stampsNow;
-    const unread = `vm-stamps/${id}`;
-    try {
-      stampsNow = JSON.parse((await ctx.cli(['vm:credential-stamps', id])) || '{}');
-      ctx.memory.warned.delete(unread);
-    } catch (error) {
-      stampsNow = null;
-      if (!ctx.memory.warned.has(unread)) { ctx.memory.warned.add(unread); ctx.log('error', `${PHASE} ${id}: vm:credential-stamps ${id} failed; no VM's credentials compared with the keychain till it reads: ${error.message}`); }
-    }
-    return stampsNow;
-  };
+  const currentStamps = async () => (stampsNow = await stampsOf(ctx, id, stampEvery));
   for (const [name, vm] of vms) {
     if (vm.keep) continue;   // ASS-297: its project paused, an assignment on it: left as it is till that ends
     if (vm.release && vm.busy) continue;   // ASS-325: released, an assignment on it: left as it is till that ends
