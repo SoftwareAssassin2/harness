@@ -8,7 +8,12 @@ set -euo pipefail
 # minus the harness's fields (key, title, description, url,
 # ticket-system-status, -priority, -assignment, points, issue-type,
 # dependencies, overlaps, sprint-tag — points and dependencies left out when unread, ASS-152/ASS-322; and fast-track: true on a fast-tracked off-board
-# ticket, ASS-83, carried onto the sprint or backlog ticket, never taken off).
+# ticket, ASS-83, carried onto the sprint or backlog ticket, never taken off;
+# and, on a Jira ticket, ticket-system-assignment-id, its assignee's account id
+# or null when unassigned (ASS-344), set as the other fields are — a ticket
+# fetched without the key, an off-board one, gets none and keeps what it has).
+# The signed-in user's account id to compare it with is the project folder's
+# ticket-system-account-id file (project:set-ticket-system-account-id).
 # It is merged, in one locked write, into the
 # project's active sprint file (data/projects/<project>/sprints/sprint-<n>/
 # sprint.json; features, bugs or spikes by issue-type, a ticket moving to the
@@ -165,7 +170,8 @@ update_json "$json" --slurpfile in "$file" --arg target "$target" --arg state "$
   def arrays: if $target == "sprint" then "features", "bugs", "spikes" else "tickets" end;
   # The ticket-system fields, from the fetched ticket $t.
   def system_fields($t): ($t | { title, description, url, "ticket-system-status", "ticket-system-priority", "ticket-system-assignment", points, "issue-type", "sprint-tag" }) + { dependencies: ($t.dependencies // []), overlaps: ($t.overlaps // []) }
-    + (if $t["fast-track"] == true then { "fast-track": true } else {} end);
+    + (if $t["fast-track"] == true then { "fast-track": true } else {} end)
+    + (if $t | has("ticket-system-assignment-id") then { "ticket-system-assignment-id": $t["ticket-system-assignment-id"] } else {} end);
   # A sprint ticket whose status was set (ticket-system-status-at) no earlier
   # than the list was read (fetched-at), both to the second, keeps it (ASS-128).
   def epoch: sub("\\.[0-9]+"; "") | fromdateiso8601;

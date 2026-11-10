@@ -79,6 +79,30 @@ test('ticket:sync leaves merge requests alone when the file has none for the key
   assert.equal(s.bugs[0].priority, 5);
 });
 
+test('ASS-344 AC1, AC2: ticket:sync carries ticket-system-assignment-id as a ticket-system field: a reassigned ticket takes the new holder\'s name and account id, an unassigned one both null; a ticket fetched without the key (off-board) gets none and keeps what it has', async () => {
+  const dir = projects();
+  const mine = { 'ticket-system-assignment': 'Ann', 'ticket-system-assignment-id': 'acc-ann' };
+  await sync(dir, 'p', 'sprint', file(dir, { tickets: [fetched('ABC-1', mine), fetched('ABC-2', { 'issue-type': 'Bug', ...mine })] }));
+  await sync(dir, 'p', 'backlog', file(dir, { tickets: [fetched('ABC-9', mine)] }));
+  assert.deepEqual([sprint(dir).features[0]['ticket-system-assignment-id'], sprint(dir).bugs[0]['ticket-system-assignment-id'], backlog(dir).tickets[0]['ticket-system-assignment-id']], ['acc-ann', 'acc-ann', 'acc-ann']);
+  // Reassigned (AC1) and unassigned (AC2) in Jira, read by key and synced like any other.
+  await sync(dir, 'p', 'sprint', file(dir, { tickets: [
+    fetched('ABC-1', { 'ticket-system-assignment': 'Bea Other', 'ticket-system-assignment-id': 'acc-bea' }),
+    fetched('ABC-2', { 'issue-type': 'Bug', 'ticket-system-assignment': null, 'ticket-system-assignment-id': null }),
+  ] }));
+  await sync(dir, 'p', 'backlog', file(dir, { tickets: [fetched('ABC-9', { 'ticket-system-assignment': null, 'ticket-system-assignment-id': null })] }));
+  const s = sprint(dir), b = backlog(dir);
+  assert.deepEqual([s.features[0]['ticket-system-assignment'], s.features[0]['ticket-system-assignment-id']], ['Bea Other', 'acc-bea']);
+  assert.deepEqual([s.features[0].priority, s.features[0]['manual-priority'], s.features[0].qa], [2, 1, { status: 'Passed' }]);   // the harness's fields stay
+  assert.deepEqual([s.bugs[0]['ticket-system-assignment'], s.bugs[0]['ticket-system-assignment-id']], [null, null]);
+  assert.deepEqual([b.tickets[0]['ticket-system-assignment'], b.tickets[0]['ticket-system-assignment-id']], [null, null]);
+  // An off-board ticket (no such key fetched): new, it has none; one already there keeps its own.
+  await sync(dir, 'p', 'sprint', file(dir, { tickets: [fetched('HD-1', { 'ticket-system-assignment': null }), fetched('ABC-1', { 'ticket-system-assignment': 'Bea Other' })] }));
+  const after = sprint(dir);
+  assert.equal('ticket-system-assignment-id' in after.features.find(t => t.key === 'HD-1'), false);
+  assert.equal(after.features.find(t => t.key === 'ABC-1')['ticket-system-assignment-id'], 'acc-bea');
+});
+
 test('ticket:sync adds a new ticket in the full shape, ranked last, one variation A at the step its ticket-system status pairs with', async () => {
   const dir = projects();
   const { stdout } = await sync(dir, 'p', 'sprint', file(dir, { tickets: [fetched('ABC-3', { 'issue-type': 'Spike' }), fetched('ABC-4', { 'issue-type': 'Bug' })], 'merge-requests': [{ key: '!3', 'build-status': 'Running', url: 'u3', ticket: 'abc-3' }, { key: '!4', 'build-status': 'Running', url: 'u4', ticket: null }] }));

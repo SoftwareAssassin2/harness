@@ -362,6 +362,7 @@ test('the sprint advance runs only on a new day, and never for a project with a 
 // The board's active sprints, answered by a fake acli: list-sprints gives `active` (or fails), a search `issues` (REST shape, none by default).
 const fakeAcli = (active, searches = [], issues = []) => async (file, args) => {
   if (args[1] === 'board' && args[2] === 'list-sprints') { if (active instanceof Error) throw active; return JSON.stringify(active.map(s => ({ ...s, state: 'active' }))); }
+  if (args[1] === 'auth' && args[2] === 'status') return 'Authenticated\n  Account ID: acc-me\n';   // ASS-344: the signed-in account, asked once a cycle
   if (args[2] === 'search') { searches.push(args[4]); return JSON.stringify(args[4].startsWith('sprint = ') ? issues : []); }
   if (args[2] === 'view') return '{}';
   throw new Error(`unexpected acli ${args.join(' ')}`);
@@ -436,4 +437,121 @@ test('a Jira project\'s cycle with no active sprint on the board, or the board u
   await cycle(new Error('acli: down'));
   assert.deepEqual(lines.filter(l => /board's sprints/.test(l)), ['the board\'s sprints could not be read; sprint 10 stays on Jira sprint 77: acli: down']);
   assert.equal(calls.filter(c => c.args[0] === 'project:set-last-data-download').length, 5);
+});
+
+// ASS-344: reassigned tickets. A Jira issue as acli prints it (fields the search would carry, so no per-ticket view).
+const jiraIssue = (key, assignee) => ({ key, fields: { summary: `Summary ${key}`, description: `About ${key}`, status: { name: 'In Progress' }, priority: { name: 'High' }, assignee, issuetype: { name: 'Story' }, customfield_10028: 3, issuelinks: [] } });
+const ME = { accountId: 'acc-me', displayName: 'Me Myself' }, BEA = { accountId: 'acc-bea', displayName: 'Bea Other' };
+// A sprint or backlog ticket as the harness holds it after an earlier sync, assigned to the signed-in user.
+const held = (key, extra = {}) => ({ key, title: `Summary ${key}`, description: `About ${key}`, url: `https://x.atlassian.net/browse/${key}`, 'ticket-system-status': 'In Progress', 'ticket-system-priority': 'High',
+  'ticket-system-assignment': ME.displayName, 'ticket-system-assignment-id': ME.accountId, points: 3, 'issue-type': 'Story', dependencies: [], overlaps: [], 'sprint-tag': 'S10', priority: 1, variations: [], ...extra });
+// A cycle with the real Jira adapter on a fake acli (`issues` by key, those in `mine` returned by the sprint search,
+// the keys in `gone` failing a by-key search as Jira does) and the real agent.sh: { dir, acli calls, lines }.
+async function realCycle({ sprint = [], backlog = [], issues = {}, mine = [], gone = [] }) {
+  const dir = root({ last: ISO, offBoard: false });
+  const p = join(dir, 'data', 'projects', 'p');
+  writeFileSync(join(p, 'sprints', 'sprint-10', 'sprint.json'), JSON.stringify({ name: 'S10', features: sprint, bugs: [], spikes: [] }));
+  writeFileSync(join(p, 'backlog.json'), JSON.stringify({ tickets: backlog }));
+  const env = { ...process.env, PROJECTS_DIR: join(dir, 'data', 'projects'), ACLI_DISABLED: '1' };
+  const acli = [], lines = [];
+  const answer = async args => {
+    acli.push(args.join(' '));
+    if (args[1] === 'board') return JSON.stringify([{ id: 77, name: 'S10', state: 'active' }]);
+    if (args[1] === 'auth') return 'Authenticated\n  Account ID: acc-me\n';
+    const jql = args[args.indexOf('--jql') + 1];
+    const asked = /^key in \((.*)\)$/.exec(jql)?.[1].split(', ');
+    if (!asked) return JSON.stringify(/sprint = 77/.test(jql) ? mine.map(k => issues[k]) : []);
+    if (asked.some(k => gone.includes(k))) throw new Error(`acli: An issue with key '${asked.find(k => gone.includes(k))}' does not exist for field 'key'.`);
+    return JSON.stringify(asked.map(k => issues[k]).filter(Boolean));
+  };
+  const exec = (file, args) => file === 'acli' ? answer(args) : promisify(execFile)(AGENT, args, { env }).then(r => r.stdout);
+  await runCycle({ root: dir, project: 'p', now: new Date(), adapters: { jira, gitlab: { fetchMergeRequests: async () => [] } }, exec, log: l => lines.push(l) });
+  const json = file => JSON.parse(readFileSync(join(p, file), 'utf8'));
+  return { dir, p, acli, lines, sprint: json(join('sprints', 'sprint-10', 'sprint.json')), backlog: json('backlog.json') };
+}
+
+test('ASS-344 AC1, AC2: a sprint ticket the signed-in user\'s search no longer returns is read by key and synced: reassigned, its assignee and account id are the new holder\'s; unassigned (here a backlog one), both null; the harness\'s fields stay', async () => {
+  const r = await realCycle({
+    sprint: [held('EX-1'), held('EX-3', { priority: 2, 'manual-priority': 1, qa: { status: 'Passed' } })], backlog: [held('EX-4', { 'sprint-tag': null })],
+    issues: { 'EX-1': jiraIssue('EX-1', ME), 'EX-3': jiraIssue('EX-3', BEA), 'EX-4': jiraIssue('EX-4', null) }, mine: ['EX-1'],
+  });
+  const ex3 = r.sprint.features.find(t => t.key === 'EX-3');
+  assert.deepEqual([ex3['ticket-system-assignment'], ex3['ticket-system-assignment-id'], ex3['sprint-tag'], ex3.priority, ex3['manual-priority'], ex3.qa], ['Bea Other', 'acc-bea', 'S10', 2, 1, { status: 'Passed' }]);
+  const ex1 = r.sprint.features.find(t => t.key === 'EX-1');
+  assert.deepEqual([ex1['ticket-system-assignment'], ex1['ticket-system-assignment-id']], ['Me Myself', 'acc-me']);
+  const ex4 = r.backlog.tickets.find(t => t.key === 'EX-4');
+  assert.deepEqual([ex4['ticket-system-assignment'], ex4['ticket-system-assignment-id']], [null, null]);
+  assert.deepEqual(r.acli.filter(c => / key in /.test(c)).map(c => /key in \([^)]*\)/.exec(c)[0]), ['key in (EX-3, EX-4)']);   // one by-key search, after the usual two
+  assert.equal(readFileSync(join(r.p, 'ticket-system-account-id'), 'utf8'), 'acc-me');   // the signed-in account, recorded once a cycle for ASS-345 to compare with
+  assert.ok(r.lines.includes('by key: 2 tickets not in the searches, 2 read'), r.lines.join('\n'));
+});
+
+test('ASS-344 AC3: a ticket the by-key read cannot return (deleted in Jira, or not visible) is left as it is, and the cycle goes on; so is every one when the read fails outright', async () => {
+  const before = held('EX-6', { priority: 3 });
+  const r = await realCycle({ sprint: [held('EX-3'), before], issues: { 'EX-3': jiraIssue('EX-3', BEA) }, gone: ['EX-6'] });
+  assert.deepEqual(r.sprint.features.find(t => t.key === 'EX-6'), before);
+  assert.equal(r.sprint.features.find(t => t.key === 'EX-3')['ticket-system-assignment-id'], 'acc-bea');
+  assert.ok(r.lines.includes('by key: 2 tickets not in the searches, 1 read, 1 left as they are'), r.lines.join('\n'));
+  assert.ok(existsSync(join(r.p, 'last-data-download')));
+  // A read that throws (not the adapter's own way, but any): logged, nothing synced for it, the time still recorded.
+  const dir = root({ last: ISO, offBoard: false });
+  writeFileSync(join(dir, 'data', 'projects', 'p', 'sprints', 'sprint-10', 'sprint.json'), JSON.stringify({ name: 'S10', features: [{ key: 'EX-3' }] }));
+  const a = adapters(), { calls, exec } = recorder(), lines = [];
+  a.jira.fetchTicketsByKey = async () => { throw new Error('acli: 503\nmore'); };
+  await runCycle({ root: dir, project: 'p', now: new Date(ISO), adapters: a, exec, log: l => lines.push(l) });
+  assert.deepEqual(calls.map(c => c.args[0]), ['ticket:sync', 'ticket:sync', 'project:set-last-data-download']);
+  assert.ok(lines.includes('by key: 1 tickets not in the searches could not be read: acli: 503'), lines.join('\n'));
+});
+
+test('ASS-344 AC4: the by-key read skips tickets the searches returned, soft-deleted ones, other projects\' (off-board) keys and Done backlog entries; a sprint ticket goes to a sprint sync, a backlog one to a backlog sync; nothing missing, no read and no extra sync', async () => {
+  const dir = root({ last: ISO });
+  const p = join(dir, 'data', 'projects', 'p');
+  writeFileSync(join(p, 'sprints', 'sprint-10', 'sprint.json'), JSON.stringify({ name: 'S10', features: [{ key: 'ex-1' }, { key: 'EX-5', 'is-deleted': true }, { key: 'HD-4' }, { key: 'EX-3' }], bugs: [{ key: 'EX-9' }] }));
+  writeFileSync(join(p, 'backlog.json'), JSON.stringify({ tickets: [{ key: 'EX-9' }, { key: 'EX-8', 'ticket-system-status': 'Done' }, { key: 'EX-10', 'is-deleted': true }, { key: 'EX-3' }, { key: 'EX-11', 'ticket-system-status': 'To Do' }, { key: 'EX-2' }] }));
+  const a = adapters(), asked = [];
+  a.jira.fetchTicketsByKey = async opts => { asked.push(opts); return opts.keys.map(key => ({ key, 'ticket-system-assignment': null, 'ticket-system-assignment-id': null })); };
+  const { calls, exec } = recorder();
+  await runCycle({ root: dir, project: 'p', now: new Date(ISO), adapters: a, exec, log: () => {} });
+  assert.deepEqual(asked, [{ site: 'https://x.atlassian.net', storyPointsField: 'customfield_10028', keys: ['EX-3', 'EX-11'] }]);
+  const syncs = calls.filter(c => c.args[0] === 'ticket:sync').map(c => [c.args[2], c.args[3].tickets.map(t => t.key), c.args[3]['merge-requests']]);
+  assert.deepEqual(syncs.slice(0, 4), [['sprint', ['EX-1', 'EX-2'], syncs[0][2]], ['backlog', ['EX-9'], undefined], ['sprint', ['EX-3'], []], ['backlog', ['EX-11'], undefined]]);
+  assert.equal(calls.find(c => c.args[0] === 'ticket:sync' && c.args[3].tickets[0].key === 'EX-3').args[3].tickets[0]['sprint-tag'], 'S10');
+  // Nothing missing: no by-key read, no extra sync — and, with the real adapter, no extra acli call.
+  const quiet = adapters(), none = recorder();
+  quiet.jira.fetchTicketsByKey = async () => { throw new Error('not to be called'); };
+  await runCycle({ root: root({ last: ISO }), project: 'p', now: new Date(ISO), adapters: quiet, exec: none.exec, log: () => {} });
+  assert.deepEqual(none.calls.map(c => c.args[0]), ['ticket:sync', 'ticket:sync', 'project:set-last-data-download']);
+  const r = await realCycle({ sprint: [held('EX-1')], issues: { 'EX-1': jiraIssue('EX-1', ME) }, mine: ['EX-1'] });
+  assert.deepEqual(r.acli.map(c => c.split(' ').slice(0, 3).join(' ')), ['jira auth status', 'jira board list-sprints', 'jira workitem search', 'jira workitem search']);
+});
+
+test('ASS-344: the signed-in account id is read once a cycle, before any sync, and recorded only when it differs from the project folder\'s ticket-system-account-id; unreadable, the file stays and it is logged once; an off-board-only project asks nothing', async () => {
+  const dir = root({ last: ISO });
+  const file = join(dir, 'data', 'projects', 'p', 'ticket-system-account-id');
+  let answer = 'acc-me', reads = 0;
+  const cycle = async () => {
+    const a = adapters(), { calls, exec } = recorder(), lines = [];
+    a.jira.fetchSignedInAccountId = async () => { reads++; if (answer instanceof Error) throw answer; return answer; };
+    await runCycle({ root: dir, project: 'p', now: new Date(ISO), adapters: a, exec, log: l => lines.push(l) });
+    return { calls: calls.map(c => c.args.slice(0, 3).join(' ')), lines };
+  };
+  let c = await cycle();
+  assert.deepEqual(c.calls.slice(0, 2), ['project:set-ticket-system-account-id p acc-me', 'ticket:sync p sprint']);
+  assert.equal(reads, 1);
+  writeFileSync(file, 'acc-me');   // as the call (a fake here) would have written it
+  c = await cycle();
+  assert.ok(!c.calls.some(x => x.startsWith('project:set-ticket-system-account-id')), c.calls.join('\n'));
+  answer = 'acc-new';
+  c = await cycle();
+  assert.ok(c.calls.includes('project:set-ticket-system-account-id p acc-new'));
+  answer = new Error('acli: 401\nmore');
+  const failed = [await cycle(), await cycle()];
+  assert.deepEqual(failed.flatMap(f => f.lines.filter(l => /signed-in/.test(l))), ['the signed-in Jira account could not be read; ticket-system-account-id stays as it is: acli: 401']);
+  assert.ok(failed.every(f => !f.calls.some(x => x.startsWith('project:set-ticket-system-account-id')) && f.calls.at(-1).startsWith('project:set-last-data-download')));
+  answer = null;
+  assert.ok((await cycle()).lines.includes('the signed-in Jira account could not be told; ticket-system-account-id stays as it is'));
+  const off = adapters(), quiet = recorder();
+  off.jira.fetchSignedInAccountId = async () => { throw new Error('not to be called'); };
+  await runCycle({ root: root({ jira: false }), project: 'p', now: new Date(ISO), adapters: { ...off, offBoard: { fetchTickets: async () => [] } }, exec: quiet.exec, log: () => {} });
+  assert.ok(!quiet.calls.some(x => x.args[0] === 'project:set-ticket-system-account-id'));
 });

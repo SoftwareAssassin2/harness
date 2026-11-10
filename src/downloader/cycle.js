@@ -3,7 +3,8 @@
 // tickets (and, on a comment cycle, their Jira comments), and hand them to the
 // agent-cli. It writes no JSON itself: every mutation is an agent.sh call
 // (ticket:snapshot-day, ticket:sync, ticket:sync-jira-comments,
-// project:set-last-data-download), so the file rules live in one place.
+// project:set-ticket-system-account-id, project:set-last-data-download), so
+// the file rules live in one place.
 import { readFileSync, writeFileSync, mkdtempSync, rmSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -39,11 +40,29 @@ import { dataDir } from '../data-folder.js';
 //    answer changes. The project's pause (assignments:pause) is not read: a
 //    paused project's sprint follows Jira all the same (the TUI's "day N of
 //    M" reads those dates).
+//    Then, for a project with a jira work source, the signed-in user's account
+//    id (adapters.jira.fetchSignedInAccountId, ASS-344), once a cycle and
+//    before any sync: `project:set-ticket-system-account-id <project> <id>`
+//    when it differs from the project folder's ticket-system-account-id file,
+//    so ticket:sync and control can compare a ticket's
+//    ticket-system-assignment-id with it. Unreadable (it throws or gives
+//    null), the file stays as it is, logged once until the answer changes.
 // 2. Sprint: the active sprint's tickets (Jira) and the merge-request scan of
 //    every Active repository (merge-requests.js: none when one cannot be read,
 //    so every record is kept) — `ticket:sync <project> sprint <file>`. No
 //    active sprint, no sprint sync.
 // 3. Backlog: `ticket:sync <project> backlog <file>`.
+// 3b. Reassigned tickets (ASS-344): the searches return only the signed-in
+//    user's tickets. The Jira tickets (keys of the board's project) the
+//    sprint file or backlog.json holds, not soft deleted, that neither search
+//    returned — but for a backlog.json entry already Done, which no search
+//    returns — are read by key (adapters.jira.fetchTicketsByKey), whoever
+//    holds them: those in the sprint file to a second `ticket:sync <project>
+//    sprint` (no merge requests: those stay as the first sync left them;
+//    sprint-tag, unread, the sprint's name), the others to a second
+//    `ticket:sync <project> backlog`. A ticket the read does not return
+//    (deleted in Jira, or not visible) is left as it is; a read that fails is
+//    logged and the cycle goes on. Nothing missing, no read and no sync.
 // 4. The off-board tickets (adapters.offBoard, off-board.js), when the project
 //    has an off-board work source: at Backlog to the backlog, the rest to the
 //    sprint with their own scan, the same two calls — but a Done one not
@@ -58,7 +77,7 @@ import { dataDir } from '../data-folder.js';
 // just before the read): a status control sets on a sprint ticket while the
 // merge requests are looked up is newer than the list, and ticket:sync keeps
 // it (ASS-128).
-// The Jira steps (2, 3, 5) only for a project with a jira work source; one with
+// The Jira steps (2, 3, 3b, 5) only for a project with a jira work source; one with
 // only an off-board source (the harness's own) syncs those tickets alone.
 // Fails before anything runs when the project has neither.
 export async function runCycle({ root, project, now = new Date(), adapters, exec, comments, lookups = false, dryRun = false, log = () => {} }) {
@@ -104,6 +123,7 @@ export async function runCycle({ root, project, now = new Date(), adapters, exec
       }
     }
 
+    if (source) await recordAccount({ key: join(projects, project), project, file: join(projects, project, 'ticket-system-account-id'), call, jira: adapters.jira, exec, log });
     if (source) await followBoard({ key: join(projects, project), project, read: file => existsSync(join(projects, project, file)) ? read(file) : {}, board, today: utcDate(now), call, jira: adapters.jira, exec, log });
 
     const active = (existsSync(join(projects, project, 'sprints.json')) ? read('sprints.json') : {}).list?.find(s => s['is-active']);   // no sprints file: no active sprint
@@ -137,6 +157,7 @@ export async function runCycle({ root, project, now = new Date(), adapters, exec
       jiraKeys.push(...backlog.map(t => t.key));
       log(`backlog: ${backlog.length} tickets`);
       await call(['ticket:sync', project, 'backlog'], { 'fetched-at': fetchedAt, tickets: backlog });
+      await refetchMissing({ project, board, sprint, sprintName: sprintData.name, sprintData, backlogData: existsSync(join(projects, project, 'backlog.json')) ? read('backlog.json') : {}, fetched: jiraKeys, call, jira: adapters.jira, exec, log });
     }
 
     // 4. The off-board tickets (src/off-board, the harness's own): at Backlog
@@ -174,6 +195,52 @@ export async function runCycle({ root, project, now = new Date(), adapters, exec
   } finally {
     rmSync(tmp, { recursive: true, force: true });
   }
+}
+
+// refetchMissing: step 3b (ASS-344).
+async function refetchMissing({ project, board, sprint, sprintName, sprintData, backlogData, fetched, call, jira, exec, log }) {
+  const lc = k => String(k ?? '').toLowerCase();
+  const seen = new Set(fetched.map(lc));
+  const own = new RegExp(`^${board.projectKey}-\\d+$`, 'i');
+  const missing = t => t?.key && own.test(t.key) && !t['is-deleted'] && !seen.has(lc(t.key));
+  const inSprint = sprint === undefined ? [] : ['features', 'bugs', 'spikes'].flatMap(a => sprintData[a] ?? []).filter(missing).map(t => t.key);
+  const sprintKeys = new Set(inSprint.map(lc));
+  const inBacklog = (backlogData.tickets ?? []).filter(t => missing(t) && t['ticket-system-status'] !== 'Done' && !sprintKeys.has(lc(t.key))).map(t => t.key);
+  if (!inSprint.length && !inBacklog.length) return;
+  const fetchedAt = new Date().toISOString();
+  let tickets;
+  try {
+    tickets = await jira.fetchTicketsByKey({ site: board.site, storyPointsField: board.storyPointsField, keys: [...inSprint, ...inBacklog] }, exec);
+  } catch (err) {
+    return log(`by key: ${inSprint.length + inBacklog.length} tickets not in the searches could not be read: ${String(err.message ?? err).split('\n')[0]}`);
+  }
+  const toSprint = tickets.filter(t => sprintKeys.has(lc(t.key))).map(t => ({ ...t, 'sprint-tag': t['sprint-tag'] ?? sprintName ?? null }));
+  const toBacklog = tickets.filter(t => !sprintKeys.has(lc(t.key)));
+  const unread = inSprint.length + inBacklog.length - toSprint.length - toBacklog.length;
+  log(`by key: ${inSprint.length + inBacklog.length} tickets not in the searches, ${tickets.length} read${unread ? `, ${unread} left as they are` : ''}`);
+  if (toSprint.length) await call(['ticket:sync', project, 'sprint'], { 'fetched-at': fetchedAt, tickets: toSprint, 'merge-requests': [] });
+  if (toBacklog.length) await call(['ticket:sync', project, 'backlog'], { 'fetched-at': fetchedAt, tickets: toBacklog });
+}
+
+// The last thing recordAccount logged, by projects folder and project: a
+// failure logged once, until the answer changes.
+const accountNotes = new Map();
+
+// recordAccount: step 1's signed-in account id (ASS-344). An adapter without
+// fetchSignedInAccountId (an older caller) records nothing.
+async function recordAccount({ key, project, file, call, jira, exec, log }) {
+  if (typeof jira.fetchSignedInAccountId !== 'function') return;
+  const note = text => { if (accountNotes.get(key) !== text) log(text); accountNotes.set(key, text); };
+  let id;
+  try { id = await jira.fetchSignedInAccountId(exec); } catch (err) {
+    return note(`the signed-in Jira account could not be read; ticket-system-account-id stays as it is: ${String(err.message ?? err).split('\n')[0]}`);
+  }
+  if (!id) return note('the signed-in Jira account could not be told; ticket-system-account-id stays as it is');
+  accountNotes.delete(key);
+  const recorded = existsSync(file) ? readFileSync(file, 'utf8').trim() : null;
+  if (recorded === id) return;
+  log(`signed-in Jira account ${id}`);
+  await call(['project:set-ticket-system-account-id', project, id]);
 }
 
 // The last thing followBoard logged that stays until the board changes, by

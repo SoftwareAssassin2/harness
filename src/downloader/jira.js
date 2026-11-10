@@ -21,6 +21,15 @@
 // that fails (throws, or prints no JSON) leaves both out, unread (ASS-322).
 // (Open: acli's `view --fields a,b` multi-field list and its --json issuelinks
 // shape are verified for search/single-field, not for this combined view.)
+//
+// Reassigned tickets (ASS-344): the searches above return only the signed-in
+// user's tickets, so one reassigned or unassigned drops out of them. The
+// downloader then reads the tickets its sprint and backlog still hold by key
+// (fetchTicketsByKey, `key in (…)`, batched), whoever holds them, so their
+// assignee stays current. Each ticket carries ticket-system-assignment-id, the
+// assignee's account id (REST's assignee.accountId), beside its display name;
+// and fetchSignedInAccountId gives the signed-in user's own account id, which
+// the downloader records once a cycle for the two to be compared.
 
 const FIELDS = ['key', 'summary', 'description', 'status', 'priority', 'assignee', 'issuetype'];
 const DEFAULT_STORY_POINTS_FIELD = 'customfield_10016';
@@ -29,6 +38,10 @@ const NO_SUBTASKS = 'issuetype not in subTaskIssueTypes()';
 // one person's work, and the agents take only that.
 const MINE = 'assignee = currentUser()';
 const TYPES = { Story: 'Story', Bug: 'Bug', Spike: 'Spike' };
+// Keys a by-key search asks for at once.
+const KEY_BATCH = 50;
+// A Jira issue key, the only thing let into a by-key search's JQL.
+const ISSUE_KEY = /^[A-Za-z][A-Za-z0-9_]*-\d+$/;
 
 // parseBoardUrl(url) → { site, projectKey, boardId } from a board url such as
 // https://<site>/jira/software/c/projects/<KEY>/boards/<id> (with or without
@@ -54,6 +67,80 @@ export function fetchSprintTickets({ site, projectKey, sprintId, sprintName, sto
 // signed-in user's tickets not done and in no current sprint.
 export function fetchBacklogTickets({ site, projectKey, storyPointsField }, run) {
   return search({ site, storyPointsField, jql: `project = ${projectKey} AND ${MINE} AND statusCategory != Done AND (sprint in futureSprints() OR sprint is EMPTY)` }, run);
+}
+
+// fetchTicketsByKey({ site, keys, storyPointsField? }, run) → the tickets with
+// those keys, whoever they are assigned to (ASS-344), in KEY_BATCH-key
+// searches `key in (…)`, mapped as the searches above map theirs, sprint-tag
+// null unless acli gives one. Jira fails a whole search that names a key it
+// cannot return (deleted, or not visible to the signed-in user), so a batch
+// that fails is asked again a key at a time; a key that still fails, or one
+// not a Jira key, is left out, never thrown. Only tickets whose key was asked
+// for come back (a ticket moved to another project answers with its new key,
+// which is not this one). No keys, no acli call.
+export async function fetchTicketsByKey({ site, keys, storyPointsField }, run) {
+  const wanted = [...new Set(keys.filter(k => ISSUE_KEY.test(k)).map(k => k.toUpperCase()))];
+  const ask = async batch => {
+    const tickets = await search({ site, storyPointsField, jql: `key in (${batch.join(', ')})` }, run);
+    return tickets.filter(t => batch.includes(String(t.key).toUpperCase()));
+  };
+  const tickets = [];
+  for (let i = 0; i < wanted.length; i += KEY_BATCH) {
+    const batch = wanted.slice(i, i + KEY_BATCH);
+    try { tickets.push(...await ask(batch)); } catch {
+      if (batch.length === 1) continue;
+      for (const key of batch) { try { tickets.push(...await ask([key])); } catch { /* unreadable: left as it is */ } }
+    }
+  }
+  return tickets;
+}
+
+// fetchSignedInAccountId(run) → the account id of the user acli is signed in
+// as, or null when it cannot be told (ASS-344). First `acli jira auth status`,
+// whose output shape is not verified: an accountId / account-id / "Account
+// ID: <id>" in it, JSON or text, is taken. Without one, the newest ticket
+// assigned to currentUser() names it (the search's verified REST shape,
+// assignee.accountId):
+//   acli jira auth status
+//   acli jira workitem search --jql "assignee = currentUser() ORDER BY updated DESC" --fields assignee --limit 1 --json
+// A failing auth status falls through to the search; a failing search throws.
+export async function fetchSignedInAccountId(run) {
+  try {
+    const id = accountIdIn(await run('acli', ['jira', 'auth', 'status']));
+    if (id) return id;
+  } catch { /* unverified: the search below */ }
+  const out = await run('acli', ['jira', 'workitem', 'search', '--jql', `${MINE} ORDER BY updated DESC`, '--fields', 'assignee', '--limit', '1', '--json']);
+  for (const issue of listed(out, 'issues')) {
+    const id = accountIdOf(issue?.fields?.assignee);
+    if (id) return id;
+  }
+  return null;
+}
+
+// An account id as Atlassian writes one (e.g. 5b10ac8d82e05b22cc7d4ef5 or
+// 712020:<uuid>): letters, digits, colons, dashes and underscores.
+const ACCOUNT_ID = /^[A-Za-z0-9:_-]{1,128}$/;
+const accountIdOf = user => typeof user?.accountId === 'string' && ACCOUNT_ID.test(user.accountId) ? user.accountId : null;
+
+// accountIdIn(text) → the account id auth status's output names, or null:
+// a JSON value's accountId / account-id / account_id (at any depth), else a
+// text line "Account ID: <id>" (any case, colon or equals; colour codes stripped).
+function accountIdIn(out) {
+  const plain = String(out ?? '').replace(/\x1b\[[0-9;]*m/g, '');
+  let values = [];
+  try { values = jsonValues(plain); } catch { /* text */ }
+  const find = v => {
+    if (!v || typeof v !== 'object') return null;
+    for (const [k, x] of Object.entries(v)) {
+      if (/^account[-_ ]?id$/i.test(k) && typeof x === 'string' && ACCOUNT_ID.test(x)) return x;
+      const inner = find(x);
+      if (inner) return inner;
+    }
+    return null;
+  };
+  for (const v of values) { const id = find(v); if (id) return id; }
+  const m = /account[\s_-]*id\s*[:=]\s*["']?([A-Za-z0-9:_-]+)/i.exec(plain);
+  return m && ACCOUNT_ID.test(m[1]) ? m[1] : null;
 }
 
 // fetchComments({ key }, run) → the ticket's comments, every page (ASS-37):
@@ -180,6 +267,7 @@ function ticket({ key, fields: f = {} }, site, storyPointsField, sprintName) {
     'ticket-system-status': f.status?.name ?? null,
     'ticket-system-priority': f.priority?.name ?? null,
     'ticket-system-assignment': f.assignee?.displayName ?? null,
+    'ticket-system-assignment-id': accountIdOf(f.assignee),
     points: typeof f[storyPointsField] === 'number' ? f[storyPointsField] : null,
     'issue-type': TYPES[f.issuetype?.name] ?? 'Story',
     dependencies: dependenciesOf(f.issuelinks),
