@@ -1,8 +1,18 @@
 // The updates screen (u): the progress made since a date and time (ASS-201: moved from app.js),
-// written by the board's statuses, paste-ready (ASS-332).
+// written by the board's statuses, paste-ready (ASS-332); what holds a ticket
+// for its dependencies judged by control's own dependencyHold (ASS-355).
 import { progressSince, progressLines, lastWeekdayMorning } from '../updates.js';
+import { dependencyHold } from '../../control/dependencies.js';
 import { below, headerLines, platform } from './frame.js';
-import { clamp, red, gray } from './shared.js';
+import { clamp, red, gray, holdingOf } from './shared.js';
+
+// holdOn(state) — (ticket, variation) → its dependencyHold on the selected
+// project's live sprint, as control holds it (shared.js holdingOf; the
+// update is of the live sprint whatever day the sprint screen shows).
+const holdOn = state => {
+  const holding = { ...holdingOf(state), on: state.projects[state.project]?.waitForDependencies === true };
+  return (t, v) => dependencyHold(holding, t, v);
+};
 
 // The updates screen: the line of its date and time fields — while the form
 // is open, its values, the field being edited in reverse video with a cursor —
@@ -22,7 +32,7 @@ function updatesView(state, { columns = 0, rows = Infinity, now = 0 }) {
   const project = state.projects[state.project];
   const list = state.updatesSince == null
     ? ['Set a date and time to see the progress made since then.']
-    : progressLines(progressSince({ sprint: project?.sprint, workflows: state.workflows, since: state.updatesSince }), columns);
+    : progressLines(progressSince({ sprint: project?.sprint, workflows: state.workflows, since: state.updatesSince, hold: holdOn(state) }), columns);
   const bottom = below(state) + platform(state, columns, now).length;
   const height = Math.max(1, rows - headerLines(state, columns, now).length - bottom - 4);
   return { head: [fields, keys, state.updatesMessage ? red(state.updatesMessage) : '', ''], list, height };

@@ -1,7 +1,7 @@
 // Reads the dashboard's data from the repo's JSON files.
 import { readdirSync, readFileSync, existsSync, statSync, watch } from 'node:fs';
 import { join, dirname, basename } from 'node:path';
-import { requiresReauthentication, loadCollaborations, loadChatSpend, loadMemorySpend } from '../control/state.js';
+import { requiresReauthentication, loadCollaborations, loadChatSpend, loadMemorySpend, loadOutside } from '../control/state.js';
 import { isLiveBacklogEntry } from '../control/rank.js';
 import { defaultSpendLimit } from '../control/spend.js';
 import { isHarnessProject } from '../control/harness-project.js';
@@ -70,8 +70,10 @@ const asShown = sprint => sprint && Object.fromEntries(Object.entries(sprint).ma
 // requiresReauthentication); glabReauthentication the same for glab auth
 // login (check-for-expired-glab-auth, ASS-61); backgroundWorkOff whether its
 // background work is switched off (background-work false, ASS-127);
-// waitForDependencies whether a ticket of its waits at Committed for the
-// tickets it depends on (wait-for-dependencies, ASS-195);
+// waitForDependencies whether a ticket of its waits for the tickets it
+// depends on (wait-for-dependencies, ASS-195: at any step, ASS-355); outside
+// its outside-tickets.json's tickets, the ones its tickets depend on that
+// its sprint and backlog do not hold (loadOutside, ASS-355);
 // rateLimit its rate-limit.json (one entry per credential kind, ASS-215), or null (ASS-94); apiKey
 // whether it has an API key to fall back to (hasApiKey, ASS-333); claudeUsage its
 // claude-usage.json — its login's session and weekly (ASS-65) usage and account, as control last
@@ -111,6 +113,7 @@ export const loadProjects = (dir, lima = limaHome()) => readdirSync(dir)
       glabReauthentication: project['check-for-expired-glab-auth'] === true && requiresReauthentication(join(dir, name), 'glab'),
       backgroundWorkOff: project['background-work'] === false,
       waitForDependencies: project['wait-for-dependencies'] === true,   // ASS-195: a ticket waits for the tickets it depends on
+      outside: loadOutside(join(dir, name), readJson),   // ASS-355: the tickets depended on that its sprint and backlog do not hold
 
       rateLimit: existsSync(join(dir, name, 'rate-limit.json')) ? readJson(join(dir, name, 'rate-limit.json')) : null,
       claudeUsage: existsSync(join(dir, name, 'claude-usage.json')) ? readJson(join(dir, name, 'claude-usage.json')) : null,
@@ -338,7 +341,7 @@ export function watchFiles(files, onChange, { delay = 50 } = {}) {
 // dataFiles(root, { projects, workflows, project, day }) — the files the
 // dashboard reads, to watch: assignments.json, chats.json, api-cost.json,
 // context-windows.json, harness.json (see loadApiCost and loadModelUsage) and disk-space.json (loadDiskSpace), each workflow's
-// state-engine.json (engines/'s, or a project's own), each project's project.json, gcloud- and glab-requires-reauthentication, rate-limit.json, claude-usage.json, push-account.json, api-cost.json, sprints.json, backlog.json, questions
+// state-engine.json (engines/'s, or a project's own), each project's project.json, gcloud- and glab-requires-reauthentication, rate-limit.json, claude-usage.json, push-account.json, api-cost.json, sprints.json, backlog.json, outside-tickets.json (ASS-355), questions
 // files (see loadQuestions), ticket chats (see loadCollaborations) and chat-spend.json (see loadChatSpend) — and of the sprints only the one on show: the
 // selected project's snapshot of the past `day`, or its active sprint.json;
 // then each project's golden image (ASS-292: loadGolden) as its golden-<id>
@@ -358,7 +361,7 @@ export function dataFiles(root, { projects, workflows, project, day }, lima = li
     join(dataDir(root), 'disk-space.json'),
     ...workflows.map(w => w.file ?? join(root, 'engines', w.name, 'state-engine.json')),   // a project's own at its file (ASS-277)
     ...projects.flatMap(({ id }) => [
-      join(dir(id), 'project.json'), join(dir(id), 'gcloud-requires-reauthentication'), join(dir(id), 'glab-requires-reauthentication'), join(dir(id), 'rate-limit.json'), join(dir(id), 'claude-usage.json'), join(dir(id), 'push-account.json'), join(dir(id), 'api-cost.json'), join(dir(id), 'memory-spend.json'), join(dir(id), 'sprints.json'), join(dir(id), 'backlog.json'), join(dir(id), 'global-questions-and-answers.json'), join(dir(id), 'chat-spend.json'), join(dir(id), 'vms.json'),   // vms.json: its VMs' credential kinds (ASS-333, hasApiKey)
+      join(dir(id), 'project.json'), join(dir(id), 'gcloud-requires-reauthentication'), join(dir(id), 'glab-requires-reauthentication'), join(dir(id), 'rate-limit.json'), join(dir(id), 'claude-usage.json'), join(dir(id), 'push-account.json'), join(dir(id), 'api-cost.json'), join(dir(id), 'memory-spend.json'), join(dir(id), 'sprints.json'), join(dir(id), 'backlog.json'), join(dir(id), 'global-questions-and-answers.json'), join(dir(id), 'chat-spend.json'), join(dir(id), 'vms.json'), join(dir(id), 'outside-tickets.json'),   // vms.json: its VMs' credential kinds (ASS-333, hasApiKey); outside-tickets.json: ASS-355
       ...(existsSync(work(id)) ? readdirSync(work(id)).toSorted() : []).flatMap(ticket => ['questions-and-answers.json', 'collaboration.json'].map(file => join(work(id), ticket, file))),
     ]),
     ...(shown ? [shown] : []),

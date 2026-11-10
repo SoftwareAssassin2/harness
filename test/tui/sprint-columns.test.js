@@ -5,7 +5,8 @@
 // ⚉ an agent working on that row's ticket and variation — each a blank when it
 // doesn't apply — then a blank and the text, so the text starts on the same
 // terminal column on every row. A paused variation's text starts "PAUSED " in
-// blue — "UNASSIGNED " in its place for a ticket reassigned away from the
+// blue — "WAITING ON <KEY>" in gold in its place for one its dependencies
+// hold (ASS-355), "UNASSIGNED " in red for a ticket reassigned away from the
 // operator (ASS-345); no 📝 or ⏸️. Every glyph is East Asian Width N with no Emoji property. A
 // key in dim text under the grid says what each means.
 import { test } from 'node:test';
@@ -65,7 +66,7 @@ const KEYS = ['A-1', 'A-2', 'A-3', 'A-4', 'A-5', 'A-6', 'A-7', 'A-8', 'A-9', 'A-
 // The key under the grid: the lines right after its bottom border that start with a key entry.
 const keyLines = lines => {
   const after = lines.slice(lines.findLastIndex(l => /^└/.test(strip(l))) + 1);
-  const end = after.findIndex(l => !/^([▮✦✘⌕☛↯⦿⚉]|PAUSED|UNASSIGNED) /.test(strip(l)));
+  const end = after.findIndex(l => !/^([▮✦✘⌕☛↯⦿⚉]|PAUSED|UNASSIGNED|WAITING ON) /.test(strip(l)));
   return end < 0 ? after : after.slice(0, end);
 };
 
@@ -180,7 +181,7 @@ test('ASS-259 AC7: a dim key directly under the grid shows each glyph as drawn i
   const bottom = raw.findLastIndex(l => /^└/.test(strip(l)));
   const key = keyLines(raw);
   assert.equal(raw.indexOf(key[0]), bottom + 1);                     // directly under the grid
-  assert.equal(strip(key.join('  ')), '▮ step  ✦ feature  ✘ bug  ⌕ spike  ☛ by hand  ↯ fast-tracked  ⦿ requirements change  ⦿ needs you  ⦿ assumption  ⚉ agent working  PAUSED paused  UNASSIGNED reassigned away');
+  assert.equal(strip(key.join('  ')), '▮ step  ✦ feature  ✘ bug  ⌕ spike  ☛ by hand  ↯ fast-tracked  ⦿ requirements change  ⦿ needs you  ⦿ assumption  ⚉ agent working  PAUSED paused  UNASSIGNED reassigned away  WAITING ON a dependency not done yet');
   const all = key.join('');
   for (const kind of ['31', '34', '2;90']) assert.ok(all.includes(`\x1b[${kind}m⦿\x1b[0m`), kind);   // ⦿ in each of its colors
   assert.ok(all.includes('\x1b[34mPAUSED\x1b[0m'));
@@ -188,7 +189,7 @@ test('ASS-259 AC7: a dim key directly under the grid shows each glyph as drawn i
 });
 
 test('ASS-259 AC7: the key wraps between entries at the screen width, never inside one, and is never cut off — the grid gives up rows', () => {
-  const ENTRIES = ['▮ step', '✦ feature', '✘ bug', '⌕ spike', '☛ by hand', '↯ fast-tracked', '⦿ requirements change', '⦿ needs you', '⦿ assumption', '⚉ agent working', 'PAUSED paused', 'UNASSIGNED reassigned away'];
+  const ENTRIES = ['▮ step', '✦ feature', '✘ bug', '⌕ spike', '☛ by hand', '↯ fast-tracked', '⦿ requirements change', '⦿ needs you', '⦿ assumption', '⚉ agent working', 'PAUSED paused', 'UNASSIGNED reassigned away', 'WAITING ON a dependency not done yet'];
   for (const columns of [200, 100, 60, 40]) {
     const size = { ...wide, columns, rows: 40 };
     const lines = render(state, size);
@@ -213,9 +214,9 @@ test('ASS-259 AC7: the key wraps between entries at the screen width, never insi
 
 // ASS-345 AC5: a ticket ticket:sync holds as reassigned away from the operator
 // (its reassigned, to another person or to nobody) starts each of its rows
-// "UNASSIGNED " in PAUSED's blue, in PAUSED's place — paused by the operator
+// "UNASSIGNED " in red (ASS-355; ASS-345 drew it in PAUSED's blue), in PAUSED's place — paused by the operator
 // too or not; a row paused by the operator alone still starts "PAUSED ".
-test('ASS-345 AC5: a reassigned ticket\'s rows start "UNASSIGNED " in blue, not "PAUSED "; one paused by the operator alone still starts "PAUSED "; the key lists UNASSIGNED', () => {
+test('ASS-345 AC5, ASS-355 AC7: a reassigned ticket\'s rows start "UNASSIGNED " in red, not "PAUSED "; one paused by the operator alone still starts "PAUSED "; the key lists UNASSIGNED', () => {
   const away = to => ({ to, 'to-id': to && `acc-${to}`, 'detected-at': '2026-11-10T13:00:00Z', 'paused-variations': ['A'] });
   const held = [
     ticket('R-1', 'To another', { paused: true, reassigned: away('bea') }),
@@ -229,7 +230,39 @@ test('ASS-345 AC5: a reassigned ticket\'s rows start "UNASSIGNED " in blue, not 
   for (const key of ['R-1', 'R-2', 'R-3.A', 'R-3.B']) assert.ok(text(key).startsWith(`UNASSIGNED ${key}: `), `${key}: ${text(key)}`);
   assert.ok(text('R-4').startsWith('PAUSED R-4: '), text('R-4'));
   assert.ok(!['R-1', 'R-2', 'R-3.A', 'R-3.B'].some(k => text(k).includes('PAUSED')));
-  assert.ok(r.some(l => l.includes('\x1b[34mUNASSIGNED\x1b[0m R-1: ')));                 // PAUSED's blue
+  assert.ok(r.some(l => l.includes('\x1b[31mUNASSIGNED\x1b[0m R-1: ')));                 // red (ASS-355)
   const key = keyLines(r);
-  assert.ok(key.join('').includes('\x1b[34mUNASSIGNED\x1b[0m\x1b[2m reassigned away\x1b[0m'), key.join('\n'));
+  assert.ok(key.join('').includes('\x1b[31mUNASSIGNED\x1b[0m\x1b[2m reassigned away\x1b[0m'), key.join('\n'));
+});
+
+// ASS-355 AC7: a variation its dependencies hold (control's dependencyHold, on
+// a project with wait-for-dependencies) starts its row "WAITING ON <KEY>" in
+// gold — several keys "WAITING ON <KEY>, <KEY>" — in PAUSED's place, paused
+// too or not; UNASSIGNED still says more; the key explains it.
+test('ASS-355 AC7: a held row starts "WAITING ON <KEY>" — "<KEY>, <KEY>" for several — in gold, in PAUSED\'s place; the key under the grid explains it', () => {
+  const GOLD = '\x1b[38;2;255;215;0m';
+  const held = [
+    ticket('W-1', 'One outside', { dependencies: ['EX-1'] }),
+    ticket('W-2', 'Two of them', { dependencies: ['EX-1', 'W-9'] }),
+    ticket('W-3', 'Paused too', { dependencies: ['EX-1'], paused: true }),
+    ticket('W-4', 'Theirs is done', { dependencies: ['EX-2'] }),
+    ticket('W-5', 'Done itself', { state: 'done', dependencies: ['EX-1'] }),
+    ticket('W-9', 'Building'),
+  ];
+  const outside = [{ key: 'EX-1', 'ticket-system-status': 'In Review', 'ticket-system-assignment': 'A Teammate' }, { key: 'EX-2', 'ticket-system-status': 'Done' }];
+  const engine = [...steps.filter(x => x.id !== 'done'), { ...steps.find(x => x.id === 'done'), 'paired-ticket-system-status': 'Done' }];
+  const s = initialState({ projects: [{ ...project, waitForDependencies: true, outside, sprint: { ...project.sprint, features: held, bugs: [], spikes: [] }, questions: [] }], workflows: [{ name: 'e', steps: engine }], assignments: [] });
+  const r = render(s, wide);
+  const text = key => strip(rowOf(key, r)).slice(2 + TEXT);
+  assert.ok(text('W-1').startsWith('WAITING ON EX-1 W-1: '), text('W-1'));
+  assert.ok(text('W-2').startsWith('WAITING ON EX-1, W-9 W-2: '), text('W-2'));
+  assert.ok(text('W-3').startsWith('WAITING ON EX-1 W-3: '), text('W-3'));                  // in PAUSED's place
+  assert.ok(text('W-4').startsWith('W-4: '), text('W-4'));
+  assert.ok(text('W-5').startsWith('W-5: '), text('W-5'));                                  // a done step is never held
+  assert.ok(rowOf('W-1', r).includes(`${GOLD}WAITING ON EX-1\x1b[0m W-1: `), rowOf('W-1', r));
+  const key = keyLines(r);
+  assert.ok(key.join('').includes(`${GOLD}WAITING ON\x1b[0m\x1b[2m a dependency not done yet\x1b[0m`), key.join('\n'));
+  // The same project with the flag off holds nothing: no prefix.
+  const off = render(initialState({ projects: [{ ...project, outside, sprint: { ...project.sprint, features: held, bugs: [], spikes: [] }, questions: [] }], workflows: [{ name: 'e', steps: engine }], assignments: [] }), wide);
+  assert.ok(strip(rowOf('W-1', off)).slice(2 + TEXT).startsWith('W-1: '));
 });

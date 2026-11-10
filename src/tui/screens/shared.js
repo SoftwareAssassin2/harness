@@ -2,7 +2,7 @@
 // or by the frame every screen sizes against. Moved from app.js as they were.
 import { sinceResolution, visitsInto, statusOf, changePath, isOpenQuestion, blocksTicket, markOff, isHeld, isBlockedState, waitsOnHuman, isDoneStep } from '../../control/engine.js';
 import { rankBacklog, flattenSprint } from '../../control/rank.js';
-import { dependencyHold } from '../../control/dependencies.js';
+import { dependencyHold, dependencyRows } from '../../control/dependencies.js';
 import { stateOf, levelChanges, enginesOf, refinementSteps as refinementStepsOf } from '../status.js';
 import { lastStart } from '../table.js';
 import { visible, clip, link, wrapParts } from '../text.js';
@@ -202,28 +202,48 @@ export function viewChoice(view, focused) {
   return [`Show:   ${views.join('   ')}`, `${focused ? '←/→ choose' : 'tab to choose'} what each station shows   ↑/↓ scroll   PgUp/PgDn Home/End`, ''];
 }
 
+// engineOf(state, project) — a loaded project's execution engine as the
+// dashboard holds it (load.js loadWorkflows): its own of that name first
+// (ASS-277), else engines/'s.
+const engineOf = (state, project) => state.workflows.find(w => w.name === project?.stateEngine && w.project === project?.id)
+  ?? state.workflows.find(w => w.name === project?.stateEngine && w.project == null)
+  ?? state.workflows.find(w => w.name === project?.stateEngine);
+
+// holdingOf(state) — what control's dependencyHold and dependencyRows
+// (ASS-195, ASS-355) take of the selected project, as control builds it
+// (dependencies.js holdingOf): its flag (only on the live sprint), engine and
+// the engines beneath it, sprint, backlog and outside-tickets.json, and every
+// other project's engine, sprint and backlog.
+export function holdingOf(state) {
+  const project = state.projects[state.project];
+  return {
+    on: !state.day && project?.waitForDependencies === true,
+    engine: engineOf(state, project), engines: enginesOf(state.workflows),
+    tickets: flattenSprint(project?.sprint ?? {}), backlog: project?.backlog ?? [], outside: project?.outside ?? [],
+    elsewhere: state.projects.filter(p => p.id !== project?.id).map(p => ({ id: p.id, engine: engineOf(state, p), tickets: flattenSprint(p.sprint ?? {}), backlog: p.backlog ?? [] })),
+  };
+}
+
 // The sprint work on show (see viewedSprint), one entry per ticket variation: the
 // ticket's fields with its type icon, the variation, the key to show (KEY.NAME
 // when the ticket has several variations, else KEY), its status (statusOf,
 // every level resolved in the loaded engines) and the execution state
 // engine step the variation's harness-status state names, `color` the
 // deepest step's of its status that has one (ASS-67), `gate` what a human
-// must do before it moves on (humanGate) and `hold` what it waits for of the
-// tickets it depends on (ASS-195, dependencyHold — control's own predicate,
-// so the Status cell and control never disagree; only on the live sprint of a
-// project with wait-for-dependencies). Closest to done first (highest step
+// must do before it moves on (humanGate), `hold` what it waits for of the
+// tickets it depends on (ASS-195, ASS-355: dependencyHold — control's own
+// predicate, so the Status cell and control never disagree; only on the live
+// sprint of a project with wait-for-dependencies) and `dependencyRows` each
+// dependency with where it is, its status and assignee (dependencyRows,
+// ASS-355). Closest to done first (highest step
 // sequence, then the detailed step's within it, level by level), then by
 // priority; and that engine's steps.
 export function sprintTickets(state) {
   const project = state.projects[state.project];
-  const engine = state.workflows.find(w => w.name === project?.stateEngine);
+  const engine = engineOf(state, project);
   const steps = engine?.steps ?? [];
   const engines = enginesOf(state.workflows);
-  const holding = {
-    on: !state.day && project?.waitForDependencies === true,
-    engine, tickets: flattenSprint(project?.sprint ?? {}), backlog: project?.backlog ?? [],
-    elsewhere: state.projects.filter(p => p.id !== project?.id).flatMap(p => [...flattenSprint(p.sprint ?? {}), ...(p.backlog ?? [])].map(t => t.key)),
-  };
+  const holding = holdingOf(state);
   const tickets = Object.entries(ICONS)
     .flatMap(([type, icon]) => (viewedSprint(state)?.[type] ?? []).flatMap(t => {
       const variations = t.variations?.length ? t.variations : [{}];
@@ -239,7 +259,7 @@ export function sprintTickets(state) {
           step: status.step,
           color: status.chain.findLast(l => l.step?.color)?.step.color,
         };
-        return { ...ticket, gate: humanGate(ticket, steps, { engines, runs: state.transientEngines ?? [], project: project?.id }), hold: dependencyHold(holding, t, variation) };
+        return { ...ticket, gate: humanGate(ticket, steps, { engines, runs: state.transientEngines ?? [], project: project?.id }), hold: dependencyHold(holding, t, variation), dependencyRows: dependencyRows(holding, t) };
       });
     }))
     .toSorted((a, b) => further(a, b) || (a.priority ?? Infinity) - (b.priority ?? Infinity) || 0);

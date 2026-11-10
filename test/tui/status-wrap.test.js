@@ -95,7 +95,7 @@ test('ASS-326 AC1: the one-line statusText (the ticket screen\'s) keeps the hold
 });
 
 test('ASS-326 AC2: at a narrow width the grid fits, Health and Agents show their headers in full, and Status re-wraps narrower with all its text shown, none cut with "…"', () => {
-  for (const columns of [180, 160, 150]) {   // 150: about as narrow as Ticket's floor (ASS-207) lets this grid get
+  for (const columns of [200, 190, 180]) {   // 180: about as narrow as Ticket's floor (ASS-207) lets this grid get, ABC-1's row starting "WAITING ON ABC-2, ABC-3 +7" (ASS-355; 150 before it)
     const lines = grid(columns);
     for (const l of lines) assert.equal(visible(l), columns, `${columns}: ${l}`);
     assert.match(lines[1], /│ Health │ Agents │$/, `${columns}: ${lines[1]}`);
@@ -107,7 +107,7 @@ test('ASS-326 AC2: at a narrow width the grid fits, Health and Agents show their
   }
   // Narrower than at 300: Status gave up width.
   const width = lines => { const h = lines[1], at = h.indexOf(' Status '); return h.indexOf('│', at) - h.lastIndexOf('│', at) - 3; };
-  assert.ok(width(grid(150)) < width(grid(300)), `${width(grid(150))} < ${width(grid(300))}`);
+  assert.ok(width(grid(180)) < width(grid(300)), `${width(grid(180))} < ${width(grid(300))}`);
 });
 
 test('ASS-326 AC2: boxTable lays a function cell out at its column\'s width — wide for its natural width, narrower when it shrinks', () => {

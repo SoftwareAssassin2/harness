@@ -559,3 +559,29 @@ test('ASS-345: a ticket held as reassigned away from the operator says so on its
   assert.deepEqual(panel(away(null)), ['Held: Unassigned', '  since 11-10 13:05 UTC']);
   assert.ok(!quick().map(strip).some(l => l.startsWith('Held')));
 });
+
+// ASS-355 AC7: the ticket screen names each dependency with its status and
+// assignee — control's dependencyRows, through sprintTickets — where it is
+// when not in the sprint, and whether it is done; a ticket without them (a
+// backlog one) lists its keys as before.
+test('ASS-355: the Dependencies field lists each dependency on its own line with its status, assignee, where it is and whether it is done', async () => {
+  const { sprintTickets } = await import('../../src/tui/screens/shared.js');
+  const { initialState } = await import('../../src/tui/app.js');
+  const steps = [{ id: 'build', name: 'Build', sequence: 5, action: { type: 'prompt' } }, { id: 'done', name: 'Done', sequence: 10, 'is-done': true, 'paired-ticket-system-status': 'Done', action: { type: 'none' } }];
+  const v = state => [{ name: 'A', 'harness-status': { state, 'state-engine': 'e' } }];
+  const features = [
+    { key: 'PRJ-1', title: 'Needs three', dependencies: ['PRJ-2', 'EX-301', 'ZZ-9'], variations: v('build') },
+    { key: 'PRJ-2', title: 'Ours', 'ticket-system-status': 'In Progress', 'ticket-system-assignment': 'Me Myself', variations: v('build') },
+  ];
+  const project = { id: 'p', name: 'P', stateEngine: 'e', waitForDependencies: true, outside: [{ key: 'EX-301', 'ticket-system-status': 'Done', 'ticket-system-assignment': 'A Teammate' }], sprint: { number: 1, features, bugs: [], spikes: [] }, questions: [] };
+  const t = sprintTickets(initialState({ projects: [project], workflows: [{ name: 'e', steps }], assignments: [] })).tickets.find(x => x.key === 'PRJ-1');
+  const shown = ticketLines(t, { status: 'Build', stepName: id => id, prompted: () => false, agents: [], columns: 120 }).details.map(strip);
+  const at = shown.findIndex(l => l.startsWith('Dependencies'));
+  assert.deepEqual(shown.slice(at, at + 3).map(l => l.slice(28)), [
+    'PRJ-2 — In Progress, Me Myself, not done',
+    'EX-301 — Done, A Teammate, outside the sprint and backlog, done',
+    'ZZ-9 — not found',
+  ]);
+  const plain = ticketLines({ key: 'B-1', title: 'Backlog', dependencies: ['B-2', 'B-3'], variation: {} }, { status: '', stepName: id => id, prompted: () => false, agents: [], columns: 120 }).details.map(strip);
+  assert.equal(plain.find(l => l.startsWith('Dependencies')).slice(28), 'B-2, B-3');
+});

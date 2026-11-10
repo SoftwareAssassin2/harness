@@ -86,7 +86,7 @@ const blueDot = (l, text) => /\x1b\[34m[●⦿]/.test(l) && new RegExp(`[●⦿]
 const cols = ({ step = '▮', type = '✦', hand = ' ', fast = ' ', dot = ' ', agent = ' ' } = {}) => `${[step, type, hand, fast, dot, agent].join('')} `;
 // How many lines of the key under the sprint grid (ASS-259) follow line `bottom`, its bottom border.
 const keyUnder = (out, bottom) => {
-  const end = out.slice(bottom + 1).findIndex(l => !/^([▮✦✘⌕☛↯⦿⚉]|PAUSED|UNASSIGNED) /.test(strip(l)));
+  const end = out.slice(bottom + 1).findIndex(l => !/^([▮✦✘⌕☛↯⦿⚉]|PAUSED|UNASSIGNED|WAITING ON) /.test(strip(l)));
   return end < 0 ? out.length - bottom - 1 : end;
 };
 const lines = (s, size = screen) => render(s, size).map(strip);
@@ -3100,13 +3100,13 @@ test('with more than one variation, the ticket screen shows the variation\'s AI\
 });
 
 test('the ticket screen\'s fields come in order, in groups, the health in its long form only', () => {
-  const fields = tabOf(lines(onTab(press(onGrid, 'return'), 'details'), { ...wide, rows: 80 })).slice(0, 36);
+  const fields = tabOf(lines(onTab(press(onGrid, 'return'), 'details'), { ...wide, rows: 80 })).slice(0, 37);
   const labels = fields.map(l => l.match(/^(\S.*?)(?: {2,}|$)/)?.[1] ?? '');
   assert.deepEqual(labels, [
     'Ticket number', 'Variation', 'Ticket name', 'Description',   // whole on its line: the tab is wide (ASS-184)
     '',
     'Status', 'Status in ticketing system', 'Assignee', 'Points', 'Priority', 'Manual priority', '',
-    'Dependencies', 'Overlaps', '',                                   // Overlaps right after Dependencies (ASS-196)
+    'Dependencies', '', 'Overlaps', '',                               // one line a dependency (ASS-355); Overlaps right after them (ASS-196)
     'Branch', 'Worktree', '',
     'Total Token Spend', 'Total Agent Time', 'Total Time Planning', 'Total Time Executing', '',
     'Health', 'Automated tests', 'Gates', '',
@@ -3115,11 +3115,12 @@ test('the ticket screen\'s fields come in order, in groups, the health in its lo
     'QA', '',
     'Merge requests',
   ]);
-  assert.match(fields[33], /QA +Passed$/);
+  assert.match(fields[34], /QA +Passed$/);
   assert.match(fields[0], /✨ ABC-5$/);
-  assert.match(fields[12], /ABC-1, ABC-2$/);
-  assert.match(fields[13], /Overlaps +ABC-3$/);
-  assert.match(fields[23], /Long health: the whole story\.$/);
+  assert.match(fields[12], /Dependencies +ABC-1 — not found$/);   // ASS-355: each named, with its status and assignee when found
+  assert.match(fields[13], /^ +ABC-2 — no status, unassigned, not done$/);   // ABC-2 in the sprint
+  assert.match(fields[14], /Overlaps +ABC-3$/);
+  assert.match(fields[24], /Long health: the whole story\.$/);
   assert.ok(!TAB_IDS.some(tab => lines(onTab(press(onGrid, 'return'), tab), { ...wide, rows: 80 }).some(l => l.includes('Short health'))));
 });
 

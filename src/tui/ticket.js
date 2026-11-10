@@ -1,4 +1,4 @@
-// The ticket screen: everything sprint.json holds on one ticket variation.
+// The ticket screen: everything sprint.json holds on one ticket variation, each dependency named with its status and assignee (ASS-355).
 import { pathToFileURL } from 'node:url';
 import { link, wrap, pad, visible, clip } from './text.js';
 import { scrollBox } from './table.js';
@@ -144,6 +144,15 @@ export function overlapsOf(t, tickets) {
   return [...own, ...reverse];
 }
 
+// dependencyLine(row) — one dependency (dependencies.js dependencyRows, ASS-355)
+// as the ticket screen names it: "EX-301 — In Review, A Teammate, outside the
+// sprint and backlog", "ABC-2 — Done, Ann Lee, done", "ZZ-9 — not found".
+export function dependencyLine({ key, where, project, status, assignee, done }) {
+  if (where === 'unknown') return `${key} — not found`;
+  const place = { backlog: 'in the backlog', outside: 'outside the sprint and backlog', 'another project': `in ${project}` }[where];
+  return `${key} — ${[status ?? 'no status', assignee ?? 'unassigned', place, done ? 'done' : 'not done'].filter(Boolean).join(', ')}`;
+}
+
 // ticketLines(t, { status, stepName, agents, columns }) — the screen's lines
 // in two sections for the caller to scroll on its own, { details, history,
 // starts } (ASS-101): every field of the ticket, its state history, and the
@@ -157,7 +166,11 @@ export function overlapsOf(t, tickets) {
 // `running` what the variation's running agents have spent so far and
 // `ticketRunning` the ticket's — every variation's (ASS-270: their usage.json,
 // spend.js usageSpend), counted in its Total Token Spend and its spend against
-// the limit, marked as running;
+// the limit, marked as running; the Dependencies field each of
+// t.dependencyRows (ASS-355: control's dependencyRows, shared.js
+// sprintTickets) on a line of its own — its key, its ticket-system status and
+// assignee, where it is when not in the sprint, and whether it is done
+// (dependencyLine) — or, without them (a backlog ticket), the keys alone;
 // gateName(entry) a gate-when-leaving-state entry's display name (stepName's by default).
 // `overlaps` the keys of its Overlaps field, the screen's overlapsOf over the
 // project's tickets (ASS-196); its own t.overlaps by default.
@@ -214,7 +227,7 @@ export function ticketLines(t, { status, stepName, prompted, agents, columns, st
     ...field('Priority', t.priority),
     ...field('Manual priority', t['manual-priority']),
     '',
-    ...field('Dependencies', t.dependencies?.join(', ')),
+    ...field('Dependencies', t.dependencyRows?.length ? t.dependencyRows.flatMap(r => wrap(dependencyLine(r), width)) : t.dependencies?.join(', ')),
     ...field('Overlaps', overlaps.join(', ')),
     '',
     ...field('Branch', branch && [branchUrl ? link(branch, branchUrl) : branch]),
