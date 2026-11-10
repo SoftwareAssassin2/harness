@@ -353,3 +353,46 @@ test('ASS-334 AC3: a paired group whose members are both still pending past the 
     f.ctx.stopAgents();
   }
 });
+
+test('ASS-334 AC3: the timeout is logged once per span, though a pair member past the bound waits on approvals still to come over several ticks', async () => {
+  const f = controlFixture();
+  edit(engineFile(f), e => { e.steps.find(s => s.id === 'plan').action['agent-count'] = 2; });
+  edit(join(f.dir, 'harness.json'), h => { h['agent-pending-work-wait-seconds'] = 1; });
+  process.env.FAKE_PENDING = 'schedule';
+  let clock = f.ctx.started.getTime();
+  f.ctx.now = () => new Date(clock);
+  try {
+    const [pen, pair] = await dispatch(f);
+    assert.ok(await turnsEnd(f.ctx));
+    await tick(f.ctx);
+    assert.deepEqual(named(waiting(f)).toSorted(), [pen['agent-name'], pair['agent-name']].toSorted(), f.lines.join('\n'));
+    clock += 2_000;
+    for (let i = 0; i < 3; i++) await tick(f.ctx);                                // the pair never approves: the group is not finished
+    assert.deepEqual(assigned(f).toSorted(), [pen['agent-name'], pair['agent-name']].toSorted(), f.lines.join('\n'));
+    assert.deepEqual(named(timedOut(f)).toSorted(), [pen['agent-name'], pair['agent-name']].toSorted(), f.lines.join('\n'));
+  } finally {
+    delete process.env.FAKE_PENDING;
+    f.ctx.stopAgents();
+  }
+});
+
+test('ASS-334: a held agent whose assignment another hand removed is ended with nothing of its wait left warned', async () => {
+  const f = controlFixture();
+  process.env.FAKE_PENDING = 'schedule';
+  try {
+    const [record] = await dispatch(f);
+    const name = record['agent-name'];
+    assert.ok(await turnsEnd(f.ctx));
+    await tick(f.ctx);
+    assert.deepEqual(named(waiting(f)), [name], f.lines.join('\n'));
+    assert.equal([...f.ctx.memory.warned].filter(k => k.startsWith(`pending/${name}/`)).length, 1);
+    await f.agent('assignments:remove', name);
+    await tick(f.ctx);
+    assert.ok(f.lines.includes(`finish ${name}: no assignment any more; ending its process`), f.lines.join('\n'));
+    assert.ok(!f.ctx.agents.has(name), f.lines.join('\n'));
+    assert.deepEqual([...f.ctx.memory.warned].filter(k => k.startsWith('pending/')), [], 'a warned key was left behind');
+  } finally {
+    delete process.env.FAKE_PENDING;
+    f.ctx.stopAgents();
+  }
+});

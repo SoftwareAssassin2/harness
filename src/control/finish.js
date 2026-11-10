@@ -110,10 +110,15 @@ async function endAgent(ctx, live) {
   } finally {
     live.agent.stop();
     ctx.agents.delete(live.name);
-    // The pending-work warned keys (ASS-334) are per span; drop this agent's
-    // once it is gone, so ctx.memory.warned does not keep one for every span.
-    for (const key of ctx.memory.warned) if (key.startsWith(`pending/${live.name}/`)) ctx.memory.warned.delete(key);
+    forgetPending(ctx, live.name);
   }
+}
+
+// forgetPending(ctx, name) — the pending-work warned keys (ASS-334) are per
+// span; drop the agent's once it is gone (endAgent, endUnassigned), so
+// ctx.memory.warned does not keep one for every span.
+function forgetPending(ctx, name) {
+  for (const key of ctx.memory.warned) if (key.startsWith(`pending/${name}/`)) ctx.memory.warned.delete(key);
 }
 
 // Where the record's step is: { kind: 'ticket', project, ticket, variation,
@@ -164,7 +169,8 @@ async function holdForRateLimit(ctx, state, live) {
 // without a result, is just ended (the step runs again), with what it cost;
 // a group whose any live member's last turn left background work pending
 // (ASS-334) is held — nothing of it ended — up to pendingWaitMs, logged once
-// per span, then finished anyway with a timeout line once that passes; else,
+// per span, then finished anyway with a timeout line (also once per span)
+// once that passes; else,
 // once the assignment's turn is complete (turnComplete), the step's exits are
 // evaluated with turn-complete, the result's structured_output, the ticket's
 // facts and files written since the turn began — then, in this order, every
@@ -200,6 +206,7 @@ async function endUnassigned(ctx, live) {
   if (work && variation && /^\d/.test(cost[0] ?? '')) await ctx.attempt(PHASE, live.name, () => ctx.cli(['assignments:record-spend', project, work, variation, live.name, started, ...cost]));
   live.agent.stop();
   ctx.agents.delete(live.name);
+  forgetPending(ctx, live.name);
 }
 
 // One ended agent (see finishEnded).
@@ -241,7 +248,14 @@ async function finishOne(ctx, state, live) {
     }
     return;
   }
-  for (const l of pending) ctx.log(PHASE, `${l.name}: pending background work still outstanding after ${held(wait)}; finishing anyway (timeout)`);
+  for (const l of pending) {
+    // Once per span too: a pair member past the bound while the pen-holder's
+    // turn is still running returns below each tick until the pen's ends.
+    const key = `pending/${l.name}/${l.pending.at}/timeout`;
+    if (ctx.memory.warned.has(key)) continue;
+    ctx.memory.warned.add(key);
+    ctx.log(PHASE, `${l.name}: pending background work still outstanding after ${held(wait)}; finishing anyway (timeout)`);
+  }
   const pen = group.find(a => a['agent-name'] === a['pen-holder']) ?? group[0];
   const penLive = ctx.agents.get(pen['agent-name']);
   if (!penLive?.result || !turnComplete(group, pen)) return;   // a pair agent done, or approvals still to come
