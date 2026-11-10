@@ -625,3 +625,100 @@ test('ASS-239 AC1: on GitHub merge-request:reply and :resolve reply to and resol
   assert.equal(mutations().length, 2);
   assert.equal(f.forge.log('glab').filter(l => l !== 'auth status').length, 0);
 });
+
+// ASS-335: a merge request depending on one in another repository is not
+// stacked on it (same-repository ones are), so its tests run against what that
+// repository has published — the dependency's change missing until it merges.
+// merge-request:await-dependencies is Build's gate before Automated Testing
+// (grouped-build's Await Dependencies in Other Repositories, waiting exit 2;
+// the engine side: test/workflow/grouped-development.test.js): 2 while one
+// waits, 0 once none does.
+const awaiting = async f => {
+  try { const { stdout } = await f.agent('merge-request:await-dependencies', 'p', 'ABC-5', 'A'); return { code: 0, out: JSON.parse(stdout) }; }
+  catch (e) { return { code: e.code, out: e.stdout ? JSON.parse(e.stdout) : null, err: e.stderr }; }
+};
+
+test('ASS-335 AC1: MR 2 depending on MR 1 in another repository, MR 1 not Merged — merge-request:await-dependencies waits (exit 2), naming both, so the tests are not run; the forge is read first, so the wait is on its live state', async () => {
+  const f = await planned([{ id: 1, repository: LIB }, { id: 2, repository: APP, 'depends-on': [1] }]);
+  f.record({ 1: { status: 'Open', key: '!7', url: `${LIB}/-/merge_requests/7`, base: 'master' }, 2: { status: 'Open', key: '!9', url: `${APP}/-/merge_requests/9`, base: 'master' } });
+  view(f, 'lib', 7, { web_url: `${LIB}/-/merge_requests/7` });
+  view(f, 'app', 9, {});
+  const waiting = await awaiting(f);
+  assert.equal(waiting.code, 2, waiting.err);
+  assert.deepEqual(waiting.out, { waiting: [{ id: 2, repository: APP, 'depends-on': { id: 1, repository: LIB, status: 'Open', key: '!7', url: `${LIB}/-/merge_requests/7` } }] });
+  assert.ok(f.forge.log('glab').includes('api projects/g%2Flib/merge_requests/7 --hostname gitlab.com'), f.forge.log('glab').join('\n'));
+  // Recorded Open, but merged on the forge since: no wait.
+  view(f, 'lib', 7, { state: 'merged' });
+  assert.equal((await awaiting(f)).code, 0);
+  // Not yet created counts as not merged too.
+  const g = await planned([{ id: 1, repository: LIB }, { id: 2, repository: APP, 'depends-on': [1] }]);
+  g.record({ 2: { status: 'Open', key: '!9', base: 'master' } });
+  view(g, 'app', 9, {});
+  const unmade = await awaiting(g);
+  assert.deepEqual([unmade.code, unmade.out.waiting[0]['depends-on'].status], [2, 'Not Created']);
+});
+
+test('ASS-335 AC2: once MR 1 is Merged the dependent flow goes on — merge-request:await-dependencies exits 0, MR 1 recorded Merged; nothing to wait for (a same-repository dependency, which is stacked, one Closed, or none) exits 0 asking no forge', async () => {
+  const f = await planned([{ id: 1, repository: LIB }, { id: 2, repository: APP, 'depends-on': [1] }]);
+  f.record({ 1: { status: 'Open', key: '!7', base: 'master' }, 2: { status: 'Open', key: '!9', base: 'master' } });
+  view(f, 'lib', 7, { state: 'merged' });
+  view(f, 'app', 9, {});
+  assert.deepEqual(await awaiting(f), { code: 0, out: { waiting: [] } });
+  assert.deepEqual(f.mrs().map(m => [m.id, m.status]), [[1, 'Merged'], [2, 'Open']]);
+  // Recorded Merged: no forge asked at all.
+  const asked = f.forge.log('glab').length;
+  assert.deepEqual(await awaiting(f), { code: 0, out: { waiting: [] } });
+  assert.equal(f.forge.log('glab').length, asked);
+  for (const [entries, created] of [
+    [[{ id: 1, repository: APP }, { id: 2, repository: APP, 'depends-on': [1] }], { 1: { status: 'Open', key: '!7' }, 2: { status: 'Open', key: '!9' } }],
+    [[{ id: 1, repository: LIB }, { id: 2, repository: APP, 'depends-on': [1] }], { 1: { status: 'Closed' }, 2: { status: 'Open', key: '!9' } }],
+    [[{ id: 1, repository: LIB }, { id: 2, repository: APP }], { 1: { status: 'Open', key: '!7' }, 2: { status: 'Open', key: '!9' } }],
+  ]) {
+    const g = await planned(entries);
+    g.record(created);
+    assert.deepEqual(await awaiting(g), { code: 0, out: { waiting: [] } }, JSON.stringify(entries));
+    assert.deepEqual(g.forge.log('glab'), [], JSON.stringify(entries));
+  }
+});
+
+// ASS-335 AC3: merge-request:create titles a merge request in the project's
+// format, so a CI mr-title job (a conventional-commit lint) passes from the
+// first pipeline. lint-title.sh's regex, as merge-request-title.bash copies it.
+const CONVENTIONAL = /^(build|chore|ci|docs|feat|fix|perf|refactor|revert|style|test|flow)(\([a-z0-9._/-]+\))?!?: .+/;
+
+test('ASS-335 AC3: with "merge-request-title": "conventional", merge-request:create <id> opens "<type>: <title> (<KEY>)" — a Bug a fix, a Story (or none) a feat, a Task a chore; with several MRs "(MR <id>)" before the key — passing the conventional-commit regex', async () => {
+  for (const [issueType, count, wanted] of [
+    ['Bug', 1, 'fix: close the account (ABC-5)'],
+    ['Story', 1, 'feat: close the account (ABC-5)'],
+    [undefined, 1, 'feat: close the account (ABC-5)'],
+    ['Task', 2, 'chore: close the account (MR 1) (ABC-5)'],
+  ]) {
+    const f = await planned(Array.from({ length: count }, (_, i) => ({ id: i + 1, repository: LIB })));
+    const project = join(f.dir, 'p', 'project.json');
+    writeFileSync(project, JSON.stringify({ ...JSON.parse(readFileSync(project, 'utf8')), 'merge-request-title': 'conventional' }));
+    if (issueType) { const sprint = JSON.parse(readFileSync(f.file, 'utf8')); sprint.features[0]['issue-type'] = issueType; writeFileSync(f.file, JSON.stringify(sprint, null, 4)); }
+    f.forge.route('glab', /merge_requests\?state=opened&source_branch=/, { out: [] });
+    f.forge.route('glab', /repository\/branches\//, { out: {} });
+    f.forge.route('glab', /repository\/compare\?/, { out: { diffs: [{ new_path: 'a.js' }] } });
+    f.forge.route('glab', /^api projects\/g%2Flib\/merge_requests --hostname gitlab.com -X POST/, { out: { iid: 7, web_url: `${LIB}/-/merge_requests/7` } });
+    await f.agent('merge-request:create', 'p', 'ABC-5', 'A', '1');
+    const post = f.forge.log('glab').find(l => / -X POST/.test(l));
+    const title = post.match(/ -f title=Draft: (.*) -f description=/)[1];
+    assert.equal(title, wanted, post);
+    assert.match(title, CONVENTIONAL);
+    assert.ok(title.endsWith(' (ABC-5)'));
+  }
+  // A bug filed in the sprint's bugs, no issue-type recorded: a fix. An acronym keeps its capitals.
+  const f = await planned([{ id: 1, repository: HUB }]);
+  writeFileSync(join(f.dir, 'p', 'project.json'), JSON.stringify({ repositories: [{ url: HUB }], 'merge-request-title': 'conventional' }));
+  const sprint = JSON.parse(readFileSync(f.file, 'utf8'));
+  sprint.bugs = [{ ...sprint.features[0], title: 'API times out' }]; sprint.features = [];
+  writeFileSync(f.file, JSON.stringify(sprint, null, 4));
+  f.forge.route('gh', /^pr list /, { out: [] });
+  f.forge.route('gh', /^api repos\/o\/h\/compare\//, { out: { files: [{ filename: 'a.js' }] } });
+  f.forge.route('gh', /^pr create /, { out: 'https://github.com/o/h/pull/12' });
+  await f.agent('merge-request:create', 'p', 'ABC-5', 'A', '1');
+  const created = f.forge.log('gh').find(l => /^pr create/.test(l));
+  assert.match(created, / --title fix: API times out \(ABC-5\) --body /);
+  assert.match('fix: API times out (ABC-5)', CONVENTIONAL);
+});

@@ -89,14 +89,36 @@
                     "condition": {
                         "turn-complete": true
                     },
-                    "move-to-state": "refresh-before-testing"
+                    "move-to-state": "await-dependencies"
                 }
             ],
             "run-location": "vm"
         },
         {
-            "id": "refresh-before-testing",
+            "id": "await-dependencies",
             "sequence": 4,
+            "name": "Await Dependencies in Other Repositories",
+            "description": "Wait until every merge request a merge request of the ticket depends on in another repository is merged, so its tests do not run against what that repository has not yet published; polling while one is not (exit 2, its waiting-exit-code: no failure, ASS-335); nothing to wait for passes at once",
+            "record-script-output": true,
+            "action": {
+                "type": "script",
+                "command": "./agent.sh merge-request:await-dependencies {project} {ticket} {variation}",
+                "mode": "timer",
+                "timer-minutes": 5,
+                "waiting-exit-code": 2
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "exit-code": 0
+                    },
+                    "move-to-state": "refresh-before-testing"
+                }
+            ]
+        },
+        {
+            "id": "refresh-before-testing",
+            "sequence": 5,
             "name": "Refresh the Reference Repositories Before Testing",
             "description": "Bring the repositories the ticket does not change up to their default branch again, so the tests run against current upstream",
             "action": {
@@ -122,7 +144,7 @@
         },
         {
             "id": "automated-testing",
-            "sequence": 5,
+            "sequence": 6,
             "name": "Automated Testing",
             "description": "Run automated tests",
             "max-visits": 3,
@@ -163,7 +185,7 @@
         },
         {
             "id": "ci-checks",
-            "sequence": 6,
+            "sequence": 7,
             "name": "CI Checks",
             "description": "Run the merge-request CI checks the project declares (ci-checks.json) for each repository the ticket changes; a project that declares none passes with nothing run",
             "max-visits": 3,
@@ -198,7 +220,7 @@
         },
         {
             "id": "code-review",
-            "sequence": 7,
+            "sequence": 8,
             "name": "Code Review",
             "description": "Reviewing the solution",
             "max-visits": 3,
@@ -245,7 +267,7 @@
         },
         {
             "id": "security-review",
-            "sequence": 8,
+            "sequence": 9,
             "name": "Security Review",
             "description": "Security review",
             "max-visits": 3,
@@ -298,7 +320,7 @@
             "action": {
                 "type": "none"
             },
-            "sequence": 9
+            "sequence": 10
         },
         {
             "id": "blocked",
@@ -308,7 +330,7 @@
             "action": {
                 "type": "none"
             },
-            "sequence": 10
+            "sequence": 11
         }
     ]
 }

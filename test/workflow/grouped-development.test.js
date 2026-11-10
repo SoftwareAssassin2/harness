@@ -26,7 +26,7 @@ const hasInOrder = (actual, expected, message = '') => assert.ok(inOrder(actual,
 const GROUPS = {
   setup: ['check-setup-complete', 'create-vm', 'mark-setup-complete'],
   plan: ['enrich-ac', 'root-cause-analysis', 'review-root-cause-analysis', 'write-execution-plan', 'write-test-plan', 'enrich-automated-test-data', 'review-plan'],
-  build: ['refresh-repositories', 'generate-automated-tests', 'generate-solution', 'refresh-before-testing', 'automated-testing', 'ci-checks', 'code-review', 'security-review'],
+  build: ['refresh-repositories', 'generate-automated-tests', 'generate-solution', 'await-dependencies', 'refresh-before-testing', 'automated-testing', 'ci-checks', 'code-review', 'security-review'],
   test: ['local-testing', 'steps-to-test'],
   document: ['update-documentation', 'update-merge-request-details', 'check-merge-request-details', 'add-screenshots-to-merge-request'],
   review: ['explain-the-change', 'risk-assessment', 'token-expense-check', 'payment-gate', 'variation-selection'],   // ASS-314: Human Review gone, risk-assessment straight on to the token expense check
@@ -194,7 +194,7 @@ test('AC3: the Payment Gate\'s Rejected re-enters Plan at Write Execution Plan',
 
 test('AC3: Local Testing\'s Rejected re-enters Build at Generate Solution; in example so does Team Code Review sending the ticket back In Progress', () => {
   const tested = walk('harness-development-grouped', { 'grouped-local-testing/test': [{ structuredOutput: { 'is-approved': false } }, {}] });
-  assert.deepEqual(after(tested, 'grouped-local-testing/done').slice(0, 5), ['grouped-test/rebuild', 'harness-development-grouped/build', 'grouped-build/generate-solution', 'grouped-build/refresh-before-testing', 'grouped-build/automated-testing']);
+  assert.deepEqual(after(tested, 'grouped-local-testing/done').slice(0, 6), ['grouped-test/rebuild', 'harness-development-grouped/build', 'grouped-build/generate-solution', 'grouped-build/await-dependencies', 'grouped-build/refresh-before-testing', 'grouped-build/automated-testing']);
   assert.equal(tops(tested).at(-1), 'done');
   const reviewed = walk('example-development-grouped', {
     'grouped-release-example/team-code-review': [{ ticketSystemStatus: 'In Progress' }, MERGED], 'grouped-qa/qa-testing': { ticketSystemStatus: 'Done' } });
@@ -204,7 +204,7 @@ test('AC3: Local Testing\'s Rejected re-enters Build at Generate Solution; in ex
 
 test('AC3: loops within a group stay in it — a rejected code review rebuilds there; a step looping past its max-visits ends the group at Blocked, and the group step sends the ticket to the top level\'s Blocked', () => {
   const reviewed = walk('harness-development-grouped', { 'grouped-build/code-review': [{ structuredOutput: { 'is-approved': false } }, {}] });
-  assert.deepEqual(after(reviewed, 'grouped-build/code-review').slice(0, 3), ['grouped-build/generate-solution', 'grouped-build/refresh-before-testing', 'grouped-build/automated-testing']);
+  assert.deepEqual(after(reviewed, 'grouped-build/code-review').slice(0, 4), ['grouped-build/generate-solution', 'grouped-build/await-dependencies', 'grouped-build/refresh-before-testing', 'grouped-build/automated-testing']);
   const looping = walk('harness-development-grouped', { 'grouped-plan/write-execution-plan': { fileUpdated: () => false } });
   assert.deepEqual(looping.slice(-5), ['grouped-plan/write-execution-plan', 'grouped-plan/write-execution-plan', 'grouped-plan/write-execution-plan', 'grouped-plan/blocked', 'harness-development-grouped/blocked']);
   const failing = walk('example-development-grouped', { 'grouped-build/automated-testing': { exitCode: 3 } });
@@ -535,7 +535,7 @@ test('ASS-249 AC4: grouped-build\'s CI Checks step — the ci-checks:verify scri
     let runs = 0;
     const released = top.startsWith('example') ? { 'grouped-release-example/team-code-review': MERGED, 'grouped-qa/qa-testing': { ticketSystemStatus: 'Done' } } : {};
     const once = walk(top, { ...released, 'grouped-build/ci-checks': { get exitCode() { return runs++ === 0 ? 1 : 0; } } });
-    assert.deepEqual(after(once, 'grouped-build/automated-testing').slice(0, 6), ['grouped-build/ci-checks', 'grouped-build/generate-solution', 'grouped-build/refresh-before-testing', 'grouped-build/automated-testing', 'grouped-build/ci-checks', 'grouped-build/code-review'], top);
+    assert.deepEqual(after(once, 'grouped-build/automated-testing').slice(0, 7), ['grouped-build/ci-checks', 'grouped-build/generate-solution', 'grouped-build/await-dependencies', 'grouped-build/refresh-before-testing', 'grouped-build/automated-testing', 'grouped-build/ci-checks', 'grouped-build/code-review'], top);
     assert.equal(tops(once).at(-1), 'done', top);
     const blocked = walk(top, { 'grouped-build/ci-checks': { exitCode: 3 } });
     assert.deepEqual(blocked.slice(-3), ['grouped-build/ci-checks', 'grouped-build/blocked', `${top}/blocked`], top);
@@ -558,6 +558,39 @@ test('ASS-255: grouped-release-harness\'s await-restart waits on exit 1 (the res
     assert.deepEqual(validateStateEngine(engine, ROOT, name, EXAMPLE_ENGINES), [], name);
   }
   assert.equal(stepOf(engines['harness-development'], 'await-restart').action['waiting-exit-code'], undefined, 'the flat harness-development stays as it was');
+});
+
+// ASS-335: a merge request depending on one in another repository is tested
+// only once that one is merged. grouped-build's Await Dependencies in Other
+// Repositories (merge-request:await-dependencies, on the host, a timer) sits
+// between Generate Solution and the refresh before Automated Testing: 0 (none
+// waits) goes on, 2 (one waits) is its waiting exit — the ticket stays there,
+// polled, never sent back to Generate Solution — and an error matches no exit,
+// so it is tried again where it is. The command's own tests:
+// test/agent-cli/merge-requests.test.js.
+const AWAIT_DEPENDENCIES = './agent.sh merge-request:await-dependencies {project} {ticket} {variation}';
+
+test('ASS-335 AC1/AC2: grouped-build waits at Await Dependencies in Other Repositories before every Automated Testing — waiting (exit 2) stays, never to Generate Solution; none waiting (exit 0) goes on to the refresh and the tests; the flat engines have none', () => {
+  const build = engines['grouped-build'], step = stepOf(build, 'await-dependencies');
+  assert.deepEqual([step.action, step['run-location'], step['record-script-output']],
+    [{ type: 'script', command: AWAIT_DEPENDENCIES, mode: 'timer', 'timer-minutes': 5, 'waiting-exit-code': 2 }, undefined, true]);
+  assert.equal(nextState(stepOf(build, 'generate-solution'), build, { turnComplete: true }).to, 'await-dependencies');
+  // Every way into Automated Testing passes the gate: only the refresh moves there, and only the gate moves to the refresh.
+  const into = id => build.steps.filter(s => (s['exit-events'] ?? []).some(e => e['move-to-state'] === id)).map(s => s.id);
+  assert.deepEqual([into('automated-testing'), into('refresh-before-testing'), into('await-dependencies')], [['refresh-before-testing'], ['await-dependencies'], ['generate-solution']]);
+  // AC1: a dependency in another repository not merged — the tests are not run, and nothing sends the ticket back to Generate Solution.
+  assert.equal(nextState(step, build, { exitCode: 2 }, []), null, 'waiting stays');
+  assert.equal(nextState(step, build, { exitCode: 1 }, []), null, 'an error matches no exit, so it is tried again where it is');
+  // AC2: merged — on to the refresh and Automated Testing.
+  assert.equal(nextState(step, build, { exitCode: 0 }, []).to, 'refresh-before-testing');
+  const seq = id => stepOf(build, id).sequence;
+  assert.ok(seq('generate-solution') < seq('await-dependencies') && seq('await-dependencies') < seq('refresh-before-testing'));
+  assert.deepEqual(validateStateEngine(build, ROOT, 'grouped-build', EXAMPLE_ENGINES), []);
+  for (const top of Object.keys(CURRENT)) {
+    const trail = walk(top, NOT_SET_UP);
+    assert.deepEqual(after(trail, 'grouped-build/generate-solution').slice(0, 3), ['grouped-build/await-dependencies', 'grouped-build/refresh-before-testing', 'grouped-build/automated-testing'], top);
+  }
+  for (const flat of [...Object.values(CURRENT), 'blocked']) assert.ok(!JSON.stringify(engines[flat]).includes('await-dependencies'), flat);
 });
 
 // ASS-261: the grouped Risk Assessment writes a fixed risk line the ticket

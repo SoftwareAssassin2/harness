@@ -655,6 +655,22 @@ test('ASS-86 AC4: merge-request:create names an off-board ticket (its url a file
   }
 });
 
+test('ASS-335 AC3: from the worktree, merge-request:create titles the draft in the project\'s format — "conventional" a conventional commit, "<type>: <title> (<KEY>)", its type from the ticket (a Bug a fix)', async () => {
+  const f = onGitHub();
+  const project = join(f.dir, 'projects', 'p', 'project.json');
+  writeFileSync(project, JSON.stringify({ ...JSON.parse(readFileSync(project, 'utf8')), 'merge-request-title': 'conventional' }));
+  await f.agent('code:create-branch', 'p', 'ABC-3', 'A');
+  await f.agent('code:create-worktree', 'p', 'ABC-3', 'A');
+  const sprint = f.sprint();
+  sprint.features[0].title = 'Close the account'; sprint.features[0]['issue-type'] = 'Bug';
+  writeFileSync(join(f.dir, 'projects', 'p', 'sprints', 'sprint-10', 'sprint.json'), JSON.stringify(sprint));
+  await f.agent('merge-request:create', 'p', 'ABC-3', 'A');
+  const created = f.ghLog().find(l => /^pr create/.test(l));
+  const title = created.match(/ --title (.*) --body /)[1];
+  assert.equal(title, 'fix: close the account (ABC-3)', created);
+  assert.match(title, /^(build|chore|ci|docs|feat|fix|perf|refactor|revert|style|test|flow)(\([a-z0-9._/-]+\))?!?: .+ \(ABC-3\)$/);
+});
+
 test('on a GitHub origin, merge-request:merge marks the pull request ready and merges it itself, then confirms it merged; refused when it is not open or did not merge', async () => {
   const f = onGitHub();
   const file = join(f.dir, 'projects', 'p', 'sprints', 'sprint-10', 'sprint.json');

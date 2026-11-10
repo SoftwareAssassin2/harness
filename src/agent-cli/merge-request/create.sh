@@ -11,13 +11,30 @@ set -euo pipefail
 # made in depends-on order). An open one from its branch is reused; else,
 # when its branch changes nothing against its base, it is marked Closed, not
 # opened, and execution-plan-<variation>.md says so; else a draft is opened against its
-# base, titled "<KEY>: <ticket title>" (with " (MR <id>)" when the variation
-# has more than one), described by the ticket's link (ticket_reference: an
+# base, titled in the project's merge request title format (mr_title below;
+# "(MR <id>)" after the ticket's title when the variation has more than
+# one), described by the ticket's link (ticket_reference: an
 # off-board ticket's "<KEY>: <title>", unlinked) and its contents. Records
 # its key (!<iid>, #<number> on GitHub), url, status Open and build-status
 # Pending by id; prints { id, status, iid, url, created }. One already Open,
 # Merged or Closed is left as it is. Fails, recording nothing, when the
 # branch is not on the forge or a forge call fails.
+#
+# mr_title <project> <key> [<note>] — the title, in project.json's
+# "merge-request-title" format (ASS-335, merge-request-title.bash title_of):
+# key-summary (the default) "<KEY>: <ticket title>"; conventional "<type>:
+# <ticket title> (<KEY>)", a Bug a fix, a Task or Spike a chore, else a feat
+# — so a CI mr-title job requiring a conventional commit passes from the
+# first pipeline, and the merge request can merge.
+source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../merge-request-title.bash"
+mr_title() {
+  local format type
+  format="$(title_format merge-request:create "$projects/$1/project.json")" || return 1
+  type="$(jq -r --arg key "$2" 'def it: select(.key | ascii_downcase == ($key | ascii_downcase));
+    first((.bugs // [] | .[] | it | .["issue-type"] // "Bug"), (.spikes // [] | .[] | it | .["issue-type"] // "Spike"), (.features // [] | .[] | it | .["issue-type"] // "Story")) // ""' \
+    "$(sprint_file merge-request:create "$1")")" || return 1
+  title_of "$format" "$2" "$(ticket_field merge-request:create "$1" "$2" title)" "$type" "${3:-}"
+}
 if [[ $# -eq 4 ]]; then
   source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../merge-requests.bash"
   project="$1" key="$(upper "$2")" variation="$3" id="$4"
@@ -38,8 +55,8 @@ if [[ $# -eq 4 ]]; then
       plan_note "$project" "$key" "$variation" "MR $id ($(jq -r ".[$i].branch" <<< "$MRS")) is Closed, not opened: its branch has no changes against $(jq -r ".[$i].base" <<< "$MRS")."
       said false; exit 0
     fi
-    title="$key: $(ticket_field merge-request:create "$project" "$key" title)"
-    [[ "$(jq length <<< "$MRS")" -eq 1 ]] || title+=" (MR $id)"
+    note=""; [[ "$(jq length <<< "$MRS")" -eq 1 ]] || note="MR $id"
+    title="$(mr_title "$project" "$key" "$note")"
     description="> $(ticket_reference merge-request:create "$project" "$key")"$'\n\n'"$(jq -r ".[$i].contents" <<< "$MRS")"
     open="$(mr_open merge-request:create "$i" "$title" "$description")"
     created=true
@@ -53,7 +70,7 @@ fi
 # From the variation's worktree (code:create-worktree first): the branch
 # gets a first empty commit when it has none of its own, is pushed to origin,
 # and a draft merge request is opened against origin's default branch —
-# titled "<KEY>: <ticket title>", its description the ticket's link on the
+# titled in the project's format (mr_title above), its description the ticket's link on the
 # first line (ticket_reference: an off-board ticket's "<KEY>: <title>",
 # unlinked) — unless one from that branch is open already (reused). Records
 # [{ key: "!<iid>", build-status: "Pending", url, status: "Open" }] as the variation's
@@ -82,7 +99,7 @@ if [[ "$(git -C "$folder" rev-list --count "origin/$base..$branch" 2>/dev/null |
 fi
 git -C "$folder" push --quiet -u origin "$branch"
 created=false
-title="$key: $(ticket_field merge-request:create "$project" "$key" title)"
+title="$(mr_title "$project" "$key")"
 description="> $(ticket_reference merge-request:create "$project" "$key")"
 if [[ "$(forge "$workspace")" == github ]]; then
   # GitHub (the harness's own repository): a pull request, #<number>.

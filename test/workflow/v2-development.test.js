@@ -32,11 +32,16 @@ const engines = Object.fromEntries(engineNames().filter(d => existsSync(join(eng
   .map(d => [d, JSON.parse(readFileSync(join(engineDir(d), 'state-engine.json'), 'utf8'))]));
 // v2-build is grouped-build as it was before ASS-249 added CI Checks to the
 // grouped one alone (v2 engines unchanged): grouped-build without that step,
-// Automated Testing's exit 0 to Code Review again, the sequences closed up.
+// Automated Testing's exit 0 to Code Review again, the sequences closed up;
+// nor its Await Dependencies in Other Repositories (ASS-335, grouped-build's
+// alone too): Generate Solution's finished turn to the refresh again.
 const groupedBuild = (() => {
-  const g = structuredClone(engines['grouped-build']), at = g.steps.find(s => s.id === 'ci-checks').sequence;
-  g.steps = g.steps.filter(s => s.id !== 'ci-checks').map(s => ({ ...s, ...(s.sequence > at ? { sequence: s.sequence - 1 } : {}) }));
-  for (const e of g.steps.find(s => s.id === 'automated-testing')['exit-events']) if (e['move-to-state'] === 'ci-checks') e['move-to-state'] = 'code-review';
+  const g = structuredClone(engines['grouped-build']);
+  for (const [id, to] of [['ci-checks', 'code-review'], ['await-dependencies', 'refresh-before-testing']]) {
+    const at = g.steps.find(s => s.id === id).sequence;
+    g.steps = g.steps.filter(s => s.id !== id).map(s => ({ ...s, ...(s.sequence > at ? { sequence: s.sequence - 1 } : {}) }));
+    for (const s of g.steps) for (const e of s['exit-events'] ?? []) if (e['move-to-state'] === id) e['move-to-state'] = to;
+  }
   return g;
 })();
 const TOP = 'harness-development-v2';
