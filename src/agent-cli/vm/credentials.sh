@@ -39,7 +39,7 @@ set -euo pipefail
 # Before the tokens are read, each injected item's keychain modification time
 # (vm-credentials.bash read_stamps: its attributes only, never its value) is
 # read, and once the script has run they are recorded on the VM's vms.json row,
-# when it has one, as credential-stamps { "<kind>": "<mdat>" } (ASS-350): control
+# when it has one and any was read, as credential-stamps { "<kind>": "<mdat>" } (ASS-350): control
 # refreshes a running VM whose item has been saved again since (a rotated key).
 # Read before the tokens, so an item saved between the two reads leaves an
 # older stamp, and costs one refresh more, never one missed.
@@ -124,7 +124,8 @@ EOF
 script="$(injection_script)"
 printf '%s\n' "$script" | limactl shell "$vm" -- bash -s \
   || { echo "vm:credentials: could not inject $project's credentials into VM '$vm'" >&2; exit 1; }
-# Only on a row there already: a VM vms.json does not know gets none, and no file is made.
-[[ ! -f "$projects/$project/vms.json" ]] || update_json "$projects/$project/vms.json" --arg n "$vm" --argjson s "$stamps" \
+# Only on a row there already: a VM vms.json does not know gets none, and no file is made; and only stamps
+# read: with none (no item shows an mdat) the row is left as it is.
+[[ ! -f "$projects/$project/vms.json" || "$stamps" == '{}' ]] || update_json "$projects/$project/vms.json" --arg n "$vm" --argjson s "$stamps" \
   'if .[$n] then .[$n]["credential-stamps"] = $s else . end'
 if [[ -v TOKENS[anthropic] && -v TOKENS[claude] ]]; then echo both; elif [[ -v TOKENS[anthropic] ]]; then echo anthropic; elif [[ -v TOKENS[claude] ]]; then echo claude; fi
