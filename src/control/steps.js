@@ -1,6 +1,9 @@
 // Phase 3: the steps no agent works — `none`, `script` and `state-engine`
 // actions — of every sprint variation and every state engine run, each moved
-// on while its exits hold (backlog → committed → … in one tick).
+// on while its exits hold (backlog → committed → … in one tick). A variation
+// its dependencies hold (dependencies.js awaitsDependencies, ASS-355), and
+// every run under it, is left where it is: no move, script, sub-engine run or
+// VM wait, at any step but a done or a person's one.
 import { stepOf, engineSteps, nextState, pairedStatus, isManual, isDoneStep, isActive, answersGap, clearedByFix, FIX_LANDED, resumeAt, whyNotResume } from './engine.js';
 import { enginesFor } from './state.js';
 import { rankSprint, rankBacklog } from './rank.js';
@@ -207,6 +210,9 @@ async function runVariation(ctx, state, project, key, name) {
       if (!backlog && !mayMove(ctx, PHASE, state, project, variation, who, next.to)) { waitsForSeat(ctx.memory, project, ticket, variation, slotKind(stepOf(engine, next.to))); return false; }
       return moveTicket(ctx, PHASE, project, ticket, variation, next.to, next.reason === 'max-visits' ? 'max-visits' : undefined, next.reason === 'exit' ? next.exit['start-sub-engine-at'] : undefined, cause);
     };
+    // Held by what it depends on (ASS-195, ASS-355): held at this step, whatever it is but a done or a person's one —
+    // nothing moved, started or judged, not even its VM's wait (stopped while it is held), so it goes on here once released.
+    if (!backlog && awaitsDependencies(ctx, state, project, ticket, variation, who)) return;
     // Switched off (ASS-192): passed at once, before any VM, fact or action — a ticket limit on its target still holds it.
     if (!isActive(step)) {
       if (!await move(switchedOff(step), SKIPPED)) return;
@@ -214,7 +220,6 @@ async function runVariation(ctx, state, project, key, name) {
       continue;
     }
     if (awaitsVm(ctx, state, project, variation, who)) return;   // its VM still starting (ASS-133)
-    if (!backlog && awaitsDependencies(ctx, state, project, ticket, variation, who)) return;   // at Committed, waiting for what it depends on (ASS-195)
     const facts = ticketFacts(ctx, project, ticket, variation, undefined, runsInVm(step) ? variation.vm?.name : undefined);
     const changes = levelChanges(variation);
     switch (step.action?.type) {
@@ -340,6 +345,9 @@ async function runTransient(ctx, state, id) {
       return;   // a ticket's or another run's sub-engine: its parent ends it
     }
     const context = contextOf(run, state.transient);
+    const { project, ticket, variation, backlog } = found(state, { project: run.project, 'work-item': context.workItem, variation: context.variation });
+    // Its ticket held by what it depends on (ASS-195, ASS-355): the run stays at its step, nothing started, as the ticket's own step does.
+    if (ticket && variation && !backlog && awaitsDependencies(ctx, state, project, ticket, variation, who)) return;
     // Switched off (ASS-192): passed at once, as a ticket's step is (runVariation).
     if (!isActive(step)) {
       const next = switchedOff(step);
@@ -347,9 +355,7 @@ async function runTransient(ctx, state, id) {
       ctx.log(PHASE, `${context.workItem ?? '-'} ${context.variation ?? '-'} ${run['state-engine']}/${step.id}: switched off, skipped (→ ${next.to})`);
       continue;
     }
-    const { project, ticket, variation } = found(state, { project: run.project, 'work-item': context.workItem, variation: context.variation });
     if (awaitsVm(ctx, state, project, variation, who)) return;   // its ticket's VM still starting (ASS-133)
-    if (ticket && variation && awaitsDependencies(ctx, state, project, ticket, variation, who)) return;   // its ticket waiting for what it depends on (ASS-195)
     const facts = { ...(ticket && variation ? ticketFacts(ctx, project, ticket, variation, undefined, runsInVm(step) ? variation.vm?.name : undefined) : {}), structuredOutput: run['structured-output'], agentNeedsWork: true };
     // Its steps' visits are the run's own (ASS-66): counted over its moves, none from an earlier run or its parent.
     const changes = run['state-changes'] ?? [];

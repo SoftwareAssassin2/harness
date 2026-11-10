@@ -1,8 +1,8 @@
 // ASS-195: a ticket waits for the tickets it depends on. In a project whose
 // project.json has wait-for-dependencies: true, a sprint ticket at Committed
 // with a same-project dependency not Done — in the sprint or the backlog —
-// does not leave Committed: no slot, no agent; one past Committed keeps
-// going. While it waits, a backlog dependency is raised to
+// does not leave Committed: no slot, no agent; one past Committed is held
+// too (ASS-355, whose own tick tests are tick-dependency-hold.test.js). While it waits, a backlog dependency is raised to
 // manual-backlog-priority 1 and a sprint one, when the dependent has a
 // manual-priority, to just above it — each only when it does not already
 // rank above, recorded as priority-raised-by — and released (the raise and
@@ -97,11 +97,11 @@ test('ASS-195 AC1: any non-deleted variation of the dependency reaching an is-do
   assert.notEqual(f.stateOf('ABC-1'), 'committed', f.lines.join('\n'));
 });
 
-test('ASS-195 AC1: a variation already past Committed keeps going, its dependency not Done — no waits logged for it', async () => {
+test('ASS-355 (supersedes ASS-195\'s past-Committed rule): a variation past Committed is held too — at plan, no agent, the wait logged', async () => {
   const f = waiting({ sprint: [at('ABC-1', 'plan', { dependencies: ['ABC-2'] }), at('ABC-2', 'committed')] });
   await f.ticks();
-  assert.equal(f.dispatched('ABC-1'), true, f.lines.join('\n'));
-  assert.ok(!f.lines.some(l => /ABC-1\b.*waits on/.test(l)), f.lines.join('\n'));
+  assert.equal(f.dispatched('ABC-1'), false, f.lines.join('\n'));
+  assert.equal(f.calls(/ABC-1 A plan: waits on ABC-2$/).length, 1, f.lines.join('\n'));
 });
 
 test('ASS-195 AC1: a project without wait-for-dependencies, or with it false or "true", never holds', async () => {
@@ -213,9 +213,9 @@ test('ASS-195 AC2: a raise the operator set over (the plain command) is never re
   assert.equal(g.inBacklog('ABC-9')['manual-backlog-priority'], 1);
 });
 
-test('ASS-195 AC2: a raise is released once its dependent is past Committed or gone', async () => {
+test('ASS-195 AC2: a raise is released once its dependent is at a step no hold holds (done, ASS-355: past Committed no longer frees it) or gone', async () => {
   const record = { field: 'manual-priority', value: 4, for: 'ABC-1' };
-  for (const dependent of [at('ABC-1', 'plan', { dependencies: ['ABC-4'] }), at('ABC-1', 'committed', { dependencies: ['ABC-4'], 'is-deleted': true })]) {
+  for (const dependent of [at('ABC-1', 'done', { dependencies: ['ABC-4'] }), at('ABC-1', 'committed', { dependencies: ['ABC-4'], 'is-deleted': true })]) {
     const f = waiting({ sprint: [dependent, at('ABC-4', 'plan', { 'manual-priority': 4, priority: 4, [RAISED]: record })] });
     await f.ticks();
     assert.equal(f.calls(raise('set-manual-priority', 'ABC-4', '', 'ABC-1')).length, 1, f.lines.join('\n'));

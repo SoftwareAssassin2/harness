@@ -1,7 +1,9 @@
 // Reading a state engine (engines/<name>/state-engine.json) for control: its
 // steps, whether a step's exit conditions hold
 // against the facts control has gathered, and where a ticket variation goes
-// next. Pure: plain data in, plain data out, nothing read or written.
+// next, and which steps only wait on a person (waitsOnHuman,
+// waitsOnTicketSystem: ASS-355, never held for a dependency). Pure: plain
+// data in, plain data out, nothing read or written.
 
 // Every step list an engine holds: `steps` and each top-level `*-steps` / `*-trigger`.
 const isStepList = (key, list) => (key === 'steps' || /-(steps|trigger)$/.test(key)) && Array.isArray(list);
@@ -312,6 +314,14 @@ const readsStatusAlone = c => {
   return key === 'ticket-system-status' || (key === 'not' && readsStatusAlone(value)) || (key === 'all' && Array.isArray(value) && value.length > 0 && value.every(readsStatusAlone));
 };
 const statusExit = (condition, status) => readsStatusAlone(condition) && evaluateCondition(condition, { ticketSystemStatus: status });
+
+// waitsOnTicketSystem(step) — a `none` step past planning, not done, whose
+// every exit reads the ticket system's status alone (readsStatusAlone): it
+// waits for a person to move the ticket on the board — grouped-qa's QA
+// Testing, a flat engine's QA Testing — and nothing else moves it (ASS-355:
+// such a step is never held for a dependency).
+export const waitsOnTicketSystem = step => step?.action?.type === 'none' && step['is-planning-stage'] !== true && step['is-done'] !== true
+  && (step['exit-events'] ?? []).length > 0 && step['exit-events'].every(e => readsStatusAlone(e.condition));
 
 // answersGap(engine, variation, status, engines) — the ticket system's
 // `status`, not its step's pairing, is the variation's own sub-engine run's

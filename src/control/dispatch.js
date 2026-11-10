@@ -3,7 +3,7 @@
 // plan.js plans them — each through assignments:create, agent:dispatch (the prompt
 // queued in the inbox the process will read), startAgent, and
 // assignments:set-process (the session id is recorded in finish.js once the
-// process has said it).
+// process has said it). None for a variation its dependencies hold (ASS-355).
 import { existsSync, readFileSync, mkdirSync, appendFileSync } from 'node:fs';
 import { join, dirname, resolve } from 'node:path';
 import { stepOf, engineSteps, resolveTarget, isActive, isManual } from './engine.js';
@@ -535,7 +535,9 @@ function waitsOnAnswer(ctx, state) {
 // subscription (ASS-327) is not held: that work is paid api (paymentFor's
 // `weekly`), as any API dispatch held by the anthropic rate limit and the API
 // caps, its sprint work on paymentFor's own rule. A ticket
-// an open blocking question holds gets no agent anywhere (waitsOnAnswer, ASS-248).
+// an open blocking question holds gets no agent anywhere (waitsOnAnswer, ASS-248); nor does a
+// variation its dependencies hold (dependencies.js, ASS-355), at the top level or in a run under it —
+// asked before its VM, which is stopped while it is held. An agent already running finishes its turn.
 export async function dispatch(ctx, state) {
   const maxAgents = state.harness['max-agents'] ?? Infinity;
   const agentsOf = id => [...ctx.agents.values()].filter(l => l.project === id).length;
@@ -571,12 +573,13 @@ export async function dispatch(ctx, state) {
     if (context.workItem != null && overSpent(found(state, { project: run.project, 'work-item': context.workItem }).ticket, state.harness, project.json, runningOn(state.running, run.project, context.workItem))) continue;
     const key = runKey(run.id, run.state);
     if (waiting(ctx.memory, key, ctx.now().getTime())) continue;   // failing: held a while (backoff.js)
+    // Its ticket waiting for what it depends on (ASS-195, ASS-355): the same predicate steps.js holds it with — asked
+    // before its VM, which is stopped while it is held, so the wait is never taken for a VM that does not come up (ASS-348).
+    const waits = found(state, { project: run.project, 'work-item': context.workItem, variation: context.variation });
+    if (!waits.backlog && awaitsDependencies(ctx, state, project, waits.ticket, waits.variation, `run ${run['state-engine']} ${run.id.slice(0, 8)} ${run.state}`)) continue;
     if (await vmDown(ctx, state, step, run.project, context.workItem, context.variation, run.state)) continue;
     const pays = await paymentFor(ctx, limited, project, step, context.workItem, context.variation, limit === 'api');
     if (!pays) continue;
-    // Its ticket at Committed, waiting for what it depends on (ASS-195): the same predicate steps.js holds it with.
-    const waits = found(state, { project: run.project, 'work-item': context.workItem, variation: context.variation });
-    if (!waits.backlog && awaitsDependencies(ctx, state, project, waits.ticket, waits.variation, `run ${run['state-engine']} ${run.id.slice(0, 8)} ${run.state}`)) continue;
     const count = step.action['agent-count'] ?? 1;
     if (allAgents() + count > maxAgents || agentsOf(run.project) + count > (project.json['max-agents'] ?? Infinity)) {
       // A fast-tracked ticket's run held so waits for an agent seat (ASS-83, fast-track.js).
@@ -636,13 +639,13 @@ export async function dispatch(ctx, state) {
       if (isPaused(state, project.id, item.key, item.variation)) continue;
       const key = ticketKey(project.id, item.key, item.variation, item.state);
       if (waiting(ctx.memory, key, ctx.now().getTime())) continue;   // failing: held a while (backoff.js)
+      const at = found(state, { project: project.id, 'work-item': item.key, variation: item.variation });
+      const who = `${item.key} ${item.variation} ${item.state}`;
+      // Waiting for what it depends on (ASS-195, ASS-355): the plan leaves such a one out already; asked again, as steps.js asks, before its VM.
+      if (awaitsDependencies(ctx, state, project, at.ticket, at.variation, who)) continue;
       if (await vmDown(ctx, state, step, project.id, item.key, item.variation, item.state)) continue;
       const pays = await paymentFor(ctx, limited, project, step, item.key, item.variation);
       if (!pays) continue;
-      const at = found(state, { project: project.id, 'work-item': item.key, variation: item.variation });
-      const who = `${item.key} ${item.variation} ${item.state}`;
-      // At Committed, waiting for what it depends on (ASS-195): the same predicate steps.js holds it with.
-      if (awaitsDependencies(ctx, state, project, at.ticket, at.variation, who)) continue;
       if (!workspaceFree(ctx, state, step, project, item.key, item.variation)) continue;
       await ctx.attempt(PHASE, `${item.key} ${item.variation}`, heldOnFailure(ctx, key, async () => {
         const { ticket, variation } = at;

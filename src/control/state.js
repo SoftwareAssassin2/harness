@@ -22,6 +22,17 @@ export const requiresReauthentication = (projectDir, tool) => {
   return existsSync(file) && readFileSync(file, 'utf8') === 'true';
 };
 
+// loadOutside(dir, read) — a project's outside-tickets.json tickets (ASS-355,
+// from its folder `dir`): the Jira tickets its sprint and backlog tickets
+// depend on that neither holds, read by key by the downloader (ticket:
+// sync-outside) — each { key, title, url, ticket-system-status,
+// ticket-system-assignment }; [] without the file, or when it cannot be read.
+// Control and the dashboard both judge dependencies against them
+// (dependencies.js).
+export function loadOutside(dir, read = readJson) {
+  try { return existsSync(join(dir, 'outside-tickets.json')) ? read(join(dir, 'outside-tickets.json')).tickets ?? [] : []; } catch { return []; }
+}
+
 // loadCollaborations(dir, read) — a project's ticket chats (ASS-35), from its folder
 // `dir`: each work/<KEY>/collaboration.json — { session-id, briefed, turns } —
 // by its ticket folder, parsed by `read` (the dashboard's caches); {} for
@@ -117,7 +128,7 @@ export const readEngines = dir => (!existsSync(dir) ? {} : Object.fromEntries(re
 // [] without a sprint), backlog (backlog.json's tickets not in the sprint,
 // [] without one) — both without soft-deleted tickets (live) — asking (those
 // of them an open blocking question holds, each key to its questions:
-// openBlocking, ASS-248), gcloudRequiresReauthentication and
+// openBlocking, ASS-248), outside (its outside-tickets.json's tickets: loadOutside, ASS-355), gcloudRequiresReauthentication and
 // glabRequiresReauthentication (see requiresReauthentication), rateLimit (its rate-limit.json —
 // { <credential kind>: { since, type, resets-at }, … } (ASS-215) — or null, ASS-94), claudeUsage (its
 // claude-usage.json — { email, session: { percent, resets-at }, weekly: { percent, resets-at } | null, as-of } — or
@@ -150,7 +161,7 @@ export function loadState(paths) {
       const switchedOffErrors = switchedOff.flatMap(e => switchedOffStepErrors(e, seen));
       const own = switchOff(seen, switchedOff.filter(e => !switchedOffStepErrors(e, seen).length));
       const refinementName = refinementOf(own[engineName]);
-      return { id, json, engineName, engines: own, switchedOffErrors, engine: own[engineName], refinementName, refinement: own[refinementName], sprintFile, sprint, tickets, backlog, asking: openBlocking(dir, [...tickets, ...backlog]),
+      return { id, json, engineName, engines: own, switchedOffErrors, engine: own[engineName], refinementName, refinement: own[refinementName], sprintFile, sprint, tickets, backlog, asking: openBlocking(dir, [...tickets, ...backlog]), outside: loadOutside(dir),
         gcloudRequiresReauthentication: requiresReauthentication(dir, 'gcloud'), glabRequiresReauthentication: requiresReauthentication(dir, 'glab'), rateLimit, claudeUsage };
     });
   return {

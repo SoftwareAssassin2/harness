@@ -1,6 +1,9 @@
 // Planning which sprint ticket variations get an agent on this tick, which
 // may move into a step (the ticket limits, ASS-126), and whether a triggered
-// engine may start. Pure: nothing is dispatched or moved here.
+// engine may start. Pure: nothing is dispatched or moved here. A variation
+// its dependencies hold (dependencies.js, ASS-355) is planned as a paused one
+// is: no slot, no seat, no agent — its slot free for the next ticket.
+import { heldBy } from './dependencies.js';
 import { isBlockedState, isDoneStep, waitsOnHuman, statusIn, inPlanning, stepOf, isHeld, isActive } from './engine.js';
 import { rankSprint } from './rank.js';
 import { overSpent } from './spend.js';
@@ -39,7 +42,8 @@ export function slotKind(step, status = { chain: [{ step }] }) {
 // also give a ticket its spending limit (spend.js, ASS-191), and `running`,
 // { <work-item>: usd }, what its running agents have spent so far toward it
 // (ASS-270: spend.js runningSpend's for the project); `asking`, the
-// keys of the tickets an open blocking question holds (state.js, ASS-248). (`transient` is taken
+// keys of the tickets an open blocking question holds (state.js, ASS-248); `waitsOn(ticket,
+// variation)`, whether its dependencies hold it (dependencies.js heldBy, ASS-355). (`transient` is taken
 // for the record; triggered engines count through agentsRunning.) Returns
 // { dispatch, reserved, planning, inPlanning, waiting, held, short, free }: `dispatch`, in rank order, each
 // { key, variation, state, agentCount, planning } to put agents on;
@@ -53,7 +57,8 @@ export function slotKind(step, status = { chain: [{ step }] }) {
 // A variation is in motion — holds a slot of its step's kind (slotKind), the
 // first ones in rank order up to the limits — unless deleted, held (paused,
 // it or its ticket, or worked by hand: isHeld), its ticket waiting on the
-// operator for an answer (`asking`: no seat, as paused), its ticket at its spending limit (overSpent: steps.js
+// operator for an answer (`asking`: no seat, as paused), held by its
+// dependencies (`waitsOn`, ASS-355: no slot or seat, as paused), its ticket at its spending limit (overSpent: steps.js
 // takes it to Blocked for Human), done, in the blocked state, waiting on
 // the outside at a `none` step past planning (one with no always or
 // agent-needs-work exit, such as QA Testing waiting on the ticket system), or
@@ -66,7 +71,7 @@ export function slotKind(step, status = { chain: [{ step }] }) {
 // the one that waits on a human or the outside and that needs an agent; its
 // run's agents go out with the run (dispatch.js), so it is not dispatched
 // here, but it is `held` when it could not be — no slot — or it waits on a human.
-export function planDispatch({ ranked, engine, engines = {}, assignments = [], harness = {}, project = {}, agentsRunning = 0, projectAgentsRunning = 0, reservedElsewhere = 0, planningElsewhere = 0, asking = new Map(), running = {} }) {
+export function planDispatch({ ranked, engine, engines = {}, assignments = [], harness = {}, project = {}, agentsRunning = 0, projectAgentsRunning = 0, reservedElsewhere = 0, planningElsewhere = 0, asking = new Map(), running = {}, waitsOn = () => false }) {
   const all = name => harness[name] ?? Infinity, own = name => project[name] ?? Infinity;
   const occupied = (key, name) => assignments.some(a => a['work-item'] === key && (a.variation == null || a.variation === name));
   const slots = { planning: [], progress: [] }, elsewhere = { planning: planningElsewhere, progress: reservedElsewhere };
@@ -75,7 +80,7 @@ export function planDispatch({ ranked, engine, engines = {}, assignments = [], h
   const dispatch = [], held = [], short = [], waiting = [];
   for (const t of ranked) for (const v of overSpent(t, harness, project, running[t.key] ?? 0) ? [] : t.variations ?? []) {
     const status = statusIn(engine, v, engines), { state, step } = status;
-    if (!step || v['is-deleted'] || isHeld(t, v) || asking.has(t.key) || isDoneStep(engine, state) || isBlockedState(engine, state)) continue;
+    if (!step || v['is-deleted'] || isHeld(t, v) || asking.has(t.key) || isDoneStep(engine, state) || isBlockedState(engine, state) || waitsOn(t, v)) continue;
     const deep = status.chain.at(-1), inRun = status.chain.length > 1, at = status.detailStep ?? step;
     const hold = () => { if (inRun) held.push({ key: t.key, variation: v.name, 'state-engine': deep['state-engine'], state: deep.state }); };
     if (at['is-done'] !== true && waitsOutside(at)) continue;   // a run done: its group step is about to move on
@@ -95,14 +100,15 @@ export function planDispatch({ ranked, engine, engines = {}, assignments = [], h
   return { dispatch, reserved: slots.progress, planning: slots.planning.length, inPlanning: slots.planning, waiting, held, short, free: { planning: free('planning'), progress: free('progress') } };
 }
 
-// inMotion(projects, engines) — { planning, progress }: how many of the
+// inMotion(projects, engines, state) — { planning, progress }: how many of the
 // projects' sprint variations are in planning and in progress (planDispatch
-// with no limits).
-export function inMotion(projects, engines) {
+// with no limits); given the loaded `state`, those their dependencies hold
+// left out (heldBy, ASS-355).
+export function inMotion(projects, engines, state) {
   const counts = { planning: 0, progress: 0 };
   for (const p of projects) {
     if (!p.engine) continue;
-    const { planning, reserved } = planDispatch({ ranked: p.tickets, engine: p.engine, engines: p.engines ?? engines, asking: p.asking });
+    const { planning, reserved } = planDispatch({ ranked: p.tickets, engine: p.engine, engines: p.engines ?? engines, asking: p.asking, ...(state ? { waitsOn: heldBy(state, p) } : {}) });
     counts.planning += planning;
     counts.progress += reserved.length;
   }
@@ -114,14 +120,15 @@ export function inMotion(projects, engines) {
 // ranked, its assignments, its project.json's limits within harness.json's,
 // every other project's variations in motion counted against the harness's,
 // its tickets' running agents' spend so far (ASS-270: tick.js load's
-// `running`) against their spending limits;
+// `running`) against their spending limits, those its dependencies hold
+// (and other projects' so held) taking nothing (heldBy, ASS-355);
 // `agents`, { agentsRunning, projectAgentsRunning }, for its dispatches.
 export function planFor(state, project, agents = {}) {
-  const others = inMotion((state.allProjects ?? state.projects).filter(p => p.id !== project.id), state.engines);
+  const others = inMotion((state.allProjects ?? state.projects).filter(p => p.id !== project.id), state.engines, state);
   return planDispatch({
     ranked: rankSprint(project.tickets, { engine: project.engine }), engine: project.engine, engines: project.engines ?? state.engines,
     assignments: state.assignments.filter(a => a.project === project.id), transient: state.transient,
-    harness: state.harness, project: project.json, reservedElsewhere: others.progress, planningElsewhere: others.planning, asking: project.asking, running: state.running?.[project.id] ?? {}, ...agents,
+    harness: state.harness, project: project.json, reservedElsewhere: others.progress, planningElsewhere: others.planning, asking: project.asking, running: state.running?.[project.id] ?? {}, waitsOn: heldBy(state, project), ...agents,
   });
 }
 
