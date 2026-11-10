@@ -6,7 +6,10 @@
 # fast-tracked ticket — ASS-83, ticket:create --fast-track, and ASS-306,
 # ticket:mark-fast-track on one already created — kept-whole: true
 # on a ticket the operator kept whole and split-into: <KEY>, <KEY> on one split
-# into others — ASS-252, ticket:keep-whole and ticket:mark-split — created,
+# into others — ASS-252, ticket:keep-whole and ticket:mark-split — resume-at:
+# <step> on a fix ticket whose fix changes an earlier step of the blocked
+# ticket's engine than the one it blocked at (ASS-343, ticket:create
+# --resume-at; agent.sh ticket:fix-resume-step reads it), created,
 # updated) between `---` lines, an H1 title, then H2 sections, the
 # acceptance criteria a numbered list under `## Acceptance criteria`.
 #
@@ -139,6 +142,7 @@ ticket_json() {
         "overlaps-with": ($fm["overlaps-with"] // "" | split(",") | map(trim) | map(select(. != ""))) }
       + (if $fm["fast-track"] == "true" then { "fast-track": true } else {} end)
       + (if $fm["kept-whole"] == "true" then { "kept-whole": true } else {} end)
+      + (if ($fm["resume-at"] // "") != "" then { "resume-at": ($fm["resume-at"] | trim) } else {} end)
       + (if ($fm["split-into"] // "") != "" then { "split-into": ($fm["split-into"] | split(",") | map(trim) | map(select(. != ""))) } else {} end)
       + (.[$h + 1:] | {
           description: (join("\n") | trim),

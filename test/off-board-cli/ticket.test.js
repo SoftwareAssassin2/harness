@@ -106,6 +106,27 @@ test('ASS-83 AC1: ticket:create --fast-track writes fast-track: true in the fron
   assert.equal((await f.json('ticket:get', 'p', key))['fast-track'], true);
 });
 
+// ASS-343: a fix ticket for an earlier step of the blocked ticket's engine names that step, where the
+// blocked ticket resumes once the fix lands (agent.sh ticket:fix-resume-step reads it through ticket:get).
+test('ASS-343: ticket:create --resume-at <step> writes resume-at in the front matter, with the other options in any order; get returns it; a bad step is refused, writing nothing', async () => {
+  const f = fixture();
+  const { key } = await f.json('ticket:create', 'p', 'Bug', 'Plan prompt', '--resume-at', 'plan');
+  assert.match(f.read(key), /^status: Backlog\nresume-at: plan\ncreated:/m);
+  assert.equal((await f.json('ticket:get', 'p', key))['resume-at'], 'plan');
+  const all = await f.json('ticket:create', 'p', 'Bug', 'With body', f.body('body.md', BODY), '--resume-at', 'build', '--fast-track', '--priority', 'High');
+  assert.match(f.read(all.key), /^status: Backlog\npriority: High\nfast-track: true\nresume-at: build\ncreated:/m);
+  assert.equal(sections(f.read(all.key)), `# With body\n\n${BODY}`);
+  const plain = await f.json('ticket:create', 'p', 'Story', 'Plain');
+  assert.equal('resume-at' in (await f.json('ticket:get', 'p', plain.key)), false);
+  // A rewrite keeps it.
+  await f.offBoard('ticket:update-status', 'p', key, 'In Progress');
+  assert.equal((await f.json('ticket:get', 'p', key))['resume-at'], 'plan');
+  const before = f.snapshot();
+  await fails(f.offBoard('ticket:create', 'p', 'Bug', 'Bad', '--resume-at', '../plan'), /invalid resume-at step '\.\.\/plan'/);
+  await fails(f.offBoard('ticket:create', 'p', 'Bug', 'Bad', '--resume-at'), /usage: ticket:create/);
+  assert.equal(f.snapshot(), before);
+});
+
 test('ticket:get parses the front matter, title, description and numbered criteria; the key matches in any case', async () => {
   const f = fixture();
   f.put('HD-3', STORY('HD-3', BODY));

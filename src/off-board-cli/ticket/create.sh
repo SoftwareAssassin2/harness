@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Description: Create an off-board ticket — ticket:create <project> <type> <title> [<body-file>] [--fast-track] [--priority <priority>].
+# Description: Create an off-board ticket — ticket:create <project> <type> <title> [<body-file>] [--fast-track] [--resume-at <step>] [--priority <priority>].
 set -euo pipefail
 
 # Writes <OFF_BOARD_DIR>/<folder>/<KEY>.md (see ticket.bash), the key one past
@@ -14,20 +14,37 @@ set -euo pipefail
 # rank.js, fast-track.js); nothing but the health check passes it. The grouped
 # blocked flow's fix ticket is fast-tracked too (ASS-306), but after it is
 # created — ticket:mark-fast-track, run by agent.sh ticket:fast-track — the
-# create prompt it shares with other flows passing no --fast-track. Prints
+# create prompt it shares with other flows passing no --fast-track.
+# --resume-at <step> (ASS-343), anywhere after the title, writes resume-at:
+# <step> after that: the grouped blocked flow's fix ticket, when its fix
+# changes an earlier step of the blocked ticket's engine than the one it
+# blocked at, names that step, where the blocked ticket resumes once the fix
+# lands (agent.sh ticket:fix-resume-step; control takes it only when it is a
+# work step at or before the blocked one). Prints
 # { key, file }. Fails, writing nothing, when the
 # project is missing or has no off-board work source, the type is not Story,
-# Bug or Spike, the priority is not one of those names, or the body file is
-# missing.
+# Bug or Spike, the priority is not one of those names, the resume-at step is
+# not one word of letters, digits, _ and -, or the body file is missing.
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../ticket.bash"
 
-fast=
+usage='usage: ticket:create <project> <type> <title> [<body-file>] [--fast-track] [--resume-at <step>] [--priority <priority>]'
+fast= resume=
 args=()
-for arg in "$@"; do if [[ "$arg" == --fast-track ]]; then fast=1; else args+=("$arg"); fi; done
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --fast-track) fast=1 ;;
+    --resume-at)
+      [[ $# -ge 2 ]] || { echo "$usage" >&2; exit 1; }
+      [[ "$2" =~ ^[A-Za-z0-9_-]+$ ]] || { echo "ticket:create: invalid resume-at step '$2'" >&2; exit 1; }
+      resume="$2"; shift ;;
+    *) args+=("$1") ;;
+  esac
+  shift
+done
 set -- "${args[@]+"${args[@]}"}"
 priority=
 if [[ $# -ge 2 && "${*: -2:1}" == --priority ]]; then priority="$(priority_name ticket:create "${*: -1}")"; set -- "${@:1:$#-2}"; fi
-[[ ($# -eq 3 || $# -eq 4) && "${4:-}" != --priority ]] || { echo "usage: ticket:create <project> <type> <title> [<body-file>] [--fast-track] [--priority <priority>]" >&2; exit 1; }
+[[ ($# -eq 3 || $# -eq 4) && "${4:-}" != --priority ]] || { echo "$usage" >&2; exit 1; }
 case "$2" in Story|Bug|Spike) ;; *) echo "ticket:create: unknown type '$2'; one of Story, Bug, Spike" >&2; exit 1 ;; esac
 [[ $# -eq 3 || -f "$4" ]] || { echo "ticket:create: no file $4" >&2; exit 1; }
 folder="$(ticket_folder ticket:create "$1")"
@@ -45,7 +62,7 @@ now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
 tmp="$(mktemp "$folder/.$key.XXXXXX")"
 {
-  printf -- '---\nkey: %s\ntype: %s\nstatus: Backlog\n%s%screated: %s\nupdated: %s\n---\n# %s\n\n' "$key" "$2" "${priority:+priority: $priority$'\n'}" "${fast:+fast-track: true$'\n'}" "$now" "$now" "$3"
+  printf -- '---\nkey: %s\ntype: %s\nstatus: Backlog\n%s%s%screated: %s\nupdated: %s\n---\n# %s\n\n' "$key" "$2" "${priority:+priority: $priority$'\n'}" "${fast:+fast-track: true$'\n'}" "${resume:+resume-at: $resume$'\n'}" "$now" "$now" "$3"
   if [[ $# -eq 4 ]]; then cat "$4"; else printf '## User story\n\n## Context\n\n## Acceptance criteria\n'; fi
 } > "$tmp"
 mv "$tmp" "$file"

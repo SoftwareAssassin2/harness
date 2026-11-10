@@ -10,7 +10,8 @@ set -euo pipefail
 # (ticket:set-overlaps, ASS-196); acceptance-criteria the numbered list
 # under `## Acceptance criteria`, each { criteria-number, description }.
 # "kept-whole": true and "split-into" (ASS-252) appear only on a ticket kept
-# whole (ticket:keep-whole) or split into others (ticket:mark-split).
+# whole (ticket:keep-whole) or split into others (ticket:mark-split);
+# "resume-at" (ASS-343) only on a fix ticket created with --resume-at.
 # The key matches in any case. Fails when the project is missing or has
 # no off-board work source, the ticket is missing, or its file is malformed.
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../ticket.bash"
