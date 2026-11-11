@@ -289,3 +289,27 @@ test('ASS-355 AC7: the updates screen judges the hold with control\'s predicate 
   assert.doesNotMatch(screen(true, 'Done'), /Waiting on another ticket/);   // the engine's done step pairs Done
   assert.doesNotMatch(screen(false, 'In Progress'), /Waiting on another ticket/);   // flag off: control holds nothing
 });
+
+// ASS-362 AC6: a variation whose plan is finished (its planning step's
+// sub-engine at an is-done step) holds no seat and only waits for one to move
+// on to Build: listed apart, not under In Progress: planning, and not counted
+// as actively being planned — then or now.
+test('ASS-362 AC6: a finished plan is listed as planned, waiting for a build seat, apart from planning, and not counted as active', () => {
+  const planned = workflows.map(w => (w.name === 'prj-dev' ? { ...w, steps: w.steps.map(s => (s.id === 'plan' ? { ...s, 'exit-events': [{ condition: { 'is-done': true }, 'move-to-state': 'build' }] } : s)) }
+    : w.name === 'prj-plan' ? { ...w, steps: [...w.steps, step('plan-done', 'Done', 3, { 'is-done': true, action: { type: 'none' } })] } : w));
+  const ours = { features: [
+    ticket('PRJ-20', 'Just planned', { 'ticket-system-status': 'In Progress' }, [['committed', 'plan/check-plan', before], ['plan/check-plan', 'plan/plan-done', after(1)]]),
+    ticket('PRJ-21', 'Still planning', { 'ticket-system-status': 'In Progress' }, [['committed', 'plan/check-plan', before]]),
+    ticket('PRJ-22', 'Planned a while ago', { 'ticket-system-status': 'In Progress' }, [['committed', 'plan/check-plan', before], ['plan/check-plan', 'plan/plan-done', before]]),
+  ], bugs: [], spikes: [] };
+  const { sections, net } = progressSince({ sprint: ours, workflows: planned, since });
+  const of = title => sections.find(s => s.title.startsWith(`${title} (`));
+  assert.deepEqual(of('In Progress: planned, waiting for a build seat').bullets.map(b => b.key), ['PRJ-20', 'PRJ-22']);
+  assert.equal(of('In Progress: planned, waiting for a build seat').title, 'In Progress: planned, waiting for a build seat (2). Planning is finished; building starts when a seat frees up.');
+  assert.deepEqual(of('In Progress: planning').bullets.map(b => b.key), ['PRJ-21']);
+  assert.equal(of('In Progress: planned, waiting for a build seat').bullets[0].text, 'PRJ-20: Just planned. At the Plan step.');
+  // Listed before planning, after building, in the board's order.
+  assert.deepEqual(sections.map(s => s.title.split(' (')[0]), ['In Progress: planned, waiting for a build seat', 'In Progress: planning']);
+  // PRJ-21 alone is active now; then PRJ-20 (planning then) too, PRJ-22 already planned.
+  assert.match(net, / 1 ticket is actively being built or planned, down from 2; 2 planned, waiting for a build seat\. /);
+});

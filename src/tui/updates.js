@@ -9,7 +9,7 @@
 
 import { wrap, link } from './text.js';
 import { enginesOf } from './status.js';
-import { statusOf, inPlanning, isHeld, changePath } from '../control/engine.js';
+import { statusOf, inPlanning, isHeld, changePath, finishedPlanning } from '../control/engine.js';
 import { reassignedTo } from './ticket.js';
 import { dependencyHold } from '../control/dependencies.js';
 
@@ -27,12 +27,13 @@ export function lastWeekdayMorning(now) {
 }
 
 // The board's columns in its order, each with what it means to the team; In
-// Progress is split three ways and On Hold three (see progressSince). Any other
+// Progress is split four ways and On Hold three (see progressSince). Any other
 // status follows these, by name, with no meaning of its own.
 const BOARD = [
   ['Done', 'Finished and accepted.'],
   ['In Testing', 'The work is done and being verified.'],
   ['In Progress: building', 'Code is written or being written, and tests are running.'],
+  ['In Progress: planned, waiting for a build seat', 'Planning is finished; building starts when a seat frees up.'],
   ['In Progress: planning', 'Being analyzed and planned before any code.'],
   ['In Progress: held on purpose', 'Started, then held until something else is ready.'],
   ['To Do', 'Committed to the sprint, not started yet.'],
@@ -102,7 +103,9 @@ function stoppedAt(engines, v) {
 // otherwise is under Stopped until a problem is fixed. A paused one that is
 // Done stays under Done. In Progress is split: held on purpose when control
 // holds it otherwise (isHeld: worked by hand, or paused to free a seat for a
-// fast-track); planning at a planning-stage step (inPlanning); else building.
+// fast-track); planned, waiting for a build seat when its plan is finished
+// (ASS-362: statusOf's planned — it holds no seat, and is not counted as
+// actively planned); planning at a planning-stage step (inPlanning); else building.
 //
 // Each text is "<KEY>: <title>. <note>", the note where it is and why it
 // waits, in plain words from the engines' step names and the keys it waits
@@ -117,7 +120,8 @@ function stoppedAt(engines, v) {
 // net nets the change since `since`: the holds cleared (moves out of
 // quarantine), the On Hold count then and now and how many of now's are
 // paused on purpose and waiting on another ticket (counted, as a pause is, then only when it has had no
-// state change since), how many are being built or planned now and then, how
+// state change since), how many are being built or planned now and then (a
+// finished plan waiting for a build seat neither, ASS-362: how many wait so now said apart), how
 // many are In Testing, and how many reached Done; the paused on purpose
 // counted only as On Hold. A variation's status then is the one its step
 // then pairs with — where its first change since moved it from, else where
@@ -134,12 +138,12 @@ export function progressSince({ sprint, workflows, since, hold }) {
   const live = t => (t.variations ?? []).filter(v => v['is-deleted'] !== true);
   const after = c => Boolean(c.timestamp) && Date.parse(c.timestamp) > since;
   const groups = new Map();
-  let cleared = 0, onHoldThen = 0, onHoldNow = 0, pausedNow = 0, waitingNow = 0, activeThen = 0, activeNow = 0, testing = 0, reachedDone = 0;
+  let cleared = 0, onHoldThen = 0, onHoldNow = 0, pausedNow = 0, waitingNow = 0, activeThen = 0, activeNow = 0, readyNow = 0, testing = 0, reachedDone = 0;
 
   // A chain's status on the board, and its In Progress split for a variation held or not.
   const boardOf = (t, chain) => pairedOf(chain) ?? t['ticket-system-status'];
-  const splitOf = (status, chain, held) => (status !== IN_PROGRESS ? status
-    : `${IN_PROGRESS}: ${held ? 'held on purpose' : inPlanning({ chain }) ? 'planning' : 'building'}`);
+  const splitOf = (status, chain, held, planned) => (status !== IN_PROGRESS ? status
+    : `${IN_PROGRESS}: ${held ? 'held on purpose' : planned ? 'planned, waiting for a build seat' : inPlanning({ chain }) ? 'planning' : 'building'}`);
   // Paused on purpose (ASS-352): the ticket, or the variation not by control
   // to free a seat for a fast-track (paused-for-fast-track). A requirements
   // change's hold and a reassignment's set is-paused too, so they count.
@@ -148,13 +152,14 @@ export function progressSince({ sprint, workflows, since, hold }) {
   for (const t of tickets) {
     const variations = live(t);
     for (const v of variations) {
-      const { chain } = statusOf(engines, undefined, v);
+      const { chain, planned } = statusOf(engines, undefined, v);
       const changes = (v['state-changes'] ?? []).filter(after);
       const waits = hold(t, v)?.waits ?? [];
       const held = isHeld(t, v) || waits.length > 0;
       const status = boardOf(t, chain);
       const then = changes.length ? sideOf(engines, changes[0], 'from-state').chain : chain;
       const statusThen = pairedOf(then) ?? t['ticket-system-status'];
+      const plannedThen = changes.length ? finishedPlanning(engines, then, v) : planned;   // ASS-362: its plan finished then
       // Paused on purpose now and (no pause history: see above) then; a Done one stays Done.
       const onPurpose = pausedOnPurpose(t, v) && status !== DONE;
       const onPurposeThen = pausedOnPurpose(t, v) && !changes.length && statusThen !== DONE;
@@ -166,8 +171,9 @@ export function progressSince({ sprint, workflows, since, hold }) {
       onHoldNow += onPurpose || waiting || status === ON_HOLD;
       pausedNow += onPurpose;
       waitingNow += waiting;
-      activeThen += statusThen === IN_PROGRESS && !held && !onPurposeThen;
-      activeNow += status === IN_PROGRESS && !held && !onPurpose;
+      activeThen += statusThen === IN_PROGRESS && !held && !onPurposeThen && !plannedThen;
+      activeNow += status === IN_PROGRESS && !held && !onPurpose && !planned;
+      readyNow += status === IN_PROGRESS && !held && !onPurpose && planned;
       testing += status === IN_TESTING && !onPurpose && !waiting;
       reachedDone += status === DONE && statusThen !== DONE;
       if (!changes.length && status === DONE) continue;
@@ -188,7 +194,7 @@ export function progressSince({ sprint, workflows, since, hold }) {
       const title = /[.!?]$/.test(t.title ?? '') ? t.title : `${t.title}.`;
       const key = variations.length > 1 ? `${t.key}.${v.name}` : t.key;
       const text = `${key}: ${title}${note ? ` ${note[0].toUpperCase()}${note.slice(1)}.` : ''}${mismatch}`;
-      const group = onPurpose ? `${ON_HOLD}/${PAUSED_ON_PURPOSE}` : waiting ? `${ON_HOLD}/${WAITING_ON_ANOTHER}` : status === ON_HOLD ? `${ON_HOLD}/${STOPPED}` : splitOf(status, chain, isHeld(t, v)) ?? 'No status';
+      const group = onPurpose ? `${ON_HOLD}/${PAUSED_ON_PURPOSE}` : waiting ? `${ON_HOLD}/${WAITING_ON_ANOTHER}` : status === ON_HOLD ? `${ON_HOLD}/${STOPPED}` : splitOf(status, chain, isHeld(t, v), planned) ?? 'No status';
       groups.set(group, [...(groups.get(group) ?? []), { key, url: t.url, text }]);
     }
   }
@@ -209,7 +215,8 @@ export function progressSince({ sprint, workflows, since, hold }) {
     + `${plural(cleared, 'hold')} cleared; On Hold went from ${plural(onHoldThen, 'ticket')} to ${onHoldNow}`
     + `${!pausedNow ? '' : onHoldNow === 1 ? ', paused on purpose' : `, ${pausedNow} of them paused on purpose`}`
     + `${!waitingNow ? '' : onHoldNow === 1 ? ', waiting on another ticket' : `, ${waitingNow} ${pausedNow ? '' : 'of them '}waiting on another ticket`}. `
-    + `${plural(activeNow, 'ticket')} ${activeNow === 1 ? 'is' : 'are'} actively being built or planned, ${trend} ${activeThen}. `
+    + `${plural(activeNow, 'ticket')} ${activeNow === 1 ? 'is' : 'are'} actively being built or planned, ${trend} ${activeThen}`
+    + `${readyNow ? `; ${readyNow} planned, waiting for a build seat` : ''}. `
     + `${testing} in testing, ${reachedDone} reached Done.`;
   return { sections, net };
 }

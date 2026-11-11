@@ -329,8 +329,13 @@ function further(a, b) {
 // screen's Status field; the sprint grid wraps it (statusCell, ASS-326).
 export const statusText = (t, steps) => {
   const { chain, hold } = statusParts(t, steps);
-  return [chain.join(' › ') || NONE, hold && `${hold.lead} ${hold.items.join(', ')}`].filter(Boolean).join(' — ');
+  return [chain.join(' › ') || NONE, t.status?.planned && PLANNED, hold && `${hold.lead} ${hold.items.join(', ')}`].filter(Boolean).join(' — ');
 };
+
+// What a Status adds for a variation whose plan is finished (ASS-362: control's
+// statusOf `planned`): it holds no seat — no 💺 on its row — and only waits for
+// an in-progress one to move on to Build.
+export const PLANNED = 'Planned, waiting for a build seat';
 
 // The width a sprint grid's Status wraps at (ASS-326): one ticket waiting on 9
 // others made its one-line Status ~115 wide, and since a column is as wide as
@@ -340,7 +345,8 @@ export const STATUS_WRAP = 40;
 
 // statusCell(t, steps) — the sprint grid's Status cell (ASS-326): a function of
 // its column's width (boxTable lays it out once that is known) giving the
-// lines. The step chain, wrapped between its " › " parts; under it, on lines
+// lines. The step chain, wrapped between its " › " parts; under it PLANNED for a
+// finished plan (ASS-362); under that, on lines
 // of its own wrapped between keys, the dependencies it ignores — never what it
 // waits on (ASS-360: the Ticket cell's "↳ WAITING ON" line under the title says
 // that, sprint.js ticketRows; statusText still does); each at the narrower of the column
@@ -353,6 +359,7 @@ export const statusCell = (t, steps) => {
   const comma = items => items.map((item, i) => (i < items.length - 1 ? `${item},` : item));
   const sets = [
     chain.length ? chain.map((part, i) => (i < chain.length - 1 ? `${part} ›` : part)) : [NONE],
+    ...(t.status?.planned ? [[PLANNED]] : []),
     ...(hold?.lead === 'ignores' ? [comma(hold.items).map((item, i) => (i ? item : `${hold.lead} ${item}`))] : []),
   ];
   return width => sets.flatMap(parts => wrapParts(parts, Math.min(width, STATUS_WRAP), width));

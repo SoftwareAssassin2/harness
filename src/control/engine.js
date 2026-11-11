@@ -293,7 +293,7 @@ export function statusOf(engines, engineName, variation) {
 // Plan). And it waits on no person (humanWaits: a gate on leaving the step
 // keeps it as it is). Generic: any planning sub-engine's is-done step. A
 // flat engine's steps have no sub-engine, so it is never so.
-function finishedPlanning(engines, chain, variation) {
+export function finishedPlanning(engines, chain, variation) {
   const top = chain[0]?.step;
   if (chain.length < 2 || top?.['is-planning-stage'] !== true || chain.at(-1).step?.['is-done'] !== true) return false;
   const steps = engineSteps(engines, chain[0]['state-engine']);
