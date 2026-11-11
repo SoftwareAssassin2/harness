@@ -305,6 +305,20 @@ written on the branch for CI but left out of `automated-tests-<variation>.json`,
 so Automated Testing does not block on it. The flat `generate-automated-tests`
 prompt is unchanged.
 
+A recorded test stays current with the code it tests (ASS-353). A `run`
+command bringing a docker compose stack up starts it from a fresh database:
+`docker compose down -v` first, or a per-run-unique `COMPOSE_PROJECT_NAME`;
+`automated-tests:record` refuses one under a fixed project name with no reset
+(`compose-reset.js`), whose volume would carry migrations a later step
+renumbered into the next run. Generate Solution records the list again when
+it renames or moves a test file an entry names. Automated Testing
+(`automated-tests:verify-success`) sends either kind recorded before back to
+Generate Automated Tests, exit 4 as for a missing list, marked ↻ in
+`automated-test-results-<variation>.md`: a reusing stack before anything runs,
+and a red run whose `list` command fails too (it ran, so the file it names is
+gone), compared with no master. The flat engines send exit 4 to Generate
+Solution, as any exit but 0 and 3.
+
 CI Checks (ASS-249; grouped Build only — v2-build and the flat engines have
 none — `ci-checks:verify`, in the VM, max-visits 3) runs, between Automated
 Testing and Code Review, the merge-request CI checks the project declares for

@@ -991,5 +991,57 @@ test('ASS-329 AC1: in the dev container, the limit stops the run and everything 
   assert.equal(pids(f).length, 4);
   assert.ok(gone(f));
   assert.match(results(), /- the command timed out after 0\.02 minutes\n/);
-  assert.equal(f.dockerLog().match(new RegExp(`^exec -i -w ${f.inside} ctr bash -c `, 'gm')).length, 2);
+  assert.equal(f.dockerLog().match(new RegExp(`^exec -i -w ${f.inside} ctr bash -c `, 'gm')).length, 3);   // the run, its list (ASS-353: is the recorded file still there?) and the re-run
+});
+
+// ASS-353: a fake docker on PATH whose `compose` keeps each project's
+// "volume" as a file — `down -v` removes it, `up` fails, as flyway does, when
+// it holds a migration no longer in the tree and else writes the current one
+// — each call logged.
+function fakeCompose(f) {
+  const state = join(f.tmp, 'compose');
+  mkdirSync(state);
+  writeFileSync(join(f.tmp, 'bin', 'docker'), `#!/usr/bin/env bash
+[ "$1" = compose ] || exit 1; shift
+vol="${state}/\${COMPOSE_PROJECT_NAME:-default}.volume"
+echo "$*" >> "${state}/docker.log"
+case "$1" in
+  down) [[ " $* " == *" -v "* ]] && rm -f "$vol"; exit 0 ;;
+  up) if grep -q renumbered "$vol" 2>/dev/null; then echo 'Detected applied migration not resolved locally: 373' >&2; echo 'service "db" did not complete successfully: exit 1' >&2; exit 1; fi; echo current > "$vol" ;;
+esac
+`);
+  chmodSync(join(f.tmp, 'bin', 'docker'), 0o755);
+  return { stale: project => writeFileSync(join(state, `${project}.volume`), 'V373 V374 V375, since renumbered\n'), log: () => (existsSync(join(state, 'docker.log')) ? readFileSync(join(state, 'docker.log'), 'utf8').trim().split('\n') : []) };
+}
+
+test('ASS-353 AC1, AC2: a recorded compose test resetting its volume first comes up healthy over a volume an earlier run left; one reusing it is not run but sent back to Generate Automated Tests (exit 4)', async () => {
+  const f = workspace();
+  const docker = fakeCompose(f);
+  docker.stale('ex1');
+  const fresh = 'export COMPOSE_PROJECT_NAME=ex1 && docker compose down -v && docker compose up -d --wait db && echo "ok 1 - a"';
+  const t = await withTests([{ list: 'echo a', run: fresh }], f);
+  assert.deepEqual(JSON.parse((await t.agent('automated-tests:verify-success', 'p', 'ABC-3', 'A')).stdout), { passed: 1, failed: 0 });
+  assert.deepEqual(docker.log(), ['down -v', 'up -d --wait db']);
+  // The incident's shape: a fixed project name, no down -v — over the stale volume, flyway would fail before a test ran.
+  docker.stale('ex1');
+  const reusing = 'COMPOSE_PROJECT_NAME=ex1 docker compose up -d --wait db && echo "ok 1 - a"';
+  writeFileSync(join(t.folder, 'automated-tests-A.json'), JSON.stringify([{ list: 'echo a', run: fresh }, { list: 'echo b', run: reusing }]));
+  await exitsWith(t.agent('automated-tests:verify-success', 'p', 'ABC-3', 'A'), 4, /1 of 2 reuse a docker compose stack's volumes across runs: for Generate Automated Tests to record again/);
+  assert.deepEqual(docker.log(), ['down -v', 'up -d --wait db']);              // nothing ran
+  assert.ok(t.results().includes(`## ↻ ${reusing} (not run: record it again)\n\nIt brings a docker compose stack up reusing the volumes`));
+  assert.ok(!existsSync(join(t.folder, 'automated-test-baseline-A.json')));
+});
+
+test('ASS-353 AC3: a red run whose list command fails too names a test file moved since it was recorded: exit 4 for Generate Automated Tests, compared with no master; recorded again with the current path it passes', async () => {
+  const t = await withTests([{ list: 'grep -c "^ok" tests/414_example.sql', run: 'cat tests/414_example.sql' }]);
+  mkdirSync(join(t.worktree, 'tests'));
+  writeFileSync(join(t.worktree, 'tests', '417_example.sql'), 'ok 1 - a\n');      // renumbered 414 → 417 by a later step
+  await exitsWith(t.agent('automated-tests:verify-success', 'p', 'ABC-3', 'A'), 4, /1 of 1 name a test no longer where it was recorded: for Generate Automated Tests to record again/);
+  assert.match(t.results(), /## ↻ cat tests\/414_example\.sql \(exit 1: its recorded test is gone, record it again\)\n\nIts list command fails too \(exit 2\), so the file it names was moved or renamed after it was recorded: `grep -c "\^ok" tests\/414_example\.sql`\n/);
+  assert.ok(!existsSync(join(t.folder, 'automated-test-baseline-A.json')));   // no master run
+  writeFileSync(join(t.folder, 'automated-tests-A.json'), JSON.stringify([{ list: 'grep -c "^ok" tests/417_example.sql', run: 'cat tests/417_example.sql' }]));
+  assert.deepEqual(JSON.parse((await t.agent('automated-tests:verify-success', 'p', 'ABC-3', 'A')).stdout), { passed: 1, failed: 0 });
+  // A red run whose list still finds its file is a failed test, as before.
+  writeFileSync(join(t.folder, 'automated-tests-A.json'), JSON.stringify([{ list: 'grep -c "^ok" tests/417_example.sql', run: `${ON_MASTER} || { echo broke >&2; exit 1; }` }]));
+  await exitsWith(t.agent('automated-tests:verify-success', 'p', 'ABC-3', 'A'), 1, /1 of 1 failed/);
 });

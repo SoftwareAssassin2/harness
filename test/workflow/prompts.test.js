@@ -827,3 +827,16 @@ test('ASS-316 AC1: create-ticket-grouped\'s empty key carries no-ticket-reason a
 
   assert.doesNotMatch(text('create-ticket'), /no-ticket-reason/, 'the flat reference prompt is unchanged');
 });
+
+// ASS-353: a recorded test stays current — the grouped test writer starts a
+// compose stack from a fresh database and records again an entry Automated
+// Testing marks ↻; the grouped solution builder records the list again when
+// it renames a test file an entry names. The flat prompts are unchanged.
+test('ASS-353 AC1, AC3: generate-automated-tests-grouped resets a compose stack each run and records a ↻ entry again; generate-solution-grouped records the list again on renaming a test file it names; the flat prompts are unchanged', () => {
+  const tests = text('generate-automated-tests-grouped');
+  assert.match(tests, /`docker compose down -v` first in it \(or a per-run-unique COMPOSE_PROJECT_NAME/);
+  assert.match(tests, /\{ticket-folder\}\/automated-test-results-\{variation\}\.md marks an entry ↻ \(record it again\)/);
+  const solution = text('generate-solution-grouped');
+  assert.match(solution, /When you rename or move a test file an entry of \{ticket-folder\}\/automated-tests-\{variation\}\.json names[^.]*, record that list again with the file's current path[^:]*: `\{agent-sh\} automated-tests:record \{project\} \{ticket\} \{variation\}`/);
+  for (const flat of ['generate-automated-tests', 'generate-solution']) assert.doesNotMatch(text(flat), /down -v|record that list again|marks an entry ↻/, flat);
+});

@@ -55,14 +55,38 @@ set -euo pipefail
 # new failure (re-run once, then exit 1); timed out on master too, exit 3,
 # both outputs in the results. Master's run that timed out is recorded as
 # such, and run again next time, never kept.
+#
+# A recorded test gone stale since it was recorded goes back to Generate
+# Automated Tests (exit 4, as a missing list does) to be recorded again, not
+# to Generate Solution or Blocked (ASS-353): a run command that brings a
+# docker compose stack up reusing an earlier run's volumes (compose-reset.js;
+# automated-tests:record refuses one now, this catches one recorded before)
+# is not run at all, its database possibly carrying migrations a later step
+# renumbered; and a run that fails whose list command fails too — got as far
+# as running, not "could not run" — names a test file no longer there, moved
+# or renumbered by a later step, so its failure is the record's, not the
+# code's: neither is compared with master, both named in the results.
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../automated-tests.bash"
 judge_js="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/test-results.js"
+compose_js="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/compose-reset.js"
 
 [[ $# -eq 3 ]] || { echo "usage: automated-tests:verify-success <project> <ticket-key> <variation>" >&2; exit 1; }
 key="$(upper "$2")"
 tests_setup automated-tests:verify-success "$1" "$key" "$3"
 minutes="$(run_minutes automated-tests:verify-success "$1")" || exit 3
 baseline="${results%/*}/automated-test-baseline-$3.json"
+
+# ASS-353: a recorded run command reusing its compose stack's volumes is recorded again before anything runs.
+reusing="$(node "$compose_js" <<< "$tests")"
+if [[ -n "$reusing" ]]; then
+  report="# Automated test results — $key $3, $(date -u +%Y-%m-%dT%H:%M:%SZ)"$'\n'
+  while IFS= read -r command; do
+    report+=$'\n'"## ↻ $command (not run: record it again)"$'\n\n'"It brings a docker compose stack up reusing the volumes an earlier run left, its database possibly carrying migrations since renamed or renumbered: run \`docker compose down -v\` first in it (or use a per-run-unique COMPOSE_PROJECT_NAME), so each run starts from a fresh database."$'\n'
+  done <<< "$reusing"
+  printf '%s' "$report" | replace_file "$results"
+  echo "automated-tests:verify-success: $(wc -l <<< "$reusing" | tr -d ' ') of $(jq length <<< "$tests") reuse a docker compose stack's volumes across runs: for Generate Automated Tests to record again; see $results" >&2
+  exit 4
+fi
 
 # The checkout's git, run where the tests run (in the VM, every repository in
 # /repos/; else the folder, on the Mac): `key` prints master's SHA (each
@@ -110,11 +134,16 @@ exit_of() { local why; if why="$(timed_out "$1" "$2")"; then echo "exit $1: $why
 block() { printf '\n```\n%s\n```\n' "$(cat "$1")"; }
 
 mapfile -t commands < <(jq -r '.[].run' <<< "$tests")
+mapfile -t lists < <(jq -r '.[].list' <<< "$tests")
 mapfile -t reproduces < <(jq -r '.[].reproduces == true' <<< "$tests")
-statuses=() red=()
+statuses=() red=() stale=()
 for i in "${!commands[@]}"; do
   statuses[i]="$(run_test "$1" "${commands[i]}" "$tmp/branch-$i")"
-  [[ ${statuses[i]} -eq 0 || ${reproduces[i]} == true ]] || ! ran "${statuses[i]}" "$tmp/branch-$i" || red+=("$i")
+  [[ ${statuses[i]} -ne 0 ]] || continue
+  # ASS-353: red, its list failing too (and running) — the recorded file gone: stale, not red.
+  listed="$(run_test "$1" "${lists[i]}" "$tmp/list-$i")"
+  if [[ $listed -ne 0 ]] && runnable "$listed" "$tmp/list-$i"; then stale[i]="$listed"; continue; fi
+  [[ ${reproduces[i]} == true ]] || ! ran "${statuses[i]}" "$tmp/branch-$i" || red+=("$i")
 done
 
 # Master's runs of the red commands: the ones recorded for master's SHA, the rest run now.
@@ -142,12 +171,14 @@ if [[ ${#red[@]} -gt 0 ]]; then
   fi
 fi
 
-passed=0 failed=0 unrunnable=0 blocked=0
+passed=0 failed=0 unrunnable=0 blocked=0 gone=0
 pre_existing='[]'
 report="# Automated test results — $key $3, $(date -u +%Y-%m-%dT%H:%M:%SZ)"$'\n'
 for i in "${!commands[@]}"; do
   command="${commands[i]}" status="${statuses[i]}" out="$tmp/branch-$i" extra=""
   if [[ $status -eq 0 ]]; then passed=$((passed + 1)); report+=$'\n'"## ✓ $command (exit 0)"$'\n'"$(block "$out")"$'\n'; continue; fi
+  if [[ -n "${stale[i]:-}" ]]; then gone=$((gone + 1))
+    report+=$'\n'"## ↻ $command ($(exit_of "$status" "$out"): its recorded test is gone, record it again)"$'\n\n'"Its list command fails too (exit ${stale[i]}), so the file it names was moved or renamed after it was recorded: \`${lists[i]}\`"$'\n'"$(block "$tmp/list-$i")"$'\n'"$(block "$out")"$'\n'; continue; fi
   if ! ran "$status" "$out"; then unrunnable=$((unrunnable + 1)); report+=$'\n'"## ⚠ $command (exit $status: could not run)"$'\n'"$(block "$out")"$'\n'; continue; fi
   master_status=- master=- new="New failures, failing again on a re-run:"
   if [[ ${reproduces[i]} != true ]]; then
@@ -180,6 +211,7 @@ update_whole_ticket automated-tests:verify-success "$1" "$key" --arg name "$3" -
   .variations |= map(if .name == $name then .["local-testing"] = ((.["local-testing"] // {} | if type == "object" then . else {} end)
     + { "number-of-relevant-automated-tests": $total, "number-of-passing-relevant-automated-tests": $passing }) else . end)' \
   || echo "automated-tests:verify-success: could not record the counts on the variation" >&2
+[[ $gone -eq 0 ]] || { echo "automated-tests:verify-success: $gone of $total name a test no longer where it was recorded: for Generate Automated Tests to record again; see $results" >&2; exit 4; }
 [[ $unrunnable -eq 0 ]] || { echo "automated-tests:verify-success: could not run $unrunnable of $total: an environment problem, not failed tests; see $results" >&2; exit 3; }
 [[ $blocked -eq 0 ]] || { echo "automated-tests:verify-success: $blocked of $total red on master too, with no test results to compare: for a human; see $results" >&2; exit 3; }
 [[ $failed -eq 0 ]] || { echo "automated-tests:verify-success: $failed of $total failed; see $results" >&2; exit 1; }

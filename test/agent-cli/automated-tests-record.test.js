@@ -133,3 +133,23 @@ test('work:write still refuses automated-tests-<V>.json (WORK_MANAGED unchanged)
   assert.equal(r.code, 1);
   assert.match(r.stderr, /work:write: .* is the harness's own/);
 });
+
+// ASS-353 AC1: a run command bringing a docker compose stack up under a fixed
+// project name, with no `down -v` first, would reuse an earlier run's database
+// volume: refused, the file left as it was; one that resets first is recorded.
+test('ASS-353 AC1: automated-tests:record refuses a run command reusing a docker compose stack\'s volumes, naming it, and records one that runs down -v first', async () => {
+  const { dir, folder } = projects();
+  const good = '[{"list":"a","run":"b"}]';
+  await cli(dir, good, 'automated-tests:record', 'p', 'ABC-5', 'A');
+  const before = snapshot(folder);
+  const reusing = 'cd e2e && COMPOSE_PROJECT_NAME=ex5 docker compose up -d --wait db && COMPOSE_PROJECT_NAME=ex5 docker compose run --rm tests';
+  const r = await cli(dir, JSON.stringify([{ list: 'echo ok', run: 'node --test' }, { list: 'grep -c ok 417_example.sql', run: reusing }]), 'automated-tests:record', 'p', 'ABC-5', 'A');
+  assert.equal(r.code, 1);
+  assert.match(r.stderr, /reusing the volumes an earlier run left: run `docker compose down -v` first/);
+  assert.match(r.stderr, /left as it was/);
+  assert.ok(r.stderr.includes(reusing));
+  assert.equal(snapshot(folder), before, 'nothing on disk changed');
+  const fresh = JSON.stringify([{ list: 'grep -c ok 417_example.sql', run: 'cd e2e && export COMPOSE_PROJECT_NAME=ex5 && docker compose down -v && docker compose up -d --wait db && docker compose run --rm tests' }]);
+  assert.equal((await cli(dir, fresh, 'automated-tests:record', 'p', 'ABC-5', 'A')).code, 0);
+  assert.equal(readFileSync(file(folder, 'A'), 'utf8'), fresh);
+});
