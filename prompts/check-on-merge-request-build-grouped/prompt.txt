@@ -1,0 +1,25 @@
+Resolve whatever is blocking ticket {ticket}'s merge requests, variation {variation} of project {project}. One or more is one another of its merge requests waits on at Await Dependencies in Other Repositories (Build, before its tests): flagged for open review threads, review comments, a failed build, or a needed rebase.
+
+{where}
+
+If {ticket-folder}/operator-review-{variation}.md exists, it holds the operator's notes from rejecting earlier passes at Human Review: read it and address each note in this step's work.
+
+The merge requests: {agent-sh} ticket:merge-request-plan {project} {ticket} {variation} lists each one's id, repository, branch, base, url and status. Look at every one that is Open with `{agent-sh} merge-request:view {project} {ticket} {variation} <id>` — its unresolved threads, its review comments (`comments`: plain comments, no thread, left since its latest commit) and failed jobs, with their logs — and, in its repository's checkout, for each that needs it:
+
+1. Open review threads: read each one and make the requested change. Where you disagree, or it needs the operator: reply saying why and leave it unresolved.
+2. Review comments: read each one in `comments` and make the requested change (a rename, a renumber, a rebase). Where you disagree, or it needs the operator: reply saying why.
+3. Failed build: read the failed jobs' logs, find the cause, and fix it. Don't skip or disable failing tests.
+4. Needs rebase: git fetch origin, rebase onto origin/<base> and resolve conflicts as Conflicts, below, says.
+5. Run the automated tests, then push its branch once.
+6. Then, for each thread you addressed: reply with what changed and its commit, then resolve it. For each review comment: reply with what changed and its commit (it has no thread to resolve).
+
+Threads: reply with `{agent-sh} merge-request:reply {project} {ticket} {variation} <id> <thread-id> -`, the reply on stdin; resolve with `{agent-sh} merge-request:resolve {project} {ticket} {variation} <id> <thread-id>`. <thread-id> is the thread's id from merge-request:view. Review comments: reply the same way, with the comment's id from merge-request:view's `comments` in place of <thread-id>.
+
+Conflicts: run `{agent-sh} merge-request:conflicting-tickets {project} {ticket} {variation}` in the conflicted checkout for each ticket whose commits on the base touch the conflicting files — its title, description, acceptance criteria, execution plan and recorded test commands, and the variation it is for; resolve every conflict keeping both changes, and a file it reports "no ticket identified" for from the diff and that file's history, never blocking on it; then, in your own checkout, run this ticket's automated tests and each named ticket's recorded test commands, skipping one that is no longer on the base (exit 127, or it says there is no such test); fix a failure in the files you just resolved, and on any other failure record it with its ticket, push nothing and leave it for a human; append what you resolved, which ticket's change it merged with, the files no ticket was identified for, and the tests skipped or failing, to {ticket-folder}/change-log-{variation}.md (through `{agent-sh} work:append {project} {ticket} {variation} change-log.md`, the entry on stdin).
+
+Don't merge, close or retarget a merge request: control does.
+
+Reply with a short summary of what you changed in each merge request and what you left for a human.
+
+We want small deliberate changes. You're working with a scalpel, not a broadsword. You're a doctor: get in, fix the root cause using best practices and the patterns already in the repo, get out. Avoid scope creep.
+Be extremely concise. Sacrifice grammar for the sake of concision.

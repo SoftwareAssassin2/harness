@@ -14,6 +14,11 @@
 #   mr_rerun <command> <index>                  # its failed pipeline started again (ASS-346)
 #   mr_approvals_left <command> <index> <view>  # approvals it still needs: a number, "unknown" (GitHub: review required), else 0 (ASS-359)
 #   mr_failed_jobs <command> <index> <view>     # its failed pipeline's job names (GitHub: failed checks'), a JSON array (ASS-359)
+#   mr_review_comments <command> <index> <project>   # its plain review comments not yet answered, a JSON array [{ id, author, body, created }] (ASS-361)
+#   mr_harness_accounts <command> <url> <project>    # the logins the harness writes as on <url>'s forge, a JSON array (ASS-361)
+#   mr_comment <command> <index> <comment-id>   # { author, url } of a plain comment on it; fails unless <comment-id> names one (ASS-361)
+#   mr_comment_reply <command> <index> <comment-id> <body>   # a new comment on it answering that one (ASS-361)
+#   is_comment_id <url> <id>                    # whether <id> names a plain comment (GitLab: a note id; GitHub: IC_/PRR_), not a thread (ASS-361)
 #   MR_DEPS                                     # (jq defs) done; unmerged_deps($all): the rows it depends on, neither Merged nor Closed
 #   MR_TIME                                     # (jq def) epoch: a forge's ISO 8601 time as seconds
 #   mr_close <command> <url>                    # the merge request at <url> closed on its forge, unmerged (ASS-104)
@@ -330,6 +335,111 @@ mr_failed_jobs() {
   pipeline="$(jq -r '.pipeline.id // empty' <<< "$3")"
   [[ -n "$pipeline" ]] || { echo '[]'; return; }
   lab "$command" "$url" "/pipelines/$pipeline/jobs?scope=failed" 2>/dev/null | jq -c '[.[]? | .name // empty] | unique' 2>/dev/null || echo '[]'
+}
+
+# mr_harness_accounts <command> <url> <project> — the forge logins the
+# harness itself writes as (ASS-361), lowercased, a JSON array: the project's
+# push account (data/projects/<project>/push-account.json's account, control's
+# last check of the VMs' token, ASS-307), which pushes the commits, and the
+# host's own glab or gh login (GitLab GET /user's username, GitHub's login),
+# which merge-request:reply posts as. A comment by either is never a review
+# comment, and one by either after a review comment answers it. Best effort:
+# a login that cannot be read is left out.
+mr_harness_accounts() {
+  local command="$1" url="$2" file="$projects/$3/push-account.json" push="" host=""
+  [[ -f "$file" ]] && push="$(jq -r '.account // empty' "$file" 2>/dev/null)" || true
+  if on_github "$url"; then host="$(gh_run "$command" api user 2>/dev/null | jq -r '.login // empty' 2>/dev/null)" || true
+  else host="$(glab_run "$command" api user --hostname "$(host_of "$url")" 2>/dev/null | jq -r '.username // empty' 2>/dev/null)" || true; fi
+  jq -nc --arg a "$push" --arg b "$host" '[$a, $b] | map(select(. != "") | ascii_downcase) | unique'
+}
+
+# REVIEW_COMMENTS — jq over { notes: [{ id, author, body, created, resolvable,
+# system, bot }], commits: [<time>], accounts: [<login>] } (ASS-361): the plain
+# review comments still to be acted on — each note neither a system note, a
+# bot's, a resolvable thread's (open-threads counts those) nor the harness's
+# own (accounts), posted after the merge request's latest commit and after the
+# harness's last note there, so a new commit or a reply by the harness answers
+# it. Each { id, author, body, created }, oldest first.
+REVIEW_COMMENTS="$MR_TIME"'
+  def at: if . == null then 0 else epoch end;
+  ([.commits[] | at] | max // 0) as $commit
+  | .accounts as $ours
+  | [.notes[] | select((.system | not) and (.bot | not))] as $notes
+  | ([$notes[] | select((.author // "" | ascii_downcase) | IN($ours[])) | .created | at] | max // 0) as $answered
+  | [$notes[] | select((.resolvable | not) and ((.author // "" | ascii_downcase) | IN($ours[]) | not))
+      | select((.created | at) as $t | $t > $commit and $t > $answered) | { id, author, body, created }]
+  | sort_by(.created | at)'
+
+# mr_review_comments <command> <index> <project> — its plain review comments
+# not yet answered (ASS-361; REVIEW_COMMENTS), a JSON array of { id, author,
+# body, created }: a reviewer's blocking request left as a plain comment, not
+# a thread. GitLab: its notes (GET …/notes, a thread's notes resolvable, a
+# plain comment's not; a project or group bot, "project_<n>_bot…", left out)
+# against its commits' committed dates (…/commits), each id the note's.
+# GitHub: its issue comments and the bodies of its reviews that commented or
+# requested changes (gh pr view --json comments,reviews,commits; an app or
+# [bot] left out), each id the comment's or the review's node id. Best effort:
+# [] when the forge will not say, so asking never fails the caller.
+mr_review_comments() {
+  local command="$1" url iid planned accounts out commits
+  IFS=$'\t' read -r url iid planned < <(mr_at "$2")
+  accounts="$(mr_harness_accounts "$command" "$url" "$3")"
+  if on_github "$url"; then
+    out="$(gh_run "$command" pr view "$iid" --repo "$(path_of "$url")" --json comments,reviews,commits 2>/dev/null)" || { echo '[]'; return 0; }
+    out="$(jq -c '{ notes: ([.comments[]? | { id, author: .author.login, body, created: .createdAt }]
+        + [.reviews[]? | select((.body // "") != "" and (.state | IN("COMMENTED", "CHANGES_REQUESTED"))) | { id, author: .author.login, body, created: .submittedAt }])
+        | map(. + { resolvable: false, system: false, bot: ((.author // "") | test("\\[bot\\]$|^app/")) }),
+      commits: [.commits[]? | .committedDate] }' <<< "$out" 2>/dev/null)" || { echo '[]'; return 0; }
+  else
+    out="$(lab "$command" "$url" "/merge_requests/$iid/notes?per_page=100" 2>/dev/null)" || { echo '[]'; return 0; }
+    commits="$(lab "$command" "$url" "/merge_requests/$iid/commits?per_page=100" 2>/dev/null)" || { echo '[]'; return 0; }
+    out="$(jq -c --argjson commits "$commits" '{ notes: [.[]? | { id, author: .author.username, body, created: .created_at, resolvable: (.resolvable == true), system: (.system == true),
+        bot: ((.author.bot == true) or ((.author.username // "") | test("^(project|group)_[0-9]+_bot"))) }],
+      commits: [$commits[]? | .committed_date // .created_at] }' <<< "$out" 2>/dev/null)" || { echo '[]'; return 0; }
+  fi
+  jq -c --argjson accounts "$accounts" '. + { accounts: $accounts } | '"$REVIEW_COMMENTS" <<< "$out" 2>/dev/null || echo '[]'
+}
+
+# is_comment_id <url> <id> — a plain comment's id as merge-request:view's
+# comments give it (ASS-361), not a thread's: on GitLab a note id (digits; a
+# thread is a discussion, a hex id longer than any note id), on GitHub an
+# issue comment's or a review's node id (IC_…, PRR_…; a thread is PRRT_…).
+is_comment_id() {
+  if on_github "$1"; then [[ "$2" =~ ^(IC|PRR)_ ]]; else [[ "$2" =~ ^[0-9]{1,20}$ ]]; fi
+}
+
+# mr_comment <command> <index> <comment-id> — { author, url } of the plain
+# comment <comment-id> on MRS[<index>], asked of the forge, so a reply never
+# answers another merge request's comment (ASS-361): GitLab GET …/notes/<id>
+# (its url the merge request's, #note_<id>); GitHub the node, which must be
+# this pull request's. Fails, saying so, otherwise.
+mr_comment() {
+  local command="$1" url iid planned repo out
+  IFS=$'\t' read -r url iid planned < <(mr_at "$2")
+  if on_github "$url"; then
+    repo="$(path_of "$url")"
+    out="$(gh_run "$command" api graphql -f query='query($id: ID!) { node(id: $id) { ... on IssueComment { url author { login } pullRequest { number repository { nameWithOwner } } } ... on PullRequestReview { url author { login } pullRequest { number repository { nameWithOwner } } } } }' -f id="$3")" || return 1
+    jq -ce --arg repo "$repo" --argjson n "$iid" '.data.node // {} | select(.pullRequest.number == $n and (.pullRequest.repository.nameWithOwner | ascii_downcase) == ($repo | ascii_downcase)) | { author: .author.login, url }' <<< "$out" \
+      || { echo "$command: $3 is not a comment of $(mr_name "$2")" >&2; return 1; }
+  else
+    out="$(lab "$command" "$url" "/merge_requests/$iid/notes/$3" 2>/dev/null)" || { echo "$command: $3 is not a comment of $(mr_name "$2")" >&2; return 1; }
+    jq -ce --arg mr "$(jq -r --argjson i "$2" '.[$i].url // empty' <<< "$MRS")" '{ author: .author.username, url: (if $mr != "" then "\($mr)#note_\(.id)" else null end) }' <<< "$out" \
+      || { echo "$command: $3 is not a comment of $(mr_name "$2")" >&2; return 1; }
+  fi
+}
+
+# mr_comment_reply <command> <index> <comment-id> <body> — answers a plain
+# comment with a new comment on the merge request (ASS-361), naming the
+# comment's author and linking it: a GitHub issue comment or review cannot be
+# replied to in place, and a reply on a GitLab note would make it a thread
+# (resolvable, so open-threads), which a plain comment is not.
+mr_comment_reply() {
+  local command="$1" url iid planned about text
+  IFS=$'\t' read -r url iid planned < <(mr_at "$2")
+  about="$(mr_comment "$command" "$2" "$3")" || return 1
+  text="$(jq -r --arg body "$4" '"@\(.author)" + (if .url then " (re \(.url))" else "" end) + "\n\n" + $body' <<< "$about")"
+  if on_github "$url"; then gh_run "$command" api "repos/$(path_of "$url")/issues/$iid/comments" -X POST -f body="$text" >/dev/null
+  else lab "$command" "$url" "/merge_requests/$iid/notes" -X POST -f "body=$text" >/dev/null; fi
 }
 
 # mr_close <command> <url> — gh pr close <url> on GitHub; on GitLab its API's

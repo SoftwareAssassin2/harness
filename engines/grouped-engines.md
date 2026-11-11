@@ -13,7 +13,7 @@ rollback.
 | Backlog, Committed | (plain steps) | |
 | Setup | `grouped-setup` | Check Setup Complete, Create VM, Mark Setup Complete |
 | Plan | `grouped-plan` | Extract Acceptance Criteria, Root Cause Analysis, Review Root Cause Analysis, Write Execution Plan, Write Test Plan, Enrich Automated Test Data, Review Plan |
-| Build | `grouped-build` | Refresh the Reference Repositories, Generate Automated Tests, Generate Solution, Await Dependencies in Other Repositories, Refresh the Reference Repositories Before Testing, Automated Testing, CI Checks, Code Review, Security Review |
+| Build | `grouped-build` | Refresh the Reference Repositories, Generate Automated Tests, Generate Solution, Address Merge Request Feedback (only from Await Dependencies), Await Dependencies in Other Repositories, Refresh the Reference Repositories Before Testing, Automated Testing, CI Checks, Code Review, Security Review |
 | Test | `grouped-test` | Local Testing (`grouped-local-testing`), Steps to Test (`grouped-steps-to-test`) |
 | Document | `grouped-document` | Update Documentation, Update Merge Request Details, Check Merge Request Details, Add Screenshots to Merge Request |
 | Review | `grouped-review` | Explain the Change, Risk Assessment, AI Token Expense Check, Payment Gate, Variation Selection |
@@ -60,8 +60,8 @@ It says why a dependency is not merging (ASS-359). Each `waiting` entry it
 prints has `needs`, read from the dependency's forge, in this order:
 `not-created` (planned, never opened), `draft`, `build-failed` (its head
 pipeline failed or was canceled; on GitHub a failed check), `open-threads`
-(unresolved blocking threads; on GitHub changes requested), `needs-rebase`
-(conflicts, or behind its target), `needs-approval` (GitLab's
+(unresolved blocking threads; on GitHub changes requested), `review-comments`
+(ASS-361, below), `needs-rebase` (conflicts, or behind its target), `needs-approval` (GitLab's
 `approvals_left` above 0; GitHub's review decision `REVIEW_REQUIRED`) — or
 `[]` when it only waits to be merged (set to auto-merge, say), which keeps
 polling silently as before. While any dependency needs something, the step
@@ -83,8 +83,45 @@ back to Generate Solution — a visit there, under its max-visits (5), after
 which the run ends at Blocked as any other loop does. The feedback names the
 merge request never created, and a control line in
 `execution-plan-<variation>.md` tells Generate Solution which to build and
-record. Any other failure of the command exits 1, never 2 or 3, so it matches
-no exit and is tried again where it is.
+record. Any other failure of the command exits 1, never 2, 3 or 4, so it
+matches no exit and is tried again where it is.
+
+A reviewer may leave a blocking request as a plain comment, not a thread
+(ASS-361): "renumber the migration, then rebase". `review-comments` counts
+those, after `open-threads`: on GitLab a merge request note that is neither a
+system note, a bot's nor resolvable (a thread's notes are resolvable, and
+`open-threads` counts those), on GitHub an issue comment or the body of a
+review that commented or requested changes — by anyone but the harness,
+posted after the merge request's latest commit and after the harness's last
+comment there. The harness is the project's push account
+(`data/projects/<p>/push-account.json`, control's check of the VMs' token,
+which pushes the commits) and the host's own glab or gh login (which
+`merge-request:reply` posts as), so a new commit or a reply answers it.
+`merge-request:view` lists them as `comments: [{ id, author, body, created }]`
+beside `threads`, and `merge-request:reply` takes a comment's id in place of a
+thread's: the comment is answered with a new one naming its author and
+linking it (neither forge replies to one in place without making it a
+thread). The feedback says it in plain words: "it has a review comment from
+sam".
+
+Every dependency waited on is the variation's own merge request, and before
+ASS-361 nothing in Build acted on its review: Release's Address Merge Request
+Feedback comes after the very tests that wait. So while a dependency needs
+`open-threads`, `review-comments`, `build-failed` or `needs-rebase` (and none
+is `not-created`, which exits 3 first) the step exits 4, and grouped-build
+sends it to its own Address Merge Request Feedback:
+`check-on-merge-request-build-grouped`, in the VM — Release's
+`check-on-merge-request-grouped` (unchanged) plus plain review comments and
+the operator's Human Review notes, as every grouped Build prompt reads
+them — which reads each merge
+request with `merge-request:view`, acts on its threads, review comments,
+failed jobs and rebase, pushes, and replies to each (resolving the threads).
+Once its turn is complete it goes back to Await Dependencies, which reads the
+forge again. It has its own max-visits (3), then Blocked. A control line in
+`execution-plan-<variation>.md` names the merge request and what it needs,
+and the feedback adds "sent to Address Merge Request Feedback". A dependency
+that is only a draft or only needs approval is no agent's to act on: it keeps
+polling, exit 2, as before.
 
 Write Execution Plan (grouped/v2 Plan, `write-execution-plan-grouped`) never
 pins a consumer to a digest or tag a producer repository publishes only after

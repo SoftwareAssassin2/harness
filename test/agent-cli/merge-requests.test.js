@@ -487,6 +487,7 @@ test('ASS-238 AC1, ASS-239 AC2: merge-request:view <id> on GitLab prints the MR 
   assert.deepEqual(JSON.parse((await f.agent('merge-request:view', 'p', 'abc-5', 'A', '1')).stdout), {
     id: 1, url: `${APP}/-/merge_requests/7`, state: 'Open', draft: true, base: 'master', branch: 'change/ABC-5-1', title: 'Draft: ABC-5: Close the account', description: 'D',
     threads: [{ id: 'd1', path: 'a.js', line: 3, comments: [{ author: 'rev', body: 'Rename x' }, { author: 'me', body: 'Why?' }] }],
+    comments: [],   // ASS-361: its notes not readable here (no route), so none
     'failed-jobs': [{ name: 'unit', url: 'https://gitlab.com/g/app/-/jobs/9', log: 'setup\nFAIL a.test.js' }],
   });
   await fails(f.agent('merge-request:view', 'p', 'ABC-5', 'A', '2'), /merge-request:view: ABC-5 A has no created merge request 2/);
@@ -506,6 +507,7 @@ test('ASS-238 AC1, ASS-239 AC2: merge-request:view <id> on GitHub prints the pul
   assert.deepEqual(JSON.parse((await f.agent('merge-request:view', 'p', 'ABC-5', 'A', '1')).stdout), {
     id: 1, url: 'https://github.com/o/h/pull/12', state: 'Open', draft: false, base: 'main', branch: 'change/ABC-5-1', title: 'ABC-5: Close the account', description: 'B',
     threads: [{ id: 'PRRT_1', path: 'a.js', line: 2, comments: [{ author: 'rev', body: 'why?' }] }],
+    comments: [],   // ASS-361: no review comments (no route for them)
     'failed-jobs': [{ name: 'ci', url: 'https://ci/1' }],
   });
   assert.equal(f.forge.log('glab').filter(l => l !== 'auth status').length, 0);
@@ -705,7 +707,7 @@ test('ASS-359 AC1: each waiting dependency gets needs from its forge, in order �
   const f = await dependedOn(red, 2);
   f.forge.route('glab', /^api projects\/g%2Flib\/pipelines\/55\/jobs\?scope=failed --hostname gitlab.com$/, { out: [{ name: 'lint' }, { name: 'unit' }] });
   const all = await awaiting(f);
-  assert.equal(all.code, 2, all.err);
+  assert.equal(all.code, 4, all.err);   // ASS-361: build-failed, open-threads and needs-rebase are its own to act on — exit 4
   assert.deepEqual(all.out, { waiting: [{ id: 2, repository: APP, 'depends-on': { id: 1, repository: LIB, status: 'Open', key: '!7', url: LIB_7 }, needs: ['draft', 'build-failed', 'open-threads', 'needs-rebase', 'needs-approval'] }] });
   // A canceled pipeline is build-failed too; conflicts need a rebase.
   const c = await dependedOn({ draft: false, head_pipeline: { id: 56, status: 'canceled' }, has_conflicts: true });
@@ -734,20 +736,20 @@ test('ASS-359 AC2: the operator is told what each dependency needs — repositor
   const f = await dependedOn({ draft: true, head_pipeline: { id: 55, status: 'failed' } }, 1);
   f.forge.route('glab', /pipelines\/55\/jobs\?scope=failed/, { out: [{ name: 'check-collisions' }] });
   const first = await awaiting(f);
-  assert.equal(first.code, 2, first.err);
+  assert.equal(first.code, 4, first.err);   // ASS-361: a failed pipeline is its own to act on
   const told = variationOf(f);
-  assert.equal(told['ai-feedback-short'], 'Waiting on g/lib !7: is a draft, its pipeline failed (check-collisions), it needs 1 approval');
-  assert.equal(told['ai-feedback-long'], `g/lib !7 ${LIB_7}: is a draft; its pipeline failed (check-collisions); it needs 1 approval. MR 2 depends on it. The tests run once it merges: act on it on the forge, and this step goes on by itself.`);
+  assert.equal(told['ai-feedback-short'], 'Waiting on g/lib !7: is a draft, its pipeline failed (check-collisions), it needs 1 approval; sent to Address Merge Request Feedback');
+  assert.equal(told['ai-feedback-long'], `g/lib !7 ${LIB_7}: is a draft; its pipeline failed (check-collisions); it needs 1 approval. MR 2 depends on it. Build has sent g/lib !7 to Address Merge Request Feedback, to act on its review and pipeline; then this step waits again.`);
   assert.deepEqual(told['awaited-dependency-needs'].needs, [{ id: 1, key: '!7', needs: ['draft', 'build-failed', 'needs-approval'] }]);
   assert.match(first.err, /merge-request:await-dependencies: ABC-5 A: g\/lib !7 .*: is a draft; its pipeline failed \(check-collisions\); it needs 1 approval\./);
   // Polled again, the same needs: nothing written, nothing said.
   const again = await awaiting(f);
-  assert.deepEqual([again.code, again.err], [2, '']);
+  assert.deepEqual([again.code, again.err], [4, '']);
   assert.deepEqual(variationOf(f), told);
   // Out of draft: the needs changed, so the feedback is rewritten and said once.
   view(f, 'lib', 7, { web_url: LIB_7, draft: false, head_pipeline: { id: 55, status: 'failed' } });
   const changed = await awaiting(f);
-  assert.equal(variationOf(f)['ai-feedback-short'], 'Waiting on g/lib !7: its pipeline failed (check-collisions), it needs 1 approval');
+  assert.equal(variationOf(f)['ai-feedback-short'], 'Waiting on g/lib !7: its pipeline failed (check-collisions), it needs 1 approval; sent to Address Merge Request Feedback');
   assert.match(changed.err, /its pipeline failed \(check-collisions\); it needs 1 approval\./);
   // Green and approved, only waiting to merge: cleared, said once; then silent.
   view(f, 'lib', 7, { web_url: LIB_7, draft: false, merge_when_pipeline_succeeds: true });
@@ -784,6 +786,141 @@ test('ASS-359 AC4: an error in the command exits 1, never a code the step reads 
   view(f, 'lib', 7, {}, { exit: 1 });
   const failed = await awaiting(f);
   assert.equal(failed.code, 1, failed.err);
+});
+
+// ASS-361: a reviewer's blocking request left as a plain comment (no thread)
+// on a waiting dependency — the ticket's own merge request — is
+// review-comments, after open-threads; merge-request:view lists those
+// comments, merge-request:reply answers one, and a dependency with feedback of
+// its own to act on (threads, comments, a failed pipeline, a rebase) exits 4,
+// grouped-build's way to its own Address Merge Request Feedback. The engine
+// side: test/workflow/grouped-development.test.js and
+// test/control/tick-await-dependencies.test.js.
+const T = h => `2026-11-11T${String(h).padStart(2, '0')}:00:00.000Z`;
+const note = (id, author, h, v = {}) => ({ id, author: { username: author }, body: `note ${id}`, created_at: T(h), system: false, resolvable: false, ...v });
+// The project's push account (as control last checked it) and the host's own glab login: the harness's.
+const ours = (f, provider = 'GitLab') => writeFileSync(join(f.dir, 'p', 'push-account.json'), JSON.stringify({ project: 'p', provider, account: 'Harness-Pusher', error: null, 'checked-at': T(1) }));
+// <repo> !<iid>'s notes as given; its commits the latest at <commitAt> o'clock (an offset, as GitLab may give it), one earlier.
+function noted(f, repo, iid, notes, commitAt = 10) {
+  ours(f);
+  f.forge.route('glab', /^api user --hostname gitlab.com$/, { out: { username: 'host-me' } });
+  f.forge.route('glab', new RegExp(`^api projects/g%2F${repo}/merge_requests/${iid}/notes\\?per_page=100 --hostname gitlab.com$`), { out: notes });
+  f.forge.route('glab', new RegExp(`^api projects/g%2F${repo}/merge_requests/${iid}/commits\\?per_page=100 --hostname gitlab.com$`), { out: [{ id: 'c2', committed_date: T(commitAt).replace('Z', '+00:00') }, { id: 'c1', committed_date: T(8) }] });
+}
+// o/h #12's issue comments and reviews as given, its latest commit at 10 o'clock.
+const discussed = (f, comments, reviews = []) => f.forge.route('gh', /^pr view 12 --repo o\/h --json comments,reviews,commits$/, { out: { comments, reviews, commits: [{ oid: 'c1', committedDate: '2026-11-11T10:00:00Z' }] } });
+const SAM = { id: 'IC_1', author: { login: 'sam' }, body: 'Renumber V12; it collides with master', createdAt: T(11) };
+const HUB_REVIEWS = [
+  { id: 'PRR_1', author: { login: 'lee' }, body: 'And rebase, please', state: 'COMMENTED', submittedAt: T(12) },
+  { id: 'PRR_2', author: { login: 'kim' }, body: 'LGTM', state: 'APPROVED', submittedAt: T(12) },
+  { id: 'PRR_3', author: { login: 'lee' }, body: '', state: 'COMMENTED', submittedAt: T(12) }];
+const HUB_IGNORED = [{ id: 'IC_2', author: { login: 'github-actions[bot]' }, body: 'coverage 91%', createdAt: T(11) }, { id: 'IC_0', author: { login: 'kim' }, body: 'old', createdAt: T(9) }];
+// MR 2 (app) depending on MR 1 (o/h #12), out of draft, nothing else needed.
+async function hubDependedOn() {
+  const g = await planned([{ id: 1, repository: HUB }, { id: 2, repository: APP, 'depends-on': [1] }]);
+  g.record({ 1: { status: 'Open', key: '#12', url: 'https://github.com/o/h/pull/12', base: 'main' }, 2: { status: 'Open', key: '!9', base: 'master' } });
+  view(g, 'app', 9, {});
+  prView(g, 12, { isDraft: false });
+  ours(g, 'GitHub');
+  g.forge.route('gh', /^api user$/, { out: { login: 'host-me' } });
+  return g;
+}
+
+test('ASS-361 AC1: on GitLab a plain note — not system, not a bot\'s, not resolvable — by anyone but the harness after the latest commit is review-comments, after open-threads; a reply by the harness (push account or host login) or a new commit answers it', async () => {
+  const f = await dependedOn({ draft: false, blocking_discussions_resolved: false });
+  noted(f, 'lib', 7, [
+    note(1, 'kim', 9),                               // before the latest commit
+    note(2, 'sam', 11),                              // counts
+    note(3, 'lee', 11, { resolvable: true }),        // a thread's: open-threads counts it
+    note(4, 'sam', 12, { system: true }),            // "added 1 commit"
+    note(5, 'project_12_bot_ab12', 12),              // a project bot's
+    note(6, 'harness-pusher', 9)]);                  // the harness's own, before it
+  const one = await awaiting(f);
+  assert.equal(one.code, 4, one.err);
+  assert.deepEqual(one.out.waiting[0].needs, ['open-threads', 'review-comments']);
+  assert.match(variationOf(f)['ai-feedback-long'], /: it has unresolved review threads; it has a review comment from sam\. MR 2 depends on it\./);
+  assert.deepEqual(variationOf(f)['awaited-dependency-needs'].needs, [{ id: 1, key: '!7', needs: ['open-threads', 'review-comments'], from: ['sam'] }]);
+  // The thread resolved; the harness's reply after the comment — posted as the host's login, as merge-request:reply posts — answers it.
+  view(f, 'lib', 7, { web_url: LIB_7, draft: false });
+  noted(f, 'lib', 7, [note(2, 'sam', 11), note(7, 'host-me', 12)]);
+  assert.deepEqual(await awaiting(f).then(r => [r.code, r.out.waiting[0].needs]), [2, []]);
+  // Sam again, after that reply: counts; then the push account's reply (any case) answers it.
+  noted(f, 'lib', 7, [note(2, 'sam', 11), note(7, 'host-me', 12), note(8, 'Sam', 13)]);
+  assert.deepEqual(await awaiting(f).then(r => [r.code, r.out.waiting[0].needs]), [4, ['review-comments']]);
+  noted(f, 'lib', 7, [note(2, 'sam', 11), note(7, 'host-me', 12), note(8, 'Sam', 13), note(9, 'Harness-Pusher', 14)]);
+  assert.deepEqual(await awaiting(f).then(r => [r.code, r.out.waiting[0].needs]), [2, []]);
+  // A new commit after the comment answers it too.
+  noted(f, 'lib', 7, [note(8, 'sam', 13)], 14);
+  assert.deepEqual(await awaiting(f).then(r => [r.code, r.out.waiting[0].needs]), [2, []]);
+});
+
+test('ASS-361 AC1: on GitHub an issue comment, or the body of a review that commented, by anyone but the harness after the latest commit is review-comments; an approval, an empty review, a [bot]\'s and an earlier one are not; the harness\'s reply answers it', async () => {
+  const g = await hubDependedOn();
+  discussed(g, [SAM, ...HUB_IGNORED], HUB_REVIEWS);
+  const r = await awaiting(g);
+  assert.equal(r.code, 4, r.err);
+  assert.deepEqual(r.out.waiting[0].needs, ['review-comments']);
+  assert.equal(variationOf(g)['ai-feedback-short'], 'Waiting on o/h #12: it has 2 review comments from lee, sam; sent to Address Merge Request Feedback');
+  discussed(g, [SAM, ...HUB_IGNORED, { id: 'IC_3', author: { login: 'Host-Me' }, body: 'Renumbered in abc123', createdAt: T(13) }], HUB_REVIEWS);
+  assert.deepEqual(await awaiting(g).then(x => [x.code, x.out.waiting[0].needs]), [2, []]);
+  assert.ok(!g.forge.log('glab').some(l => /notes|commits|api user/.test(l)), 'a GitHub dependency\'s comments are never asked of GitLab');
+});
+
+test('ASS-361 AC2: merge-request:view lists the review comments still to act on as comments [{ id, author, body, created }] beside threads, on GitLab and GitHub, its other fields as before', async () => {
+  const f = await planned([{ id: 1, repository: APP }]);
+  f.record({ 1: { status: 'Open', key: '!7', base: 'master' } });
+  view(f, 'app', 7, { description: 'D', source_branch: 'change/ABC-5-1' });
+  f.forge.route('glab', /^api projects\/g%2Fapp\/merge_requests\/7\/discussions\?per_page=100 --hostname gitlab.com$/, { out: [] });
+  noted(f, 'app', 7, [note(2, 'sam', 11), note(1, 'kim', 9), note(3, 'host-me', 10, { created_at: '2026-11-11T09:30:00Z' })]);
+  const seen = JSON.parse((await f.agent('merge-request:view', 'p', 'ABC-5', 'A', '1')).stdout);
+  assert.deepEqual(Object.keys(seen), ['id', 'url', 'state', 'draft', 'base', 'branch', 'title', 'description', 'threads', 'comments', 'failed-jobs']);
+  assert.deepEqual([seen.threads, seen.comments], [[], [{ id: 2, author: 'sam', body: 'note 2', created: T(11) }]]);
+  const g = await hubDependedOn();
+  g.forge.route('gh', /^pr view 12 --repo o\/h --json url,state,isDraft,baseRefName,headRefName,title,body,statusCheckRollup$/, { out: {
+    url: 'https://github.com/o/h/pull/12', state: 'OPEN', isDraft: false, baseRefName: 'main', headRefName: 'change/ABC-5-1', title: 'ABC-5: Close the account', body: 'B', statusCheckRollup: [] } });
+  g.forge.route('gh', /^api graphql -f query=.*reviewThreads.* -F number=12$/, { out: { data: { repository: { pullRequest: { reviewThreads: { nodes: [] } } } } } });
+  discussed(g, [SAM, ...HUB_IGNORED], HUB_REVIEWS);
+  assert.deepEqual(JSON.parse((await g.agent('merge-request:view', 'p', 'ABC-5', 'A', '1')).stdout).comments, [
+    { id: 'IC_1', author: 'sam', body: 'Renumber V12; it collides with master', created: T(11) },
+    { id: 'PRR_1', author: 'lee', body: 'And rebase, please', created: T(12) }]);
+});
+
+test('ASS-361 AC4: merge-request:reply answers a plain review comment by its id from comments — a new comment naming its author and linking it, never a thread — once it is found on that merge request; another\'s is refused', async () => {
+  const f = await planned([{ id: 1, repository: APP }]);
+  f.record({ 1: { status: 'Open', key: '!7', url: `${APP}/-/merge_requests/7`, base: 'master' } });
+  f.forge.route('glab', /^api projects\/g%2Fapp\/merge_requests\/7\/notes\/42 --hostname gitlab.com$/, { out: { id: 42, author: { username: 'sam' }, body: 'Renumber V12' } });
+  f.forge.route('glab', /^api projects\/g%2Fapp\/merge_requests\/7\/notes --hostname gitlab.com -X POST /, { out: { id: 43 } });
+  await piped(f, 'Renumbered to V13 in abc123\n', 'merge-request:reply', 'p', 'ABC-5', 'A', '1', '42', '-');
+  assert.ok(f.forge.log('glab').join('\n').includes(`api projects/g%2Fapp/merge_requests/7/notes --hostname gitlab.com -X POST -f body=@sam (re ${APP}/-/merge_requests/7#note_42)\n\nRenumbered to V13 in abc123`), f.forge.log('glab').join('\n'));
+  assert.ok(!f.forge.log('glab').some(l => /discussions/.test(l)), 'no thread made of it');
+  f.forge.route('glab', /notes\/44 --hostname/, { exit: 1 });
+  await assert.rejects(piped(f, 'x', 'merge-request:reply', 'p', 'ABC-5', 'A', '1', '44', '-'), e => /44 is not a comment of MR 1 \(!7\)/.test(e.stderr));
+  assert.equal(f.forge.log('glab').filter(l => / -X POST/.test(l)).length, 1);
+  const g = await planned([{ id: 1, repository: HUB }]);
+  g.record({ 1: { status: 'Open', key: '#12', base: 'main' } });
+  const node = pullRequest => g.forge.route('gh', /^api graphql -f query=.*IssueComment.* -f id=IC_1$/, { out: { data: { node: { url: 'https://github.com/o/h/pull/12#issuecomment-1', author: { login: 'sam' }, pullRequest } } } });
+  node({ number: 12, repository: { nameWithOwner: 'o/h' } });
+  g.forge.route('gh', /^api repos\/o\/h\/issues\/12\/comments -X POST -f body=/, { out: { id: 2 } });
+  await piped(g, 'Done in abc123', 'merge-request:reply', 'p', 'ABC-5', 'A', '1', 'IC_1', '-');
+  assert.ok(g.forge.log('gh').join('\n').includes('api repos/o/h/issues/12/comments -X POST -f body=@sam (re https://github.com/o/h/pull/12#issuecomment-1)\n\nDone in abc123'), g.forge.log('gh').join('\n'));
+  node({ number: 13, repository: { nameWithOwner: 'o/h' } });
+  await assert.rejects(piped(g, 'x', 'merge-request:reply', 'p', 'ABC-5', 'A', '1', 'IC_1', '-'), e => /IC_1 is not a comment of MR 1 \(#12\)/.test(e.stderr));
+  assert.equal(g.forge.log('gh').filter(l => / -X POST/.test(l)).length, 1);
+});
+
+test('ASS-361 AC3/AC5: feedback of its own to act on exits 4 — the execution plan naming the merge request and what it needs, the operator told it went to Address Merge Request Feedback — while a draft or an approval alone still polls (exit 2)', async () => {
+  const f = await dependedOn({ draft: true, has_conflicts: true }, 1);
+  const r = await awaiting(f);
+  assert.equal(r.code, 4, r.err);
+  assert.ok(f.notes().some(l => /MR 1 \(!7\) has needs-rebase, and another repository's merge request of this ticket waits on it: to Address Merge Request Feedback/.test(l)), f.notes().join('\n'));
+  assert.match(variationOf(f)['ai-feedback-long'], /is a draft; it needs a rebase onto its target branch; it needs 1 approval\. MR 2 depends on it\. Build has sent g\/lib !7 to Address Merge Request Feedback/);
+  for (const [v, left, needs] of [[{ draft: true }, 0, ['draft']], [{ draft: false }, 2, ['needs-approval']], [{ draft: true }, 1, ['draft', 'needs-approval']]]) {
+    const quiet = await dependedOn(v, left);
+    const q = await awaiting(quiet);
+    assert.deepEqual([q.code, q.out.waiting[0].needs], [2, needs]);
+    assert.doesNotMatch(variationOf(quiet)['ai-feedback-short'], /Address Merge Request Feedback/);
+    assert.ok(!quiet.notes().some(l => /Address Merge Request Feedback/.test(l)));
+  }
 });
 
 // ASS-335 AC3: merge-request:create titles a merge request in the project's

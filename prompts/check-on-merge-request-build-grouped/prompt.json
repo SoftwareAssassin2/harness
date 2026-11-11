@@ -1,0 +1,35 @@
+{
+    "description": "grouped-build's Address Merge Request Feedback (ASS-361): check-on-merge-request-grouped (Release's, unchanged) for a merge request of the ticket that another of its merge requests waits on at Await Dependencies, plus plain review comments (merge-request:view's comments, answered through merge-request:reply) and the operator's Human Review notes, as every grouped Build prompt reads them",
+    "supported-command-line-interfaces": [
+        "claude"
+    ],
+    "supported-models": [
+        "claude-opus-5-5",
+        "claude-opus-5",
+        "claude-sonnet-5",
+        "claude-opus-4-8",
+        "claude-opus-4-7"
+    ],
+    "persona": "developer",
+    "input-arguments": [
+        {
+            "name": "project",
+            "description": "Project folder name under data/projects/",
+            "example": "my-project",
+            "required": true
+        },
+        {
+            "name": "ticket",
+            "description": "Ticket number",
+            "example": "ABC-1234",
+            "required": true
+        },
+        {
+            "name": "variation",
+            "description": "The ticket variation",
+            "example": "A",
+            "required": true
+        }
+    ],
+    "output": ""
+}

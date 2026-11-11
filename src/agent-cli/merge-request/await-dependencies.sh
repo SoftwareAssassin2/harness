@@ -27,12 +27,16 @@ set -euo pipefail
 # an agent must do — in this order: "not-created" (planned, never opened),
 # "draft", "build-failed" (its head pipeline failed or was canceled; on
 # GitHub a failed check), "open-threads" (unresolved blocking threads; on
-# GitHub changes requested), "needs-rebase" (conflicts, or behind its
-# target), "needs-approval" (approvals still required: GitLab's
+# GitHub changes requested), "review-comments" (ASS-361: a reviewer's plain
+# comment — not a thread — posted after its latest commit and not yet
+# answered by the harness, mr_review_comments: a GitLab note that is not
+# resolvable, a GitHub issue comment or review body, by anyone but the
+# project's push account or the host's own login), "needs-rebase" (conflicts,
+# or behind its target), "needs-approval" (approvals still required: GitLab's
 # approvals_left, GitHub's review decision); [] when it only waits to be
 # merged (set to auto-merge, say). The reasons are mr_view's, as
-# merge-request:check reads them; the approvals and the failed jobs' names
-# are asked of the forge only for a dependency that waits.
+# merge-request:check reads them; the approvals, the failed jobs' names and
+# the review comments are asked of the forge only for a dependency that waits.
 #
 # Exits:
 #   0  none waits;
@@ -44,6 +48,17 @@ set -euo pipefail
 #      and nothing but Generate Solution will. grouped-build sends exit 3
 #      back to Generate Solution, under that step's max-visits, then
 #      Blocked. A note in execution-plan-<variation>.md tells it which;
+#   4  (ASS-361) one waits on a dependency with feedback of its own to act
+#      on — open-threads, review-comments, build-failed or needs-rebase —
+#      and none was never created (3 first). The dependency is the
+#      variation's own merge request, and nothing else in Build acts on its
+#      review (Release's Address Merge Request Feedback comes after the very
+#      tests that wait): grouped-build sends exit 4 to its own Address Merge
+#      Request Feedback (check-on-merge-request-build-grouped, in the VM), which
+#      comes back here once its turn is complete, under its max-visits (3),
+#      then Blocked. A note in execution-plan-<variation>.md names which and
+#      what each needs. A draft or an approval alone is no agent's to act
+#      on: still 2, polled;
 #   1  any other failure — the ticket or variation missing, a forge call
 #      failing — matching no exit, so the step tries again.
 #
@@ -51,7 +66,9 @@ set -euo pipefail
 # something, the variation's ai-feedback-short and -long (as
 # ticket:set-ai-feedback writes them; the TUI's Health) name each one by
 # repository, key and url and say what it needs in plain words — "acme/api
-# !12 (url): is a draft; its pipeline failed (lint); it needs 1 approval".
+# !12 (url): is a draft; its pipeline failed (lint); it needs 1 approval" —
+# a review comment as "it has a review comment from sam", and, on exit 4,
+# that the ticket went to Address Merge Request Feedback (ASS-361).
 # The needs last written are kept on the variation as
 # awaited-dependency-needs { needs, feedback }, so the feedback is written —
 # and said once on stderr, which control's log keeps — only when they
@@ -64,7 +81,7 @@ set -euo pipefail
 # later pipeline (a promotion after the merge) may still be publishing when
 # the tests run.
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../merge-requests.bash"
-# Any failure exits 1, never a command's own status: jq's 2 or 3 would read as waiting or as never created.
+# Any failure exits 1, never a command's own status: jq's 2, 3 or 4 would read as waiting, never created or feedback to act on.
 set -E
 trap 'exit 1' ERR
 
@@ -108,28 +125,33 @@ refresh_merge_requests "$command" "$project" "$key" "$variation"
 waiting="$(jq -c "$WAITING" <<< "$MRS")"
 [[ "$waiting" != '[]' ]] || none_waiting
 
-# What each dependency waited on needs, by its index: { "<at>": { needs, jobs, approvals } }.
+# What each dependency waited on needs, by its index: { "<at>": { needs, jobs, approvals, from } } — from: its review comments' authors (ASS-361).
 found='{}'
 for at in $(jq -r '[.[].at] | unique | .[]' <<< "$waiting"); do
   view="$(jq -c --argjson i "$at" '.[$i]' <<< "$VIEWS")"
-  jobs='[]' approvals=0
+  jobs='[]' approvals=0 comments='[]'
   if [[ "$(jq -r --argjson i "$at" '.[$i].key // empty' <<< "$MRS")" && "$view" != null ]]; then
     approvals="$(mr_approvals_left "$command" "$at" "$view")"
     if jq -e 'any(.reasons[]; . == "build-failed")' <<< "$view" >/dev/null; then jobs="$(mr_failed_jobs "$command" "$at" "$view")"; fi
+    comments="$(mr_review_comments "$command" "$at" "$project")"
   fi
-  found="$(jq -c --arg at "$at" --argjson view "$view" --argjson jobs "$jobs" --arg approvals "$approvals" --argjson mrs "$MRS" '
+  found="$(jq -c --arg at "$at" --argjson view "$view" --argjson jobs "$jobs" --arg approvals "$approvals" --argjson comments "$comments" --argjson mrs "$MRS" '
     ($mrs[$at | tonumber]) as $d
-    | .[$at] = { jobs: $jobs, approvals: $approvals,
+    | .[$at] = { jobs: $jobs, approvals: $approvals, from: [$comments[].author] | unique, count: ($comments | length),
         needs: (if $d.key == null then ["not-created"]
                 elif $view == null then []
                 else [ (if $view.draft then "draft" else empty end),
-                       ("build-failed", "open-threads", "needs-rebase" | select(IN($view.reasons[]))),
+                       ("build-failed", "open-threads" | select(IN($view.reasons[]))),
+                       (if $comments != [] then "review-comments" else empty end),
+                       ("needs-rebase" | select(IN($view.reasons[]))),
                        (if $approvals != "0" then "needs-approval" else empty end) ] end) }' <<< "$found")"
 done
 
 out="$(jq -c --argjson found "$found" '{ waiting: map(del(.at) + { needs: $found[.at | tostring].needs }) }' <<< "$waiting")"
 
 # The feedback: each dependency that needs something, named and said in plain words; the needs that changed it.
+# OWN: the needs an agent acts on in Address Merge Request Feedback (ASS-361, exit 4).
+OWN='["open-threads", "review-comments", "build-failed", "needs-rebase"]'
 FEEDBACK='
   def repo: .repository // "" | rtrimstr(".git") | sub("^[a-z]+://[^/]+/"; "");
   def name: if .key then repo + " " + .key else "MR \(.id) (" + repo + ")" end;
@@ -139,6 +161,7 @@ FEEDBACK='
       draft: "is a draft",
       "build-failed": ("its pipeline failed" + (if $f.jobs == [] then "" else " (" + ($f.jobs | join(", ")) + ")" end)),
       "open-threads": "it has unresolved review threads",
+      "review-comments": ((if $f.count == 1 then "it has a review comment from " else "it has \($f.count) review comments from " end) + ($f.from | join(", "))),
       "needs-rebase": "it needs a rebase onto its target branch",
       "needs-approval": (if $f.approvals == "unknown" then "it needs approval" elif $f.approvals == "1" then "it needs 1 approval" else "it needs " + $f.approvals + " approvals" end) }[.] ];
   def about: (.dep | name) + (if .dep.url then " " + .dep.url else "" end) + ": " + (said | join("; ")) + ". "
@@ -146,14 +169,17 @@ FEEDBACK='
   [ $waiting | group_by(.at)[] | { at: .[0].at, dep: .[0]["depends-on"], by: map("MR \(.id)") }
     | . + $found[.at | tostring] | select(.needs != []) ] as $deps
   | [ $deps[] | select(.needs | index("not-created")) | .dep | name ] as $unmade
+  | [ $deps[] | select(any(.needs[]; IN($own[]))) | .dep | name ] as $ours
   | if $deps == [] then { needs: null, short: "", long: "" } else
       (if $unmade != [] then "Never created: " + ($unmade | join(", ")) + "; back to Generate Solution"
-       else "Waiting on " + ([$deps[] | (.dep | name) + ": " + (said | join(", "))] | join("; ")) end) as $short
+       else "Waiting on " + ([$deps[] | (.dep | name) + ": " + (said | join(", "))] | join("; "))
+         + (if $ours != [] then "; sent to Address Merge Request Feedback" else "" end) end) as $short
     | ([$deps[] | about] | join(" ")
        + (if $unmade != [] then " A planned merge request Generate Solution never created is not waited on: the ticket goes back to Generate Solution to create it."
+          elif $ours != [] then " Build has sent " + ($ours | join(", ")) + " to Address Merge Request Feedback, to act on its review and pipeline; then this step waits again."
           else " The tests run once it merges: act on it on the forge, and this step goes on by itself." end)) as $long
-    | { needs: [$deps[] | { id: .dep.id, key: .dep.key, needs }], short: $short, long: $long } end'
-feedback="$(jq -nc --argjson found "$found" --argjson waiting "$waiting" "$FEEDBACK")"
+    | { needs: [$deps[] | { id: .dep.id, key: .dep.key, needs } + (if .from != [] then { from } else {} end)], short: $short, long: $long } end'
+feedback="$(jq -nc --argjson found "$found" --argjson waiting "$waiting" --argjson own "$OWN" "$FEEDBACK")"
 
 needs="$(jq -c '.needs' <<< "$feedback")"
 record_feedback "$needs" "$(jq -r '.short' <<< "$feedback")" "$(jq -r '.long' <<< "$feedback")"
@@ -165,5 +191,14 @@ unmade="$(jq -r --argjson found "$found" '[.[] | select($found[.at | tostring].n
 if [[ -n "$unmade" ]]; then
   plan_note "$project" "$key" "$variation" "$unmade: back to Generate Solution to build it and record it (merge-request:create)."
   exit 3
+fi
+
+# Feedback of its own to act on (ASS-361): to Address Merge Request Feedback, told which in its execution plan.
+ours="$(jq -r --argjson found "$found" --argjson own "$OWN" '[.[] | .at as $at | ($found[$at | tostring].needs | map(select(IN($own[])))) as $n
+    | select($n != []) | "MR \(.["depends-on"].id) (\(.["depends-on"].key)) has \($n | join(", "))"] | unique
+  | if . == [] then empty else join("; ") end' <<< "$waiting")"
+if [[ -n "$ours" ]]; then
+  plan_note "$project" "$key" "$variation" "$ours, and another repository's merge request of this ticket waits on it: to Address Merge Request Feedback to act on it (merge-request:view lists its threads, comments and failed jobs)."
+  exit 4
 fi
 exit 2

@@ -664,6 +664,24 @@ test('ASS-239 AC3: check-on-merge-request-grouped replies to and resolves each t
   assert.doesNotMatch(t, /a human replies on and resolves/);
 });
 
+// ASS-361: grouped-build's Address Merge Request Feedback runs check-on-merge-request-build-grouped, Release's
+// check-on-merge-request-grouped (left as it is) plus plain review comments: it reads merge-request:view's comments,
+// makes the change (or says why not) and replies to each with what changed and its commit, through
+// merge-request:reply with the comment's id — which answers it for merge-request:await-dependencies. Its threads,
+// failed build and rebase steps are Release's.
+test('ASS-361 AC4: check-on-merge-request-grouped reads merge-request:view\'s comments, makes the requested change or replies why not, and replies to each with what changed and its commit through merge-request:reply', () => {
+  const t = text('check-on-merge-request-build-grouped');
+  assert.match(t, /review comments \(`comments`: plain comments, no thread/);
+  assert.match(t, /Review comments: read each one in `comments` and make the requested change.*Where you disagree, or it needs the operator: reply saying why\./);
+  assert.match(t, /For each review comment: reply with what changed and its commit \(it has no thread to resolve\)/);
+  assert.match(t, /Review comments: reply the same way, with the comment's id from merge-request:view's `comments` in place of <thread-id>/);
+  assert.match(t, /Open review threads: read each one and make the requested change/);
+  assert.match(t, /Failed build: read the failed jobs' logs/);
+  assert.match(t, /Needs rebase: git fetch origin, rebase onto origin\/<base> and resolve conflicts.*Conflicts/);
+  assert.equal(t.split('\n\n').find(b => b.startsWith('Conflicts:')), text('check-on-merge-request-grouped').split('\n\n').find(b => b.startsWith('Conflicts:')), 'the same Conflicts: paragraph as Release\'s');
+  assert.doesNotMatch(text('check-on-merge-request-grouped'), /comments`|review comment/, 'Release\'s prompt is unchanged');
+});
+
 // ASS-241: the sprint screen's acceptance-criteria dots read each criterion's dev-status and testing-status, which
 // the grouped/v2 Build and Test prompts now record through ticket:set-ac-status. The flat prompts are unchanged.
 const SET_AC = (kind, value) => `\`{agent-sh} ticket:set-ac-status {project} {ticket} {variation} ${kind} <n> ${value}\``;

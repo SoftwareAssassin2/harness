@@ -17,7 +17,7 @@ import { engineDir } from '../support/engine-walk.js';
 const edit = (file, change) => { const json = JSON.parse(readFileSync(file, 'utf8')); change(json); writeFileSync(file, JSON.stringify(json)); };
 const sprint = f => join(f.dir, 'projects', 'p', 'sprints', 'sprint-10', 'sprint.json');
 const grouped = JSON.parse(readFileSync(join(engineDir('grouped-build'), 'state-engine.json'), 'utf8'));
-const KEPT = ['generate-solution', 'await-dependencies', 'refresh-before-testing', 'done', 'blocked'];
+const KEPT = ['generate-solution', 'address-merge-request-feedback', 'await-dependencies', 'refresh-before-testing', 'done', 'blocked'];
 
 // The control fixture with ABC-3 A at local-testing, which runs grouped-build's own await-dependencies, generate-solution
 // (its exits, max-visits and on-max-visits as they are; its agent the fixture's test prompt, on the host) and the refresh
@@ -33,7 +33,7 @@ function fixture(codes) {
   });
   const steps = grouped.steps.filter(s => KEPT.includes(s.id)).map(s => {
     if (s.id === 'await-dependencies') return { ...s, sequence: 0 };
-    if (s.id === 'generate-solution') { const { 'run-location': _, ...rest } = s; return { ...rest, action: { ...s.action, prompt: 'test', 'run-in-dev-container': false } }; }
+    if (s.id === 'generate-solution' || s.id === 'address-merge-request-feedback') { const { 'run-location': _, ...rest } = s; return { ...rest, action: { ...s.action, prompt: 'test', 'run-in-dev-container': false } }; }
     const { 'run-location': _, ...rest } = s;
     return rest;
   });
@@ -79,6 +79,41 @@ test('ASS-359 AC3: at Generate Solution\'s max-visits (5), exit 3 ends the run a
     r['state-changes'] = Array.from({ length: 5 }, (_, i) => [
       { 'from-state': 'await-dependencies', 'to-state': 'generate-solution', timestamp: `2026-11-10T1${i}:00:00Z` },
       { 'from-state': 'generate-solution', 'to-state': 'await-dependencies', timestamp: `2026-11-10T1${i}:30:00Z` }]).flat();
+  });
+  for (let i = 0; i < 3 && state(f) !== 'blocked'; i++) await tick(f.ctx);
+  assert.equal(f.polls.length, 1, f.polls.join('\n'));
+  assert.equal(state(f), 'blocked', f.lines.join('\n'));
+  assert.ok(f.lines.some(l => /await-dependencies → blocked/.test(l)), f.lines.join('\n'));
+});
+
+// ASS-361 AC3: exit 4 — a dependency of the ticket's own with review threads,
+// review comments, a failed pipeline or a needed rebase — moves the run to
+// Build's own Address Merge Request Feedback (its agent, here the fixture's
+// test prompt), under that step's max-visits (3), then Blocked.
+test('ASS-361 AC3: await-dependencies\' exit 4 moves the run to Address Merge Request Feedback; waiting (2) stays where it is', async () => {
+  const f = fixture([2, 4]);
+  await tick(f.ctx);
+  assert.equal(run(f)?.state, 'await-dependencies', f.lines.join('\n'));
+  await tick(f.ctx);
+  assert.equal(run(f).state, 'await-dependencies', 'waiting (2) stays');
+  f.now += 5 * 60e3 + 1e3;
+  await tick(f.ctx);
+  assert.equal(f.polls.length, 2, f.polls.join('\n'));
+  assert.equal(run(f)?.state, 'address-merge-request-feedback', f.lines.join('\n'));
+  assert.equal(state(f), 'local-testing');
+  assert.ok(f.lines.some(l => /await-dependencies → address-merge-request-feedback/.test(l)), f.lines.join('\n'));
+});
+
+test('ASS-361 AC3: at Address Merge Request Feedback\'s max-visits (3), exit 4 ends the run at Blocked, and the ticket goes to Blocked', async () => {
+  const f = fixture([4]);
+  await tick(f.ctx);
+  assert.equal(run(f)?.state, 'await-dependencies', f.lines.join('\n'));
+  // Three rounds through Address Merge Request Feedback already in this run.
+  edit(join(f.dir, 'assignments.json'), a => {
+    const r = a['transient-state-engines'].find(t => t['state-engine'] === 'build');
+    r['state-changes'] = Array.from({ length: 3 }, (_, i) => [
+      { 'from-state': 'await-dependencies', 'to-state': 'address-merge-request-feedback', timestamp: `2026-11-10T1${i}:00:00Z` },
+      { 'from-state': 'address-merge-request-feedback', 'to-state': 'await-dependencies', timestamp: `2026-11-10T1${i}:30:00Z` }]).flat();
   });
   for (let i = 0; i < 3 && state(f) !== 'blocked'; i++) await tick(f.ctx);
   assert.equal(f.polls.length, 1, f.polls.join('\n'));
