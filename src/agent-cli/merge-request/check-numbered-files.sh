@@ -47,12 +47,43 @@ set -euo pipefail
 # renumber-to, rename-to, reason, free-number-from }] }; exits 0 when none
 # collides (or there is nothing to check), 1 when any does — naming each file
 # and the name to give it on stderr (→ Generate Solution, which renumbers);
-# 3 when it could not check: a malformed declaration, no VM, a fetch or
-# forge call that failed (→ Blocked).
+# 3 when it could not check: a malformed declaration, no VM (→ Blocked).
+#
+# ASS-386: a forge or VM hiccup is not a block. Each forge read (glab auth
+# status, the open merge requests and the files each adds) and each git call
+# in the VM (fetch, default, added, tree) gets up to 3 attempts, 5s then 15s
+# apart (NUMBERED_FILES_RETRY_SLEEPS, the sleeps between attempts; the tests
+# make them 0). Still failing, it could not check, and where that goes
+# depends on who ran it:
+# - at grouped-build's Check Numbered Files (the variation's deepest status):
+#   exit 2, the step's waiting-exit-code — control polls it again on its
+#   5-minute timer, no visit or failure counted — until 30 minutes have passed
+#   since the ticket entered the step (its sub-state-change into it in the
+#   variation's state-changes: every run since then failed to check, as any
+#   other exit moves it on), then exit 3 (→ Blocked), printing
+#   { ai-feedback-short, ai-feedback-long } naming what kept failing (which
+#   forge call or VM command, and its last error), which the step's
+#   record-script-output hands to the Build step, set as the ticket's health
+#   after its move to Blocked. While it waits the variation's ai-feedback says
+#   "Check Numbered Files: can't reach <the forge/the VM>, retrying (attempt
+#   n, since <time>)", kept with the attempt as numbered-files-wait
+#   { entered, since, attempt, feedback } (as ticket:set-ai-feedback writes
+#   it, and only when it changes, as await-dependencies' ASS-359); one kept
+#   for an earlier entry into the step is not counted on. A run that checks
+#   (exit 0 or 1) clears both, the feedback only while it is still that one.
+# - anywhere else (an agent running it before a push): exit 3 at once, as
+#   before, with nothing written to the variation.
+# Any other failure exits 4, never a command's own status (jq's 2 or 3 would
+# read as waiting or blocked): it matches no exit, so the step tries again.
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../merge-requests.bash"
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../numbered-files.bash"
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../work.bash"
 command=merge-request:check-numbered-files
+# ASS-386: an unexpected failure exits 4 (see above).
+set -E
+trap 'exit 4' ERR
+read -ra sleeps <<< "${NUMBERED_FILES_RETRY_SLEEPS-5 15}"
+WAIT_MINUTES=30
 
 [[ $# -eq 3 ]] || { echo "usage: $command <project> <ticket-key> <variation>" >&2; exit 1; }
 project="$1" key="$(upper "$2")" variation="$3"
@@ -64,8 +95,22 @@ heading="# Numbered files check — $key $variation, $(date -u +%Y-%m-%dT%H:%M:%
 write_results() {
   [[ -n "$results" ]] || return 0
   lock_on 9 "$results.lock" "$command" "${JSON_LOCK_TIMEOUT:-30}" && printf '%s' "$1" | replace_file "$results" || echo "$command: could not write $results" >&2
+  exec 9>&-   # ASS-386: the lock released, so the variation's write after it (update_json, on 9 too) can take its own
 }
-nothing() { write_results "$heading"$'\n'"Nothing to check: $1."$'\n'; jq -nc '{ checked: 0, collisions: [] }'; exit 0; }
+
+# ASS-386: forget_wait — the wait kept on the variation dropped, and its feedback with it while it is still the one written here.
+forget_wait() {
+  update_whole_ticket "$command" "$project" "$key" --arg name "$variation" '
+    .variations |= map(if .name != $name or .["is-deleted"] then . else
+      (if .["ai-feedback-long"] == .["numbered-files-wait"].feedback then .["ai-feedback-short"] = null | .["ai-feedback-long"] = null else . end)
+      | del(.["numbered-files-wait"]) end)'
+}
+# ran — the check ran (exit 0 or 1): any wait kept for it cleared.
+ran() {
+  [[ "$(variation_field '.["numbered-files-wait"] != null' "$command" "$project" "$key" "$variation" 2> /dev/null)" == true ]] || return 0
+  if forget_wait; then echo "$command: $key $variation: the check ran; its retry feedback cleared" >&2; else echo "$command: could not clear $key $variation's retry feedback" >&2; fi
+}
+nothing() { write_results "$heading"$'\n'"Nothing to check: $1."$'\n'; ran; jq -nc '{ checked: 0, collisions: [] }'; exit 0; }
 
 [[ "$(jq length <<< "$rules")" -gt 0 ]] || nothing "$project declares no numbered files (\"numbered-files\": [])"
 plan="$(variation_field '.["merge-request"] // []' "$command" "$project" "$key" "$variation")" || exit 3
@@ -73,7 +118,6 @@ rows="$(jq -c '[to_entries[] | .value + { row: .key } | select((.status | IN("Me
 [[ "$(jq length <<< "$rows")" -gt 0 ]] || nothing "no merge request of the ticket's is open or still to open"
 vm="$(vm_of "$command" "$project" "$key" "$variation")" || exit 3
 [[ -n "$vm" ]] || fail "$key $variation has no VM: its checkouts are there"
-if jq -e 'any(.[]; .repository | startswith("https://github.com/") | not)' <<< "$rows" > /dev/null; then glab_authenticated "$command" || exit 3; fi
 
 # The checkout's git, in /repos/<repository> in the VM: `fetch`; `default`,
 # origin's default branch; `added <branch> <base>`, the files the branch adds
@@ -98,6 +142,63 @@ in_repo() { local repo="$1"; shift; in_project "$command" "$project" "/repos/$re
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
+# ASS-386: retried <stdout-file> <command…> — the command, up to 3 attempts (the sleeps between them NUMBERED_FILES_RETRY_SLEEPS'),
+# its stdout in <stdout-file>, the last attempt's stderr in $tmp/err (err: on one line) and its exit status in $status.
+retried() {
+  local out="$1" s; shift
+  for s in ${sleeps[@]+"${sleeps[@]}"} last; do
+    "$@" > "$out" 2> "$tmp/err" && return 0
+    status=$?
+    [[ "$s" == last ]] || sleep "$s"
+  done
+  return 1
+}
+err() { tr '\n' ' ' < "$tmp/err" | cut -c1-500; }
+# could_not <what> <line> — the check could not run: <line> says which call failed and its last error; <what>, the forge or the VM, what it could not reach.
+could="" reach=""
+could_not() { could+="$2"$'\n'; [[ ", $reach, " == *", $1, "* ]] || reach+="${reach:+, }$1"; }
+
+# unreachable — it could not check, after each call's retries: at Check Numbered Files, waiting (exit 2) until WAIT_MINUTES
+# since the ticket entered the step, then Blocked (exit 3) with feedback naming what kept failing; anywhere else, exit 3 at once.
+unreachable() {
+  local was now wait short long
+  was="$(variation_field '{
+      at: ([.["harness-status"] | recurse(.["sub-status"] // empty) | .state] | last),
+      entered: (last(.["state-changes"] // [] | .[] | select([recurse(.["sub-state-change"] // empty)] | last
+        | .["to-state"] == "check-numbered-files" and .["from-state"] != "check-numbered-files") | .timestamp) // null),
+      kept: .["numbered-files-wait"], long: .["ai-feedback-long"] }' "$command" "$project" "$key" "$variation")" || exit 3
+  [[ "$(jq -r .at <<< "$was")" == check-numbered-files ]] || exit 3
+  now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  wait="$(jq -c --arg now "$now" --argjson limit "$WAIT_MINUTES" '
+    def secs: sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601;
+    (.kept != null and .kept.entered == .entered) as $same
+    | { entered, since: (if .entered != null then .entered elif $same then .kept.since else $now end), attempt: (if $same then .kept.attempt + 1 else 1 end) }
+    | .over = (($now | secs) - (.since | secs) >= $limit * 60)' <<< "$was")"
+  IFS=$'\t' read -r since attempt over < <(jq -r '[.since, .attempt, .over] | @tsv' <<< "$wait")
+  if [[ "$over" == true ]]; then
+    short="Check Numbered Files: still can't reach $reach after $WAIT_MINUTES minutes (attempt $attempt, since $since); Blocked"
+    long="$short. What kept failing, with its last error:"$'\n'"$could"
+    forget_wait || true
+    echo "$command: $key $variation: $short" >&2
+    jq -nc --arg short "$short" --arg long "$long" '{ "ai-feedback-short": $short, "ai-feedback-long": $long }'
+    exit 3
+  fi
+  short="Check Numbered Files: can't reach $reach, retrying (attempt $attempt, since $since)"
+  long="$short. What failed, with its last error:"$'\n'"$could"
+  if ! jq -e --arg long "$long" '.kept.feedback == $long and .long == $long' <<< "$was" > /dev/null; then
+    update_whole_ticket "$command" "$project" "$key" --arg name "$variation" --arg short "$short" --arg long "$long" --argjson wait "$wait" '
+      .variations |= map(if .name != $name or .["is-deleted"] then . else
+        .["ai-feedback-short"] = $short | .["ai-feedback-long"] = $long | .["numbered-files-wait"] = ($wait | del(.over) | .feedback = $long) end)'
+    echo "$command: $key $variation: $short" >&2
+  fi
+  exit 2
+}
+
+# The forge's glab login, when any repository is on GitLab (ASS-386: retried, and a failure waits as any forge call's).
+if jq -e 'any(.[]; .repository | startswith("https://github.com/") | not)' <<< "$rows" > /dev/null; then
+  retried "$tmp/out" glab_authenticated "$command" || could_not "the forge (GitLab)" "glab auth status: $(err)"
+fi
+
 # numbered <label> <iid> — the numbered files among the paths on stdin, as JSON [{ path, kind, folder, n, label, iid }].
 numbered() {
   jq -Rsc --argjson rules "$rules" --arg label "$1" --argjson iid "$2" "$NUMBERED_JQ"'
@@ -108,18 +209,27 @@ numbered() {
 }
 
 # others <url> — the repository's open merge requests on its forge, each with the numbered files it adds: [{ path, kind, folder, n, label, iid, branch }].
+# ASS-386: each read retried (retried); one still failing is named on stderr with its last error.
 others() {
-  local url="$1" list iid label files all='[]'
+  local url="$1" list iid label files all='[]' call
   if on_github "$url"; then
-    list="$(gh_run "$command" api --paginate "repos/$(path_of "$url")/pulls?state=open&per_page=100" | jq -sc 'add // [] | map({ iid: .number, branch: .head.ref, label: "#\(.number)" })')" || return 1
+    call="GET repos/$(path_of "$url")/pulls"
+    retried "$tmp/forge" gh_run "$command" api --paginate "repos/$(path_of "$url")/pulls?state=open&per_page=100" || { echo "$call: $(err)" >&2; return 1; }
+    list="$(jq -sc 'add // [] | map({ iid: .number, branch: .head.ref, label: "#\(.number)" })' "$tmp/forge")" || { echo "$call: unreadable" >&2; return 1; }
   else
-    list="$(lab "$command" "$url" "/merge_requests?state=opened&per_page=100" --paginate | jq -sc 'add // [] | map({ iid, branch: .source_branch, label: "!\(.iid)" })')" || return 1
+    call="GET projects/$(path_of "$url")/merge_requests"
+    retried "$tmp/forge" lab "$command" "$url" "/merge_requests?state=opened&per_page=100" --paginate || { echo "$call: $(err)" >&2; return 1; }
+    list="$(jq -sc 'add // [] | map({ iid, branch: .source_branch, label: "!\(.iid)" })' "$tmp/forge")" || { echo "$call: unreadable" >&2; return 1; }
   fi
   while IFS=$'\t' read -r iid label branch; do
     if on_github "$url"; then
-      files="$(gh_run "$command" api --paginate "repos/$(path_of "$url")/pulls/$iid/files?per_page=100" | jq -sr 'add // [] | .[] | select(.status | IN("added", "renamed", "copied")) | .filename')" || return 1
+      call="GET repos/$(path_of "$url")/pulls/$iid/files"
+      retried "$tmp/forge" gh_run "$command" api --paginate "repos/$(path_of "$url")/pulls/$iid/files?per_page=100" || { echo "$call: $(err)" >&2; return 1; }
+      files="$(jq -sr 'add // [] | .[] | select(.status | IN("added", "renamed", "copied")) | .filename' "$tmp/forge")" || { echo "$call: unreadable" >&2; return 1; }
     else
-      files="$(lab "$command" "$url" "/merge_requests/$iid/diffs?per_page=100" --paginate | jq -sr 'add // [] | .[] | select(.new_file or .renamed_file) | .new_path')" || return 1
+      call="GET projects/$(path_of "$url")/merge_requests/$iid/diffs"
+      retried "$tmp/forge" lab "$command" "$url" "/merge_requests/$iid/diffs?per_page=100" --paginate || { echo "$call: $(err)" >&2; return 1; }
+      files="$(jq -sr 'add // [] | .[] | select(.new_file or .renamed_file) | .new_path' "$tmp/forge")" || { echo "$call: unreadable" >&2; return 1; }
     fi
     all="$(jq -c --argjson more "$(numbered "$label" "$iid" <<< "$files")" --arg b "$branch" '. + ($more | map(.branch = $b))' <<< "$all")"
   done < <(jq -r '.[] | [.iid, .label, .branch] | @tsv' <<< "$list")
@@ -155,22 +265,30 @@ JUDGE="$NUMBERED_JQ"'
           | .at = $k + 1)
       | .out[])'
 
-checked=0 collisions='[]' report="$heading" could=""
+checked=0 collisions='[]' report="$heading" urls=""
 declare -A next_of=()
-for url in $(jq -r '[.[].repository] | unique[]' <<< "$rows"); do
-  repo="$(sed -E 's#\.git$##; s#.*/##' <<< "$url")"
-  if ! in_repo "$repo" fetch > "$tmp/out" 2>&1; then could+="$repo: could not fetch origin: $(tr '\n' ' ' < "$tmp/out")"$'\n'; continue; fi
-  default="$(in_repo "$repo" default 2> "$tmp/out")" || { could+="$repo: $(tr '\n' ' ' < "$tmp/out")"$'\n'; continue; }
+# ASS-386: each call into the VM and each forge read retried; one still failing is could_not's, named with its last error.
+[[ -n "$could" ]] || urls="$(jq -r '[.[].repository] | unique[]' <<< "$rows")"
+for url in $urls; do
+  repo="$(sed -E 's#\.git$##; s#.*/##' <<< "$url")" host="$(host_of "$url")"
+  # A fetch that fails as ssh does (255: limactl shell never reached the VM) is the VM's; any other, git's reach of the forge.
+  if ! retried "$tmp/out" in_repo "$repo" fetch; then
+    if [[ $status -eq 255 ]]; then could_not "the VM ($vm)" "$repo: could not reach the VM to fetch origin (limactl shell, exit 255): $(err)"
+    else could_not "the forge ($host), from the VM ($vm)" "$repo: could not fetch origin (git fetch in the VM, exit $status): $(err)"; fi
+    continue
+  fi
+  retried "$tmp/out" in_repo "$repo" default || { could_not "the VM ($vm)" "$repo: origin's default branch (git in the VM): $(err)"; continue; }
+  default="$(< "$tmp/out")"
   theirs=""
   for j in $(jq -r --arg u "$url" '.[] | select(.repository == $u) | .row' <<< "$rows"); do
     IFS=$'\t' read -r branch base iid label < <(jq -r --argjson j "$j" --arg d "$default" '.[$j] | [.branch, (.base // $d),
       (.key // "" | tostring | ltrimstr("!") | ltrimstr("#") | if test("^[0-9]+$") then . else "null" end), "MR \(.id // "?")\(if .key then " (\(.key))" else "" end)"] | @tsv' <<< "$plan")
-    if ! in_repo "$repo" added "$branch" "$base" > "$tmp/added" 2> "$tmp/out"; then could+="$repo $label: $(tr '\n' ' ' < "$tmp/out")"$'\n'; continue; fi
+    retried "$tmp/added" in_repo "$repo" added "$branch" "$base" || { could_not "the VM ($vm)" "$repo $label: the files $branch adds (git diff in the VM): $(err)"; continue; }
     own="$(numbered "$label" "$iid" < "$tmp/added")"
     [[ "$(jq length <<< "$own")" -gt 0 ]] || continue
-    if ! in_repo "$repo" tree "$base" > "$tmp/tree" 2> "$tmp/out"; then could+="$repo $label: $(tr '\n' ' ' < "$tmp/out")"$'\n'; continue; fi
+    retried "$tmp/tree" in_repo "$repo" tree "$base" || { could_not "the VM ($vm)" "$repo $label: the files on $base (git ls-tree in the VM): $(err)"; continue; }
     target="$(numbered "$base" null < "$tmp/tree")"
-    if [[ -z "$theirs" ]]; then theirs="$(others "$url")" || { could+="$repo: could not read its open merge requests from the forge"$'\n'; continue; }; fi
+    if [[ -z "$theirs" ]]; then theirs="$(others "$url" 2> "$tmp/out")" || { could_not "the forge ($host)" "$repo: could not read its open merge requests from the forge: $(tr '\n' ' ' < "$tmp/out")"; continue; }; fi
     # Every open one but this: by its iid, or, not yet opened, its branch.
     mine="$(jq -c --argjson iid "$iid" --arg b "$branch" 'map(select(if $iid != null then .iid != $iid else .branch != $b end))' <<< "$theirs")"
     checked=$((checked + $(jq --argjson t "$target" '[.[] | select(.path as $p | any($t[]; .path == $p) | not)] | length' <<< "$own")))
@@ -201,7 +319,8 @@ else
 fi
 [[ -z "$could" ]] || report+=$'\n'"## ⚠ Could not check"$'\n\n'"$could"
 write_results "$report"
-[[ -z "$could" ]] || { echo "$command: could not check every repository: $could" >&2; exit 3; }
+[[ -z "$could" ]] || { echo "$command: could not check every repository: $could" >&2; unreachable; }
+ran   # ASS-386: it checked; any wait kept for it cleared.
 if [[ $n -gt 0 ]]; then
   { echo "$command: $n numbered file(s) the ticket's merge requests add collide with their target branch or another open merge request; renumber each (git mv, and every reference to it, the recorded automated tests included), then push:"; echo "$lines"; } >&2
   jq -nc --argjson c "$checked" --argjson l "$collisions" '{ checked: $c, collisions: $l }'

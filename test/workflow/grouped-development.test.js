@@ -665,10 +665,13 @@ test('ASS-261 AC2: the grouped Risk Assessment writes **Risk: Low**, **Risk: Med
 // could not run to Blocked, each loop capped.
 test('ASS-385 AC3: grouped-build checks numbered files on the host before every Automated Testing; exit 1 back to Generate Solution, 3 to Blocked, its visits capped', () => {
   const build = engines['grouped-build'], step = stepOf(build, 'check-numbered-files');
-  assert.deepEqual([step.action, step['run-location'], step['max-visits'], step['on-max-visits']],
-    [{ type: 'script', command: './agent.sh merge-request:check-numbered-files {project} {ticket} {variation}' }, undefined, 3, 'blocked']);
+  // ASS-386: a timer step, 2 its waiting exit, its output recorded (the give-up's feedback, for the Build step's move to Blocked).
+  assert.deepEqual([step.action, step['run-location'], step['max-visits'], step['on-max-visits'], step['record-script-output']],
+    [{ type: 'script', command: './agent.sh merge-request:check-numbered-files {project} {ticket} {variation}', mode: 'timer', 'timer-minutes': 5, 'waiting-exit-code': 2 }, undefined, 3, 'blocked', true]);
   assert.equal(nextState(stepOf(build, 'refresh-before-testing'), build, { exitCode: 0 }).to, 'check-numbered-files');
   assert.deepEqual([0, 1, 3].map(exitCode => nextState(step, build, { exitCode }).to), ['automated-testing', 'generate-solution', 'blocked']);
+  // ASS-386: waiting (2) and an unexpected failure (4) match no exit: the step stays, polled again.
+  assert.deepEqual([2, 4].map(exitCode => nextState(step, build, { exitCode })), [null, null]);
   assert.deepEqual(build.steps.filter(s => (s['exit-events'] ?? []).some(e => e['move-to-state'] === 'automated-testing')).map(s => s.id), ['check-numbered-files']);
   assert.deepEqual(validateStateEngine(build, ROOT, 'grouped-build', EXAMPLE_ENGINES), []);
 });

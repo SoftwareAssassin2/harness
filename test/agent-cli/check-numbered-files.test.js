@@ -9,7 +9,7 @@
 // example-corpus, on GitLab, on master); glab and gh are fake-forge.js.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { writeFileSync, readFileSync, existsSync, mkdirSync } from 'node:fs';
+import { writeFileSync, readFileSync, existsSync, mkdirSync, rmSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { lima, git, edit } from './vm-fixture.js';
 import { run, AGENT } from './harness-fixture.js';
@@ -29,7 +29,8 @@ const commit = (dir, files, message) => {
 function setup({ adds = { 'db/V3__mine.sql': 'mine\n' }, numbered } = {}) {
   const l = lima(), forge = fakeForge();
   l.v.instance('abc-3-a', 'Running');
-  const env = { ...l.env, PATH: `${forge.path.split(':')[0]}:${l.env.PATH}` };
+  // ASS-386: no sleep between a call's retries here.
+  const env = { ...l.env, PATH: `${forge.path.split(':')[0]}:${l.env.PATH}`, NUMBERED_FILES_RETRY_SLEEPS: '0 0' };
   if (numbered !== undefined) edit(join(l.f.dir, 'projects', 'p', 'project.json'), p => { p['numbered-files'] = numbered; });
   edit(join(l.f.dir, 'projects', 'p', 'sprints', 'sprint-10', 'sprint.json'), s => {
     Object.assign(s.features[0].variations[0], {
@@ -60,8 +61,20 @@ function setup({ adds = { 'db/V3__mine.sql': 'mine\n' }, numbered } = {}) {
   openOn('example-corpus', []);
   const results = join(l.folder, 'numbered-files-check-A.md');
   const cli = () => run(AGENT, ['merge-request:check-numbered-files', 'p', 'ABC-3', 'A'], { env });
+  // ASS-386: the variation as sprint.json holds it; atStep(minutesAgo) puts it at grouped-build's Check Numbered Files, entered that long ago.
+  const sprint = join(l.f.dir, 'projects', 'p', 'sprints', 'sprint-10', 'sprint.json');
+  const variation = () => JSON.parse(readFileSync(sprint, 'utf8')).features[0].variations[0];
+  const atStep = minutesAgo => {
+    const entered = new Date(Date.now() - minutesAgo * 60_000).toISOString().replace(/\.\d+Z$/, 'Z');
+    edit(sprint, j => {
+      const v = j.features[0].variations[0];
+      v['harness-status'] = { state: 'build', 'state-engine': 'harness-development-grouped', 'sub-status': { state: 'check-numbered-files', 'state-engine': 'grouped-build' } };
+      v['state-changes'] = [...(v['state-changes'] ?? []), { 'state-engine': 'harness-development-grouped', 'from-state': 'build', 'to-state': 'build', 'sub-state-change': { 'state-engine': 'grouped-build', 'from-state': 'refresh-before-testing', 'to-state': 'check-numbered-files' }, timestamp: entered, 'agent-dispatch-log': [], 'work-is-done': false }];
+    });
+    return entered;
+  };
   return {
-    ...l, forge, own, origin, openOn,
+    ...l, forge, own, origin, openOn, variation, atStep,
     check: async () => JSON.parse((await cli()).stdout),
     failure: () => cli().then(() => assert.fail('it passed'), e => e),
     results: () => readFileSync(results, 'utf8'),
@@ -142,7 +155,72 @@ test('ASS-385 AC4: a GitLab repository\'s other open merge requests are read thr
   s.forge.route('glab', /merge_requests\?state=opened/, { exit: 1 });
   const f = await s.failure();
   assert.equal(f.code, 3, f.stderr);
-  assert.match(f.stderr, /could not check every repository: example-corpus: could not read its open merge requests from the forge/);
+  assert.match(f.stderr, /could not check every repository: example-corpus: could not read its open merge requests from the forge: GET projects\/g\/example-corpus\/merge_requests: /);
+  // ASS-386: tried 3 times first; run outside the step (an agent, before a push) it exits 3 at once, writing nothing to the variation.
+  assert.equal(s.forge.log('glab').filter(l => l.includes('merge_requests?state=opened')).length - 1, 3, 'the earlier passing run read it once, this one 3 times');
+  assert.deepEqual([s.variation()['numbered-files-wait'], s.variation()['ai-feedback-short']], [undefined, undefined]);
+});
+
+// ASS-386: a forge or VM hiccup is retried in the command, then waited out on the step's timer for 30 minutes, then Blocked.
+test('ASS-386 AC1, AC3: a forge read that fails once is retried in the command and the check runs; a clean pass and a collision read each call once, no retry', async () => {
+  const s = setup({ adds: { 'db/V5__mine.sql': 'mine\n' } });
+  s.atStep(0);
+  s.forge.route('gh', /^api --paginate repos\/o\/harness\/pulls\?state=open/, { exit: 1, touch: 'up' });
+  s.forge.route('gh', /^api --paginate repos\/o\/harness\/pulls\?state=open/, { when: 'up', out: [{ number: 5, head: { ref: 'change/ABC-3-1' } }] });
+  assert.deepEqual(await s.check(), { checked: 1, collisions: [] });
+  const pulls = () => s.forge.log('gh').filter(l => l.includes('pulls?state=open')).length;
+  assert.equal(pulls(), 2, 'failed once, then read');
+  assert.deepEqual([s.variation()['numbered-files-wait'], s.variation()['ai-feedback-short']], [undefined, undefined]);
+  // A clean pass: each call once.
+  assert.deepEqual(await s.check(), { checked: 1, collisions: [] });
+  assert.equal(pulls(), 3);
+  // A collision: exit 1 as before, each call once.
+  const t = setup();
+  t.atStep(0);
+  const e = await t.failure();
+  assert.equal(e.code, 1, e.stderr);
+  assert.equal(t.forge.log('gh').filter(l => l.includes('pulls?state=open')).length, 1);
+  assert.equal(t.v.calls().filter(c => c.vm === 'abc-3-a' && c.workdir === '/repos/harness' && c.argv.join(' ').includes('set -- fetch ')).length, 1);
+});
+
+test('ASS-386 AC1, AC4: a VM it cannot reach after 3 tries waits (exit 2), its feedback saying so with the attempt and since when; a later timer tick that reaches it runs the check and clears the feedback', async () => {
+  const s = setup({ adds: { 'db/V5__mine.sql': 'mine\n' } });
+  const entered = s.atStep(5);
+  s.v.unreachable('abc-3-a');
+  const e = await s.failure();
+  assert.equal(e.code, 2, e.stderr);
+  assert.equal(e.stdout, '');
+  assert.equal(s.v.calls().filter(c => c.vm === 'abc-3-a' && c.workdir === '/repos/harness').length, 3, 'the fetch tried 3 times');
+  const short = n => `Check Numbered Files: can't reach the VM (abc-3-a), retrying (attempt ${n}, since ${entered})`;
+  assert.equal(s.variation()['ai-feedback-short'], short(1));
+  assert.match(s.variation()['ai-feedback-long'], /harness: could not reach the VM to fetch origin \(limactl shell, exit 255\): ssh: connect to host .* Connection refused/);
+  assert.deepEqual(s.variation()['numbered-files-wait'], { entered, since: entered, attempt: 1, feedback: s.variation()['ai-feedback-long'] });
+  // The next tick: still waiting, attempt 2.
+  assert.equal((await s.failure()).code, 2);
+  assert.equal(s.variation()['ai-feedback-short'], short(2));
+  // A wait kept from an earlier entry into the step is not counted on.
+  const again = s.atStep(1);
+  assert.equal((await s.failure()).code, 2);
+  assert.equal(s.variation()['ai-feedback-short'], `Check Numbered Files: can't reach the VM (abc-3-a), retrying (attempt 1, since ${again})`);
+  // Reached: the check runs, the feedback and the wait cleared.
+  rmSync(join(s.v.instances, 'abc-3-a', 'unreachable'));
+  assert.deepEqual(await s.check(), { checked: 1, collisions: [] });
+  assert.deepEqual([s.variation()['numbered-files-wait'], s.variation()['ai-feedback-short'], s.variation()['ai-feedback-long']], [undefined, null, null]);
+});
+
+test('ASS-386 AC2: still failing 30 minutes after the ticket entered the step, it exits 3 (Blocked), its output the feedback naming what kept failing and its last error; the wait dropped', async () => {
+  const s = setup({ adds: { 'db/V5__mine.sql': 'mine\n' } });
+  s.atStep(29);
+  s.forge.route('gh', /^api --paginate repos\/o\/harness\/pulls\?state=open/, { exit: 1 });
+  assert.equal((await s.failure()).code, 2, 'under 30 minutes: waits');
+  assert.match(s.variation()['ai-feedback-short'], /^Check Numbered Files: can't reach the forge \(github\.com\), retrying \(attempt 1, since /);
+  const entered = s.atStep(31);
+  const e = await s.failure();
+  assert.equal(e.code, 3, e.stderr);
+  const out = JSON.parse(e.stdout);
+  assert.equal(out['ai-feedback-short'], `Check Numbered Files: still can't reach the forge (github.com) after 30 minutes (attempt 1, since ${entered}); Blocked`);
+  assert.match(out['ai-feedback-long'], /What kept failing, with its last error:\nharness: could not read its open merge requests from the forge: GET repos\/o\/harness\/pulls: /);
+  assert.equal(s.variation()['numbered-files-wait'], undefined);
 });
 
 test('ASS-385 AC1: no rule declared checks Flyway versioned migrations by the fallback; [] declares none and checks nothing — not even the VM reached; a malformed declaration exits 3, naming the problem', async () => {

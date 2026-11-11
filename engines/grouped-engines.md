@@ -392,8 +392,24 @@ renumbered in order from the free number, skipping any number another open
 merge request holds, each new name keeping its digits' width. Exit 0 goes on
 to Automated Testing; 1 (a collision) back to Generate Solution, with each
 file and the name to give it on stderr and in `numbered-files-check-<variation>.md`
-in the ticket's folder; 3 (no VM, a fetch or forge call failed, the
-declaration malformed) to Blocked. `generate-solution-grouped`,
+in the ticket's folder; 3 (no VM, the declaration malformed) to Blocked.
+A forge or VM hiccup is no block (ASS-386): each forge read (`glab auth
+status`, the open merge requests, the files each adds) and each git call in
+the VM (fetch, the default branch, the files added, the target's tree) gets 3
+attempts, 5s then 15s apart. Still failing, the step — a timer step (5 min,
+`waiting-exit-code` 2, as Await Sequential Merge) — waits: exit 2, polled
+again with no visit or failure counted, the variation's feedback saying
+"Check Numbered Files: can't reach <the forge/the VM>, retrying (attempt n,
+since <time>)" (kept as `numbered-files-wait`, written when it changes,
+cleared once the check runs). 30 minutes after the ticket entered the step
+(its sub-state-change into it in the variation's `state-changes`; every run
+since failed to check, as any other exit moves it on) it gives up: exit 3 to
+Blocked, its output (`record-script-output`) the `ai-feedback-short`/`-long`
+naming which forge call or VM command kept failing and its last error, set
+as the ticket's health after the move. Run anywhere else (an agent before a
+push) it exits 3 at once, as before. Any other failure exits 4, matching no
+exit: tried again. A collision (1) and a pass (0) are as before, with no
+delay. `generate-solution-grouped`,
 `check-on-merge-request-build-grouped` and Release's
 `check-on-merge-request-grouped` give the rule (`{numbered-files}`) and have
 the agent run the same command after every rebase and before every push,
