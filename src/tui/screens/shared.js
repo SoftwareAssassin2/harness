@@ -348,7 +348,7 @@ export const STATUS_WRAP = 40;
 // lines. The step chain, wrapped between its " › " parts; under it PLANNED for a
 // finished plan (ASS-362); under that, on lines
 // of its own wrapped between keys, the dependencies it ignores — never what it
-// waits on (ASS-360: the Ticket cell's "↳ WAITING ON" line under the title says
+// waits on (ASS-360: the Ticket cell's "↳ AWAITING" line (ASS-364) under the title says
 // that, sprint.js ticketRows; statusText still does); each at the narrower of the column
 // and STATUS_WRAP, continuation lines indented (wrapParts). A part wider than
 // STATUS_WRAP keeps its line whole, so the column is never narrower than its

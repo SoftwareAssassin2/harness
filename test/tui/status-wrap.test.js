@@ -1,7 +1,7 @@
 // ASS-326: a long Status no longer widens the sprint grid off the screen. The
 // hold goes on its own lines under the step chain — since ASS-360 only the
 // dependencies it ignores ("ignores <KEY> (<why>)"): what it waits on (ASS-195's
-// "waits on …") moved to the Ticket cell's "↳ WAITING ON" line, the ticket
+// "waits on …") moved to the Ticket cell's "↳ AWAITING" line, the ticket
 // screen's statusText alone keeping it — and every Status line wraps — the hold between keys, a long step chain
 // between its " › " parts — at STATUS_WRAP, continuation lines indented; the
 // row grows taller, nothing is cut with "…". When the grid must narrow, Status
@@ -113,11 +113,11 @@ test('ASS-360 AC1: the sprint grid\'s Status cell no longer says "waits on …" 
   const at = tickets.findIndex(l => l.includes('ABC-11:'));
   assert.equal(status[at], 'Committed');
   assert.ok(!status.some(l => l.includes('waits on')), status.join('\n'));
-  assert.match(tickets[at + 1], /^↳ WAITING ON ABC-2 \(unassigned\)$/);
+  assert.match(tickets[at + 1], /^↳ AWAITING ABC-2 \(unassigned\)$/);
 });
 
 test('ASS-326 AC2: at a narrow width the grid fits, Health and Agents show their headers in full, and Status re-wraps narrower with all its text shown, none cut with "…"', () => {
-  for (const columns of [180, 170, 160]) {   // 160: about as narrow as Ticket's floor (ASS-207) lets this grid get (180 with ASS-355, 150 before it; ASS-360 took WAITING ON off the Ticket cell's first line)
+  for (const columns of [180, 170, 160]) {   // 160: about as narrow as Ticket's floor (ASS-207) lets this grid get (180 with ASS-355, 150 before it; ASS-360 took AWAITING off the Ticket cell's first line)
     const lines = grid(columns);
     for (const l of lines) assert.equal(visible(l), columns, `${columns}: ${l}`);
     assert.match(lines[1], /│ Health │ Agents │$/, `${columns}: ${lines[1]}`);

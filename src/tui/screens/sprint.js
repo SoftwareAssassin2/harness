@@ -26,7 +26,7 @@ const SHRINK = ['Health', 'Agents', 'Status'].map(h => TABLE_HEADERS.indexOf(h))
 // Ticket cell's first line and its title, so the prefix (the six one-cell icon
 // columns and the two-cell seat, PAUSED or UNASSIGNED, the linked key: see
 // ticketRows) is not re-derived. A held row's cell is two lines (ASS-360): its
-// "↳ WAITING ON" line, never cut, floors the column at its own width alone, so
+// "↳ AWAITING" line (ASS-364; was WAITING ON), never cut, floors the column at its own width alone, so
 // it widens the column only when wider than the first line's floor; so does a
 // row's "↳ AWAITING MERGE" line (ASS-363), its third when it has both. No rows → 0 (no floor).
 const ticketFloor = (rows, tickets) => Math.max(0, ...rows.map((row, i) => {
@@ -94,12 +94,12 @@ function boundaries(tickets) {
 const PAUSED = '\x1b[34mPAUSED\x1b[0m';   // blue, before a paused variation's key (ASS-259)
 const UNASSIGNED = red('UNASSIGNED');   // red (ASS-355; was PAUSED's blue), before a reassigned ticket's key, in PAUSED's place (ASS-345)
 // waitingOn(keys) — gold (ASS-355), for a variation its dependencies hold, on the Ticket cell's second line after
-// "↳ " (ASS-360; it was in PAUSED's place on the first): "WAITING ON EX-1, EX-2"; past WAITING_KEYS keys the rest
-// counted ("WAITING ON EX-1, EX-2 +7"), so the Ticket column, floored at that line's width (ticketFloor), never pushes
+// "↳ " (ASS-360; AWAITING, was WAITING ON, ASS-364; it was in PAUSED's place on the first): "AWAITING EX-1, EX-2"; past WAITING_KEYS keys the rest
+// counted ("AWAITING EX-1, EX-2 +7"), so the Ticket column, floored at that line's width (ticketFloor), never pushes
 // the grid off the screen — the ticket screen's Status field (statusText) lists every one. Each key shown is followed
-// by whose it is (ASS-360 AC7, waitingWho): "WAITING ON EX-1 (Sam), EX-2 (unassigned)".
+// by whose it is (ASS-360 AC7, waitingWho): "AWAITING EX-1 (Sam), EX-2 (unassigned)".
 const WAITING_KEYS = 2;
-const waitingOn = (keys, who = () => '') => gold(`WAITING ON ${keys.slice(0, WAITING_KEYS).map(k => `${k}${who(k)}`).join(', ')}${keys.length > WAITING_KEYS ? ` +${keys.length - WAITING_KEYS}` : ''}`);
+const waitingOn = (keys, who = () => '') => gold(`AWAITING ${keys.slice(0, WAITING_KEYS).map(k => `${k}${who(k)}`).join(', ')}${keys.length > WAITING_KEYS ? ` +${keys.length - WAITING_KEYS}` : ''}`);
 // waitingWho(t)(key) — the suffix after a held ticket's waited-on key (ASS-360 AC7), from the assignee the ticket
 // screen names it with (t.dependencyRows, control's dependencyRows: the sprint's, backlog's, other loaded projects'
 // or outside-tickets.json's ticket-system-assignment, a display name): " (<first name>)" for someone other than the
@@ -166,7 +166,7 @@ const dim = text => `\x1b[2m${text}\x1b[0m`;
 const SEAT = '💺';
 
 // The key under the ticket grid (ASS-259): each of the rows' glyphs as they
-// are drawn there — ⦿ in each of its colors, PAUSED in blue, UNASSIGNED in red, WAITING ON in gold (on its own line under the ticket, ASS-360),
+// are drawn there — ⦿ in each of its colors, PAUSED in blue, UNASSIGNED in red, AWAITING in gold (on its own line under the ticket, ASS-360),
 // AWAITING MERGE in gold (on its own line after that, ASS-363) — with what it
 // means, in dim text; entries two blanks apart, wrapped at `columns` between
 // entries, never inside one.
@@ -175,7 +175,7 @@ const KEY = [
   [dim(GLYPHS.hand), 'by hand'], [dim(GLYPHS.fast), 'fast-tracked'], [markDot(GLYPHS.mark, 'change'), 'requirements change'],
   [markDot(GLYPHS.mark, 'needed'), 'needs you'], [markDot(GLYPHS.mark, 'assumed'), 'assumption'], [dim(GLYPHS.agent), 'agent working'],
   [SEAT, 'holds a seat (planning or in progress)'],
-  [PAUSED, 'paused'], [UNASSIGNED, 'reassigned away'], [gold('WAITING ON'), 'a dependency not done yet'],
+  [PAUSED, 'paused'], [UNASSIGNED, 'reassigned away'], [gold('AWAITING'), 'a dependency not done yet'], // ASS-364: was WAITING ON
   [gold('AWAITING MERGE'), 'MRs to merge, in order'],
 ].map(([glyph, meaning]) => `${glyph}${dim(` ${meaning}`)}`);
 function iconKey(columns) {
@@ -214,12 +214,12 @@ const BUILD_COLORS = { Merged: gray, Closed: gray, Running: gold, Failed: red, P
 // reassigned, to another person or to nobody) "UNASSIGNED " in red in its
 // place, on every variation's row: the reassignment says more. One its
 // dependencies hold (its `hold`, ASS-355: control's own predicate), paused too
-// or not, gets a second line (ASS-360; before it, "WAITING ON" took PAUSED's
-// place on the first): "↳ WAITING ON <KEY> (<who>), <KEY>" in gold (waitingOn, waitingWho),
+// or not, gets a second line (ASS-360; before it, "AWAITING" took PAUSED's
+// place on the first): "↳ AWAITING <KEY> (<who>), <KEY>" in gold (ASS-364) (waitingOn, waitingWho),
 // indented by the icon and seat columns so the ↳ starts under the key — none
 // on an UNASSIGNED row; an unheld row's cell stays one line. A variation at a
 // step with shows-merge-train whose merge requests await one in another
-// repository (mergeTrains, ASS-363) gets one more line, after any WAITING ON
+// repository (mergeTrains, ASS-363) gets one more line, after any AWAITING
 // one and indented as it is: "↳ AWAITING MERGE <repo> <key> → <repo> <key>"
 // (awaitingMerge). iconKey says what each means, under the grid.
 function ticketRows(tickets, assignments, steps, collaborations = {}, marks = { needed: new Set() }, seats = new Set()) {

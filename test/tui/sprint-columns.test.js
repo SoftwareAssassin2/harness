@@ -72,7 +72,7 @@ const KEYS = ['A-1', 'A-2', 'A-3', 'A-4', 'A-5', 'A-6', 'A-7', 'A-8', 'A-9', 'A-
 // The key under the grid: the lines right after its bottom border that start with a key entry.
 const keyLines = lines => {
   const after = lines.slice(lines.findLastIndex(l => /^└/.test(strip(l))) + 1);
-  const end = after.findIndex(l => !/^([▮✦✘⌕☛↯⦿⚉]|💺|PAUSED|UNASSIGNED|WAITING ON|AWAITING MERGE) /u.test(strip(l)));
+  const end = after.findIndex(l => !/^([▮✦✘⌕☛↯⦿⚉]|💺|PAUSED|UNASSIGNED|AWAITING|AWAITING MERGE) /u.test(strip(l)));
   return end < 0 ? after : after.slice(0, end);
 };
 
@@ -190,7 +190,7 @@ test('ASS-259 AC7: a dim key directly under the grid shows each glyph as drawn i
   const bottom = raw.findLastIndex(l => /^└/.test(strip(l)));
   const key = keyLines(raw);
   assert.equal(raw.indexOf(key[0]), bottom + 1);                     // directly under the grid
-  assert.equal(strip(key.join('  ')), '▮ step  ✦ feature  ✘ bug  ⌕ spike  ☛ by hand  ↯ fast-tracked  ⦿ requirements change  ⦿ needs you  ⦿ assumption  ⚉ agent working  💺 holds a seat (planning or in progress)  PAUSED paused  UNASSIGNED reassigned away  WAITING ON a dependency not done yet  AWAITING MERGE MRs to merge, in order');
+  assert.equal(strip(key.join('  ')), '▮ step  ✦ feature  ✘ bug  ⌕ spike  ☛ by hand  ↯ fast-tracked  ⦿ requirements change  ⦿ needs you  ⦿ assumption  ⚉ agent working  💺 holds a seat (planning or in progress)  PAUSED paused  UNASSIGNED reassigned away  AWAITING a dependency not done yet  AWAITING MERGE MRs to merge, in order');
   const all = key.join('');
   for (const kind of ['31', '34', '2;90']) assert.ok(all.includes(`\x1b[${kind}m⦿\x1b[0m`), kind);   // ⦿ in each of its colors
   assert.ok(all.includes('\x1b[34mPAUSED\x1b[0m'));
@@ -198,7 +198,7 @@ test('ASS-259 AC7: a dim key directly under the grid shows each glyph as drawn i
 });
 
 test('ASS-259 AC7: the key wraps between entries at the screen width, never inside one, and is never cut off — the grid gives up rows', () => {
-  const ENTRIES = ['▮ step', '✦ feature', '✘ bug', '⌕ spike', '☛ by hand', '↯ fast-tracked', '⦿ requirements change', '⦿ needs you', '⦿ assumption', '⚉ agent working', '💺 holds a seat (planning or in progress)', 'PAUSED paused', 'UNASSIGNED reassigned away', 'WAITING ON a dependency not done yet', 'AWAITING MERGE MRs to merge, in order'];
+  const ENTRIES = ['▮ step', '✦ feature', '✘ bug', '⌕ spike', '☛ by hand', '↯ fast-tracked', '⦿ requirements change', '⦿ needs you', '⦿ assumption', '⚉ agent working', '💺 holds a seat (planning or in progress)', 'PAUSED paused', 'UNASSIGNED reassigned away', 'AWAITING a dependency not done yet', 'AWAITING MERGE MRs to merge, in order'];
   assert.equal(Math.max(...ENTRIES.map(visible)), 41);   // the seat's entry (ASS-357), the widest: no narrower screen holds it whole
   for (const columns of [200, 100, 60, 41]) {
     const size = { ...wide, columns, rows: 40 };
@@ -247,7 +247,7 @@ test('ASS-345 AC5, ASS-355 AC7: a reassigned ticket\'s rows start "UNASSIGNED " 
 
 // ASS-355 AC7, ASS-360 AC2/AC3/AC7: a variation its dependencies hold (control's
 // dependencyHold, on a project with wait-for-dependencies) keeps its first line
-// as an unheld row's — PAUSED too when paused — and gets a second, "↳ WAITING ON
+// as an unheld row's — PAUSED too when paused — and gets a second, "↳ AWAITING
 // <KEY> (<who>), <KEY>" in gold, the ↳ under the key, at most WAITING_KEYS keys
 // then "+N"; UNASSIGNED still says more, with no waiting line; the key explains it.
 const GOLD = '\x1b[38;2;255;215;0m';
@@ -279,40 +279,40 @@ const ticketLines = (lines, key) => {
   return [lines[at], lines[at + 1]].map(l => strip(l).slice(1, 1 + width).trimEnd()).concat(lines[at + 1]);
 };
 
-test('ASS-360 AC2: a held row\'s first line is as for an unheld row — icons, seat, PAUSED or UNASSIGNED if they apply, then the key — no WAITING ON', () => {
+test('ASS-360 AC2: a held row\'s first line is as for an unheld row — icons, seat, PAUSED or UNASSIGNED if they apply, then the key — no AWAITING', () => {
   const r = render(heldState(), wide);
   const text = key => ticketLines(r, key)[0].slice(1 + TEXT);
   for (const key of ['W-1', 'W-2', 'W-4', 'W-5', 'W-6', 'W-7']) assert.ok(text(key).startsWith(`${key}: `), text(key));
   assert.ok(text('W-3').startsWith('PAUSED W-3: '), text('W-3'));                     // paused and waiting: PAUSED shows
   assert.ok(text('W-10').startsWith('UNASSIGNED W-10: '), text('W-10'));
-  assert.ok(!r.some(l => strip(l).includes('WAITING ON') && /W-\d+: /.test(strip(l))), 'never on the key\'s line');
+  assert.ok(!r.some(l => strip(l).includes('AWAITING') && /W-\d+: /.test(strip(l))), 'never on the key\'s line');
 });
 
-test('ASS-360 AC3, ASS-355 AC7: a held row\'s second line is "↳ WAITING ON …" in gold, the ↳ under the key; an unheld or UNASSIGNED row has none; the key under the grid explains it', () => {
+test('ASS-360 AC3, ASS-355 AC7: a held row\'s second line is "↳ AWAITING …" in gold, the ↳ under the key; an unheld or UNASSIGNED row has none; the key under the grid explains it', () => {
   const r = render(heldState(), wide);
   const second = key => ticketLines(r, key)[1];
   for (const key of ['W-1', 'W-2', 'W-3', 'W-6', 'W-7']) {
     const [first, under] = ticketLines(r, key);
-    assert.ok(under.trimStart().startsWith('↳ WAITING ON '), `${key}: ${under}`);
+    assert.ok(under.trimStart().startsWith('↳ AWAITING '), `${key}: ${under}`);
     assert.equal(under.indexOf('↳'), 1 + TEXT, key);                                   // after the icon and seat columns
     assert.equal(first.indexOf(key === 'W-3' ? 'PAUSED' : `${key}:`), 1 + TEXT, key);   // under the line's text
   }
-  assert.equal(second('W-1').trim(), '↳ WAITING ON EX-1 (Sam)');
-  assert.ok(ticketLines(r, 'W-1')[2].includes(`↳ ${GOLD}WAITING ON EX-1 (Sam)\x1b[0m`), ticketLines(r, 'W-1')[2]);
-  for (const key of ['W-4', 'W-5', 'W-8', 'W-9', 'W-10']) assert.ok(!second(key).includes('WAITING ON'), `${key}: ${second(key)}`);
+  assert.equal(second('W-1').trim(), '↳ AWAITING EX-1 (Sam)');
+  assert.ok(ticketLines(r, 'W-1')[2].includes(`↳ ${GOLD}AWAITING EX-1 (Sam)\x1b[0m`), ticketLines(r, 'W-1')[2]);
+  for (const key of ['W-4', 'W-5', 'W-8', 'W-9', 'W-10']) assert.ok(!second(key).includes('AWAITING'), `${key}: ${second(key)}`);
   const key = keyLines(r);
-  assert.ok(key.join('').includes(`${GOLD}WAITING ON\x1b[0m\x1b[2m a dependency not done yet\x1b[0m`), key.join('\n'));
+  assert.ok(key.join('').includes(`${GOLD}AWAITING\x1b[0m\x1b[2m a dependency not done yet\x1b[0m`), key.join('\n'));
   // The same project with the flag off holds nothing: no waiting line.
   const off = render(heldState(false), wide);
-  assert.ok(!ticketLines(off, 'W-1')[1].includes('WAITING ON'));
+  assert.ok(!ticketLines(off, 'W-1')[1].includes('AWAITING'));
 });
 
-test('ASS-360 AC7: each key on the WAITING ON line names its assignee\'s first name when not the operator, "(unassigned)" for nobody, nothing for the operator or an unknown key; +N past WAITING_KEYS stays', () => {
+test('ASS-360 AC7: each key on the AWAITING line names its assignee\'s first name when not the operator, "(unassigned)" for nobody, nothing for the operator or an unknown key; +N past WAITING_KEYS stays', () => {
   const r = render(heldState(), wide);
   const second = key => ticketLines(r, key)[1].trim();
-  assert.equal(second('W-1'), '↳ WAITING ON EX-1 (Sam)');                   // someone else, outside
-  assert.equal(second('W-2'), '↳ WAITING ON EX-1 (Sam), W-9 (unassigned)');  // nobody, in the sprint
-  assert.equal(second('W-6'), '↳ WAITING ON W-8');                               // the operator
+  assert.equal(second('W-1'), '↳ AWAITING EX-1 (Sam)');                   // someone else, outside
+  assert.equal(second('W-2'), '↳ AWAITING EX-1 (Sam), W-9 (unassigned)');  // nobody, in the sprint
+  assert.equal(second('W-6'), '↳ AWAITING W-8');                               // the operator
   // A key whose assignee is not known at all — no row for it, or found nowhere (control ignores such a key, so
   // it is never waited on in the grid) — gets no suffix.
   const t = { 'ticket-system-assignment': OPERATOR, dependencyRows: [{ key: 'ZZ-404', where: 'unknown', assignee: null }, { key: 'ex-5', where: 'outside', assignee: 'Bea  Smith' }] };
@@ -320,7 +320,7 @@ test('ASS-360 AC7: each key on the WAITING ON line names its assignee\'s first n
   assert.equal(waitingWho(t)('NO-1'), '');
   assert.equal(waitingWho(t)('EX-5'), ' (Bea)');                                   // matched whatever its case
   assert.equal(waitingWho({})('EX-5'), '');
-  assert.equal(second('W-7'), '↳ WAITING ON EX-1 (Sam), W-9 (unassigned) +2');
+  assert.equal(second('W-7'), '↳ AWAITING EX-1 (Sam), W-9 (unassigned) +2');
 });
 
 test('ASS-360 AC4: the Ticket column is floored at the waiting line when it is wider than the first line needs, and never otherwise; selection and scrolling count the two-line cell', () => {
@@ -334,11 +334,11 @@ test('ASS-360 AC4: the Ticket column is floored at the waiting line when it is w
   const floor = ticketWidth(render(one([]), narrow));
   assert.equal(floor, TEXT + 5 + 24 + 1);
   const shorter = render(one(['EX-9']), narrow);
-  assert.equal(ticketLines(shorter, 'L-1')[1].trim(), '↳ WAITING ON EX-9 (Sam)');
+  assert.equal(ticketLines(shorter, 'L-1')[1].trim(), '↳ AWAITING EX-9 (Sam)');
   assert.equal(ticketWidth(shorter), floor);
   const wider = render(one([long]), narrow);
   const under = ticketLines(wider, 'L-1')[1].trim();
-  assert.equal(under, `↳ WAITING ON ${long} (Sam)`);                               // whole, never cut
+  assert.equal(under, `↳ AWAITING ${long} (Sam)`);                               // whole, never cut
   assert.equal(ticketWidth(wider), TEXT + visible(under));
   // Selection reverses both of a held row's lines; moving down past it lands on the next row.
   const size = { ...wide, rows: 36 };   // room for a few rows: the rest scroll into view
@@ -352,7 +352,7 @@ test('ASS-360 AC4: the Ticket column is floored at the waiting line when it is w
     seen.push(key);
     if (key === 'W-1') {
       assert.ok(r[i + 1].includes('\x1b[7m'), r[i + 1]);
-      assert.match(strip(r[i + 1]), /↳ WAITING ON EX-1/);
+      assert.match(strip(r[i + 1]), /↳ AWAITING EX-1/);
     }
     s = handleKey(s, { name: 'down' }, size);
   }
@@ -458,7 +458,7 @@ test('ASS-357 AC4: 💺 is two cells wide; seated and unseated rows stay aligned
 // (dependencies.js heldBy), so its row has no 💺 and its seat goes to the next
 // ticket. Capped at two in-progress seats: D-1 waits on D-2 (in the sprint, at
 // Build), D-3 on X-1 (outside-tickets.json, In Progress); D-4's X-2 is Done.
-test('ASS-357 AC1: a variation its dependencies hold (WAITING ON) holds no seat, as control plans it; its seat goes to the next ticket', () => {
+test('ASS-357 AC1: a variation its dependencies hold (AWAITING) holds no seat, as control plans it; its seat goes to the next ticket', () => {
   const deps = [
     seatTicket('D-1', 1, [['A', 'build']], { dependencies: ['D-2'] }),
     seatTicket('D-3', 2, [['A', 'build']], { dependencies: ['X-1'] }),
@@ -475,7 +475,7 @@ test('ASS-357 AC1: a variation its dependencies hold (WAITING ON) holds no seat,
   const seatedOf = lines => keys.filter(k => strip(seatRow(lines, k)).slice(2, 2 + TEXT).includes(SEAT));
   const held = render(seatState([project(true)]), wide);
   assert.deepEqual(seatedOf(held), ['D-4', 'D-2']);
-  for (const [k, on] of [['D-1', 'D-2'], ['D-3', 'X-1']]) assert.ok(strip(held[held.indexOf(seatRow(held, k)) + 1]).includes(`↳ WAITING ON ${on}`), k);   // under the key (ASS-360)
+  for (const [k, on] of [['D-1', 'D-2'], ['D-3', 'X-1']]) assert.ok(strip(held[held.indexOf(seatRow(held, k)) + 1]).includes(`↳ AWAITING ${on}`), k);   // under the key (ASS-360)
   assert.deepEqual(seatedOf(render(seatState([project(false)]), wide)), ['D-1', 'D-3']);   // the flag off: nothing held, the first two seated
   // Control's own answer on its state shape: the same seats.
   const engine = { steps: seatSteps };
@@ -486,7 +486,7 @@ test('ASS-357 AC1: a variation its dependencies hold (WAITING ON) holds no seat,
 
 // ===== ASS-363: "↳ AWAITING MERGE" under a ticket held at a step with shows-merge-train =====
 // A variation whose status chain is at a step with shows-merge-train (grouped-build's Await Sequential Merge; here
-// `await`, top level, and `wait` in a sub-engine) gets an extra Ticket-cell line, after any WAITING ON one and
+// `await`, top level, and `wait` in a sub-engine) gets an extra Ticket-cell line, after any AWAITING one and
 // indented as it is: each train an awaited merge request — one a merge request of the variation depends on, in
 // another repository, neither Merged nor Closed — then every one depending on it, directly or not, in depends-on
 // order, " → " between them and "; " between trains. From the recorded merge-request list alone.
@@ -505,7 +505,7 @@ const mergeTickets = [
   merging('M-3', [mr(1, API, '!12', { status: 'Merged' }), mr(2, WEB, '!7', { 'depends-on': [1] })]),            // nothing awaited
   merging('M-4', [mr(1, WEB, '!6'), mr(2, WEB, '!7', { 'depends-on': [1] })]),                                    // its own repository: stacked, not awaited
   merging('M-5', [mr(1, API, '!12'), mr(2, WEB, '!7', { 'depends-on': [1] }), mr(3, LIB, '!4'), mr(4, WEB, '!8', { 'depends-on': [3] })]),
-  merging('M-6', train, { dependencies: ['EX-1'] }),                                                               // WAITING ON too
+  merging('M-6', train, { dependencies: ['EX-1'] }),                                                               // AWAITING too
   merging('M-7', train, { state: 'build', sub: 'wait' }),                                                         // the flag deeper in the chain
   merging('M-8', [mr(1, API, '!12', { status: 'Closed' }), mr(2, WEB, '!7', { 'depends-on': [1] })]),            // Closed: nothing to wait for
 ];
@@ -522,7 +522,7 @@ test('ASS-363 AC3: a variation at a shows-merge-train step gets "↳ AWAITING ME
   const r = render(mergeState(), wide);
   const second = key => cellLines(r, key)[1];
   assert.equal(second('M-1').trim(), '↳ AWAITING MERGE api !12 → web !7 → web MR 3');
-  assert.equal(second('M-1').indexOf('↳'), 1 + TEXT);                                   // under the key, as WAITING ON
+  assert.equal(second('M-1').indexOf('↳'), 1 + TEXT);                                   // under the key, as AWAITING
   assert.equal(second('M-5').trim(), '↳ AWAITING MERGE api !12 → web !7; lib !4 → web !8');
   assert.equal(second('M-7').trim(), '↳ AWAITING MERGE api !12 → web !7 → web MR 3');   // a sub-engine's step with the flag
   const raw = r[r.findIndex(l => / M-1: /.test(strip(l))) + 1];
@@ -549,12 +549,12 @@ test('ASS-363 AC3: a train goes on through every merge request depending on the 
   assert.deepEqual(mergeTrains({ variation: { 'merge-request': train } }), []);
 });
 
-test('ASS-363 AC4: no AWAITING MERGE line with nothing awaited or without the flag; WAITING ON comes first, then AWAITING MERGE', () => {
+test('ASS-363 AC4: no AWAITING MERGE line with nothing awaited or without the flag; AWAITING comes first, then AWAITING MERGE', () => {
   const r = render(mergeState(), wide);
   for (const key of ['M-2', 'M-3', 'M-4', 'M-8']) assert.ok(!cellLines(r, key)[1].includes('AWAITING MERGE'), `${key}: ${cellLines(r, key)[1]}`);
   const [first, waiting, awaiting] = cellLines(r, 'M-6');
   assert.ok(first.slice(1 + TEXT).startsWith('M-6: '), first);
-  assert.equal(waiting.trim(), '↳ WAITING ON EX-1 (Sam)');
+  assert.equal(waiting.trim(), '↳ AWAITING EX-1 (Sam)');
   assert.equal(awaiting.trim(), '↳ AWAITING MERGE api !12 → web !7 → web MR 3');
   assert.equal(waiting.indexOf('↳'), awaiting.indexOf('↳'));
 });
