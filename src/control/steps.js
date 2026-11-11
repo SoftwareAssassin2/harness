@@ -224,10 +224,15 @@ async function runVariation(ctx, state, project, key, name) {
     const changes = levelChanges(variation);
     switch (step.action?.type) {
       case 'none': {
-        facts.agentNeedsWork = !backlog && agentNeedsWork(planFor(state, project), step, ticket, variation);
+        const planned = backlog ? null : planFor(state, project);
+        facts.agentNeedsWork = !backlog && agentNeedsWork(planned, step, ticket, variation);
         if (!await move(nextState(step, engine, facts, changes))) {
           // Kept in the queue for want of a planning slot (committed): a fast-tracked ticket's wait, remembered (ASS-83).
           if (!backlog && step['is-planning-stage'] === true && !facts.agentNeedsWork) waitsForSeat(ctx.memory, project, ticket, variation, 'planning');
+          // …or for room in the ready-for-build queue (ASS-362: max-tickets-ready-for-build), said once per visit.
+          if (planned?.readyFull && step['is-planning-stage'] === true && !facts.agentNeedsWork) {
+            warnOnce(ctx, `ready/${project.id}/${who}/${(variation['state-changes'] ?? []).length}`, `${who}: waits to enter planning: max-tickets-ready-for-build reached (${planned.ready.length} ready for build, ${planned.planning} in planning)`);
+          }
           return;
         }
         break;

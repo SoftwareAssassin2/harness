@@ -744,7 +744,7 @@ test('statusOf: a variation\'s high-level state and its detailed step, every lev
   assert.deepEqual([flat.chain.length, flat.chain[0]['state-engine'], flat.state, flat.detail, flat.detailStep.id], [1, 'e', 'build', 'build', 'build']);
   // A step no engine knows is undefined; no harness-status, no chain.
   assert.equal(statusOf(engines, 'e', { 'harness-status': nested(['e', 'test'], ['nope', 'x']) }).detailStep, undefined);
-  assert.deepEqual(statusOf(engines, 'e', {}), { chain: [], state: undefined, step: undefined, detail: undefined, detailStep: undefined });
+  assert.deepEqual(statusOf(engines, 'e', {}), { chain: [], state: undefined, step: undefined, detail: undefined, detailStep: undefined, planned: false });
 });
 
 test('inPlanning: the deepest step that sets is-planning-stage decides, falling back up the chain', () => {

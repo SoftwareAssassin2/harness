@@ -12,7 +12,8 @@
 // it is, neither stopped under its agent nor started, until it ends) or it was set aside
 // (is-deleted) or waits for a slot (ASS-233: in motion but holding none,
 // plan.js planFor's `waiting`; a seat holder at a gate or a human step,
-// ASS-203, keeps its seat and so its VM) or for a ticket it depends on
+// ASS-203, keeps its seat and so its VM; a finished plan waiting for a build
+// seat, ASS-362, planFor's `ready`, holds none, so its queue costs no RAM) or for a ticket it depends on
 // (ASS-355: dependencies.js heldBy, the predicate control holds it with —
 // stopped as one waiting for a slot is, its agent at work let finish first,
 // and started again once the hold lifts); stopped anywhere else (Release,
@@ -76,7 +77,9 @@
 // and reached — a start or recreation it made, or limactl list plus a probe
 // (ASS-169) — is not judged (steps.js, awaitsVm) until it is, for at most
 // VM_WAIT; then it is, as it stands — unless it waits for a slot, when it is
-// not judged until it holds one and its VM is up. Nor, under the same wait, is an agent
+// not judged until it holds one and its VM is up. A finished plan (ASS-362)
+// needs no VM to move on to Build: its step is judged with its VM stopped,
+// and the move, once a seat is free, starts it. Nor, under the same wait, is an agent
 // dispatched into it (dispatch.js vmDown, ASS-159) — nor after it, until the
 // VM is up, or the variation goes to Blocked once it has waited past a
 // ceiling (ASS-348: 30 minutes, harness.json's vm-up-ceiling-seconds); limactl list is read in
@@ -100,8 +103,9 @@ const PHASE = 'vm';
 // variation's status that sets it ('running', 'stopped' or 'released', ASS-325), or undefined.
 const vmUse = (engines, engineName, variation) => statusOf(engines, engineName, variation).chain.findLast(l => l.step?.vm)?.step.vm;
 
-// waitsForSlot(plan, ticket, variation) — the variation is in motion but holds no slot (planFor's `waiting`, ASS-233).
-const waitsForSlot = (plan, ticket, variation) => plan.waiting.some(w => w.key === ticket?.key && w.variation === variation.name);
+// waitsForSlot(plan, ticket, variation) — the variation is in motion but holds no slot (planFor's `waiting`, ASS-233),
+// or its plan is finished and it waits for a build seat (`ready`, ASS-362).
+const waitsForSlot = (plan, ticket, variation) => [...plan.waiting, ...plan.ready].some(w => w.key === ticket?.key && w.variation === variation.name);
 
 // awaitsVm(ctx, state, project, variation, who) — whether the variation's
 // step waits this tick for its VM (see the module comment); its wait, and its
@@ -116,6 +120,7 @@ export function awaitsVm(ctx, state, project, variation, who) {
   if (!name || (ctx.memory.vmsUp ??= new Set()).has(name) || vmUse(project.engines ?? state.engines, project.engineName, variation) !== 'running') return false;
   const ticket = project.tickets.find(t => t.variations?.includes(variation));
   if (ticket && heldBy(state, project)(ticket, variation)) return true;   // its VM stopped while its dependencies hold it (ASS-355)
+  if (statusOf(project.engines ?? state.engines, project.engineName, variation).planned) return false;   // ASS-362: moves on to Build without it
   if (waitsForSlot(planFor(state, project), ticket, variation)) return true;   // its VM stopped till it holds one
   const waits = (ctx.memory.vmWaits ??= new Map()), now = ctx.now().getTime();
   let w = waits.get(name);
@@ -145,7 +150,7 @@ function declaredVmKind(ctx, id) {
   return d?.anthropic && d?.claude ? 'both' : d?.anthropic ? 'anthropic' : d?.claude ? 'claude' : null;
 }
 
-// The project's VMs: name → { ticket, variation, state (its variation's top-level step, in the sprint), run (whether it should), waits (for a slot),
+// The project's VMs: name → { ticket, variation, state (its variation's top-level step, in the sprint), run (whether it should), waits (for a slot), ready (ASS-362: that wait a finished plan's, for a build seat),
 // dependsOn (ASS-355: the keys of the tickets it waits on, holdOf's, when they hold it),
 // kind (its recorded credential kind), stamps (its recorded credential-stamps, ASS-350, or null), busy (an assignment on its variation, its agent started or not; for an inventory-only VM,
 // its row's ticket and variation, ASS-349), unlinked (ASS-234: only the
@@ -168,8 +173,9 @@ function vmsOf(ctx, state, project) {
     const busy = state.assignments.some(a => a.project === project.id && a['work-item'] === t.key && a.variation === v.name);
     const dependsOn = wants && !pause ? holdOf(state, project, t, v).waits : [];   // ASS-355: held by what it depends on, stopped as one waiting for a slot
     const waits = wants && !pause && !dependsOn.length && waitsForSlot(plan ??= planFor(state, project), t, v), run = wants && !waits && !dependsOn.length && !pause;
+    const ready = waits && plan.ready.some(r => r.key === t.key && r.variation === v.name);   // ASS-362: a finished plan, said so
     const paused = wants && pause ? pause : undefined, keep = !!pause && busy;   // ASS-297: paused, stopped once idle, never started
-    vms.set(v.vm.name, { ...vms.get(v.vm.name), ticket: t.key, variation: v.name, state: v['harness-status']?.state, run, waits, dependsOn, busy, paused, keep, release });
+    vms.set(v.vm.name, { ...vms.get(v.vm.name), ticket: t.key, variation: v.name, state: v['harness-status']?.state, run, waits, ready, dependsOn, busy, paused, keep, release });
   }
   return vms;
 }
@@ -266,7 +272,7 @@ async function match(ctx, id, vms, r, status, diskHold = false, stampEvery = CRE
     else if (vm.run && s == null) [args, did] = [['vm:create', id, vm.ticket, vm.variation], `recreated (${vm.ticket} ${vm.variation} at ${vm.state}; it had been deleted)`];
     else if (vm.run && s != null && s !== 'Running') [args, did] = [['vm:start', id, vm.ticket, vm.variation], `started (${vm.ticket} ${vm.variation} at ${vm.state})`];
     else if (!vm.run && s === 'Running') {
-      const why = `${vm.ticket} ${vm.variation} ${vm.state ? `at ${vm.state}` : vm.unlinked ? 'not linked to its variation' : 'is not in the sprint'}${vm.waits ? '; waits for a slot' : ''}${vm.dependsOn?.length ? `; waits on ${vm.dependsOn.join(', ')}` : ''}${vm.paused ? `; ${vm.paused === 'all' ? 'all projects are' : `${id} is`} paused` : ''}`;
+      const why = `${vm.ticket} ${vm.variation} ${vm.state ? `at ${vm.state}` : vm.unlinked ? 'not linked to its variation' : 'is not in the sprint'}${vm.waits ? (vm.ready ? '; planned, waits for a build seat' : '; waits for a slot') : ''}${vm.dependsOn?.length ? `; waits on ${vm.dependsOn.join(', ')}` : ''}${vm.paused ? `; ${vm.paused === 'all' ? 'all projects are' : `${id} is`} paused` : ''}`;
       if (vm.busy) {   // ASS-349: an assignment on its variation — its agent at work in it — holds the stop till it ends
         if (!ctx.memory.warned.has(holding)) { ctx.memory.warned.add(holding); ctx.log(PHASE, `${id} ${name}: to stop (${why}); waits until its agent finishes`); }
         continue;

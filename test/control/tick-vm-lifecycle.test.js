@@ -490,6 +490,24 @@ test('ASS-233 AC2, AC3: once the seat holder leaves, the waiting variation\'s VM
   assert.ok(l.calls.some(c => c.endsWith(' in abc-3-b')), l.calls.join('\n'));
 });
 
+// ASS-362 AC5: a finished plan (grouped Plan at done) holds no seat while it waits for one in progress: its VM is stopped
+// as one waiting for a slot is, so the queue for Build costs no RAM; it needs none to move on, so once a seat frees it goes.
+test('ASS-362 AC5: a finished plan waiting for a build seat has its VM stopped, said so; once a seat frees it moves on to Build without waiting for its VM', async () => {
+  const l = await reentering({ A: [PAYMENT_GATE, 'Running'], B: [at('plan', ['grouped-plan', 'done']), 'Running'] }, ONE_SEAT);
+  const runs = l.file('assignments.json'), data = JSON.parse(readFileSync(runs, 'utf8'));
+  for (const r of data['transient-state-engines']) if (r.parent.variation === 'B') r['is-done'] = true;   // its Plan run over
+  writeFileSync(runs, JSON.stringify(data));
+  await l.tick(); await l.settle();
+  assert.ok(l.calls.includes('vm:stop p abc-3-b'), l.calls.join('\n'));
+  assert.ok(l.f.lines.includes('vm p abc-3-b: stopped (ABC-3 B at plan; planned, waits for a build seat)'), l.f.lines.join('\n'));
+  const stateOfB = () => l.f.sprint().features[0].variations.find(v => v.name === 'B')['harness-status'].state;
+  assert.equal(stateOfB(), 'plan');
+  writeFileSync(join(l.v.instances, 'abc-3-b', 'status'), 'Stopped');   // as vm:stop left it
+  l.edit(t => { t.variations[0]['harness-status'] = at('done'); });   // A's seat freed
+  await l.tick();
+  assert.equal(stateOfB(), 'build', l.f.lines.join('\n'));
+});
+
 test('ASS-288 AC4: while the disk hold is on (disk-space.json level hold) no VM is started or recreated — said once each — while stops go on; once it lifts they are', async () => {
   const l = lifecycle({
     A: [at('setup', ['grouped-setup', 'mark-setup-complete']), 'Stopped'],

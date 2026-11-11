@@ -3,6 +3,23 @@
 // engine may start. Pure: nothing is dispatched or moved here. A variation
 // its dependencies hold (dependencies.js, ASS-355) is planned as a paused one
 // is: no slot, no seat, no agent — its slot free for the next ticket.
+//
+// A finished plan holds no seat (ASS-362): a variation whose top-level
+// planning step's sub-engine has reached its is-done step (grouped Plan at
+// done; engine.js finishedPlanning, statusOf's `planned`) only waits for an
+// in-progress seat to move on to Build. It holds neither a planning seat —
+// so the next ticket at committed may start planning — nor an in-progress
+// one; it is `ready`, and its VM is stopped while it waits (vm-lifecycle.js,
+// as for one waiting for a slot, ASS-233). The ready form a queue in rank
+// order: control moves the sprint's variations highest-ranked first
+// (steps.js), so a freed in-progress seat goes to the highest-ranked ready
+// one (mayEnter), never a lower-ranked one ahead of it. A planning step at a
+// gate or a human step, a plan sent back for revision, Requirements Changed
+// and any planning step not done keep their seat as before. The optional
+// max-tickets-ready-for-build (harness.json, every project's together, and
+// project.json, its own; unset for no limit) caps the queue: while the ready
+// and those still planning (who will join it) reach it, no ticket enters
+// planning (free.planning false; steps.js says so once at committed).
 import { heldBy } from './dependencies.js';
 import { isBlockedState, isDoneStep, waitsOnHuman, statusIn, inPlanning, stepOf, isHeld, isActive } from './engine.js';
 import { rankSprint } from './rank.js';
@@ -11,17 +28,21 @@ import { overSpent } from './spend.js';
 // The ticket limits (ASS-126) count tickets in motion: each variation at a
 // planning step takes a planning slot, at any other an in-progress slot.
 const LIMIT = { planning: 'max-tickets-in-planning', progress: 'max-tickets-in-progress' };
+// The cap on the ready queue, the planned waiting for a build seat (ASS-362).
+export const READY_LIMIT = 'max-tickets-ready-for-build';
 
 // slotKind(step, status) — the slot a variation at top-level `step` takes:
 // none (null) in the queue (a planning step no agent works: backlog,
 // committed), at a detour it returns from (follow-return-to-state: Blocked,
-// Blocked for Human), a switched-off one (isActive, ASS-192: passed at once) or done; else 'planning' when in
+// Blocked for Human), a switched-off one (isActive, ASS-192: passed at once), done, or
+// a planning step whose plan is finished (status.planned, ASS-362: ready for build); else 'planning' when in
 // planning (inPlanning over its `status`, statusOf: inside a sub-engine the
 // deepest step that says, falling back up to `step`), else 'progress' — a
 // human step (ASS-203) holds its slot like any other, by position.
 export function slotKind(step, status = { chain: [{ step }] }) {
   if (!step || !isActive(step) || step['is-done'] === true || step['is-blocked-state'] === true || step['follow-return-to-state'] === true) return null;
   if (step['is-planning-stage'] === true && step.action?.type === 'none') return null;
+  if (status.planned === true) return null;
   return inPlanning(status) ? 'planning' : 'progress';
 }
 
@@ -32,28 +53,32 @@ export function slotKind(step, status = { chain: [{ step }] }) {
 // `engines` the engines beneath it ({ [name]: its JSON }; none, the top
 // level alone); `assignments`: its assignments.json records, one occupying a variation when
 // its work-item matches and its variation does or is null; `harness` and
-// `project`: { max-agents, max-tickets-in-progress, max-tickets-in-planning } from
+// `project`: { max-agents, max-tickets-in-progress, max-tickets-in-planning, max-tickets-ready-for-build } from
 // harness.json (every project together) and the project's project.json (it
 // alone), null or missing for no limit, 0 for none — a slot or a dispatch must fit both;
 // `agentsRunning`: agent processes alive now, of every kind and project, and
 // `projectAgentsRunning` this project's; `reservedElsewhere` and
 // `planningElsewhere`: the variations other projects have in progress and in
-// planning (inMotion), against the harness's limits; `harness` and `project`
+// planning (inMotion), against the harness's limits, and `readyElsewhere`
+// those they have ready for build (ASS-362); `harness` and `project`
 // also give a ticket its spending limit (spend.js, ASS-191), and `running`,
 // { <work-item>: usd }, what its running agents have spent so far toward it
 // (ASS-270: spend.js runningSpend's for the project); `asking`, the
 // keys of the tickets an open blocking question holds (state.js, ASS-248); `waitsOn(ticket,
 // variation)`, whether its dependencies hold it (dependencies.js heldBy, ASS-355). (`transient` is taken
 // for the record; triggered engines count through agentsRunning.) Returns
-// { dispatch, reserved, planning, inPlanning, waiting, held, short, free }: `dispatch`, in rank order, each
+// { dispatch, reserved, planning, inPlanning, ready, readyFull, waiting, held, short, free }: `dispatch`, in rank order, each
 // { key, variation, state, agentCount, planning } to put agents on;
 // `reserved`, the { key, variation } holding the in-progress slots, in rank
 // order; `planning`, how many hold planning slots, and `inPlanning` which;
+// `ready`, the { key, variation } whose plan is finished (ASS-362: no seat, its
+// VM stopped), in rank order — the queue for Build; `readyFull`, whether
+// max-tickets-ready-for-build is reached by those and the ones in planning;
 // `waiting`, the { key, variation } in motion but holding no slot, the limits full (ASS-233: no VM runs for one);
 // `short`, the { key, variation } a dispatch was skipped for, max-agents full; `held`, each { key, variation,
 // state-engine, state } whose step inside a sub-engine may not have an agent
 // now; `free`, { planning, progress }: whether a variation holding none could
-// take a slot of each (mayEnter).
+// take a slot of each (mayEnter) — planning only while readyFull is not.
 // A variation is in motion — holds a slot of its step's kind (slotKind), the
 // first ones in rank order up to the limits — unless deleted, held (paused,
 // it or its ticket, or worked by hand: isHeld), its ticket waiting on the
@@ -71,13 +96,13 @@ export function slotKind(step, status = { chain: [{ step }] }) {
 // the one that waits on a human or the outside and that needs an agent; its
 // run's agents go out with the run (dispatch.js), so it is not dispatched
 // here, but it is `held` when it could not be — no slot — or it waits on a human.
-export function planDispatch({ ranked, engine, engines = {}, assignments = [], harness = {}, project = {}, agentsRunning = 0, projectAgentsRunning = 0, reservedElsewhere = 0, planningElsewhere = 0, asking = new Map(), running = {}, waitsOn = () => false }) {
+export function planDispatch({ ranked, engine, engines = {}, assignments = [], harness = {}, project = {}, agentsRunning = 0, projectAgentsRunning = 0, reservedElsewhere = 0, planningElsewhere = 0, readyElsewhere = 0, asking = new Map(), running = {}, waitsOn = () => false }) {
   const all = name => harness[name] ?? Infinity, own = name => project[name] ?? Infinity;
   const occupied = (key, name) => assignments.some(a => a['work-item'] === key && (a.variation == null || a.variation === name));
   const slots = { planning: [], progress: [] }, elsewhere = { planning: planningElsewhere, progress: reservedElsewhere };
   const free = kind => slots[kind].length < own(LIMIT[kind]) && elsewhere[kind] + slots[kind].length < all(LIMIT[kind]);
   let agents = agentsRunning, projectAgents = projectAgentsRunning;
-  const dispatch = [], held = [], short = [], waiting = [];
+  const dispatch = [], held = [], short = [], waiting = [], ready = [];
   for (const t of ranked) for (const v of overSpent(t, harness, project, running[t.key] ?? 0) ? [] : t.variations ?? []) {
     const status = statusIn(engine, v, engines), { state, step } = status;
     if (!step || v['is-deleted'] || isHeld(t, v) || asking.has(t.key) || isDoneStep(engine, state) || isBlockedState(engine, state) || waitsOn(t, v)) continue;
@@ -85,6 +110,7 @@ export function planDispatch({ ranked, engine, engines = {}, assignments = [], h
     const hold = () => { if (inRun) held.push({ key: t.key, variation: v.name, 'state-engine': deep['state-engine'], state: deep.state }); };
     if (at['is-done'] !== true && waitsOutside(at)) continue;   // a run done: its group step is about to move on
     const kind = slotKind(step, status), slot = kind != null && free(kind);
+    if (status.planned) ready.push({ key: t.key, variation: v.name });   // ASS-362: in the queue for Build, no seat
     if (slot) slots[kind].push({ key: t.key, variation: v.name });
     else if (kind != null) waiting.push({ key: t.key, variation: v.name });
     if (waitsOnHuman(engine, v, engines)) { hold(); continue; }   // keeps its slot (ASS-203), just no agent
@@ -97,20 +123,23 @@ export function planDispatch({ ranked, engine, engines = {}, assignments = [], h
     agents += agentCount;
     projectAgents += agentCount;
   }
-  return { dispatch, reserved: slots.progress, planning: slots.planning.length, inPlanning: slots.planning, waiting, held, short, free: { planning: free('planning'), progress: free('progress') } };
+  const queued = ready.length + slots.planning.length;
+  const readyFull = queued >= own(READY_LIMIT) || readyElsewhere + planningElsewhere + queued >= all(READY_LIMIT);
+  return { dispatch, reserved: slots.progress, planning: slots.planning.length, inPlanning: slots.planning, ready, readyFull, waiting, held, short, free: { planning: free('planning') && !readyFull, progress: free('progress') } };
 }
 
-// inMotion(projects, engines, state) — { planning, progress }: how many of the
-// projects' sprint variations are in planning and in progress (planDispatch
+// inMotion(projects, engines, state) — { planning, progress, ready }: how many of the
+// projects' sprint variations are in planning, in progress and ready for build (planDispatch
 // with no limits); given the loaded `state`, those their dependencies hold
 // left out (heldBy, ASS-355).
 export function inMotion(projects, engines, state) {
-  const counts = { planning: 0, progress: 0 };
+  const counts = { planning: 0, progress: 0, ready: 0 };
   for (const p of projects) {
     if (!p.engine) continue;
-    const { planning, reserved } = planDispatch({ ranked: p.tickets, engine: p.engine, engines: p.engines ?? engines, asking: p.asking, ...(state ? { waitsOn: heldBy(state, p) } : {}) });
+    const { planning, reserved, ready } = planDispatch({ ranked: p.tickets, engine: p.engine, engines: p.engines ?? engines, asking: p.asking, ...(state ? { waitsOn: heldBy(state, p) } : {}) });
     counts.planning += planning;
     counts.progress += reserved.length;
+    counts.ready += ready.length;
   }
   return counts;
 }
@@ -128,7 +157,7 @@ export function planFor(state, project, agents = {}) {
   return planDispatch({
     ranked: rankSprint(project.tickets, { engine: project.engine }), engine: project.engine, engines: project.engines ?? state.engines,
     assignments: state.assignments.filter(a => a.project === project.id), transient: state.transient,
-    harness: state.harness, project: project.json, reservedElsewhere: others.progress, planningElsewhere: others.planning, asking: project.asking, running: state.running?.[project.id] ?? {}, waitsOn: heldBy(state, project), ...agents,
+    harness: state.harness, project: project.json, reservedElsewhere: others.progress, planningElsewhere: others.planning, readyElsewhere: others.ready, asking: project.asking, running: state.running?.[project.id] ?? {}, waitsOn: heldBy(state, project), ...agents,
   });
 }
 
@@ -147,8 +176,11 @@ export function seatsOf(state, project) {
 // top-level step `to` (ASS-126): one that takes no slot (slotKind: the queue,
 // Blocked, done); one of the kind the variation is in already (it
 // holds that slot — or is in it past the limits, and the move takes no
-// more); or one whose kind has a slot free (planFor). Rank order is the
-// callers': they move variations highest-ranked first. A top-level human
+// more); or one whose kind has a slot free (planFor; a planning one only while
+// max-tickets-ready-for-build is not reached, ASS-362). Rank order is the
+// callers': they move variations highest-ranked first — so a freed in-progress
+// seat goes to the highest-ranked ready for build (a finished plan, holding
+// none) before a lower-ranked one. A top-level human
 // step takes an in-progress slot too (ASS-203), so moving to one needs one.
 export function mayEnter(state, project, variation, to) {
   const kind = slotKind(stepOf(project.engine, to));

@@ -270,8 +270,9 @@ export const isHeld = (ticket, variation) => ticket?.['is-paused'] === true || v
 // variation's own when not given), each sub-status's its own, `step` that
 // engine's step of that id (engineSteps; undefined when not known); `state`
 // and `step` the top level's, its high-level state; `detail` and
-// `detailStep` the deepest's, its detailed step. Without a harness-status,
-// chain [] and the rest undefined.
+// `detailStep` the deepest's, its detailed step; `planned`, whether it has
+// finished planning and only waits to leave it (finishedPlanning, ASS-362).
+// Without a harness-status, chain [] and the rest undefined (planned false).
 export function statusOf(engines, engineName, variation) {
   const chain = [];
   for (let at = variation?.['harness-status']; at?.state != null; at = at['sub-status']) {
@@ -279,8 +280,30 @@ export function statusOf(engines, engineName, variation) {
     chain.push({ 'state-engine': name, state: at.state, step: name == null ? undefined : stepOf(engineSteps(engines, name), at.state) });
   }
   const top = chain[0], deep = chain.at(-1);
-  return { chain, state: top?.state, step: top?.step, detail: deep?.state, detailStep: deep?.step };
+  return { chain, state: top?.state, step: top?.step, detail: deep?.state, detailStep: deep?.step, planned: finishedPlanning(engines, chain, variation) };
 }
+
+// finishedPlanning(engines, chain, variation) — the status `chain` (statusOf's,
+// `engines` beneath it) has finished planning (ASS-362): its top-level step is
+// a planning one (is-planning-stage) that runs a sub-engine, its deepest step
+// in there is an is-done one — the run over, the step about to move by its
+// own exits — and among those exits is one out of planning to a step past it
+// (leavesPlanning: grouped Plan's to Build), so it is the plan finished, not
+// a planning step on the way to another (grouped Setup's done goes on to
+// Plan). And it waits on no person (humanWaits: a gate on leaving the step
+// keeps it as it is). Generic: any planning sub-engine's is-done step. A
+// flat engine's steps have no sub-engine, so it is never so.
+function finishedPlanning(engines, chain, variation) {
+  const top = chain[0]?.step;
+  if (chain.length < 2 || top?.['is-planning-stage'] !== true || chain.at(-1).step?.['is-done'] !== true) return false;
+  const steps = engineSteps(engines, chain[0]['state-engine']);
+  return (top['exit-events'] ?? []).some(e => leavesPlanning(stepOf(steps, e['move-to-state']))) && !humanWaits(chain, variation);
+}
+
+// leavesPlanning(step) — a step past planning that holds a seat (not done, a
+// detour or the blocked state): where a finished plan goes next.
+const leavesPlanning = step => step != null && step['is-planning-stage'] !== true && step['is-done'] !== true
+  && step['is-blocked-state'] !== true && step['follow-return-to-state'] !== true;
 
 // inPlanning(status) — the status (statusOf) is in planning: the deepest
 // step of its chain that sets is-planning-stage says, falling back up; false
@@ -340,9 +363,13 @@ export const answersGap = (engine, variation, status, engines) => statusIn(engin
 // status (statusOf). A switched-off step (isActive) waits on no one.
 export function waitsOnHuman(engine, variation, engines) {
   const { chain, step } = statusIn(engine, variation, engines);
-  if (!step) return false;
-  const last = variation['state-changes']?.at(-1), path = changePath(last);
-  const gates = variation['gate-when-leaving-state'] ?? [];
+  return step != null && humanWaits(chain, variation);
+}
+
+// humanWaits(chain, variation) — waitsOnHuman over a status chain (statusOf's) of the variation.
+function humanWaits(chain, variation) {
+  const last = variation?.['state-changes']?.at(-1), path = changePath(last);
+  const gates = variation?.['gate-when-leaving-state'] ?? [];
   return chain.some((l, i) => isActive(l.step) && (l.step?.action?.type === 'human'
     || (gates.includes(gateName(l)) && path[i]?.['to-state'] === l.state && last['work-is-done'] === true)));
 }
