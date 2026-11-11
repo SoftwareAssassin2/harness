@@ -1,5 +1,5 @@
-// The open MRs screen (U, ASS-366): the selected project's open merge
-// requests, grouped by ticket, as the paste-ready text merge-requests-summary.js
+// The open MRs screen (U, ASS-366): the selected project's merge requests
+// ready for approval (ASS-367), grouped by ticket, as the paste-ready text merge-requests-summary.js
 // writes — shown as it is copied, scrolling as the updates screen (u) does.
 import { openMergeRequests, openMergeRequestLines, inPlay } from '../merge-requests-summary.js';
 import { below, headerLines, platform } from './frame.js';

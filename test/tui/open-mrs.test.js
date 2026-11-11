@@ -7,7 +7,10 @@ import { link } from '../../src/tui/text.js';
 // ASS-366: the open MRs screen (U) — the sprint's open merge requests grouped
 // by ticket, as paste-ready text, from the recorded merge-request rows alone.
 const forge = (repo, n) => `https://forge.example.com/acme/${repo}/-/merge_requests/${n}`;
-const mr = (id, repo, n, fields = {}) => ({ id, repository: `https://forge.example.com/acme/${repo}.git`, key: `!${n}`, url: forge(repo, n), status: 'Open', 'depends-on': [], ...fields });
+// ASS-367: ready for approval by default (approval-wait-since set); WAIT its time as the dashboard writes it.
+const SINCE = '2026-11-11T14:05:00Z';
+const WAIT = 'waiting since Wed Nov 11 @ 2:05 PM UTC';
+const mr = (id, repo, n, fields = {}) => ({ id, repository: `https://forge.example.com/acme/${repo}.git`, key: `!${n}`, url: forge(repo, n), status: 'Open', 'depends-on': [], 'approval-wait-since': SINCE, ...fields });
 const NOW = new Date('2026-11-11T15:00:00Z');
 
 test('each ticket\'s open merge requests in depends-on order, the ones it waits for after each; the rest left out (ASS-366 AC2, AC3)', () => {
@@ -25,14 +28,14 @@ test('each ticket\'s open merge requests in depends-on order, the ones it waits 
   ]);
   assert.deepEqual(groups.map(g => g.key), ['EX-12', 'EX-40']);
   assert.equal(openMergeRequestText(groups, NOW), [
-    'Open merge requests (3), 2026-11-11',
+    'Merge requests ready for approval (3), 2026-11-11',
     '',
     'EX-12: Capture parent lineage from source',
-    `  - api !1005  ${forge('api', 1005)}`,
-    `  - ingest !577  ${forge('ingest', 577)}  (after api !1005)`,
+    `  - api !1005  ${forge('api', 1005)}  ${WAIT}`,
+    `  - ingest !577  ${forge('ingest', 577)}  (after api !1005)  ${WAIT}`,
     '',
     'EX-40: Measure use of downloads',
-    `  - api !1019  ${forge('api', 1019)}`,
+    `  - api !1019  ${forge('api', 1019)}  ${WAIT}`,
   ].join('\n'));
 });
 
@@ -48,7 +51,7 @@ test('a merge request waiting on several is placed after them all, naming each; 
 });
 
 test('with none open the text says so; the key is linked for display only and copies plain (ASS-366 AC3, AC4)', () => {
-  assert.deepEqual(openMergeRequestLines([], NOW), ['No open merge requests.']);
+  assert.deepEqual(openMergeRequestLines([], NOW), ['No merge requests ready for approval.']);
   const groups = openMergeRequests([{ key: 'EX-1', title: 'T', url: 'https://tickets.example.com/EX-1', variation: { 'merge-request': [mr(1, 'api', 1)] } }]);
   assert.equal(openMergeRequestLines(groups, NOW)[2], `${link('EX-1', 'https://tickets.example.com/EX-1')}: T`);
   assert.equal(openMergeRequestText(groups, NOW).split('\n')[2], 'EX-1: T');
@@ -78,11 +81,11 @@ test('U opens the open MRs screen, listed in the menu as your open MRs; the scre
   const open = press(s, 'U');
   assert.deepEqual([open.screen, open.focus], ['U', 'openmrs']);
   const menu = lines(press(s, '?'));
-  assert.ok(menu.some(l => /│ U +your open MRs +│/.test(l)));
+  assert.ok(menu.some(l => /│ U +MRs ready for approval +│/.test(l)));   // ASS-367
   const out = lines(open);
   const at = text => out.findIndex(l => l === text);
-  assert.ok(at('Open merge requests (2), 2026-11-11') > 0);
-  assert.ok(out.includes(`  - api !1005  ${forge('api', 1005)}`));
+  assert.ok(at('Merge requests ready for approval (2), 2026-11-11') > 0);
+  assert.ok(out.includes(`  - api !1005  ${forge('api', 1005)}  ${WAIT}`));
   assert.ok(!out.some(l => l.includes('old !1')));                                 // the set-aside variation's
   assert.ok(at('EX-40: Measure use of downloads') < at('EX-12: Capture parent lineage from source'));   // the sprint's order: by priority here
   assert.equal(press(open, 's').screen, 's');
@@ -93,7 +96,7 @@ test('U opens the open MRs screen, listed in the menu as your open MRs; the scre
 });
 
 test('with no open merge requests the screen says so (ASS-366 AC3)', () => {
-  assert.ok(lines(press(stateOf(sprint([ticket('EX-1', 'T', 1, [mr(1, 'api', 1, { status: 'Merged' })])])), 'U')).includes('No open merge requests.'));
+  assert.ok(lines(press(stateOf(sprint([ticket('EX-1', 'T', 1, [mr(1, 'api', 1, { status: 'Merged' })])])), 'U')).includes('No merge requests ready for approval.'));
 });
 
 test('up and down scroll text taller than the window, no further than its end (ASS-366 AC5)', () => {
@@ -106,4 +109,17 @@ test('up and down scroll text taller than the window, no further than its end (A
   assert.equal(shown(end).at(-1), 'EX-39');
   assert.equal(press(end, 'down').openMrsScroll, end.openMrsScroll);
   assert.equal(press(end, ...Array(300).fill('up')).openMrsScroll, 0);
+});
+
+test('only merge requests ready for approval are listed; a dependency not ready is left unnamed (ASS-367 AC1, AC3)', () => {
+  const groups = openMergeRequests([{ key: 'EX-12', title: 'T', variation: { 'merge-request': [
+    mr(1, 'api', 10, { 'approval-wait-since': null }),                       // a draft, or feedback being acted on
+    mr(2, 'web', 20, { 'depends-on': [1] }),
+    mr(3, 'lib', 30, { 'depends-on': [2] }),
+    mr(4, 'cli', 40, { 'approval-wait-since': undefined }),                  // not yet set to auto-merge
+  ] } }, { key: 'EX-13', title: 'None ready', variation: { 'merge-request': [mr(1, 'api', 11, { 'approval-wait-since': null })] } }]);
+  assert.deepEqual(groups.map(g => g.key), ['EX-12']);
+  assert.deepEqual(groups[0].mrs.map(m => [m.name, m.after, m.since]), [['web !20', [], SINCE], ['lib !30', ['web !20'], SINCE]]);
+  assert.deepEqual(openMergeRequestLines(openMergeRequests([{ key: 'EX-13', title: 'T', variation: { 'merge-request': [mr(1, 'api', 11, { 'approval-wait-since': null })] } }]), NOW),
+    ['No merge requests ready for approval.']);
 });

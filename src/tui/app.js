@@ -30,7 +30,7 @@ import * as ticket from './screens/ticket.js';
 // project and options screens, never built, are gone (ASS-262).
 const SCREENS = {
   s: 'sprint', S: 'sprint flow', b: 'backlog', B: 'backlog flow', c: 'control', f: 'sub-flows',
-  m: 'merge requests', r: 'repos', u: 'updates', U: 'your open MRs', a: 'agents', x: 'chat', h: 'memory',   // U: the open merge requests by ticket, to paste (ASS-366)
+  m: 'merge requests', r: 'repos', u: 'updates', U: 'MRs ready for approval', a: 'agents', x: 'chat', h: 'memory',   // U: the open merge requests by ticket, to paste (ASS-366), only those ready for approval (ASS-367)
   A: 'agents for all projects',   // every project's agents (ASS-188), beside a (ASS-246), apart from the rest in the menu
 };
 // The screen key a keypress names: its sequence, so S is told from s; its name when it has none.

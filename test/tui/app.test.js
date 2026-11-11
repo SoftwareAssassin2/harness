@@ -1285,7 +1285,7 @@ test('ASS-183: ? opens the menu: one entry per line — key, label, agent count 
   const menu = menuOf(state);
   assert.deepEqual(menu, [
     's sprint 🤖x3', 'S sprint flow', 'b backlog 🤖x0', 'B backlog flow', 'c control', 'f sub-flows 🤖x0', 'm merge requests 🤖x0',
-    'r repos 🤖x0', 'u updates', 'U your open MRs', 'a agents 🤖x0', 'x chat', 'h memory',
+    'r repos 🤖x0', 'u updates', 'U MRs ready for approval', 'a agents 🤖x0', 'x chat', 'h memory',
     'A agents for all projects',   // its own group (ASS-188, ASS-246)
     'space pause Example', '! pause every project', '/ hide project menu', 'Q quit',
     '⦿ needs you — counted on Operator Needed if a sprint ticket (backlog: ●)', '⦿ going on with an assumption — not counted (backlog: ●)',   // what the marks mean, a blank line apart (ASS-248)
