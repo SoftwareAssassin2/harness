@@ -395,6 +395,14 @@ test('ASS-264: restarts-visit-count is a boolean, on a human step alone — a pe
   assertError(two({ 'restarts-visit-count': true }), /step "b" has restarts-visit-count but is no human step/);
 });
 
+test('ASS-363 AC2: shows-merge-train is a boolean, on any step', () => {
+  const two = b => engine([step('a', 1, { 'exit-events': [{ condition: { always: true }, 'move-to-state': 'b' }], ...b }), step('b', 2, { 'is-done': true, ...b })]);
+  assert.deepEqual(errorsFor(two({ 'shows-merge-train': true })), []);
+  assert.deepEqual(errorsFor(two({ 'shows-merge-train': false })), []);
+  assertError(two({ 'shows-merge-train': 'yes' }), /step "a" shows-merge-train "yes" is not true or false/);
+  assertError(two({ 'shows-merge-train': 1 }), /step "b" shows-merge-train "1" is not true or false/);
+});
+
 // ASS-315: an exit may say why the move it makes was made ("cause": merge-gate-red on
 // harness-development-v2's release rebuild exit, which restarts the visit window — engine.js
 // sinceResolution, steps.js). It is recorded as given, so it must be a string: a non-string would

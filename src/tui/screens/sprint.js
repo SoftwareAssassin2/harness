@@ -27,7 +27,8 @@ const SHRINK = ['Health', 'Agents', 'Status'].map(h => TABLE_HEADERS.indexOf(h))
 // columns and the two-cell seat, PAUSED or UNASSIGNED, the linked key: see
 // ticketRows) is not re-derived. A held row's cell is two lines (ASS-360): its
 // "↳ WAITING ON" line, never cut, floors the column at its own width alone, so
-// it widens the column only when wider than the first line's floor. No rows → 0 (no floor).
+// it widens the column only when wider than the first line's floor; so does a
+// row's "↳ AWAITING MERGE" line (ASS-363), its third when it has both. No rows → 0 (no floor).
 const ticketFloor = (rows, tickets) => Math.max(0, ...rows.map((row, i) => {
   const [first, ...more] = [row[0]].flat();
   const title = tickets[i].title;
@@ -110,13 +111,63 @@ export const waitingWho = t => key => {
   if (row.assignee == null) return ' (unassigned)';
   return row.assignee === t['ticket-system-assignment'] ? '' : ` (${row.assignee.trim().split(/\s+/)[0]})`;
 };
+// mergeTrains(t) — the merge trains of a variation held at a merge wait (ASS-363), [] for none: each an array of its
+// merge requests, starting with an awaited one and going on in depends-on order. Only at a step that says so — any
+// level of its status chain (t.status.chain) at a step with shows-merge-train: true (grouped-build's Await Sequential
+// Merge), never a step id or name compared. From the variation's recorded merge-request list alone (no forge call),
+// with merge-request:await-dependencies' own test (MR_DEPS): a merge request awaited is one that a merge request of
+// the variation — with an id, neither Merged nor Closed — depends on, found in the list (the first with that id), in
+// another repository, and neither Merged nor Closed itself. Its train goes on through every merge request of the
+// variation that depends on it, directly or not, each placed once all it depends on in the train are (list order
+// among those ready; a cycle's rest at the end).
+export function mergeTrains(t) {
+  if (!(t.status?.chain ?? []).some(l => l.step?.['shows-merge-train'] === true)) return [];
+  const mrs = (t.variation?.['merge-request'] ?? []).filter(m => m?.id != null);
+  const done = m => m.status === 'Merged' || m.status === 'Closed';
+  const byId = new Map();
+  for (const m of mrs) if (!byId.has(m.id)) byId.set(m.id, m);
+  const deps = m => (m['depends-on'] ?? []).map(id => byId.get(id)).filter(Boolean);
+  const awaited = [...new Set(mrs.filter(m => !done(m)).flatMap(m => deps(m).filter(d => !done(d) && d.repository !== m.repository)))];
+  const reach = head => {
+    const reached = new Set([head]);
+    for (let grew = true; grew;) {
+      grew = false;
+      for (const m of byId.values()) if (!reached.has(m) && deps(m).some(d => reached.has(d))) { reached.add(m); grew = true; }
+    }
+    return reached;
+  };
+  const reaches = new Map(awaited.map(head => [head, reach(head)]));
+  // An awaited one already in an earlier-starting train (web !7 awaited by lib !4, itself awaiting api !12) is shown
+  // there, in order: no train of its own.
+  const heads = awaited.filter((head, i) => !awaited.some((other, j) => other !== head && reaches.get(other).has(head) && !(reaches.get(head).has(other) && j > i)));
+  return heads.map(head => {
+    const reached = reaches.get(head);
+    const train = [head];
+    for (let rest = [...byId.values()].filter(m => m !== head && reached.has(m)); rest.length;) {
+      const next = rest.find(m => deps(m).every(d => !reached.has(d) || train.includes(d))) ?? rest[0];
+      train.push(next);
+      rest = rest.filter(m => m !== next);
+    }
+    return train;
+  });
+}
+// awaitingMerge(trains) — the AWAITING MERGE line's text (ASS-363), "AWAITING MERGE" in gold then each train's merge
+// requests joined by " → ", trains by "; ": each "<repo> <key>", the repository url's last path segment linked to
+// that url and the key to the merge request's url where known; "MR <id>" for a planned one with no key yet —
+// "AWAITING MERGE api !12 → web !7" (for acme/api and acme/web).
+const repoName = url => (url ?? '').replace(/\/+$/, '').replace(/\.git$/, '').split(/[/:]/).pop();
+const awaitingMerge = trains => `${gold('AWAITING MERGE')} ${trains.map(train => train.map(m => {
+  const repo = repoName(m.repository), key = m.key ?? `MR ${m.id}`;
+  return [repo && (/^https?:\/\//.test(m.repository) ? link(repo, m.repository.replace(/\.git$/, '')) : repo), m.url && m.key ? link(key, m.url) : key].filter(Boolean).join(' ');
+}).join(' → ')).join('; ')}`;
 const dim = text => `\x1b[2m${text}\x1b[0m`;
 // A variation holding a planning or in-progress seat (ASS-357): an emoji, two
 // cells wide (text.js visible counts it so), its column two blanks without.
 const SEAT = '💺';
 
 // The key under the ticket grid (ASS-259): each of the rows' glyphs as they
-// are drawn there — ⦿ in each of its colors, PAUSED in blue, UNASSIGNED in red, WAITING ON in gold (on its own line under the ticket, ASS-360) — with what it
+// are drawn there — ⦿ in each of its colors, PAUSED in blue, UNASSIGNED in red, WAITING ON in gold (on its own line under the ticket, ASS-360),
+// AWAITING MERGE in gold (on its own line after that, ASS-363) — with what it
 // means, in dim text; entries two blanks apart, wrapped at `columns` between
 // entries, never inside one.
 const KEY = [
@@ -125,6 +176,7 @@ const KEY = [
   [markDot(GLYPHS.mark, 'needed'), 'needs you'], [markDot(GLYPHS.mark, 'assumed'), 'assumption'], [dim(GLYPHS.agent), 'agent working'],
   [SEAT, 'holds a seat (planning or in progress)'],
   [PAUSED, 'paused'], [UNASSIGNED, 'reassigned away'], [gold('WAITING ON'), 'a dependency not done yet'],
+  [gold('AWAITING MERGE'), 'MRs to merge, in order'],
 ].map(([glyph, meaning]) => `${glyph}${dim(` ${meaning}`)}`);
 function iconKey(columns) {
   const lines = [];
@@ -165,8 +217,11 @@ const BUILD_COLORS = { Merged: gray, Closed: gray, Running: gold, Failed: red, P
 // or not, gets a second line (ASS-360; before it, "WAITING ON" took PAUSED's
 // place on the first): "↳ WAITING ON <KEY> (<who>), <KEY>" in gold (waitingOn, waitingWho),
 // indented by the icon and seat columns so the ↳ starts under the key — none
-// on an UNASSIGNED row; an unheld row's cell stays one line. iconKey says what
-// each means, under the grid.
+// on an UNASSIGNED row; an unheld row's cell stays one line. A variation at a
+// step with shows-merge-train whose merge requests await one in another
+// repository (mergeTrains, ASS-363) gets one more line, after any WAITING ON
+// one and indented as it is: "↳ AWAITING MERGE <repo> <key> → <repo> <key>"
+// (awaitingMerge). iconKey says what each means, under the grid.
 function ticketRows(tickets, assignments, steps, collaborations = {}, marks = { needed: new Set() }, seats = new Set()) {
   return tickets.map(t => {
     // One line per assignment to this ticket and this row's variation (or to no
@@ -181,8 +236,10 @@ function ticketRows(tickets, assignments, steps, collaborations = {}, marks = { 
     const held = t.reassigned ? `${UNASSIGNED} ` : t.variation['is-paused'] === true ? `${PAUSED} ` : '';
     const line = `${lead}${held}${t.url ? link(name, t.url) : name}`;
     const waits = !t.reassigned && t.hold?.waits?.length ? t.hold.waits : null;
+    const trains = mergeTrains(t);
+    const under = [waits && waitingOn(waits, waitingWho(t)), trains.length && awaitingMerge(trains)].filter(Boolean).map(text => `${' '.repeat(visible(lead))}↳ ${text}`);
     return [
-      waits ? [line, `${' '.repeat(visible(lead))}↳ ${waitingOn(waits, waitingWho(t))}`] : line,
+      under.length ? [line, ...under] : line,
       String(t.priority ?? NONE) + (t['manual-priority'] != null ? ' 🪪' : ''),
       statusCell(t, steps),
       String(t.points ?? NONE),

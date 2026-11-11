@@ -98,7 +98,7 @@
             "id": "address-merge-request-feedback",
             "sequence": 4,
             "name": "Address Merge Request Feedback",
-            "description": "Act on the review threads, plain review comments, failed pipeline or needed rebase of the ticket's own merge request that another of its merge requests waits on at Await Dependencies in Other Repositories (its exit 4), then wait again; Release's own Address Merge Request Feedback comes after the very tests that wait (ASS-361)",
+            "description": "Act on the review threads, plain review comments, failed pipeline or needed rebase of the ticket's own merge request that another of its merge requests waits on at Await Sequential Merge (its exit 4), then wait again; Release's own Address Merge Request Feedback comes after the very tests that wait (ASS-361)",
             "max-visits": 3,
             "on-max-visits": "blocked",
             "action": {
@@ -120,7 +120,8 @@
         {
             "id": "await-dependencies",
             "sequence": 5,
-            "name": "Await Dependencies in Other Repositories",
+            "name": "Await Sequential Merge",
+            "shows-merge-train": true,
             "description": "Wait until every merge request a merge request of the ticket depends on in another repository is merged, so its tests do not run against what that repository has not yet published; polling while one is not (exit 2, its waiting-exit-code: no failure, ASS-335); nothing to wait for passes at once. What each dependency needs (draft, failed pipeline, open threads, rebase, approval) is the operator's feedback, written when it changes; one of the ticket's own planned merge requests never created is not waited on but sent back to Generate Solution (exit 3, under its max-visits) (ASS-359). One with review threads, review comments, a failed pipeline or a needed rebase of its own goes to Address Merge Request Feedback (exit 4, under its max-visits) (ASS-361); a draft or an approval alone keeps polling",
             "record-script-output": true,
             "action": {

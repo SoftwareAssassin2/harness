@@ -633,7 +633,7 @@ test('ASS-239 AC1: on GitHub merge-request:reply and :resolve reply to and resol
 // stacked on it (same-repository ones are), so its tests run against what that
 // repository has published — the dependency's change missing until it merges.
 // merge-request:await-dependencies is Build's gate before Automated Testing
-// (grouped-build's Await Dependencies in Other Repositories, waiting exit 2;
+// (grouped-build's Await Sequential Merge, waiting exit 2;
 // the engine side: test/workflow/grouped-development.test.js): 2 while one
 // waits, 0 once none does.
 const awaiting = async f => {

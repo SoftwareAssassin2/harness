@@ -33,7 +33,7 @@ const engines = Object.fromEntries(engineNames().filter(d => existsSync(join(eng
 // v2-build is grouped-build as it was before ASS-249 added CI Checks to the
 // grouped one alone (v2 engines unchanged): grouped-build without that step,
 // Automated Testing's exit 0 to Code Review again, the sequences closed up;
-// nor its Await Dependencies in Other Repositories (ASS-335, grouped-build's
+// nor its Await Sequential Merge (ASS-335, grouped-build's
 // alone too): Generate Solution's finished turn to the refresh again.
 const groupedBuild = (() => {
   const g = structuredClone(engines['grouped-build']);

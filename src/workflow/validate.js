@@ -108,6 +108,10 @@ export function validateStateEngine(engine, root, name, own) {
     // a person's choice there, so on a human step alone, never one an agent's output could loop through.
     if (s['restarts-visit-count'] !== undefined && typeof s['restarts-visit-count'] !== 'boolean') errors.push(`${at} restarts-visit-count "${s['restarts-visit-count']}" is not true or false`);
     else if (s['restarts-visit-count'] === true && action?.type !== 'human') errors.push(`${at} has restarts-visit-count but is no human step`);
+    // shows-merge-train (ASS-363): a variation whose status chain is at the step gets the sprint grid's
+    // "↳ AWAITING MERGE" Ticket-cell line (sprint.js mergeTrains) — the flag says so, never the step's id or name.
+    // Any step may have it; it must be true or false.
+    if (s['shows-merge-train'] !== undefined && typeof s['shows-merge-train'] !== 'boolean') errors.push(`${at} shows-merge-train "${s['shows-merge-train']}" is not true or false`);
     // color paints the step on the dashboard: its progress-bar run and status square.
     if (s.color !== undefined && !/^#[0-9a-f]{6}$/i.test(s.color)) errors.push(`${at} color "${s.color}" is not #rrggbb`);
 

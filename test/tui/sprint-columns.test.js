@@ -72,7 +72,7 @@ const KEYS = ['A-1', 'A-2', 'A-3', 'A-4', 'A-5', 'A-6', 'A-7', 'A-8', 'A-9', 'A-
 // The key under the grid: the lines right after its bottom border that start with a key entry.
 const keyLines = lines => {
   const after = lines.slice(lines.findLastIndex(l => /^└/.test(strip(l))) + 1);
-  const end = after.findIndex(l => !/^([▮✦✘⌕☛↯⦿⚉]|💺|PAUSED|UNASSIGNED|WAITING ON) /u.test(strip(l)));
+  const end = after.findIndex(l => !/^([▮✦✘⌕☛↯⦿⚉]|💺|PAUSED|UNASSIGNED|WAITING ON|AWAITING MERGE) /u.test(strip(l)));
   return end < 0 ? after : after.slice(0, end);
 };
 
@@ -190,7 +190,7 @@ test('ASS-259 AC7: a dim key directly under the grid shows each glyph as drawn i
   const bottom = raw.findLastIndex(l => /^└/.test(strip(l)));
   const key = keyLines(raw);
   assert.equal(raw.indexOf(key[0]), bottom + 1);                     // directly under the grid
-  assert.equal(strip(key.join('  ')), '▮ step  ✦ feature  ✘ bug  ⌕ spike  ☛ by hand  ↯ fast-tracked  ⦿ requirements change  ⦿ needs you  ⦿ assumption  ⚉ agent working  💺 holds a seat (planning or in progress)  PAUSED paused  UNASSIGNED reassigned away  WAITING ON a dependency not done yet');
+  assert.equal(strip(key.join('  ')), '▮ step  ✦ feature  ✘ bug  ⌕ spike  ☛ by hand  ↯ fast-tracked  ⦿ requirements change  ⦿ needs you  ⦿ assumption  ⚉ agent working  💺 holds a seat (planning or in progress)  PAUSED paused  UNASSIGNED reassigned away  WAITING ON a dependency not done yet  AWAITING MERGE MRs to merge, in order');
   const all = key.join('');
   for (const kind of ['31', '34', '2;90']) assert.ok(all.includes(`\x1b[${kind}m⦿\x1b[0m`), kind);   // ⦿ in each of its colors
   assert.ok(all.includes('\x1b[34mPAUSED\x1b[0m'));
@@ -198,7 +198,7 @@ test('ASS-259 AC7: a dim key directly under the grid shows each glyph as drawn i
 });
 
 test('ASS-259 AC7: the key wraps between entries at the screen width, never inside one, and is never cut off — the grid gives up rows', () => {
-  const ENTRIES = ['▮ step', '✦ feature', '✘ bug', '⌕ spike', '☛ by hand', '↯ fast-tracked', '⦿ requirements change', '⦿ needs you', '⦿ assumption', '⚉ agent working', '💺 holds a seat (planning or in progress)', 'PAUSED paused', 'UNASSIGNED reassigned away', 'WAITING ON a dependency not done yet'];
+  const ENTRIES = ['▮ step', '✦ feature', '✘ bug', '⌕ spike', '☛ by hand', '↯ fast-tracked', '⦿ requirements change', '⦿ needs you', '⦿ assumption', '⚉ agent working', '💺 holds a seat (planning or in progress)', 'PAUSED paused', 'UNASSIGNED reassigned away', 'WAITING ON a dependency not done yet', 'AWAITING MERGE MRs to merge, in order'];
   assert.equal(Math.max(...ENTRIES.map(visible)), 41);   // the seat's entry (ASS-357), the widest: no narrower screen holds it whole
   for (const columns of [200, 100, 60, 41]) {
     const size = { ...wide, columns, rows: 40 };
@@ -482,4 +482,106 @@ test('ASS-357 AC1: a variation its dependencies hold (WAITING ON) holds no seat,
   const control = { id: 'p', json: { 'max-tickets-in-progress': 2, 'wait-for-dependencies': true }, engine, engines: { e: engine }, tickets: deps.map(t => ({ ...t, type: 'feature' })), backlog: [], outside, asking: new Map() };
   const seats = seatsOf({ projects: [control], allProjects: [control], engines: { e: engine }, assignments: [], harness: {} }, control);
   assert.deepEqual(seats['in-progress'], ['D-4 A', 'D-2 A']);
+});
+
+// ===== ASS-363: "↳ AWAITING MERGE" under a ticket held at a step with shows-merge-train =====
+// A variation whose status chain is at a step with shows-merge-train (grouped-build's Await Sequential Merge; here
+// `await`, top level, and `wait` in a sub-engine) gets an extra Ticket-cell line, after any WAITING ON one and
+// indented as it is: each train an awaited merge request — one a merge request of the variation depends on, in
+// another repository, neither Merged nor Closed — then every one depending on it, directly or not, in depends-on
+// order, " → " between them and "; " between trains. From the recorded merge-request list alone.
+const API = 'https://gitlab.example.com/acme/api', WEB = 'https://gitlab.example.com/acme/web', LIB = 'https://gitlab.example.com/acme/lib';
+const mr = (id, repository, key, extra = {}) => ({ id, repository, ...(key ? { key, url: `${repository}/-/merge_requests/${key.slice(1)}`, status: 'Open' } : { status: 'Not Created' }), ...extra });
+const train = [mr(1, API, '!12'), mr(2, WEB, '!7', { 'depends-on': [1] }), mr(3, WEB, null, { 'depends-on': [2] })];
+const mergeEngine = [...heldEngine, { id: 'await', name: 'Await Sequential Merge', sequence: 6, 'shows-merge-train': true, action: { type: 'script' } }];
+const subEngine = [{ id: 'wait', name: 'Wait', sequence: 1, 'shows-merge-train': true, action: { type: 'script' } }];
+const merging = (key, mrs, { state = 'await', sub, ...extra } = {}) => ({
+  key, title: 'Merge me', 'ticket-system-assignment': OPERATOR, ...extra,
+  variations: [{ name: 'A', 'harness-status': { ...hs(state), ...(sub ? { 'sub-status': { state: sub, 'state-engine': 'sub' } } : {}) }, 'merge-request': mrs }],
+});
+const mergeTickets = [
+  merging('M-1', train),
+  merging('M-2', train, { state: 'build' }),                                                                       // no flag at its step
+  merging('M-3', [mr(1, API, '!12', { status: 'Merged' }), mr(2, WEB, '!7', { 'depends-on': [1] })]),            // nothing awaited
+  merging('M-4', [mr(1, WEB, '!6'), mr(2, WEB, '!7', { 'depends-on': [1] })]),                                    // its own repository: stacked, not awaited
+  merging('M-5', [mr(1, API, '!12'), mr(2, WEB, '!7', { 'depends-on': [1] }), mr(3, LIB, '!4'), mr(4, WEB, '!8', { 'depends-on': [3] })]),
+  merging('M-6', train, { dependencies: ['EX-1'] }),                                                               // WAITING ON too
+  merging('M-7', train, { state: 'build', sub: 'wait' }),                                                         // the flag deeper in the chain
+  merging('M-8', [mr(1, API, '!12', { status: 'Closed' }), mr(2, WEB, '!7', { 'depends-on': [1] })]),            // Closed: nothing to wait for
+];
+const mergeState = (tickets = mergeTickets) => initialState({ projects: [{ ...project, waitForDependencies: true, outside: heldOutside, sprint: { ...project.sprint, features: tickets, bugs: [], spikes: [] }, questions: [] }],
+  workflows: [{ name: 'e', steps: mergeEngine }, { name: 'sub', steps: subEngine }], assignments: [] });
+// A row's Ticket cell lines (stripped, the grid's border and padding off): its first and the `n` - 1 under it.
+const cellLines = (lines, key, n = 3) => {
+  const at = lines.findIndex(l => new RegExp(`(^|\\s)${key}: `).test(strip(l)));
+  const width = strip(lines.find(l => /│ +Ticket +│/.test(strip(l)))).indexOf('│', 1) - 1;
+  return lines.slice(at, at + n).map(l => strip(l).slice(1, 1 + width).trimEnd());
+};
+
+test('ASS-363 AC3: a variation at a shows-merge-train step gets "↳ AWAITING MERGE <repo> <key> → …" under the key, each repo and key linked; a planned one shows "MR <id>"; several trains joined by "; "', () => {
+  const r = render(mergeState(), wide);
+  const second = key => cellLines(r, key)[1];
+  assert.equal(second('M-1').trim(), '↳ AWAITING MERGE api !12 → web !7 → web MR 3');
+  assert.equal(second('M-1').indexOf('↳'), 1 + TEXT);                                   // under the key, as WAITING ON
+  assert.equal(second('M-5').trim(), '↳ AWAITING MERGE api !12 → web !7; lib !4 → web !8');
+  assert.equal(second('M-7').trim(), '↳ AWAITING MERGE api !12 → web !7 → web MR 3');   // a sub-engine's step with the flag
+  const raw = r[r.findIndex(l => / M-1: /.test(strip(l))) + 1];
+  assert.ok(raw.includes(`${GOLD}AWAITING MERGE\x1b[0m`), raw);
+  assert.ok(raw.includes(`\x1b]8;;${API}\x1b\\api\x1b]8;;\x1b\\ \x1b]8;;${API}/-/merge_requests/12\x1b\\!12\x1b]8;;\x1b\\`), raw);
+  assert.ok(raw.includes(`\x1b]8;;${WEB}\x1b\\web\x1b]8;;\x1b\\ MR 3`), raw);              // planned: its repository linked, "MR <id>" not
+  const key = keyLines(r);
+  assert.ok(key.join('').includes(`${GOLD}AWAITING MERGE\x1b[0m\x1b[2m MRs to merge, in order\x1b[0m`), key.join('\n'));
+});
+
+test('ASS-363 AC3: a train goes on through every merge request depending on the awaited one, directly or not, in depends-on order whatever the list order', async () => {
+  const { mergeTrains } = await import('../../src/tui/screens/sprint.js');
+  const at = { status: { chain: [{ step: { 'shows-merge-train': true } }] } };
+  const keys = mrs => mergeTrains({ ...at, variation: { 'merge-request': mrs } }).map(tr => tr.map(m => m.key ?? `MR ${m.id}`));
+  // Listed backwards, a fork after web !7 in its own repository: both branches follow it, each after what it depends on.
+  assert.deepEqual(keys([mr(4, WEB, '!9', { 'depends-on': [3, 2] }), mr(3, WEB, '!8', { 'depends-on': [2] }), mr(2, WEB, '!7', { 'depends-on': [1] }), mr(1, API, '!12')]), [['!12', '!7', '!8', '!9']]);
+  // Across three repositories web !7 is awaited too (lib !4 depends on it), but already in api !12's train: one train, not two.
+  assert.deepEqual(keys([mr(1, API, '!12'), mr(2, WEB, '!7', { 'depends-on': [1] }), mr(3, LIB, '!4', { 'depends-on': [2] })]), [['!12', '!7', '!4']]);
+  // A merged dependent still shows in its place; one depending on an unrelated merge request does not join.
+  assert.deepEqual(keys([mr(1, API, '!12'), mr(2, WEB, '!7', { 'depends-on': [1], status: 'Merged' }), mr(5, LIB, '!5')]), []);   // the only dependent is merged: nothing waits
+  assert.deepEqual(keys([mr(1, API, '!12'), mr(2, WEB, '!7', { 'depends-on': [1] }), mr(5, LIB, '!5', { 'depends-on': [9] })]), [['!12', '!7']]);
+  // The flag absent from every level, or no chain: none.
+  assert.deepEqual(mergeTrains({ status: { chain: [{ step: { id: 'await-dependencies', name: 'Await Sequential Merge' } }] }, variation: { 'merge-request': train } }), []);
+  assert.deepEqual(mergeTrains({ variation: { 'merge-request': train } }), []);
+});
+
+test('ASS-363 AC4: no AWAITING MERGE line with nothing awaited or without the flag; WAITING ON comes first, then AWAITING MERGE', () => {
+  const r = render(mergeState(), wide);
+  for (const key of ['M-2', 'M-3', 'M-4', 'M-8']) assert.ok(!cellLines(r, key)[1].includes('AWAITING MERGE'), `${key}: ${cellLines(r, key)[1]}`);
+  const [first, waiting, awaiting] = cellLines(r, 'M-6');
+  assert.ok(first.slice(1 + TEXT).startsWith('M-6: '), first);
+  assert.equal(waiting.trim(), '↳ WAITING ON EX-1 (Sam)');
+  assert.equal(awaiting.trim(), '↳ AWAITING MERGE api !12 → web !7 → web MR 3');
+  assert.equal(waiting.indexOf('↳'), awaiting.indexOf('↳'));
+});
+
+test('ASS-363 AC4: the Ticket column is floored at an AWAITING MERGE line wider than the first line needs; selection and scrolling count the three-line cell', () => {
+  const narrow = { ...wide, columns: 100 };
+  const ticketWidth = lines => strip(lines.find(l => /│ +Ticket +│/.test(strip(l)))).indexOf('│', 1) - 3;
+  const long = [mr(1, API, '!12'), mr(2, WEB, '!7', { 'depends-on': [1] }), mr(3, LIB, '!4', { 'depends-on': [2] }), mr(4, WEB, '!8', { 'depends-on': [3] })];
+  const r = render(mergeState([merging('M-9', long, { dependencies: ['EX-1'] })]), narrow);
+  const under = cellLines(r, 'M-9')[2].trim();
+  assert.equal(under, '↳ AWAITING MERGE api !12 → web !7 → lib !4 → web !8');           // whole, never cut
+  assert.equal(ticketWidth(r), TEXT + visible(under));
+  // Selection reverses all three of M-6's lines; moving down past it lands on the next row.
+  const size = { ...wide, rows: 36 };
+  let s = { ...mergeState(), focus: 'tickets' };
+  const seen = [];
+  for (let n = 0; n < mergeTickets.length; n++) {
+    const lines = render(s, size);
+    const i = lines.findIndex(l => l.includes('\x1b[7m'));
+    assert.ok(i >= 0, `row ${n}: none selected`);
+    const key = strip(lines[i]).match(/ (M-\d+): /)[1];
+    seen.push(key);
+    if (key === 'M-6') {
+      for (const j of [1, 2]) assert.ok(lines[i + j].includes('\x1b[7m'), lines[i + j]);
+      assert.match(strip(lines[i + 2]), /↳ AWAITING MERGE api !12/);
+    }
+    s = handleKey(s, { name: 'down' }, size);
+  }
+  assert.deepEqual([...seen].sort(), mergeTickets.map(t => t.key).sort());
 });

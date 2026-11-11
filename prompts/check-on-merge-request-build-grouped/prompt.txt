@@ -1,4 +1,4 @@
-Resolve whatever is blocking ticket {ticket}'s merge requests, variation {variation} of project {project}. One or more is one another of its merge requests waits on at Await Dependencies in Other Repositories (Build, before its tests): flagged for open review threads, review comments, a failed build, or a needed rebase.
+Resolve whatever is blocking ticket {ticket}'s merge requests, variation {variation} of project {project}. One or more is one another of its merge requests waits on at Await Sequential Merge (Build, before its tests): flagged for open review threads, review comments, a failed build, or a needed rebase.
 
 {where}
 

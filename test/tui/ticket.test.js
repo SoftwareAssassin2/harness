@@ -336,15 +336,15 @@ test('ASS-184 AC2: the title takes at most two lines; a manual priority shows wi
   assert.deepEqual(bare.filter(l => /^(MRs|Tests|Health|Branch):/.test(l) || l.startsWith('Spend')), ['MRs: —', 'Tests: —', 'Health: —', 'Spend — · Agent time —', 'Branch: —']);
 });
 
-// ASS-359 AC5: Await Dependencies in Other Repositories (a step of Build's
+// ASS-359 AC5: Await Sequential Merge (a step of Build's
 // grouped-build run) records what a dependency needs as the variation's
 // ai-feedback, which no move within the run clears: the panel's Health shows
 // it while the step waits, the Health field the whole of it.
-test('ASS-359 AC5: while the ticket waits at Build\'s Await Dependencies, the panel\'s Health and the details\' Health show the dependency feedback', () => {
+test('ASS-359 AC5: while the ticket waits at Build\'s Await Sequential Merge, the panel\'s Health and the details\' Health show the dependency feedback', () => {
   const long = 'acme/api !12 https://gitlab.example.com/acme/api/-/merge_requests/12: is a draft; its pipeline failed (lint); it needs 1 approval. MR 2 depends on it.';
   const waiting = { 'harness-status': { state: 'build', 'state-engine': 'example-development-grouped', 'sub-status': { state: 'await-dependencies', 'state-engine': 'grouped-build' } },
     'ai-feedback-short': 'Waiting on acme/api !12: is a draft, its pipeline failed (lint), it needs 1 approval', 'ai-feedback-long': long };
-  const panel = quick({}, waiting, { status: 'Build › Await Dependencies in Other Repositories' }).map(strip);
+  const panel = quick({}, waiting, { status: 'Build › Await Sequential Merge' }).map(strip);
   assert.ok(panel.some(l => l.startsWith('Health: acme/api !12')), panel.join('\n'));
   const details = ticketLines({ key: 'ABC-1', title: 'T', variation: waiting }, { status: 'Build', stepName: id => id, prompted: () => false, agents: [], columns: 400 }).details.map(strip);
   assert.ok(details.some(l => /^Health +acme\/api !12 .*it needs 1 approval\. MR 2 depends on it\.$/.test(l)), details.join('\n'));

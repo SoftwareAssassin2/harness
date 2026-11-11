@@ -13,7 +13,7 @@ rollback.
 | Backlog, Committed | (plain steps) | |
 | Setup | `grouped-setup` | Check Setup Complete, Create VM, Mark Setup Complete |
 | Plan | `grouped-plan` | Extract Acceptance Criteria, Root Cause Analysis, Review Root Cause Analysis, Write Execution Plan, Write Test Plan, Enrich Automated Test Data, Review Plan |
-| Build | `grouped-build` | Refresh the Reference Repositories, Generate Automated Tests, Generate Solution, Address Merge Request Feedback (only from Await Dependencies), Await Dependencies in Other Repositories, Refresh the Reference Repositories Before Testing, Automated Testing, CI Checks, Code Review, Security Review |
+| Build | `grouped-build` | Refresh the Reference Repositories, Generate Automated Tests, Generate Solution, Address Merge Request Feedback (only from Await Sequential Merge), Await Sequential Merge, Refresh the Reference Repositories Before Testing, Automated Testing, CI Checks, Code Review, Security Review |
 | Test | `grouped-test` | Local Testing (`grouped-local-testing`), Steps to Test (`grouped-steps-to-test`) |
 | Document | `grouped-document` | Update Documentation, Update Merge Request Details, Check Merge Request Details, Add Screenshots to Merge Request |
 | Review | `grouped-review` | Explain the Change, Risk Assessment, AI Token Expense Check, Payment Gate, Variation Selection |
@@ -40,7 +40,9 @@ opens each merge request in it (ASS-335): `KEY: title`, or with `"conventional"`
 `(MR <id>)` before the key when the variation has several — so a CI mr-title
 job passes from the first pipeline and the merge request can merge.
 
-Await Dependencies in Other Repositories (ASS-335; grouped Build only — v2-build
+Await Sequential Merge (ASS-335; named Await Dependencies in Other
+Repositories until ASS-363, its id still `await-dependencies`; grouped Build
+only — v2-build
 and the flat engines have none — `merge-request:await-dependencies`, on the
 host, a timer every 5 minutes) sits between Generate Solution and the refresh
 before Automated Testing. A merge request depending on one in its own
@@ -55,6 +57,25 @@ tests. The dependency usually merges outside the ticket's own Release (a
 human, or that repository's team review), since the ticket's Release comes
 after its tests. It waits for the merge only, not for a later publishing
 pipeline (a promotion after the merge).
+
+It sets `"shows-merge-train": true` (ASS-363). Any step of any engine may
+declare that flag, true or false (the engine validator rejects any other
+type). While a variation's status chain, at any level, is at a step with it,
+the sprint grid gives the ticket an extra Ticket-cell line, after any
+`↳ WAITING ON …` line (ASS-360) and indented as it is:
+`↳ AWAITING MERGE <repo> <key> → <repo> <key> → …`. Each train starts with an
+awaited merge request: one that a merge request of the variation depends on,
+in another repository, that is neither Merged nor Closed (the same test as
+`merge-request:await-dependencies`). It goes on in depends-on order through
+every merge request of the variation that depends on it, directly or not.
+`<repo>` is the repository url's last path segment and `<key>` the merge
+request key, each linked to its url; a planned one with no key shows as
+`MR <id>`. Several trains are joined by "; ", and an awaited one already in
+another train gets none of its own. For example, `api !12 → web !7` (for
+acme/api and acme/web): web !7 waits on api !12 merging. The line comes from
+the variation's recorded `merge-request` list, with no forge call. The TUI
+reads the flag, never the step's id or name, so another engine's merge wait
+can opt in. The key under the grid explains AWAITING MERGE.
 
 It says why a dependency is not merging (ASS-359). Each `waiting` entry it
 prints has `needs`, read from the dependency's forge, in this order:
@@ -116,7 +137,7 @@ the operator's Human Review notes, as every grouped Build prompt reads
 them — which reads each merge
 request with `merge-request:view`, acts on its threads, review comments,
 failed jobs and rebase, pushes, and replies to each (resolving the threads).
-Once its turn is complete it goes back to Await Dependencies, which reads the
+Once its turn is complete it goes back to Await Sequential Merge, which reads the
 forge again. It has its own max-visits (3), then Blocked. A control line in
 `execution-plan-<variation>.md` names the merge request and what it needs,
 and the feedback adds "sent to Address Merge Request Feedback". A dependency

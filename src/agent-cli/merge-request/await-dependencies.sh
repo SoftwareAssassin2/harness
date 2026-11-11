@@ -2,8 +2,8 @@
 # Description: Wait until every merge request the ticket's merge requests depend on in another repository is merged, saying what each needs — merge-request:await-dependencies <project> <ticket-key> <variation>.
 set -euo pipefail
 
-# Build's gate before its tests (ASS-335; grouped-build's Await Dependencies
-# in Other Repositories, a timer step whose waiting exit is 2). A planned
+# Build's gate before its tests (ASS-335; grouped-build's Await Sequential Merge
+# (ASS-363's name), a timer step whose waiting exit is 2). A planned
 # merge request depending on one in its own repository is stacked on that
 # one's branch (refresh_merge_requests, merge-requests.bash), so its tests
 # see the change; one depending on a merge request in another repository is

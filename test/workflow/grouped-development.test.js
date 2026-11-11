@@ -561,8 +561,8 @@ test('ASS-255: grouped-release-harness\'s await-restart waits on exit 1 (the res
 });
 
 // ASS-335: a merge request depending on one in another repository is tested
-// only once that one is merged. grouped-build's Await Dependencies in Other
-// Repositories (merge-request:await-dependencies, on the host, a timer) sits
+// only once that one is merged. grouped-build's Await Sequential Merge
+// (ASS-363; was Await Dependencies in Other Repositories) (merge-request:await-dependencies, on the host, a timer) sits
 // between Generate Solution and the refresh before Automated Testing: 0 (none
 // waits) goes on, 2 (one waits) is its waiting exit — the ticket stays there,
 // polled, never sent back to Generate Solution — and an error matches no exit,
@@ -570,7 +570,7 @@ test('ASS-255: grouped-release-harness\'s await-restart waits on exit 1 (the res
 // test/agent-cli/merge-requests.test.js.
 const AWAIT_DEPENDENCIES = './agent.sh merge-request:await-dependencies {project} {ticket} {variation}';
 
-test('ASS-335 AC1/AC2: grouped-build waits at Await Dependencies in Other Repositories before every Automated Testing — waiting (exit 2) stays, never to Generate Solution; none waiting (exit 0) goes on to the refresh and the tests; the flat engines have none', () => {
+test('ASS-335 AC1/AC2: grouped-build waits at Await Sequential Merge before every Automated Testing — waiting (exit 2) stays, never to Generate Solution; none waiting (exit 0) goes on to the refresh and the tests; the flat engines have none', () => {
   const build = engines['grouped-build'], step = stepOf(build, 'await-dependencies');
   assert.deepEqual([step.action, step['run-location'], step['record-script-output']],
     [{ type: 'script', command: AWAIT_DEPENDENCIES, mode: 'timer', 'timer-minutes': 5, 'waiting-exit-code': 2 }, undefined, true]);
@@ -598,7 +598,7 @@ test('ASS-335 AC1/AC2: grouped-build waits at Await Dependencies in Other Reposi
 // requests, never created, is not waited on: merge-request:await-dependencies
 // exits 3, and grouped-build sends that back to Generate Solution — counted
 // as a visit there, so at its max-visits (5) the run ends at Blocked instead.
-test('ASS-359 AC3: Await Dependencies\' exit 3 (a planned merge request never created) goes back to Generate Solution, within its max-visits, then Blocked; waiting (2) still stays', () => {
+test('ASS-359 AC3: Await Sequential Merge\'s exit 3 (a planned merge request never created) goes back to Generate Solution, within its max-visits, then Blocked; waiting (2) still stays', () => {
   const build = engines['grouped-build'], step = stepOf(build, 'await-dependencies'), solve = stepOf(build, 'generate-solution');
   assert.deepEqual(step['exit-events'].map(e => [e.condition, e['move-to-state']]).slice(0, 2), [[{ 'exit-code': 0 }, 'refresh-before-testing'], [{ 'exit-code': 3 }, 'generate-solution']]);
   assert.equal(step.action['waiting-exit-code'], 2);
@@ -619,10 +619,10 @@ test('ASS-359 AC3: Await Dependencies\' exit 3 (a planned merge request never cr
 // comments, a failed pipeline, a needed rebase) makes
 // merge-request:await-dependencies exit 4: grouped-build sends that to its own
 // Address Merge Request Feedback (check-on-merge-request-build-grouped, a
-// variant of Release's prompt, in the VM), which comes back to Await Dependencies once its turn is
+// variant of Release's prompt, in the VM), which comes back to Await Sequential Merge once its turn is
 // complete, under its own max-visits (3), then Blocked. A draft or an approval
 // alone is still 2, waiting.
-test('ASS-361 AC3: Await Dependencies\' exit 4 goes to Build\'s own Address Merge Request Feedback, which returns to Await Dependencies on turn complete, under its max-visits (3), then Blocked; 2 still waits, 3 still goes to Generate Solution', () => {
+test('ASS-361 AC3: Await Sequential Merge\'s exit 4 goes to Build\'s own Address Merge Request Feedback, which returns to Await Sequential Merge on turn complete, under its max-visits (3), then Blocked; 2 still waits, 3 still goes to Generate Solution', () => {
   const build = engines['grouped-build'], step = stepOf(build, 'await-dependencies'), address = stepOf(build, 'address-merge-request-feedback');
   assert.deepEqual(step['exit-events'].map(e => [e.condition, e['move-to-state']]), [[{ 'exit-code': 0 }, 'refresh-before-testing'], [{ 'exit-code': 3 }, 'generate-solution'], [{ 'exit-code': 4 }, 'address-merge-request-feedback']]);
   assert.deepEqual([address.name, address.action, address['run-location'], address['max-visits'], address['on-max-visits']],

@@ -1,4 +1,4 @@
-// ASS-359 AC3: grouped-build's Await Dependencies in Other Repositories
+// ASS-359 AC3: grouped-build's Await Sequential Merge
 // (merge-request:await-dependencies, a timer step whose waiting exit is 2)
 // exits 3 when a dependency is one of the ticket's own planned merge requests
 // that Generate Solution never created: control moves the run back to

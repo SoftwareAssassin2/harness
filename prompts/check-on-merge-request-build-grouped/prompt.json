@@ -1,5 +1,5 @@
 {
-    "description": "grouped-build's Address Merge Request Feedback (ASS-361): check-on-merge-request-grouped (Release's, unchanged) for a merge request of the ticket that another of its merge requests waits on at Await Dependencies, plus plain review comments (merge-request:view's comments, answered through merge-request:reply) and the operator's Human Review notes, as every grouped Build prompt reads them",
+    "description": "grouped-build's Address Merge Request Feedback (ASS-361): check-on-merge-request-grouped (Release's, unchanged) for a merge request of the ticket that another of its merge requests waits on at Await Sequential Merge, plus plain review comments (merge-request:view's comments, answered through merge-request:reply) and the operator's Human Review notes, as every grouped Build prompt reads them",
     "supported-command-line-interfaces": [
         "claude"
     ],
