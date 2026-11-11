@@ -7,9 +7,8 @@ import { link } from '../../src/tui/text.js';
 // ASS-366: the open MRs screen (U) — the sprint's open merge requests grouped
 // by ticket, as paste-ready text, from the recorded merge-request rows alone.
 const forge = (repo, n) => `https://forge.example.com/acme/${repo}/-/merge_requests/${n}`;
-// ASS-367: ready for approval by default (approval-wait-since set); WAIT its time as the dashboard writes it.
+// ASS-367: ready for approval by default (approval-wait-since set). ASS-372: no line says how long it has waited.
 const SINCE = '2026-11-11T14:05:00Z';
-const WAIT = 'waiting since Wed Nov 11 @ 2:05 PM UTC';
 const mr = (id, repo, n, fields = {}) => ({ id, repository: `https://forge.example.com/acme/${repo}.git`, key: `!${n}`, url: forge(repo, n), status: 'Open', 'depends-on': [], 'approval-wait-since': SINCE, ...fields });
 const NOW = new Date('2026-11-11T15:00:00Z');
 
@@ -31,11 +30,11 @@ test('each ticket\'s open merge requests in depends-on order, the ones it waits 
     'Merge requests ready for approval (3), 2026-11-11',
     '',
     'EX-12: Capture parent lineage from source',
-    `  - api !1005  ${forge('api', 1005)}  ${WAIT}`,
-    `  - ingest !577  ${forge('ingest', 577)}  (after api !1005)  ${WAIT}`,
+    `  - api !1005  ${forge('api', 1005)}`,
+    `  - ingest !577  ${forge('ingest', 577)}  (after api !1005)`,
     '',
     'EX-40: Measure use of downloads',
-    `  - api !1019  ${forge('api', 1019)}  ${WAIT}`,
+    `  - api !1019  ${forge('api', 1019)}`,
   ].join('\n'));
 });
 
@@ -85,7 +84,7 @@ test('U opens the open MRs screen, listed in the menu as your open MRs; the scre
   const out = lines(open);
   const at = text => out.findIndex(l => l === text);
   assert.ok(at('Merge requests ready for approval (2), 2026-11-11') > 0);
-  assert.ok(out.includes(`  - api !1005  ${forge('api', 1005)}  ${WAIT}`));
+  assert.ok(out.includes(`  - api !1005  ${forge('api', 1005)}`));
   assert.ok(!out.some(l => l.includes('old !1')));                                 // the set-aside variation's
   assert.ok(at('EX-40: Measure use of downloads') < at('EX-12: Capture parent lineage from source'));   // the sprint's order: by priority here
   assert.equal(press(open, 's').screen, 's');
@@ -122,4 +121,11 @@ test('only merge requests ready for approval are listed; a dependency not ready 
   assert.deepEqual(groups[0].mrs.map(m => [m.name, m.after, m.since]), [['web !20', [], SINCE], ['lib !30', ['web !20'], SINCE]]);
   assert.deepEqual(openMergeRequestLines(openMergeRequests([{ key: 'EX-13', title: 'T', variation: { 'merge-request': [mr(1, 'api', 11, { 'approval-wait-since': null })] } }]), NOW),
     ['No merge requests ready for approval.']);
+});
+
+test('no merge request line says how long it has waited (ASS-372)', () => {
+  const groups = openMergeRequests([{ key: 'EX-12', title: 'T', variation: { 'merge-request': [mr(1, 'api', 10), mr(2, 'web', 20, { 'depends-on': [1] })] } }]);
+  const out = openMergeRequestLines(groups, NOW);
+  assert.equal(out.filter(l => l.startsWith('  - ')).length, 2);
+  assert.ok(!out.some(l => l.includes('waiting since')));
 });

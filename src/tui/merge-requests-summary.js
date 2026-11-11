@@ -4,13 +4,12 @@
 // no forge call. Plain text, paste-ready, every url written out in full; each
 // ticket key linked to its ticket's url only for display, as on the updates
 // screen (ASS-332). Pure; screens/open-mrs.js owns the screen. Since ASS-367
-// only the merge requests ready for approval (isReady), each with how long it
-// has waited.
+// only the merge requests ready for approval (isReady); since ASS-372 without
+// how long each has waited.
 
 import { link } from './text.js';
 import { mrStatus } from './status.js';
 import { repoName } from './screens/sprint.js';
-import { timestamp } from './screens/shared.js';
 
 // inPlay(t) — a ticket's variation in play: its first one not set aside (soft-deleted), or undefined.
 export const inPlay = t => (t.variations ?? []).find(v => v['is-deleted'] !== true);
@@ -62,10 +61,9 @@ export function openMergeRequests(tickets) {
 // openMergeRequestLines(groups, now) — the text as lines (ASS-366): a header
 // counting the merge requests and giving `now`'s UTC date, a blank line, then
 // each ticket's "<KEY>: <title>" over its merge requests ("  - <repo> <key>
-// <url>  (after <repo> <key>, …)  waiting since <time>"), the time as the
-// dashboard writes it (timestamp), a blank line between tickets; "No merge
+// <url>  (after <repo> <key>, …)"), a blank line between tickets; "No merge
 // requests ready for approval." with none (ASS-367: the header and that read
-// "ready for approval", each line ends with its wait). Never wrapped, so a url copies whole; the key
+// "ready for approval"; ASS-372: no "waiting since <time>" on each line). Never wrapped, so a url copies whole; the key
 // linked to its ticket's url (display only: it copies as plain text) when
 // `linked` and the ticket has one. No colour or icon.
 export function openMergeRequestLines(groups, now, { linked = true } = {}) {
@@ -77,7 +75,7 @@ export function openMergeRequestLines(groups, now, { linked = true } = {}) {
     ...groups.flatMap(({ key, url, title, mrs }) => [
       '',
       `${linked && url ? link(key, url) : key}: ${title}`,
-      ...mrs.map(m => `  - ${[m.name, m.url].filter(Boolean).join('  ')}${m.after.length ? `  (after ${m.after.join(', ')})` : ''}  waiting since ${timestamp(new Date(m.since))}`),
+      ...mrs.map(m => `  - ${[m.name, m.url].filter(Boolean).join('  ')}${m.after.length ? `  (after ${m.after.join(', ')})` : ''}`),
     ]),
   ];
 }
