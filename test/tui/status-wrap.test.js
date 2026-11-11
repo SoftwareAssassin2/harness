@@ -1,6 +1,8 @@
 // ASS-326: a long Status no longer widens the sprint grid off the screen. The
-// hold (ASS-195's "waits on …") goes on its own lines under the step chain,
-// and every Status line wraps — the hold between keys, a long step chain
+// hold goes on its own lines under the step chain — since ASS-360 only the
+// dependencies it ignores ("ignores <KEY> (<why>)"): what it waits on (ASS-195's
+// "waits on …") moved to the Ticket cell's "↳ WAITING ON" line, the ticket
+// screen's statusText alone keeping it — and every Status line wraps — the hold between keys, a long step chain
 // between its " › " parts — at STATUS_WRAP, continuation lines indented; the
 // row grows taller, nothing is cut with "…". When the grid must narrow, Status
 // gives up width after Health and Agents (down to its header), re-wrapping
@@ -20,15 +22,20 @@ const steps = [
   { id: 'build', name: 'Build', sequence: 5, action: { type: 'prompt' } },
   { id: 'done', name: 'Done', sequence: 10, 'is-done': true, action: { type: 'none' } },
 ];
-// ABC-1 at Committed waits on nine sprint tickets still at Build.
-const DEPS = ['ABC-2', 'ABC-3', 'ABC-4', 'ABC-5', 'ABC-6', 'ABC-7', 'ABC-8', 'ABC-9', 'ABC-10'];
+// ABC-1 at Committed depends on nine tickets found nowhere, so ignores them
+// (ASS-360: its long Status hold; one it waits on shows in the Ticket cell);
+// ABC-11 waits on a sprint ticket still at Build. The nine at Build fill the grid.
+const DEPS = ['ABC-20', 'ABC-21', 'ABC-22', 'ABC-23', 'ABC-24', 'ABC-25', 'ABC-26', 'ABC-27', 'ABC-28'];
+const BUILDING = ['ABC-2', 'ABC-3', 'ABC-4', 'ABC-5', 'ABC-6', 'ABC-7', 'ABC-8', 'ABC-9', 'ABC-10'];
+const IGNORED = DEPS.map(k => `${k} (unknown)`);
 const ticket = (key, state, extra = {}) => ({ key, title: `Ticket ${key}`, variations: [{ name: 'A', 'harness-status': hs(state), ...extra.variation }], ...extra.ticket });
 const features = [
   ticket('ABC-1', 'committed', {
     ticket: { title: 'Waits on the whole sprint before it starts', dependencies: DEPS },
     variation: { 'ai-feedback-short': 'Two failing tests on the results grid and a stale merge request' },
   }),
-  ...DEPS.map(k => ticket(k, 'build')),
+  ...BUILDING.map(k => ticket(k, 'build')),
+  ticket('ABC-11', 'committed', { ticket: { dependencies: ['ABC-2'] } }),
 ];
 const assignments = [{ project: 'p', 'agent-name': 'Daredevil-of-Hells-Kitchen', 'work-item': 'ABC-2', variation: null, 'ai-status-update-short': 'Rewriting the allocation loop' }];
 const project = { id: 'p', name: 'P', stateEngine: 'e', waitForDependencies: true, sprint: { number: 10, start: '2026-09-18', end: '2026-10-01', features, bugs: [], spikes: [] } };
@@ -59,15 +66,15 @@ function statusOf(lines) {
 }
 const keysIn = text => text.match(/ABC-\d+/g) ?? [];
 
-test('ASS-326 AC1: the hold goes on its own lines under the step chain, wrapped between keys at STATUS_WRAP, continuation lines indented', () => {
+test('ASS-326 AC1: the hold (keys ignored, ASS-360) goes on its own lines under the step chain, wrapped between keys at STATUS_WRAP, continuation lines indented', () => {
   assert.equal(STATUS_WRAP, 40);
   const lines = grid(300);
   const status = statusOf(lines);
   assert.equal(status[0], 'Committed');                                   // the step chain, alone on its line
-  assert.match(status[1], /^waits on ABC-2, /);                           // then the hold
+  assert.match(status[1], /^ignores ABC-20 \(unknown\),/);                // then the hold
   assert.deepEqual(keysIn(status.slice(1).join(' ')), DEPS);              // every key, in order
   assert.ok(status.length > 2, status.join('\n'));                        // over more than one line
-  const cells = statusCell({ status: { chain: [{ state: 'committed', step: steps[0] }] }, variation: {}, hold: { waits: DEPS, ignores: [] } }, steps)(Infinity);
+  const cells = statusCell({ status: { chain: [{ state: 'committed', step: steps[0] }] }, variation: {}, hold: { waits: [], ignores: DEPS.map(key => ({ key, why: 'unknown' })) } }, steps)(Infinity);
   for (const l of cells) assert.ok(visible(l) <= STATUS_WRAP, l);
   for (const l of cells.slice(2)) assert.match(l, /^ {2}\S/, l);         // continuation lines indented
   assert.ok(!status.some(s => s.includes('…')), status.join('\n'));
@@ -94,20 +101,35 @@ test('ASS-326 AC1: the one-line statusText (the ticket screen\'s) keeps the hold
   assert.deepEqual(statusCell(ignored, steps)(Infinity), ['Committed', 'ignores ABC-9 (unknown)']);
 });
 
+test('ASS-360 AC1: the sprint grid\'s Status cell no longer says "waits on …" for a held variation — the Ticket cell does — while the ticket screen\'s statusText still does; "ignores" stays', () => {
+  const t = { status: { chain: [{ state: 'committed', step: steps[0] }] }, variation: {}, hold: { waits: ['ABC-2', 'ABC-3'], ignores: [{ key: 'ABC-9', why: 'unknown' }] } };
+  assert.deepEqual(statusCell(t, steps)(Infinity), ['Committed']);
+  assert.deepEqual(statusCell(t, steps)(10), ['Committed']);
+  assert.equal(statusText(t, steps), 'Committed — waits on ABC-2, ABC-3');                 // unchanged
+  assert.deepEqual(statusCell({ ...t, hold: { waits: [], ignores: t.hold.ignores } }, steps)(Infinity), ['Committed', 'ignores ABC-9 (unknown)']);
+  // In the grid: ABC-11's Status is its step alone; the wait is under its title.
+  const lines = grid(300);
+  const status = column(lines, 'Status'), tickets = column(lines, 'Ticket');
+  const at = tickets.findIndex(l => l.includes('ABC-11:'));
+  assert.equal(status[at], 'Committed');
+  assert.ok(!status.some(l => l.includes('waits on')), status.join('\n'));
+  assert.match(tickets[at + 1], /^↳ WAITING ON ABC-2 \(unassigned\)$/);
+});
+
 test('ASS-326 AC2: at a narrow width the grid fits, Health and Agents show their headers in full, and Status re-wraps narrower with all its text shown, none cut with "…"', () => {
-  for (const columns of [200, 190, 180]) {   // 180: about as narrow as Ticket's floor (ASS-207) lets this grid get, ABC-1's row starting "WAITING ON ABC-2, ABC-3 +7" (ASS-355; 150 before it)
+  for (const columns of [180, 170, 160]) {   // 160: about as narrow as Ticket's floor (ASS-207) lets this grid get (180 with ASS-355, 150 before it; ASS-360 took WAITING ON off the Ticket cell's first line)
     const lines = grid(columns);
     for (const l of lines) assert.equal(visible(l), columns, `${columns}: ${l}`);
     assert.match(lines[1], /│ Health │ Agents │$/, `${columns}: ${lines[1]}`);
     const status = statusOf(lines);
     // All the text is there, wrapped: at Status's header width (6) a key may split, never drop.
-    assert.equal(status.join('').replace(/\s/g, ''), `Committedwaitson${DEPS.join(',')}`, `${columns}:\n${status.join('\n')}`);
+    assert.equal(status.join('').replace(/\s/g, ''), `Committedignores${IGNORED.join(',').replace(/\s/g, '')}`, `${columns}:\n${status.join('\n')}`);
     assert.ok(!status.some(s => s.includes('…')), `${columns}:\n${status.join('\n')}`);
     assert.ok(lines.some(l => l.includes('ABC-1: Waits on the whole sprin')), columns);   // Ticket's floor (ASS-207): key and 24 title characters
   }
   // Narrower than at 300: Status gave up width.
   const width = lines => { const h = lines[1], at = h.indexOf(' Status '); return h.indexOf('│', at) - h.lastIndexOf('│', at) - 3; };
-  assert.ok(width(grid(180)) < width(grid(300)), `${width(grid(180))} < ${width(grid(300))}`);
+  assert.ok(width(grid(160)) < width(grid(300)), `${width(grid(160))} < ${width(grid(300))}`);
 });
 
 test('ASS-326 AC2: boxTable lays a function cell out at its column\'s width — wide for its natural width, narrower when it shrinks', () => {

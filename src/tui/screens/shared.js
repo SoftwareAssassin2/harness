@@ -340,8 +340,10 @@ export const STATUS_WRAP = 40;
 
 // statusCell(t, steps) — the sprint grid's Status cell (ASS-326): a function of
 // its column's width (boxTable lays it out once that is known) giving the
-// lines. The step chain, wrapped between its " › " parts; the hold on lines of
-// its own under it, wrapped between keys; each at the narrower of the column
+// lines. The step chain, wrapped between its " › " parts; under it, on lines
+// of its own wrapped between keys, the dependencies it ignores — never what it
+// waits on (ASS-360: the Ticket cell's "↳ WAITING ON" line under the title says
+// that, sprint.js ticketRows; statusText still does); each at the narrower of the column
 // and STATUS_WRAP, continuation lines indented (wrapParts). A part wider than
 // STATUS_WRAP keeps its line whole, so the column is never narrower than its
 // longest step; only a column narrower than that (Status giving up width after
@@ -351,7 +353,7 @@ export const statusCell = (t, steps) => {
   const comma = items => items.map((item, i) => (i < items.length - 1 ? `${item},` : item));
   const sets = [
     chain.length ? chain.map((part, i) => (i < chain.length - 1 ? `${part} ›` : part)) : [NONE],
-    ...(hold ? [comma(hold.items).map((item, i) => (i ? item : `${hold.lead} ${item}`))] : []),
+    ...(hold?.lead === 'ignores' ? [comma(hold.items).map((item, i) => (i ? item : `${hold.lead} ${item}`))] : []),
   ];
   return width => sets.flatMap(parts => wrapParts(parts, Math.min(width, STATUS_WRAP), width));
 };

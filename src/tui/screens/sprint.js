@@ -23,11 +23,15 @@ const SHRINK = ['Health', 'Agents', 'Status'].map(h => TABLE_HEADERS.indexOf(h))
 // The Ticket column's floor: over the rows, the width of the key/icon prefix
 // plus TITLE_CHARS title characters (or the whole title if shorter), and one
 // more for the ellipsis when the title is cut. Measured off the already-built
-// Ticket cell and its title, so the prefix (the six one-cell icon columns and
-// the two-cell seat, PAUSED, WAITING ON or UNASSIGNED, the linked key: see ticketRows) is not re-derived. No rows → 0 (no floor).
+// Ticket cell's first line and its title, so the prefix (the six one-cell icon
+// columns and the two-cell seat, PAUSED or UNASSIGNED, the linked key: see
+// ticketRows) is not re-derived. A held row's cell is two lines (ASS-360): its
+// "↳ WAITING ON" line, never cut, floors the column at its own width alone, so
+// it widens the column only when wider than the first line's floor. No rows → 0 (no floor).
 const ticketFloor = (rows, tickets) => Math.max(0, ...rows.map((row, i) => {
+  const [first, ...more] = [row[0]].flat();
   const title = tickets[i].title;
-  return visible(row[0]) - visible(title) + visible(clip(title, TITLE_CHARS)) + (visible(title) > TITLE_CHARS ? 1 : 0);
+  return Math.max(visible(first) - visible(title) + visible(clip(title, TITLE_CHARS)) + (visible(title) > TITLE_CHARS ? 1 : 0), ...more.map(visible));
 }));
 
 // The dashboard grid's [selected, scroll]: stored numbers as they are; `null`
@@ -88,18 +92,31 @@ function boundaries(tickets) {
 
 const PAUSED = '\x1b[34mPAUSED\x1b[0m';   // blue, before a paused variation's key (ASS-259)
 const UNASSIGNED = red('UNASSIGNED');   // red (ASS-355; was PAUSED's blue), before a reassigned ticket's key, in PAUSED's place (ASS-345)
-// waitingOn(keys) — gold, before a variation its dependencies hold, in PAUSED's place (ASS-355): "WAITING ON EX-1, EX-2";
-// past WAITING_KEYS keys the rest counted ("WAITING ON EX-1, EX-2 +7"), so the Ticket column, which keeps its title in
-// view (ticketFloor), never pushes the grid off the screen — the Status cell lists every one.
+// waitingOn(keys) — gold (ASS-355), for a variation its dependencies hold, on the Ticket cell's second line after
+// "↳ " (ASS-360; it was in PAUSED's place on the first): "WAITING ON EX-1, EX-2"; past WAITING_KEYS keys the rest
+// counted ("WAITING ON EX-1, EX-2 +7"), so the Ticket column, floored at that line's width (ticketFloor), never pushes
+// the grid off the screen — the ticket screen's Status field (statusText) lists every one. Each key shown is followed
+// by whose it is (ASS-360 AC7, waitingWho): "WAITING ON EX-1 (Sam), EX-2 (unassigned)".
 const WAITING_KEYS = 2;
-const waitingOn = keys => gold(`WAITING ON ${keys.slice(0, WAITING_KEYS).join(', ')}${keys.length > WAITING_KEYS ? ` +${keys.length - WAITING_KEYS}` : ''}`);
+const waitingOn = (keys, who = () => '') => gold(`WAITING ON ${keys.slice(0, WAITING_KEYS).map(k => `${k}${who(k)}`).join(', ')}${keys.length > WAITING_KEYS ? ` +${keys.length - WAITING_KEYS}` : ''}`);
+// waitingWho(t)(key) — the suffix after a held ticket's waited-on key (ASS-360 AC7), from the assignee the ticket
+// screen names it with (t.dependencyRows, control's dependencyRows: the sprint's, backlog's, other loaded projects'
+// or outside-tickets.json's ticket-system-assignment, a display name): " (<first name>)" for someone other than the
+// operator — whom the held ticket itself is assigned to, compared by name, as outside tickets carry no account id —
+// " (unassigned)" for nobody, and nothing for the operator or a key found nowhere (where 'unknown').
+export const waitingWho = t => key => {
+  const row = (t.dependencyRows ?? []).find(r => r.key.toUpperCase() === key.toUpperCase());
+  if (!row || row.where === 'unknown') return '';
+  if (row.assignee == null) return ' (unassigned)';
+  return row.assignee === t['ticket-system-assignment'] ? '' : ` (${row.assignee.trim().split(/\s+/)[0]})`;
+};
 const dim = text => `\x1b[2m${text}\x1b[0m`;
 // A variation holding a planning or in-progress seat (ASS-357): an emoji, two
 // cells wide (text.js visible counts it so), its column two blanks without.
 const SEAT = '💺';
 
 // The key under the ticket grid (ASS-259): each of the rows' glyphs as they
-// are drawn there — ⦿ in each of its colors, PAUSED in blue, UNASSIGNED in red, WAITING ON in gold — with what it
+// are drawn there — ⦿ in each of its colors, PAUSED in blue, UNASSIGNED in red, WAITING ON in gold (on its own line under the ticket, ASS-360) — with what it
 // means, in dim text; entries two blanks apart, wrapped at `columns` between
 // entries, never inside one.
 const KEY = [
@@ -140,13 +157,16 @@ const BUILD_COLORS = { Merged: gray, Closed: gray, Running: gold, Failed: red, P
 // while an agent works on the row's ticket and variation (its Agents); then a
 // two-cell column, 💺 when the variation holds a planning or in-progress seat
 // (ASS-357: `seats`, seatHolders — the planner's, none on a past day). A
-// paused variation's (is-paused) text starts "PAUSED " in blue — one its
-// dependencies hold (its `hold`, ASS-355: control's own predicate) "WAITING ON
-// <KEY>, <KEY> " in gold in its place, paused too or not; a ticket
+// paused variation's (is-paused) text starts "PAUSED " in blue; a ticket
 // reassigned away from the operator's account (ASS-345: ticket:sync's
-// reassigned, to another person or to nobody) "UNASSIGNED " in red in place
-// of either, on every variation's row: the reassignment says more; iconKey
-// says what each means, under the grid.
+// reassigned, to another person or to nobody) "UNASSIGNED " in red in its
+// place, on every variation's row: the reassignment says more. One its
+// dependencies hold (its `hold`, ASS-355: control's own predicate), paused too
+// or not, gets a second line (ASS-360; before it, "WAITING ON" took PAUSED's
+// place on the first): "↳ WAITING ON <KEY> (<who>), <KEY>" in gold (waitingOn, waitingWho),
+// indented by the icon and seat columns so the ↳ starts under the key — none
+// on an UNASSIGNED row; an unheld row's cell stays one line. iconKey says what
+// each means, under the grid.
 function ticketRows(tickets, assignments, steps, collaborations = {}, marks = { needed: new Set() }, seats = new Set()) {
   return tickets.map(t => {
     // One line per assignment to this ticket and this row's variation (or to no
@@ -157,9 +177,12 @@ function ticketRows(tickets, assignments, steps, collaborations = {}, marks = { 
       t.step ? `${stateColor({ sequence: t.step.sequence, color: t.color }, steps)}${GLYPHS.step}\x1b[0m` : '',
       GLYPHS[t.kind] ?? '', workedByHand(t) ? GLYPHS.hand : '', t['fast-track'] === true ? GLYPHS.fast : '', sprintMark(marks, t), agents.length ? GLYPHS.agent : '',
     ];
-    const held = t.reassigned ? `${UNASSIGNED} ` : t.hold?.waits?.length ? `${waitingOn(t.hold.waits)} ` : t.variation['is-paused'] === true ? `${PAUSED} ` : '';
+    const lead = `${icons.map(icon => icon || ' ').join('')}${seats.has(`${t.key} ${t.variation.name}`) ? SEAT : '  '} `;
+    const held = t.reassigned ? `${UNASSIGNED} ` : t.variation['is-paused'] === true ? `${PAUSED} ` : '';
+    const line = `${lead}${held}${t.url ? link(name, t.url) : name}`;
+    const waits = !t.reassigned && t.hold?.waits?.length ? t.hold.waits : null;
     return [
-      `${icons.map(icon => icon || ' ').join('')}${seats.has(`${t.key} ${t.variation.name}`) ? SEAT : '  '} ${held}${t.url ? link(name, t.url) : name}`,
+      waits ? [line, `${' '.repeat(visible(lead))}↳ ${waitingOn(waits, waitingWho(t))}`] : line,
       String(t.priority ?? NONE) + (t['manual-priority'] != null ? ' 🪪' : ''),
       statusCell(t, steps),
       String(t.points ?? NONE),
