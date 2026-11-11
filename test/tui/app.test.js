@@ -1285,7 +1285,7 @@ test('ASS-183: ? opens the menu: one entry per line — key, label, agent count 
   const menu = menuOf(state);
   assert.deepEqual(menu, [
     's sprint 🤖x3', 'S sprint flow', 'b backlog 🤖x0', 'B backlog flow', 'c control', 'f sub-flows 🤖x0', 'm merge requests 🤖x0',
-    'r repos 🤖x0', 'u updates', 'a agents 🤖x0', 'x chat', 'h memory',
+    'r repos 🤖x0', 'u updates', 'U your open MRs', 'a agents 🤖x0', 'x chat', 'h memory',
     'A agents for all projects',   // its own group (ASS-188, ASS-246)
     'space pause Example', '! pause every project', '/ hide project menu', 'Q quit',
     '⦿ needs you — counted on Operator Needed if a sprint ticket (backlog: ●)', '⦿ going on with an assumption — not counted (backlog: ●)',   // what the marks mean, a blank line apart (ASS-248)
@@ -3797,8 +3797,8 @@ test('the control screen shows the selected project\'s control output only — a
 const shifted = letter => key(letter, { shift: true, sequence: letter.toUpperCase() });
 const plain = letter => key(letter, { sequence: letter });
 
-test('ASS-103 AC1–AC3: the menu lists the screens s S b B c f m r u a x h — no questions, no p or o (ASS-262) — then space and !, / and Q', () => {
-  assert.deepEqual(menuOf(state).map(e => e.split(' ')[0]), [...'sSbBcfmruaxh', 'A', 'space', '!', '/', 'Q', '⦿', '⦿', '⦿', '⚉', '✦']);   // A in its own group (ASS-188, ASS-246); the marks' legend (ASS-248, ASS-259)
+test('ASS-103 AC1–AC3: the menu lists the screens s S b B c f m r u U a x h (ASS-366: U) — no questions, no p or o (ASS-262) — then space and !, / and Q', () => {
+  assert.deepEqual(menuOf(state).map(e => e.split(' ')[0]), [...'sSbBcfmruUaxh', 'A', 'space', '!', '/', 'Q', '⦿', '⦿', '⦿', '⚉', '✦']);   // A in its own group (ASS-188, ASS-246); the marks' legend (ASS-248, ASS-259)
 });
 
 test('ASS-103 AC1–AC3: s opens the sprint and S the sprint flow; d, D and q open nothing', () => {
@@ -3819,11 +3819,11 @@ test('ASS-262 AC1: p and o are gone — in no menu, and pressing them opens noth
 
 test('ASS-262 AC3: with chat-screen off, x is not in the menu and pressing it does nothing; with it on, x opens the chat screen, after a', () => {
   const off = flagsOff(state);
-  assert.deepEqual(menuOf(off).map(e => e.split(' ')[0]), [...'sSbBcfmruah', 'A', 'space', '!', '/', 'Q', '⦿', '⦿', '⦿', '⚉', '✦']);
+  assert.deepEqual(menuOf(off).map(e => e.split(' ')[0]), [...'sSbBcfmruUah', 'A', 'space', '!', '/', 'Q', '⦿', '⦿', '⦿', '⚉', '✦']);
   assert.equal(handleKey({ ...off, screen: 'b' }, plain('x')).screen, 'b');
   assert.equal(handleKey({ ...off, menuOpen: true }, plain('x')).menuOpen, true);   // not a menu key either
   const on = flagsOff(state, { 'chat-screen': true });
-  assert.deepEqual(menuOf(on).slice(0, 12).map(e => e.split(' ')[0]), [...'sSbBcfmruaxh']);
+  assert.deepEqual(menuOf(on).slice(0, 13).map(e => e.split(' ')[0]), [...'sSbBcfmruUaxh']);
   assert.deepEqual([handleKey(on, plain('x')).screen, handleKey(on, plain('x')).focus], ['x', 'chats']);
   assert.equal(handleKey(flagsOff(state, { 'ticket-chat-tab': true }), plain('x')).screen, 's');   // each flag on its own
 });
@@ -3857,7 +3857,8 @@ test('S opens the sprint flow and B the backlog flow, told apart from s and b; f
   assert.equal(handleKey(state, shifted('b')).screen, 'B');
   assert.equal(handleKey(state, plain('b')).screen, 'b');
   assert.deepEqual([handleKey(state, plain('f')).screen, handleKey(state, plain('f')).focus], ['f', 'subflows']);
-  for (const letter of 'wfcdomrpu') assert.equal(handleKey(state, shifted(letter)).screen, state.screen, letter.toUpperCase());
+  for (const letter of 'wfcdomrp') assert.equal(handleKey(state, shifted(letter)).screen, state.screen, letter.toUpperCase());
+  assert.equal(handleKey(state, shifted('u')).screen, 'U');   // your open MRs beside u (ASS-366)
   assert.equal(handleKey(state, shifted('a')).screen, 'A');   // A beside a (ASS-246)
   assert.equal(handleKey(state, plain('w')).screen, state.screen);
   assert.ok(lines(handleKey(dayState, shifted('s')), wide).some(l => l.startsWith('Show:')));   // the old flowchart, unchanged
@@ -4092,7 +4093,7 @@ const chatting = (extra = {}) => handleKey(initialState({ projects, workflows: [
 test('x opens the chat screen, after a in the menu: + New chat, then the selected project\'s chats newest first — title, created, last activity, running or ended', () => {
   const s = chatting({ chatsRunning: ['c1'], chatsWritten: { c1: Date.parse('2026-10-01T15:30:00Z') } });
   assert.deepEqual([s.screen, s.focus], ['x', 'chats']);
-  assert.deepEqual(menuOf(s).slice(9, 12).map(e => e.split(' ')[0]), ['a', 'x', 'h']);
+  assert.deepEqual(menuOf(s).slice(10, 13).map(e => e.split(' ')[0]), ['a', 'x', 'h']);
   const out = lines(s, wide);
   const at = text => out.findIndex(l => l.includes(text));
   assert.ok(at('+ New chat') >= 0 && at('+ New chat') < at('Explain the corpus API') && at('Explain the corpus API') < at('Why is EX-1201 blocked?'), out.join('\n'));

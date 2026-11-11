@@ -154,8 +154,9 @@ export function mergeTrains(t) {
 // awaitingMerge(trains) — the AWAITING MERGE line's text (ASS-363), "AWAITING MERGE" in gold then each train's merge
 // requests joined by " → ", trains by "; ": each "<repo> <key>", the repository url's last path segment linked to
 // that url and the key to the merge request's url where known; "MR <id>" for a planned one with no key yet —
-// "AWAITING MERGE api !12 → web !7" (for acme/api and acme/web).
-const repoName = url => (url ?? '').replace(/\/+$/, '').replace(/\.git$/, '').split(/[/:]/).pop();
+// "AWAITING MERGE api !12 → web !7" (for acme/api and acme/web). repoName is exported for the open MRs screen's
+// text, which names a repository the same way (ASS-366).
+export const repoName = url => (url ?? '').replace(/\/+$/, '').replace(/\.git$/, '').split(/[/:]/).pop();
 const awaitingMerge = trains => `${gold('AWAITING MERGE')} ${trains.map(train => train.map(m => {
   const repo = repoName(m.repository), key = m.key ?? `MR ${m.id}`;
   return [repo && (/^https?:\/\//.test(m.repository) ? link(repo, m.repository.replace(/\.git$/, '')) : repo), m.url && m.key ? link(key, m.url) : key].filter(Boolean).join(' ');

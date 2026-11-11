@@ -16,6 +16,7 @@ import * as subflows from '../../src/tui/screens/subflows.js';
 import * as mergeRequests from '../../src/tui/screens/merge-requests.js';
 import * as repos from '../../src/tui/screens/repos.js';
 import * as updates from '../../src/tui/screens/updates.js';
+import * as openMrs from '../../src/tui/screens/open-mrs.js';
 import * as agents from '../../src/tui/screens/agents.js';
 import * as chat from '../../src/tui/screens/chat.js';
 import * as memory from '../../src/tui/screens/memory.js';
@@ -37,7 +38,7 @@ const project = {
 };
 const base = initialState({ projects: [project], workflows: [engine], assignments: [], features: { 'chat-screen': true, 'ticket-chat-tab': true } });
 
-const MODULES = { s: sprint, S: sprintFlow, b: backlog, B: backlogFlow, c: control, f: subflows, m: mergeRequests, r: repos, u: updates, a: agents, x: chat, h: memory, A: agents };
+const MODULES = { s: sprint, S: sprintFlow, b: backlog, B: backlogFlow, c: control, f: subflows, m: mergeRequests, r: repos, u: updates, U: openMrs, a: agents, x: chat, h: memory, A: agents };
 const screens = [
   ...Object.keys(MODULES).map(screen => [screen, { ...base, screen }, MODULES[screen]]),
   ['ticket', { ...base, screen: 's', ticket: { key: 'ABC-1', variation: 'A' } }, ticket],
