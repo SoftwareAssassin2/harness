@@ -454,6 +454,39 @@ No master evidence (no such job, forge unreachable, nothing named) is not
 proven: no bug, Blocked for Human asking the operator. On the harness
 project nothing is checked: its project issues are its own backlog.
 
+A failure in the ticket's own branch goes back to Generate Solution, not to
+the operator (ASS-384). When master passed the job (exit 3) or could not show
+it (exit 4), Check for an Own-Branch Fix (`own-branch-or-obstacle` after a
+pass, `own-branch-or-human` after no evidence; both `ticket:own-branch-fix`
+on the host, reading the VM's checkout) decides whether the defect is the
+branch's own: Classify said `own-branch: true`, Troubleshoot named the
+failing repository, the failing file (`failing-file`, a path in it, `:line`
+allowed) and the job or assertion that fails on it, and that file is one the
+variation's branch adds or changes — in `/repos/<repository>`, changed since
+the merge base with `origin/<base>` (the merge request's base, else origin's
+default branch), committed, not committed or untracked. Then the finding —
+summary, root cause, failing check, file:line, evidence, the master evidence —
+is appended to `execution-plan-<variation>.md` as an `## Own-branch fix`
+section, which Generate Solution reads first, and the run ends at `done` with
+`own-branch-fix: true` and a `resume-at` (Generate Solution's top-level group,
+lifted and checked by fix-resume-step.js as a declared step: Build, or the
+blocked step when Build comes after it). Control takes that `resume-at` as it
+does a landed fix's (engine.js `ownBranchFix`, `resumeAt`), and the clearing
+move's `own-branch-fix` cause restarts the visit counts; its log says `the
+failure is in its own branch (own-branch fix); resumes at <step>`. The run's
+`ai-feedback-short`/`-long` are cleared, so check-on-master's "not proven"
+note does not mark the ticket as the operator's. Each such return is a fix
+attempt: ticket:fix-attempts adds the own-branch fixes in a row in the
+variation's `blocks` (back from the latest, retries passed over, until a block
+that ended any other way — a landed fix, a repair, Blocked for Human) to the
+stay's fix tickets, so the third sends the ticket to Blocked for Human, its
+feedback saying how often the own-branch fix was tried. Anything not shown —
+Classify not saying so, nothing named, no VM, a file the branch does not
+change — goes on as before: the obstacle fix after a pass, Blocked for Human
+with check-on-master's feedback after no evidence. A failure on the latest
+master still raises the project bug, and an environment or harness issue
+never reaches the check.
+
 Requirements Changed (ASS-79) is a top-level detour like Blocked, in these
 engines and `harness-development-v2`: `requirements-changed` runs
 `grouped-requirements-changed`. The operator's Take new (`ticket:take-new`,

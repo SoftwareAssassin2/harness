@@ -9,9 +9,10 @@ Classify the problem below, found in project {project} — a blocked ticket's, o
    - "environment": where the work runs — the ticket's VM or worktree, its dependencies, the project's containers, the operator's machine (credentials, a shared checkout) — repaired in place where that is allowed, else by the operator.
 3. The operator's rule: a project bug only for a failure on the latest master — never for a failure seen only in this VM or on a branch (our VM, emulation, timing, a cold cache, a missing credential or repository, a stale branch). Never raise one yourself, and never check master yourself: say "project" when the cause is in the project's code, and the harness's check against the latest master decides.
 4. A harness fix never changes a project's repositories; a project fix never changes the harness. Pick the one place the whole fix belongs.
-5. Earlier blocks, when listed: a fix made in one place that did not hold says the cause may lie in another — weigh it.
+5. A project issue in the ticket's own changes — a file its branch adds or changes (Troubleshoot's failing-file), wrong there and not on master (a migration or test number another merge request or master took first, a check its own file fails) — is own-branch: true. The harness then checks master and that the file is the branch's, and sends the ticket back to Generate Solution with the finding instead of to the operator. A cause in master's own code, or one you cannot pin to a file the branch changed: own-branch false.
+6. Earlier blocks, when listed: a fix made in one place that did not hold says the cause may lie in another — weigh it.
 
-Finish with JSON: {"issue": "harness|project|environment", "reasoning": "<why, from the evidence>", "human-action": "<what the operator must do should it not be repaired in place>"}; human-action for an environment issue only, left out otherwise.
+Finish with JSON: {"issue": "harness|project|environment", "reasoning": "<why, from the evidence>", "own-branch": <bool>, "human-action": "<what the operator must do should it not be repaired in place>"}; own-branch for a project issue only, human-action for an environment issue only, each left out otherwise.
 
 We want small deliberate changes. You're working with a scalpel, not a broadsword. You're a doctor: get in, fix the root cause using best practices and the patterns already in the repo, get out. Avoid scope creep.
 Be extremely concise. Sacrifice grammar for the sake of concision.

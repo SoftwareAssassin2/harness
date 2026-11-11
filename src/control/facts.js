@@ -176,7 +176,8 @@ export function ticketFacts(ctx, project, ticket, variation, since, vm) {
 // so blocked again, or not). '' for a variation with no run kept: one
 // never blocked, or only by an engine that keeps none (the current ones).
 const ENDED = {
-  done: b => `${b['needs-fix'] === false ? 'nothing wrong found' : b.remediated ? `repaired in place (${b['ai-feedback-short'] ?? 'no note'})` : b.key ? `fix ticket ${b.key} landed` : 'left Blocked'}, resumed — blocked again`,
+  // ASS-384: a run that sent the ticket back to fix its own branch (ticket:own-branch-fix).
+  done: b => `${b['needs-fix'] === false ? 'nothing wrong found' : b['own-branch-fix'] === true ? `the failure was in its own branch (${b['failing-file'] ?? '?'}): sent back to fix it there, at ${b['resume-at'] ?? 'the step it blocked at'}` : b.remediated ? `repaired in place (${b['ai-feedback-short'] ?? 'no note'})` : b.key ? `fix ticket ${b.key} landed` : 'left Blocked'}, resumed — blocked again`,
   retry: b => `fix ticket ${b.key ?? '?'} closed unmerged`,
   'blocked-for-human': b => `handed to the operator (${b['ai-feedback-short'] ?? 'no note'})`,
 };

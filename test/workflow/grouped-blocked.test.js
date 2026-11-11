@@ -67,6 +67,9 @@ const defaults = {
   'add-repository': { exitCode: 2 },   // no missing repository named: nothing added
   'check-on-master': { exitCode: 0, scriptOutput: { 'on-master': 'present', 'master-evidence': 'E' } },   // ASS-163: failing on the latest master
   'plan-obstacle-fix': { exitCode: 0, scriptOutput: { 'plan-revised': 'execution-plan.md', 'obstacle-fix': 'repair the environment' } },
+  // ASS-384: not shown to be the ticket's own branch — the paths after check-on-master as before.
+  'own-branch-or-obstacle': { exitCode: 3, scriptOutput: { 'own-branch-fix': false, 'own-branch-why': 'Classify did not put the cause in the ticket\'s own branch' } },
+  'own-branch-or-human': { exitCode: 3, scriptOutput: { 'own-branch-fix': false, 'own-branch-why': 'Classify did not put the cause in the ticket\'s own branch' } },
 };
 const issue = value => ({ classify: { structuredOutput: { issue: value, reasoning: 'R' } } });
 const steps = run => run.trail.filter(id => !['find-where'].includes(id));
@@ -366,7 +369,7 @@ test('AC7: when no fix ticket can be raised or waited on, the ticket never resum
 // Blocked stopped the VM and find-where started it again, troubleshoot dispatched into a stopping VM.
 test('ASS-75, ASS-240 AC2: the grouped Blocked runs its VM where it works in it — from its first step (count-attempts), troubleshooting, classifying and repairing', () => {
   const vm = engines['grouped-blocked'].steps.filter(s => s.vm).map(s => [s.id, s.vm]);
-  assert.deepEqual(vm, [['count-attempts', 'running'], ['find-where', 'running'], ['troubleshoot', 'running'], ['classify', 'running'], ['check-on-master', 'running'], ['plan-obstacle-fix', 'running'], ['add-repository', 'running'], ['repair-environment', 'running']]);
+  assert.deepEqual(vm, [['count-attempts', 'running'], ['find-where', 'running'], ['troubleshoot', 'running'], ['classify', 'running'], ['check-on-master', 'running'], ['own-branch-or-obstacle', 'running'], ['own-branch-or-human', 'running'], ['plan-obstacle-fix', 'running'], ['add-repository', 'running'], ['repair-environment', 'running']]);
 });
 
 test('learning (operator, 2026-10-24): every Blocked run is kept on the ticket (append-output-to: blocks), and troubleshooting and classifying are given those earlier blocks ({problem}: facts.js blockHistory) to take into account', () => {
@@ -430,7 +433,7 @@ test('ASS-163 AC3: absent on the latest master — nothing raised in the project
   const plan = stepOf(engines['grouped-blocked'], 'plan-obstacle-fix');
   assert.deepEqual([plan.action.type, plan.action.command, plan['record-script-output']], ['script', './agent.sh ticket:plan-obstacle-fix {project} {work-item} {variation} {run}', true]);
   const repaired = walk('grouped-blocked', project(NOT_ON_MASTER));
-  assert.deepEqual(repaired.trail.slice(-6), ['classify', 'check-on-master', 'plan-obstacle-fix', 'add-repository', 'repair-environment', 'done']);
+  assert.deepEqual(repaired.trail.slice(-7), ['classify', 'check-on-master', 'own-branch-or-obstacle', 'plan-obstacle-fix', 'add-repository', 'repair-environment', 'done']);
   resumes('grouped-blocked', repaired);
   const added = walk('grouped-blocked', project(NOT_ON_MASTER, { 'add-repository': { exitCode: 0 } }));
   assert.deepEqual(added.trail.slice(-3), ['plan-obstacle-fix', 'add-repository', 'done']);
@@ -445,7 +448,7 @@ test('ASS-163 AC3: absent on the latest master — nothing raised in the project
 
 test('ASS-163 AC5: missing master evidence is not proven — no bug raised; Blocked for Human asks the operator what to check (Have AI Try Again repeats the check)', () => {
   const run = walk('grouped-blocked', project(UNKNOWN));
-  assert.deepEqual(run.trail.slice(-3), ['classify', 'check-on-master', 'blocked-for-human']);
+  assert.deepEqual(run.trail.slice(-4), ['classify', 'check-on-master', 'own-branch-or-human', 'blocked-for-human']);
   toHuman('grouped-blocked', run, /^Not proven on master/);
   assert.doesNotMatch(problem(run.output), /^Raise the fix ticket in/m);
   assert.match(problem(run.output), /^Not proven on the latest master: no finished master pipeline/m);
@@ -471,4 +474,77 @@ test('ASS-163 AC4: Troubleshoot names the failing check, and Troubleshoot and Cl
   assert.match(classify, /never .*a failure seen only in (this|a) VM or on a branch/i);
   assert.match(classify, /check(ed)? against the latest master/);
   assert.doesNotMatch(read('classify-issue', 'prompt.txt'), /latest master/, 'the current engines\' classify-issue as it was');
+});
+
+// ASS-384: a project-code failure that is not on the latest master but in a file the ticket's own branch adds or
+// changes (Classify's own-branch, ticket:own-branch-fix's check of the branch in the VM) goes back to Generate
+// Solution, its finding in the plan — not to the obstacle fix, not to the operator.
+const OWN_BRANCH = { exitCode: 0, scriptOutput: { 'own-branch-fix': true, 'own-branch-why': 'db/V27__x.sql is one the branch change/EX-1 in api adds or changes', 'plan-revised': 'execution-plan-A.md',
+  'resume-at': 'build', 'resume-source': 'declared', 'resume-why': 'W', 'resume-ignored': [], 'ai-feedback-short': null, 'ai-feedback-long': null } };
+const ownBranch = check => ({ classify: { structuredOutput: { issue: 'project', reasoning: 'R', 'own-branch': true } }, 'check-on-master': check,
+  'own-branch-or-obstacle': OWN_BRANCH, 'own-branch-or-human': OWN_BRANCH });
+
+test('ASS-384 AC1: not on the latest master (passed there, or not proven) and in the ticket\'s own branch — the finding recorded in the plan, the run done with Generate Solution\'s group as its resume-at, the ticket resuming there, never Blocked for Human', () => {
+  for (const id of ['own-branch-or-obstacle', 'own-branch-or-human']) {
+    const step = stepOf(engines['grouped-blocked'], id);
+    assert.deepEqual([step.action.type, step.action.command, step['record-script-output'], step.vm, step['run-location']],
+      ['script', './agent.sh ticket:own-branch-fix {project} {work-item} {variation} {run}', true, 'running', undefined], id);
+  }
+  assert.deepEqual([0, 3, 4, 1].map(code => nextState(stepOf(engines['grouped-blocked'], 'check-on-master'), engines['grouped-blocked'], { exitCode: code }, []).to),
+    ['create-fix-ticket', 'own-branch-or-obstacle', 'own-branch-or-human', 'blocked-for-human'], 'exit 1 (a failed check) as before');
+  for (const [check, via] of [[NOT_ON_MASTER, 'own-branch-or-obstacle'], [UNKNOWN, 'own-branch-or-human']]) {
+    const run = walk('grouped-blocked', ownBranch(check));
+    assert.deepEqual(run.trail.slice(-4), ['classify', 'check-on-master', via, 'done'], via);
+    assert.equal(run.output['own-branch-fix'], true);
+    assert.equal(run.output['ai-feedback-short'], null, `${via}: check-on-master's not-proven feedback cleared, the ticket not shown as the operator's`);
+    for (const top of TOPS['grouped-blocked']) {
+      const changes = [{ 'from-state': 'build', 'to-state': 'test' }, { 'from-state': 'test', 'to-state': 'blocked' }];
+      const facts = { subEngineDone: true, subEngineState: run.end, structuredOutput: run.output };
+      assert.equal(nextState(stepOf(engines[top], 'blocked'), engines[top], facts, changes).to, 'build', `${top}: back to Build, upstream of the blocked Test`);
+      // Build at its max-visits (5): the own-branch return restarts the counts, as a landed fix's does.
+      const often = [...Array.from({ length: 5 }, () => ({ 'from-state': 'plan', 'to-state': 'build' })), { 'from-state': 'build', 'to-state': 'blocked' }];
+      assert.equal(nextState(stepOf(engines[top], 'blocked'), engines[top], facts, often).to, 'build', `${top}: not redirected to Blocked by Build's count`);
+      assert.equal(nextState(stepOf(engines[top], 'blocked'), engines[top], { ...facts, structuredOutput: { ...run.output, 'own-branch-fix': false } }, often).to, 'blocked', `${top}: without it, the count holds`);
+    }
+  }
+  assert.ok(stepOf(engines['grouped-build'], 'generate-solution') && stepOf(engines['v2-build'], 'generate-solution'), 'Build runs Generate Solution');
+});
+
+test('ASS-384 AC3/AC4: a failure on the latest master still raises a project bug; an environment or harness issue takes its own path; not shown to be the branch\'s (nothing named, Classify not saying so) is as before — the obstacle fix, or Blocked for Human with check-on-master\'s feedback', () => {
+  const present = walk('grouped-blocked', ownBranch(ON_MASTER));
+  assert.deepEqual(present.trail.slice(-8), ['classify', 'check-on-master', 'create-fix-ticket', 'fast-track-fix', 'wait-on', 'await-fix', 'resume-step', 'done']);
+  for (const value of ['environment', 'harness']) {
+    const run = walk('grouped-blocked', { ...ownBranch(NOT_ON_MASTER), classify: { structuredOutput: { issue: value, reasoning: 'R', 'own-branch': true } } });
+    assert.ok(!run.trail.some(id => id.startsWith('own-branch')), value);
+  }
+  const notShown = { exitCode: 3, scriptOutput: { 'own-branch-fix': false, 'own-branch-why': 'Troubleshoot named no failing repository, file and job or assertion' } };
+  const obstacle = walk('grouped-blocked', { ...ownBranch(NOT_ON_MASTER), 'own-branch-or-obstacle': notShown });
+  assert.deepEqual(obstacle.trail.slice(-5), ['own-branch-or-obstacle', 'plan-obstacle-fix', 'add-repository', 'repair-environment', 'done']);
+  const human = walk('grouped-blocked', { ...ownBranch(UNKNOWN), 'own-branch-or-human': notShown });
+  assert.deepEqual(human.trail.slice(-2), ['own-branch-or-human', 'blocked-for-human']);
+  toHuman('grouped-blocked', human, /^Not proven on master/);
+  // A command that fails is no own-branch fix either.
+  assert.deepEqual(walk('grouped-blocked', { ...ownBranch(UNKNOWN), 'own-branch-or-human': { exitCode: 1 } }).trail.slice(-1), ['blocked-for-human']);
+  assert.deepEqual(walk('grouped-blocked', { ...ownBranch(NOT_ON_MASTER), 'own-branch-or-obstacle': { exitCode: 1 } }).trail.slice(-5, -3), ['own-branch-or-obstacle', 'plan-obstacle-fix']);
+});
+
+test('ASS-384 AC2: own-branch fixes count toward the fix-attempt budget — at 3, count-attempts sends the ticket to Blocked for Human saying the own-branch fix was tried', () => {
+  const three = walk('grouped-blocked', { 'count-attempts': { exitCode: 3, scriptOutput: { 'fix-attempts': 3, 'own-branch-fixes': 3, 'ai-feedback-short': '3 fix attempts failed', 'ai-feedback-long': 'The own-branch fix was tried 3 times …' } } });
+  assert.deepEqual(three.trail, ['count-attempts', 'blocked-for-human']);
+  toHuman('grouped-blocked', three, /3 fix attempts failed/);
+  assert.match(three.output['ai-feedback-long'], /own-branch fix was tried 3 times/);
+});
+
+test('ASS-384: Troubleshoot names the failing file, Classify says own-branch; the flat engines\' prompts unchanged', () => {
+  const read = (p, f) => readFileSync(join(ROOT, 'prompts', p, f), 'utf8');
+  for (const p of ['troubleshoot-block-grouped', 'troubleshoot-block-on-host-grouped']) {
+    assert.equal(JSON.parse(read(p, 'prompt.json')).output.properties['failing-file']?.type, 'string', p);
+    assert.match(read(p, 'prompt.txt'), /"failing-file"/, p);
+  }
+  const classify = JSON.parse(read('classify-issue-grouped', 'prompt.json')).output;
+  assert.equal(classify.properties['own-branch']?.type, 'boolean');
+  assert.deepEqual(classify.required, ['issue', 'reasoning']);
+  assert.match(read('classify-issue-grouped', 'prompt.txt'), /own-branch: true/);
+  assert.doesNotMatch(read('classify-issue', 'prompt.txt'), /own-branch/);
+  assert.doesNotMatch(read('troubleshoot-block', 'prompt.txt'), /failing-file/);
 });

@@ -69,6 +69,10 @@
             "failing-assertion": {
                 "type": "string",
                 "description": "Only then: the failing test or assertion, or the command and its exit"
+            },
+            "failing-file": {
+                "type": "string",
+                "description": "Only then: the file the failure is in, its path in the failing repository, :line where one fails (ASS-384: one the ticket's own branch adds or changes sends the ticket back to Generate Solution, not to the operator)"
             }
         },
         "required": [

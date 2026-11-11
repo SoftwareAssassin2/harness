@@ -264,6 +264,43 @@ test('ticket:fix-attempts counts the fix attempts made in the ticket\'s current 
   await fails(f.agent('ticket:fix-attempts', 'p', 'ABC-3', 'Z'), /no ABC-3 variation Z/);
 });
 
+// ASS-384 AC2: an own-branch fix (a Blocked run that ended at done with own-branch-fix, kept in the variation's
+// blocks) is an attempt though it ends the stay: those since the last block that ended any other way count, a
+// retry passed over, added to this stay's fix tickets; at 3 the feedback says how often it was tried.
+test('ASS-384 AC2: ticket:fix-attempts counts the own-branch fixes in a row across stays toward the budget of 3, saying so at 3', async () => {
+  const f = waiting();
+  const sprint = join(f.dir, 'projects', 'p', 'sprints', 'sprint-10', 'sprint.json');
+  const set = (changes, blocks) => {
+    const s = JSON.parse(readFileSync(sprint, 'utf8'));
+    Object.assign(s.features[0].variations.find(v => v.name === 'A'), { 'state-changes': changes, blocks });
+    writeFileSync(sprint, JSON.stringify(s));
+  };
+  const top = (from, to) => ({ 'state-engine': 'example-development', 'from-state': from, 'to-state': to });
+  const sub = (from, to) => ({ ...top('blocked', 'blocked'), 'sub-state-change': { 'state-engine': 'blocked', 'from-state': from, 'to-state': to } });
+  const attempts = async () => { const r = await f.agent('ticket:fix-attempts', 'p', 'ABC-3', 'A').catch(e => e); return [r.code ?? 0, JSON.parse(r.stdout)]; };
+  const own = { summary: 'V27 taken', 'own-branch-fix': true, 'ended-at': 'done' }, landed = { summary: 'S', key: 'ASS-9', landed: true, 'ended-at': 'done' };
+  const retry = { summary: 'S', key: 'ASS-8', 'ended-at': 'retry' }, human = { summary: 'S', 'ended-at': 'blocked-for-human' };
+  const stay = [top('build', 'blocked'), sub(null, 'count-attempts')];
+  set(stay, [own]);
+  assert.deepEqual(await attempts(), [0, { 'fix-attempts': 1, 'own-branch-fixes': 1 }]);
+  set(stay, [landed, own, retry, own]);
+  assert.deepEqual(await attempts(), [0, { 'fix-attempts': 2, 'own-branch-fixes': 2 }], 'a retry passed over; the landed fix before them ends the run of them');
+  set(stay, [own, human, own]);
+  assert.deepEqual(await attempts(), [0, { 'fix-attempts': 1, 'own-branch-fixes': 1 }], 'the operator\'s resolution starts the count again');
+  set(stay, [own, own, own]);
+  let [code, out] = await attempts();
+  assert.equal(code, 3);
+  assert.deepEqual([out['fix-attempts'], out['own-branch-fixes'], out['ai-feedback-short']], [3, 3, '3 fix attempts failed']);
+  assert.match(out['ai-feedback-long'], /^The own-branch fix was tried 3 times .*Generate Solution.*execution-plan-A\.md\), and the block came back\. Read them and change-log-A\.md,/);
+  // With this stay's fix tickets: added together.
+  set([...stay, sub('wait-on', 'await-fix'), top('blocked', 'blocked')], [own, own]);
+  [code, out] = await attempts();
+  assert.deepEqual([code, out['fix-attempts'], out['own-branch-fixes']], [3, 3, 2]);
+  assert.match(out['ai-feedback-long'], /tried 2 times .*, and 1 fix ticket raised in this stay, and the block came back/);
+  set(stay, [landed]);
+  assert.deepEqual(await attempts(), [0, { 'fix-attempts': 0 }], 'none: the output as before');
+});
+
 // ASS-107 AC7: a fix that cannot be raised or waited on never lets the ticket resume as if fixed —
 // Blocked goes to Blocked for Human, these outputs (recorded by its run) saying why.
 test('ticket:wait-on: no fix ticket raised (Blocked hands it the blocked ticket itself) or a key no project claims — refused, writing nothing, why printed as ai-feedback', async () => {

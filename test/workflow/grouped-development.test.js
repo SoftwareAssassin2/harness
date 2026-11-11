@@ -250,7 +250,7 @@ test('ASS-75: the VM runs from Setup through Review and in Self Healing, and sto
   }
   const beneath = Object.keys(engines).filter(n => n.startsWith('grouped-')).flatMap(n => engines[n].steps.filter(s => s.vm).map(s => `${n}/${s.id}=${s.vm}`));
   // ASS-365: grouped-merge's agents run in the VM wherever it runs — Build's, or a project Release's where the VM is not otherwise needed.
-  assert.deepEqual(beneath.sort(), ['grouped-blocked/add-repository=running', 'grouped-blocked/check-on-master=running', 'grouped-blocked/classify=running', 'grouped-blocked/count-attempts=running', 'grouped-blocked/find-where=running', 'grouped-blocked/plan-obstacle-fix=running', 'grouped-blocked/repair-environment=running', 'grouped-blocked/troubleshoot=running',
+  assert.deepEqual(beneath.sort(), ['grouped-blocked/add-repository=running', 'grouped-blocked/check-on-master=running', 'grouped-blocked/classify=running', 'grouped-blocked/count-attempts=running', 'grouped-blocked/find-where=running', 'grouped-blocked/own-branch-or-human=running', 'grouped-blocked/own-branch-or-obstacle=running', 'grouped-blocked/plan-obstacle-fix=running', 'grouped-blocked/repair-environment=running', 'grouped-blocked/troubleshoot=running',
     'grouped-merge/address-merge-request-feedback=running', 'grouped-merge/code-review=running', 'grouped-merge/security-review=running', 'grouped-release-example/address-merge-request-feedback=running']);
 });
 

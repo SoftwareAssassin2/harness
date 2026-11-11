@@ -41,6 +41,10 @@
                 "type": "string",
                 "description": "Why, from the evidence"
             },
+            "own-branch": {
+                "type": "boolean",
+                "description": "Project only (ASS-384): true when the cause is in what the ticket's own branch adds or changes (Troubleshoot's failing-file), not in master's code; the harness checks master and the branch, then sends the ticket back to Generate Solution; left out otherwise"
+            },
             "human-action": {
                 "type": "string",
                 "description": "Environment only: what the operator must do should it not be repaired in place; left out otherwise"

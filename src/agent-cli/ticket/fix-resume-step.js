@@ -11,7 +11,9 @@
 // or null), changed (the files its "<KEY>:" commits changed, repository
 // paths), earlier (ASS-347: each earlier landed fix in the variation's
 // blocks, [{ fix, at (its block's timestamp), changed }], oldest first),
-// workFolder (data/projects/<project>/work/<ticket>) }.
+// workFolder (data/projects/<project>/work/<ticket>) }; declaredBy (ASS-384,
+// optional) who declares the declared step, for its resume-why, when it is
+// not the fix ticket — ticket:own-branch-fix declaring generate-solution.
 //
 // Prints { resume-at, resume-source, resume-why, resume-ignored } (ASS-343):
 // the top-level step the blocked variation resumes at once its fix has
@@ -81,7 +83,7 @@ function waitBegan(variation) {
 // enteredSince(variation, step, at) — whether the variation entered the top-level step at or after `at` (ms).
 const enteredSince = (variation, step, at) => levelChanges(variation).some(c => c['to-state'] === step && c['from-state'] !== step && Date.parse(c.timestamp ?? '') >= at);
 
-export function fixResumeStep({ project, ticket, variation = {}, engine: name, engineFiles = [], fix = null, declared = null, changed = [], earlier = [], workFolder } = {}) {
+export function fixResumeStep({ project, ticket, variation = {}, engine: name, engineFiles = [], fix = null, declared = null, declaredBy = null, changed = [], earlier = [], workFolder } = {}) {
   const all = engines(engineFiles), top = all[name] ?? { steps: [] }, via = reach(all, name);
   const back = returnTo('blocked', top, levelChanges(variation));
   const order = id => top.steps.findIndex(s => s.id === id);
@@ -108,7 +110,7 @@ export function fixResumeStep({ project, ticket, variation = {}, engine: name, e
   if (typeof declared === 'string' && declared !== '') {
     const at = everyStep.filter(({ step }) => step.id === declared);
     const tops = at.some(({ engine }) => engine === name) ? [declared] : [...new Set(at.flatMap(({ engine, step }) => lift(engine, step.id)))];
-    const chosen = take('declared', (tops.length ? tops : [declared]).map(step => ({ step, fix, why: `${fix ?? 'the fix ticket'} declares resume-at ${declared}${step === declared ? '' : ` (in ${step})`}` })));
+    const chosen = take('declared', (tops.length ? tops : [declared]).map(step => ({ step, fix, why: `${declaredBy ?? `${fix ?? 'the fix ticket'} declares`} resume-at ${declared}${step === declared ? '' : ` (in ${step})`}` })));
     if (chosen) return result(chosen);
   }
 

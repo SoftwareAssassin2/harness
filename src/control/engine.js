@@ -129,9 +129,11 @@ export function resolveTarget(exit, step, engine, stateChanges = [], facts = {})
 
 // resumeAt(facts) — the step a block cleared by a landed fix (clearedByFix)
 // asks to resume at (ASS-343): its run's structured-output resume-at
-// (grouped-blocked's resume-step, ticket:fix-resume-step); undefined for any
-// other move, or when it names none.
-export const resumeAt = facts => (clearedByFix(facts) && facts.structuredOutput['resume-at'] != null ? facts.structuredOutput['resume-at'] : undefined);
+// (grouped-blocked's resume-step, ticket:fix-resume-step) — or one sent back
+// to fix its own branch (ownBranchFix, ASS-384: ticket:own-branch-fix's
+// resume-at, Generate Solution's group); undefined for any other move, or
+// when it names none.
+export const resumeAt = facts => ((clearedByFix(facts) || ownBranchFix(facts)) && facts.structuredOutput['resume-at'] != null ? facts.structuredOutput['resume-at'] : undefined);
 
 // whyNotResume(engine, back, wanted) — why a ticket whose fix landed may not
 // resume at `wanted` instead of `back`, the step it blocked at, which the
@@ -186,6 +188,19 @@ export const FIX_LANDED = { cause: 'fix-landed' };
 // landed-fix clear apart from the retry and other (needs-fix:false, repaired) clears.
 export const clearedByFix = facts => facts?.subEngineState === 'done' && facts?.structuredOutput?.landed === true;
 
+// OWN_BRANCH_FIX — the cause of a move that clears a block by sending the
+// ticket back to fix a failure in its own branch (ASS-384: grouped-blocked's
+// ticket:own-branch-fix — not on the latest master, in a file the variation's
+// branch adds or changes — its finding in the execution plan). Recorded on
+// the clearing change as FIX_LANDED is, and for the same reason: the visit
+// counts the ticket was blocked with would send it straight back to Blocked
+// before Generate Solution could make the fix. ticket:fix-attempts's budget,
+// counted across these returns, bounds the loop instead.
+export const OWN_BRANCH_FIX = { cause: 'own-branch-fix' };
+// ownBranchFix(facts) — the current move is such a return: the sub-engine run
+// is done and its recorded output says own-branch-fix (ticket:own-branch-fix).
+export const ownBranchFix = facts => facts?.subEngineState === 'done' && facts?.structuredOutput?.['own-branch-fix'] === true;
+
 // MERGE_GATE_RED — the cause of the move an exit makes when the merge gate went red
 // (ASS-315: v2-release's merge-pull-request failing npm test on the rebased branch, or no clean
 // rebase, ends its run at rebuild, and release's exit for it sends the ticket back to Build).
@@ -208,7 +223,7 @@ export const MERGE_GATE_RED = { cause: 'merge-gate-red' };
 // red is no restart for the step it left (release), so that step's own visits
 // keep accumulating across reds and its max-visits still bounds the gate.
 export function sinceResolution(engine, stateChanges = [], targetStep) {
-  const at = stateChanges.findLastIndex(c => isResolution(engine, c['from-state'], c['to-state']) || isDoneStep(engine, c['from-state']) || restartsVisits(engine, c['from-state']) || c.cause === FIX_LANDED.cause
+  const at = stateChanges.findLastIndex(c => isResolution(engine, c['from-state'], c['to-state']) || isDoneStep(engine, c['from-state']) || restartsVisits(engine, c['from-state']) || c.cause === FIX_LANDED.cause || c.cause === OWN_BRANCH_FIX.cause
     || (c.cause === MERGE_GATE_RED.cause && c['from-state'] !== targetStep));
   return at < 0 ? stateChanges : stateChanges.slice(at);
 }
@@ -221,7 +236,8 @@ export function sinceResolution(engine, stateChanges = [], targetStep) {
 // Null when no exit matches, so a step without exits (done) rests. Visits
 // count since the last resolution of Blocked for Human (sinceResolution, over
 // the step being counted), and from none on the move that is itself one, itself
-// a block cleared by a landed fix (clearedByFix, ASS-309), or itself a merge-gate
+// a block cleared by a landed fix (clearedByFix, ASS-309) or sent back to fix its
+// own branch (ownBranchFix, ASS-384), or itself a merge-gate
 // red's return (ASS-315: else the first red is redirected by the counts it is
 // meant to restart); the return walk reads it all.
 export function nextState(step, engine, facts, stateChanges = []) {
@@ -229,7 +245,7 @@ export function nextState(step, engine, facts, stateChanges = []) {
   if (!exit) return null;
   let to = resolveTarget(exit, step, engine, stateChanges, facts);
   if (to == null) return { to: null, exit, reason: 'unresolved' };
-  const counted = isResolution(engine, step.id, to) || clearedByFix(facts) || exit.cause === MERGE_GATE_RED.cause ? [] : sinceResolution(engine, stateChanges, to);
+  const counted = isResolution(engine, step.id, to) || clearedByFix(facts) || ownBranchFix(facts) || exit.cause === MERGE_GATE_RED.cause ? [] : sinceResolution(engine, stateChanges, to);
   let reason = 'exit';
   for (const seen = new Set(); !seen.has(to); reason = 'max-visits') {
     seen.add(to);

@@ -196,7 +196,7 @@
             "id": "check-on-master",
             "sequence": 6,
             "name": "Check on the Latest Master",
-            "description": "The operator's decision box (ASS-163): is the failure a problem on the latest master? The project's master CI for the job Troubleshoot named, asked read-only on the host (project:check-on-master: glab, gh). Failed there (exit 0): a blocking bug in the project's ticket system, with that evidence, waited on. Passed (exit 3): our environment or access — nothing raised, the plan grows by the obstacle's fix. No master evidence (exit 4: no such job, forge unreachable, nothing named) is not proven: no bug, Blocked for Human asking the operator; Have AI Try Again repeats the check. On the harness project (exit 2) not checked: raised as before",
+            "description": "The operator's decision box (ASS-163): is the failure a problem on the latest master? The project's master CI for the job Troubleshoot named, asked read-only on the host (project:check-on-master: glab, gh). Failed there (exit 0): a blocking bug in the project's ticket system, with that evidence, waited on. Passed (exit 3): not master's — nothing raised; a failure in the ticket's own branch goes back to Generate Solution (ASS-384, own-branch-or-obstacle), else our environment or access: the plan grows by the obstacle's fix. No master evidence (exit 4: no such job, forge unreachable, nothing named) is not proven: no bug; a failure shown to be in the ticket's own branch goes back to Generate Solution (own-branch-or-human), else Blocked for Human asking the operator; Have AI Try Again repeats the check. On the harness project (exit 2) not checked: raised as before",
             "vm": "running",
             "record-script-output": true,
             "action": {
@@ -220,7 +220,69 @@
                     "condition": {
                         "exit-code": 3
                     },
+                    "move-to-state": "own-branch-or-obstacle"
+                },
+                {
+                    "condition": {
+                        "exit-code": 4
+                    },
+                    "move-to-state": "own-branch-or-human"
+                },
+                {
+                    "condition": {
+                        "not": {
+                            "exit-code": 0
+                        }
+                    },
+                    "move-to-state": "blocked-for-human"
+                }
+            ]
+        },
+        {
+            "id": "own-branch-or-obstacle",
+            "sequence": 7,
+            "name": "Check for an Own-Branch Fix",
+            "description": "ASS-384: master passed the job, so the failure is not the project's master's. When Classify put it in the ticket's own branch and the failing file Troubleshoot named is one the variation's branch adds or changes (ticket:own-branch-fix, its VM's checkout read, VM kept running), the finding goes into execution-plan-<variation>.md and the run is done with its resume-at — Generate Solution's group, the ticket fixing its own defect (control: ownBranchFix, the visit counts restarted; counted by ticket:fix-attempts). Else (exit 3, or the command failing) the obstacle fix, as before",
+            "vm": "running",
+            "record-script-output": true,
+            "action": {
+                "type": "script",
+                "command": "./agent.sh ticket:own-branch-fix {project} {work-item} {variation} {run}"
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "exit-code": 0
+                    },
+                    "move-to-state": "done"
+                },
+                {
+                    "condition": {
+                        "not": {
+                            "exit-code": 0
+                        }
+                    },
                     "move-to-state": "plan-obstacle-fix"
+                }
+            ]
+        },
+        {
+            "id": "own-branch-or-human",
+            "sequence": 8,
+            "name": "Check for an Own-Branch Fix Before the Operator",
+            "description": "ASS-384: master could not show the failure (not proven). The same check as Check for an Own-Branch Fix: the ticket's own branch shown, the finding into its plan and back to Generate Solution's group; else (exit 3, or the command failing) Blocked for Human with check-on-master's feedback, as before",
+            "vm": "running",
+            "record-script-output": true,
+            "action": {
+                "type": "script",
+                "command": "./agent.sh ticket:own-branch-fix {project} {work-item} {variation} {run}"
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "exit-code": 0
+                    },
+                    "move-to-state": "done"
                 },
                 {
                     "condition": {
@@ -234,7 +296,7 @@
         },
         {
             "id": "plan-obstacle-fix",
-            "sequence": 7,
+            "sequence": 9,
             "name": "Plan the Obstacle Fix",
             "description": "Not on the latest master (ASS-163 AC3): nothing raised in the project; the ticket's plan grows by fixing what stands in the way (ticket:plan-obstacle-fix appends it to execution-plan.md, no scope added), then Repair Environment's steps make that fix — a missing repository added, the environment repaired, else the operator's exact step through Blocked for Human — and the ticket resumes its own work",
             "vm": "running",
@@ -262,7 +324,7 @@
         },
         {
             "id": "add-repository",
-            "sequence": 8,
+            "sequence": 10,
             "name": "Add the Missing Repository",
             "description": "Repair Environment's first step (ASS-121), on the host: a repository the project lacks that Troubleshoot named (missing-repository) is added to project.json once the harness can access it (glab, gh: read-only) and downloaded into the VM, and the ticket retries; one it cannot access is not added: Blocked for Human, naming it and why. One another project lists is refused, nothing changed (exit 4, ASS-160): Blocked for Human, saying the ticket needs that project's access (it belongs there, or must be done on the Mac). None named, or one already listed (exit 2): nothing added, the environment repaired in place as for any other cause",
             "vm": "running",
@@ -318,7 +380,7 @@
         },
         {
             "id": "repair-environment",
-            "sequence": 9,
+            "sequence": 11,
             "name": "Repair the Environment",
             "description": "In the variation's VM and the project's containers there, never a credential: repaired and re-checked, the ticket resumes; else Blocked for Human with what was found and what to do (ASS-97)",
             "vm": "running",
@@ -355,7 +417,7 @@
         },
         {
             "id": "repair-environment-on-host",
-            "sequence": 10,
+            "sequence": 12,
             "name": "Repair the Environment on the Host",
             "description": "The variation has no VM yet: only its own worktree, never the Mac's shared checkout or a credential; else Blocked for Human with what was found and what to do (ASS-97)",
             "action": {
@@ -391,7 +453,7 @@
         },
         {
             "id": "create-fix-ticket",
-            "sequence": 11,
+            "sequence": 13,
             "name": "Create the Fix Ticket",
             "description": "Where Classify said: the harness project's backlog, or the ticket's own project's ticket system (facts.js fixTicketIn). An empty key (ASS-316) skips fast-track-fix: there is no ticket to fast-track, and no reason to run it on the blocked ticket's own key",
             "action": {
@@ -418,7 +480,7 @@
         },
         {
             "id": "fast-track-fix",
-            "sequence": 12,
+            "sequence": 14,
             "name": "Fast-Track the Fix",
             "description": "ASS-306: a harness off-board fix ticket is marked fast-track and joined to the sprint at committed, so it is built at once instead of waiting in the backlog for grooming (agent.sh ticket:fast-track, host-side). Best-effort: a project issue in its own ticket system, one already in the sprint, or none raised is left alone, and a failed join leaves the ticket off-board at Backlog with its mark — whatever happens, the fix is waited on as before",
             "action": {
@@ -444,7 +506,7 @@
         },
         {
             "id": "wait-on",
-            "sequence": 13,
+            "sequence": 15,
             "name": "Wait on the Fix",
             "description": "Record the fix ticket the blocked ticket waits on; none raised, or one no project claims, is Blocked for Human (AC7), its ai-feedback naming why (ASS-316: no-ticket-reason/no-ticket-why from create-fix-ticket's output, - when none)",
             "record-script-output": true,
@@ -471,7 +533,7 @@
         },
         {
             "id": "await-fix",
-            "sequence": 14,
+            "sequence": 16,
             "name": "Await the Fix",
             "description": "Wait until the fix ticket is Done and merged (or Done with a <KEY>: commit on its project's default branch, ASS-340, or Done after re-recording the blocked variation's own inputs since the wait began, ASS-342), polling while it is not (exit 1, its waiting-exit-code: no failure, ASS-253); one closed unmerged is a failed attempt: Blocked again, afresh; nothing to wait on is Blocked for Human (AC7)",
             "record-script-output": true,
@@ -505,7 +567,7 @@
         },
         {
             "id": "resume-step",
-            "sequence": 15,
+            "sequence": 17,
             "name": "Find Where to Resume",
             "description": "The fix landed: the step the ticket resumes at (ASS-343), recorded as the run's resume-at — the fix ticket's declared resume-at, else the earliest step its commits or the ticket's changed work files map to, else the step it blocked at. The parent's return takes it when it is a work step at or before the blocked one (engine.js whyNotResume), else returns to the blocked step as before; whatever the command's exit, the run is done",
             "record-script-output": true,
@@ -532,9 +594,9 @@
         },
         {
             "id": "done",
-            "sequence": 16,
+            "sequence": 18,
             "name": "Done",
-            "description": "Fixed, repaired, or nothing wrong any more: the parent follows return-to-state",
+            "description": "Fixed, repaired, nothing wrong any more, or sent back to fix its own branch (ASS-384): the parent follows return-to-state, or the run's resume-at where engine.js allows it",
             "is-done": true,
             "action": {
                 "type": "none"
@@ -542,7 +604,7 @@
         },
         {
             "id": "retry",
-            "sequence": 17,
+            "sequence": 19,
             "name": "Retry",
             "description": "The fix ticket was closed unmerged, a failed attempt: the parent goes round Blocked again, its attempts counted afresh",
             "is-done": true,
@@ -552,7 +614,7 @@
         },
         {
             "id": "blocked-for-human",
-            "sequence": 18,
+            "sequence": 20,
             "name": "Blocked for Human",
             "description": "No fix could be raised, waited on or made, or 3 fix attempts failed: the parent goes to Blocked for Human, the run's ai-feedback saying why",
             "is-done": true,
