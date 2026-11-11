@@ -77,11 +77,12 @@ function layout(state, { columns = 0, rows = Infinity, now = 0 }) {
 }
 
 // The grid's section lines (ASS-358), for boxTable's `separators`: solid
-// green under the last Done row (its step is-done), when other rows follow; solid blue, labelled,
+// green under the last Done row (its step is-done), when other rows follow, labelled
+// "in progress ↓ · ↑ done" like the blue one (ASS-371); solid blue, labelled,
 // over the first planning-pool row below the last in-progress-pool one
 // (slotKind; rows in neither pool — done, blocked, queued — are skipped).
 // Every other line between rows stays dashed.
-const DONE_LINE = { color: '32' };
+const DONE_LINE = { color: '32', text: 'in progress ↓ · ↑ done' };
 const POOL_LINE = { color: '34', text: 'planning ↓ · ↑ in progress' };
 function boundaries(tickets) {
   const kinds = tickets.map(t => slotKind(t.step, t.status));

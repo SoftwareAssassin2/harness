@@ -30,7 +30,7 @@ const ALL = [
   ticket('A-1', 'done'), ticket('A-2', 'done'), ticket('A-3', 'review'), ticket('A-4', 'build'), ticket('A-5', 'detour'),
   ticket('A-6', 'refine'), ticket('A-7', 'refine'), ticket('A-8', 'committed'), ticket('A-9', 'stuck'),
 ];
-const GREEN = /^├\x1b\[32m─+\x1b\[0m[┤█]$/;
+const GREEN = /^├\x1b\[32m─+ in progress ↓ · ↑ done ─+\x1b\[0m[┤█]$/;   // labelled (ASS-371)
 const BLUE = /^├\x1b\[34m─+ planning ↓ · ↑ in progress ─+\x1b\[0m[┤█]$/;
 const DASHED = /^│\x1b\[90m {3}- {3}- .*-\s*\x1b\[0m[│█]$/;
 
@@ -56,6 +56,15 @@ test('AC1, AC2, AC3: green under the last Done row, blue over the first planning
   assert.ok(Math.abs(left.length - right.length) <= 1, strip(blue));              // centred
   assert.equal(out.filter(l => GREEN.test(l)).length, 1);
   assert.equal(out.filter(l => BLUE.test(l)).length, 1);
+});
+
+test('ASS-371: the green line carries "in progress ↓ · ↑ done", centred, full width', () => {
+  const { out } = lines(stateOf(ALL));
+  const green = out.find(l => GREEN.test(l));
+  assert.ok(green, out.join('\n'));
+  assert.equal(visible(green), wide.columns);
+  const [left, right] = strip(green).slice(1, -1).split(' in progress ↓ · ↑ done ');
+  assert.ok(Math.abs(left.length - right.length) <= 1, strip(green));
 });
 
 test('AC1: no green line without Done rows, or with only Done rows', () => {
