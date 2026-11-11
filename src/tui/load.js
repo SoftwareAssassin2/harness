@@ -114,6 +114,7 @@ export const loadProjects = (dir, lima = limaHome()) => readdirSync(dir)
       gcloudReauthentication: project['check-for-expired-gcloud-auth'] === true && requiresReauthentication(join(dir, name), 'gcloud'),
       glabReauthentication: project['check-for-expired-glab-auth'] === true && requiresReauthentication(join(dir, name), 'glab'),
       backgroundWorkOff: project['background-work'] === false,
+      notifications: project['operator-needed-notifications'] !== false,   // ASS-383: macOS notifications when a ticket becomes Operator Needed, on unless false
       waitForDependencies: project['wait-for-dependencies'] === true,   // ASS-195: a ticket waits for the tickets it depends on
       outside: loadOutside(join(dir, name), readJson),   // ASS-355: the tickets depended on that its sprint and backlog do not hold
       limits: { project: pickLimits(project), harness: pickLimits(harnessOf(dir)) },   // ASS-357: what the planner reads, for the sprint screen's seats
@@ -241,7 +242,8 @@ function deletedKeys(projectDir) {
 }
 
 // The sprint marked is-active in sprints.json: its sprint.json's path, or null.
-function activeSprintFile(projectDir) {
+// Exported for the dashboard's Operator Needed notifications (ASS-383), which watch every project's.
+export function activeSprintFile(projectDir) {
   const file = join(projectDir, 'sprints.json');
   const active = existsSync(file) && readJson(file).list?.find(s => s['is-active']);
   return active ? join(projectDir, 'sprints', `sprint-${active.number}`, 'sprint.json') : null;

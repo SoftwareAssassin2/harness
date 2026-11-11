@@ -420,6 +420,28 @@ export function openTicket(state, ticket) {
   return { ...opened, ticketTab: defaultTab(gate, openQuestions(opened), chat) };
 }
 
+// openRequested(state, { project, key }) — a click on an Operator Needed
+// notification (ASS-383: notify:open-ticket's request, main.js): whatever is
+// open closed — a form, a log, the ? menu —, the project selected on its live
+// sprint, and the ticket's screen opened afresh (openTicket) on the dashboard,
+// on the variation waiting at a gate or the blocked state, else its first; a
+// ticket only in the backlog on the backlog screen. An unknown project leaves
+// the state as it was; an unknown key, the project selected and nothing opened.
+const CLEARED = { menuOpen: false, agent: null, agentLog: null, agentTyping: false, chat: null, chatLog: null, draft: null, updatesForm: null, chatConfirm: null, memoryConfirm: null, ticketConfirm: null, priorityDraft: null, reasonDraft: null, returnDraft: null, gatesDraft: null };
+export function openRequested(state, { project, key }) {
+  const index = state.projects.findIndex(p => p.id === project);
+  if (index < 0) return state;
+  const base = { ...state, ...CLEARED, ...CLOSED_TICKET, project: index, day: null, selected: null, scroll: null };
+  const rows = sprintTickets(base).tickets.filter(t => t.key === key);
+  if (rows.length) {
+    const row = rows.find(t => gateWaits(t.gate) || t.step?.['is-blocked-state'] === true) ?? rows[0];
+    return openTicket({ ...base, screen: 's', focus: 'tickets' }, { key, variation: row.variation.name });
+  }
+  const queued = backlogTickets(base).find(t => t.key === key);
+  if (queued) return openTicket({ ...base, screen: 'b', focus: 'backlog' }, { key, variation: queued.variations?.find(v => !v['is-deleted'])?.name ?? 'A', backlog: true });
+  return { ...base, screen: 's' };
+}
+
 // A key on the ticket screen: escape returns to the dashboard or the backlog;
 // tab opens the next tab (shownTabs), shift-tab the one before, and 1–5 (1–4
 // without Chat, ASS-262) a tab by its number (ASS-184 AC3: not while typing — the chat's keys are in

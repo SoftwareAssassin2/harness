@@ -35,6 +35,9 @@ merged change, with a person approving at the gates.
 - Python 3.11 or newer, for Hindsight (`brew install python@3.12`)
 - [Claude Code](https://claude.com/claude-code)
 - `git`, plus whichever of `glab`, `gcloud` and `gh` your project uses
+- Optional: [terminal-notifier](https://github.com/julienXX/terminal-notifier)
+  (`brew install terminal-notifier`), for Operator Needed notifications you can
+  click (see below)
 
 `/install` checks these and tells you how to install what is missing.
 
@@ -80,6 +83,32 @@ project without `--force`, keeps a
 credentials entry you already have for the project (`--force` replaces it
 with the bundle's placeholders), and leaves the remaining manual steps
 printed for you.
+
+## Operator Needed notifications
+
+While the dashboard runs, each ticket that becomes Operator Needed (blocked
+for a human, at a human step or gate, with a pending requirements change or
+an open blocking question) gets its own macOS notification, with the default
+sound: "<KEY> needs you", the project and ticket title, and one line written
+by Claude (claude-haiku-5-5, on the project's own Claude login, the
+subscription first; its cost counts toward the project's spend) saying what
+you need to do and why. If that call fails or takes more than 20 seconds, the
+notification carries a plain line instead, such as "Blocked for Human: …".
+Tickets already waiting when the dashboard starts don't notify; a ticket
+notifies again only after it has stopped waiting and starts again.
+
+- With `terminal-notifier` on the PATH (`brew install terminal-notifier`), a
+  newer notification for a ticket replaces the older one, and clicking it
+  brings Ghostty, where the dashboard runs, to the front and opens that
+  ticket's screen. Without it, or when it fails (for example without
+  permission), notifications go through `osascript`, with no click action.
+  The control screen (`c`) says which one the dashboard uses.
+- macOS asks for permission the first time. If nothing shows, allow it in
+  System Settings → Notifications → terminal-notifier (or Script Editor,
+  for the `osascript` fallback).
+- To turn them off for a project, set `"operator-needed-notifications": false`
+  in its `data/projects/<project>/project.json`. They are on when it is
+  absent.
 
 ## Exporting a project
 

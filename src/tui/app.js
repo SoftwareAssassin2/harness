@@ -398,5 +398,5 @@ function screenBody(state, size) {
 }
 
 // What main.js and the tests import from here, kept where it moved (ASS-201).
-export { decided } from './screens/ticket.js';
+export { decided, openRequested } from './screens/ticket.js';   // openRequested: ASS-383, a notification clicked
 export { fitRows } from './screens/log.js';

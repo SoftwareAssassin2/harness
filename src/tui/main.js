@@ -4,12 +4,13 @@
 // one column narrower than the terminal, so the rightmost column of the screen
 // stays blank (ASS-311). All behaviour lives in app.js.
 import { emitKeypressEvents } from 'node:readline';
-import { mkdirSync, readFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, rmSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { execFile, execFileSync } from 'node:child_process';
 import { join } from 'node:path';
-import { initialState, handleKey, render, decided, controlStarted, controlExited, controlDraining, drawColumns } from './app.js';
-import { loadProjects, loadWorkflows, loadPauses, loadSelfHealing, loadAssignments, loadTransientEngines, loadChats, loadHarness, loadModelUsage, loadDiskSpace, watchFiles, dataFiles, keepSame, projectsChanged } from './load.js';
+import { initialState, handleKey, render, decided, openRequested, controlStarted, controlExited, controlDraining, drawColumns } from './app.js';
+import { loadProjects, loadWorkflows, loadPauses, loadSelfHealing, loadAssignments, loadTransientEngines, loadChats, loadHarness, loadModelUsage, loadDiskSpace, watchFiles, dataFiles, keepSame, projectsChanged, activeSprintFile } from './load.js';
+import { operatorNeededNotifier } from '../notify/notifier.js';
 import { startControl } from '../control/process.js';
 import { ender, stillNamed } from './shutdown.js';
 import { sessionDir, readSession, readSessionTail, sessionModified } from '../agents/session.js';
@@ -291,15 +292,55 @@ function reload() {
   state = { ...next, updatedAt: { ...state.updatedAt, ...Object.fromEntries(moved.map(id => [id, Date.now()])) } };
   rewatch();
   draw();
+  notifyLater();
+}
+
+// Operator Needed notifications (ASS-383, src/notify/): after every reload
+// that changed the state — and once at start, which notifies nothing — each
+// project's Operator Needed set is checked on the next turn of the event loop,
+// after the frame is drawn; a ticket new to its set gets a macOS
+// notification, its AI description and the notifier run in the background,
+// never holding up a key or a frame. The seen set is kept in
+// data/operator-needed-seen.json as well, so a restart does not notify again.
+const notifier = operatorNeededNotifier({
+  seenFile: join(DATA, 'operator-needed-seen.json'), projectsDir: join(DATA, 'projects'), agentSh: join(ROOT, 'agent.sh'), log,
+});
+function notifyLater() {
+  setImmediate(() => { try { notifier.check(state); } catch (error) { log(`Operator Needed notifications: ${error.message}`); } });
+}
+// A notification clicked (ASS-383): terminal-notifier runs agent.sh
+// notify:open-ticket, which writes data/open-ticket-request.json; read here
+// once it changes (it is watched with the rest), removed, and the dashboard
+// switched to that project with the ticket's screen open (openRequested) —
+// its chat briefed as a ticket opened by key is.
+const REQUEST = join(DATA, 'open-ticket-request.json');
+function takeRequest() {
+  let request;
+  try { request = JSON.parse(readFileSync(REQUEST, 'utf8')); } catch { return; }
+  rmSync(REQUEST, { force: true });
+  if (typeof request?.project !== 'string' || typeof request?.key !== 'string') return;
+  let next = openRequested(state, request);
+  if (next.ticketChatOpen) {
+    const open = next.ticketChatOpen;
+    next = { ...next, ticketChatOpen: null };
+    try { openTicketChat(open); } catch (error) { next = { ...next, ticketChatMessage: error.message }; }
+  }
+  state = withSession(next);
+  rewatch();
+  draw();
 }
 // Watches the files the state on show reads, again only when that list changes
 // — a day or project chosen, a sprint made active, a ticket's questions added.
+// ASS-383: every project's active sprint.json too, not only the one on show,
+// so a ticket of another project becoming Operator Needed is seen at once,
+// and the request file a clicked notification writes (takeRequest).
 let watcher, watching = '';
 function rewatch() {
-  const files = dataFiles(ROOT, state);
+  const live = state.projects.map(p => activeSprintFile(join(DATA, 'projects', p.id))).filter(Boolean);
+  const files = [...new Set([...dataFiles(ROOT, state), ...live, REQUEST])];
   if (files.join('\n') === watching) return;
   watcher?.close();
-  watcher = watchFiles(files, reload);
+  watcher = watchFiles(files, () => { reload(); takeRequest(); });
   watching = files.join('\n');
 }
 rewatch();
@@ -455,3 +496,5 @@ setInterval(() => { // keeps the clock and an open session log current
 health.poll(state.projects, Date.now());
 state = withSession(state);
 draw();
+notifyLater();   // the start: every ticket already in the set is taken as seen (ASS-383)
+takeRequest();   // a notification clicked while the dashboard was down
