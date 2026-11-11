@@ -60,3 +60,20 @@ test('AC1: with a past day on show, that day\'s sprint is counted — not the li
   const r = shown([busy, ticket('A-1', 'build')], { backlog: [groomed('A-5')], questions: [asked('A-1', true), asked('A-2', true), asked('A-5', true)], days, day: '2026-09-30' });
   assert.equal(r.n, 1);
 });
+
+// ASS-370: the project menu's blue ● before each project with Operator Needed tickets.
+test('ASS-370 AC1-AC3: the menu dots each project with tickets waiting on the operator, the selected one agreeing with its tile, a past day changing nothing', () => {
+  const project = (id, features, questions = [], days = {}) => ({ id, name: id.toUpperCase(), stateEngine: 'e', sprint: sprintOf(features), backlog: [], questions, days });
+  const days = { '2026-09-30': sprintOf([busy]) };
+  const projects = [project('p', [busy, ticket('A-1', 'build')], [asked('A-1', true)], days), project('q', [busy]), project('r', [busy, ticket('A-3', 'stuck')])];
+  const s = initialState({ projects, workflows: [{ name: 'e', steps }, refinement], assignments: [{ project: 'p', 'agent-name': 'Daredevil', 'work-item': 'A-0', variation: null }] });
+  const out = render(s, wide);
+  const names = out[2], counts = out[3];
+  assert.match(names, /\x1b\[34m●\x1b\[0m P /);
+  assert.match(strip(names), /● P\s+Q\s+● R/);
+  assert.ok(!strip(names).includes('● Q'));
+  assert.equal(Number(strip(out[7]).match(/│ +(\d+) +│/)[1]), 1);            // the selected project's tile agrees
+  const centre = (line, text) => { const v = strip(line); return v.indexOf(text) + text.length / 2; };
+  assert.equal(Math.floor(centre(names, '● P')), Math.floor(centre(counts, '🤖x1')));
+  assert.equal(render({ ...s, day: '2026-09-30' }, wide)[2], names);           // a past day leaves the dots alone
+});

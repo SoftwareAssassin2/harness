@@ -11,7 +11,7 @@ import { visible, link } from '../text.js';
 import { utcDate } from '../../downloader/cycle.js';
 import { flattenSprint } from '../../control/rank.js';
 import { spendRecords, daySpend, sprintSpend, spendText } from '../../control/spend.js';
-import { ellipsis, refining, agentLine, projectAssignments, liveAssignments, viewedSprint, operatorNeeded, ICONS, since, indent, center, middle, color, green, red, gold, timestamp, sprintTickets } from './shared.js';
+import { ellipsis, refining, agentLine, projectAssignments, liveAssignments, viewedSprint, operatorNeeded, markDot, ICONS, since, indent, center, middle, color, green, red, gold, timestamp, sprintTickets } from './shared.js';
 
 // Screens where space pauses and releases the agents.
 export const PAUSABLE = new Set(['s', 'S', 'b', 'B', 'c', 'a', 'A']);
@@ -371,10 +371,17 @@ function banner({ human, ai, humanHolds, aiHolds, name, mine, everyone }, healin
 
 // Projects side by side, the selected one in reverse video while the menu has
 // focus and underlined otherwise, each with the count of its assignments
-// ("🤖x3") centered on the line beneath it.
-function menu({ projects, project, assignments, focus }) {
+// ("🤖x3") centered on the line beneath it. ASS-370: a blue ● (markDot, the
+// tickets' blue) just before the name of each project with tickets waiting on
+// the operator — operatorNeeded, the Operator Needed Tickets tile's rule, with
+// that project selected on its live sprint (day null), so a past day on show
+// never changes the dots. The dot sits inside the name's width, so the count
+// stays centred under it; with no dots the menu is as before.
+function menu(state) {
+  const { projects, project, assignments, focus } = state;
   const items = projects.map((p, i) => {
-    const name = ` ${p.name} `;
+    const dot = operatorNeeded({ ...state, project: i, day: null }).size > 0 ? `${markDot('●', 'needed')} ` : '';
+    const name = ` ${dot}${p.name} `;
     const count = `🤖x${assignments.filter(a => a.project === p.id).length}`;
     const width = Math.max(visible(name), visible(count));
     const mark = focus === 'menu' ? '\x1b[7m' : '\x1b[4m';
