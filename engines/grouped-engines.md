@@ -352,6 +352,57 @@ whose repositories declare none, passes with nothing run.
 `ci-checks.json` is not an input of the golden image: changing it rebuilds
 nothing.
 
+Check Numbered Files (ASS-385; grouped Build only — v2-build and the flat
+engines have none — `merge-request:check-numbered-files`, on the host, max-visits
+3) runs between Refresh the Reference Repositories Before Testing and Automated
+Testing, so after every Generate Solution and Address Merge Request Feedback
+push. An agent numbers a new migration or numbered test once and kept that
+number across rebases while master and other open merge requests took it:
+Flyway (`outOfOrder=false`) rejects a version at or below the target's highest,
+and a project's CI rejects one another open merge request claims. Each kind of
+numbered file is declared in project.json:
+
+```json
+"numbered-files": [
+  { "kind": "migration", "glob": "apps/*-db/src/V*__*.sql", "command": "scripts/next-free-number.sh migration" },
+  { "kind": "db-test", "glob": "apps/*-db-e2e/src/*.sql" } ]
+```
+
+`glob` picks its files from the repository's root (`**`, `*`, `?` and `{a,b}`
+as in `ci-checks.json`); a file's number is the first run of digits in its
+name, and each folder is a sequence of its own. `command` (optional) prints the
+next free number (its output's last number); it runs in the repository's
+checkout in the VM, with the VM's own forge credentials (`/run/harness/env`:
+`GITLAB_TOKEN`, `GH_TOKEN`) loaded, so a rule script that asks the forge can —
+pass the token on in the command if the script reads another name, e.g.
+`GITLAB_READ_TOKEN="$GITLAB_TOKEN" bash scripts/next-free-number.sh migration`.
+Without one, or when it fails, the free number is the fallback: one above the
+highest on the target branch and in the other open merge requests. Unset,
+`numbered-files` is Flyway's versioned migrations (`**/V*__*.sql`) by the
+fallback; `[]` checks nothing. For each merge request neither Merged nor
+Closed, the check reads in the VM, origin fetched, the numbered files its
+branch adds since its merge base with `origin/<base>` and the target's
+highest in each sequence; and on the host, through the harness's glab/gh, the
+repository's other open merge requests and the files each adds. A file
+collides when its number is at or below the target's highest, or an open merge
+request opened before this one (a lower iid; every one, while this one is not
+yet opened) adds the same number — the older keeps it, so two tickets never
+both renumber. That file and the branch's later ones in its sequence are
+renumbered in order from the free number, skipping any number another open
+merge request holds, each new name keeping its digits' width. Exit 0 goes on
+to Automated Testing; 1 (a collision) back to Generate Solution, with each
+file and the name to give it on stderr and in `numbered-files-check-<variation>.md`
+in the ticket's folder; 3 (no VM, a fetch or forge call failed, the
+declaration malformed) to Blocked. `generate-solution-grouped`,
+`check-on-merge-request-build-grouped` and Release's
+`check-on-merge-request-grouped` give the rule (`{numbered-files}`) and have
+the agent run the same command after every rebase and before every push,
+renumbering (`git mv`, every reference, the recorded automated tests through
+`automated-tests:record`) and saying so in the change log. grouped-merge,
+whose Address Merge Request Feedback pushes straight back to the review gate,
+has no step of its own: its agent runs the command before pushing, and the
+merge request's own CI rule gates the merge.
+
 Blocked, Blocked for Human and Self Healing stay top-level. Blocked runs
 `grouped-blocked` (ASS-107, ASS-97), its own engine; the current engines'
 `blocked` stays as it was, their reference. It counts the fix attempts made

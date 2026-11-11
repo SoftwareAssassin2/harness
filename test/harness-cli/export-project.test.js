@@ -56,6 +56,7 @@ function setup({ key = 'p', project = {}, engines = ['dev', 'build', 'test', 'he
     'raised-bug-priority': 'Critical',
     'max-spend-per-ticket-usd': 100,
     'merge-request-title': 'conventional',
+    'numbered-files': [{ kind: 'migration', glob: 'db/V*__*.sql', command: 'scripts/next-free-number.sh migration' }],
     'vm-full-checks': 'Run bash scripts/validate.sh from /repos/<repo>/.',
     'background-work': [{ some: 'runtime' }],
     ...project,
@@ -151,6 +152,7 @@ test('the exported project.json keeps only the setup fields: no runtime state, m
     'raised-bug-priority': 'Critical',
     'max-spend-per-ticket-usd': 100,
     'merge-request-title': 'conventional',
+    'numbered-files': [{ kind: 'migration', glob: 'db/V*__*.sql', command: 'scripts/next-free-number.sh migration' }],
     'vm-full-checks': 'Run bash scripts/validate.sh from /repos/<repo>/.',
   });
 });

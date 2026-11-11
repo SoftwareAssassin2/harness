@@ -18,6 +18,7 @@
     "merge-request:upload-image": { "project": 0, "ticket": 1, "variation": 2, "stdin": [4] },
     "merge-request:reply": { "project": 0, "ticket": 1, "variation": 2, "stdin": [5] },
     "merge-request:resolve": { "project": 0, "ticket": 1, "variation": 2 },
+    "merge-request:check-numbered-files": { "project": 0, "ticket": 1, "variation": 2 },
     "question:ask": { "project": 0, "ticket": 1 },
     "question:accept": { "project": 0, "ticket": 1 },
     "question:reject": { "project": 0, "ticket": 1 },

@@ -7,7 +7,7 @@
 #   assignment_of <command> <agent-name>                      # the record, as JSON; fails when there is none
 #   template <command> <record-json> <key> <fallback-folder>  # the template the record's engine names by <key>
 #   fill <text> <placeholder> <value>                         # <text> with every {<placeholder>} replaced, literally
-#   fill_ticket <text> <record-json>                          # {code-scope}, {merge-request-title}, {ticket}, {project}, {variation}, {ticket-folder}, {project-folder}, {harness-folder}, {project-code-folder}, {agent-sh} from the record
+#   fill_ticket <text> <record-json>                          # {code-scope}, {merge-request-title}, {numbered-files}, {ticket}, {project}, {variation}, {ticket-folder}, {project-folder}, {harness-folder}, {project-code-folder}, {agent-sh} from the record
 #   fill_commands <text> <agent-name>                         # {status-update-command} and {approve-command} for the agent
 #   approve_command <agent-name>                              # the command the agent approves with
 #   persona_of <prompt-folder>                                # the persona prompts/<folder>/prompt.json names; nothing when none
@@ -41,6 +41,7 @@ source "$here_prompt/engine.bash"
 source "$here_prompt/ticket-system.bash"
 source "$here_prompt/harness-project.bash"
 source "$here_prompt/merge-request-title.bash"
+source "$here_prompt/numbered-files.bash"
 prompts_dir="${PROMPTS_DIR:-$here_prompt/../../prompts}"
 personas_dir="${PERSONAS_DIR:-$here_prompt/../../personas}"
 prompt_projects_dir="${PROJECTS_DIR:-$here_prompt/../../data/projects}"
@@ -158,7 +159,7 @@ write_ticket_json() {
 }
 
 fill_ticket() {
-  local text="$1" record="$2" ticket project variation folder scope format
+  local text="$1" record="$2" ticket project variation folder scope format rules
   ticket="$(jq -r '.["work-item"] // ""' <<< "$record")"
   project="$(jq -r '.project // ""' <<< "$record")"
   variation="$(jq -r '.variation // ""' <<< "$record")"
@@ -171,6 +172,11 @@ fill_ticket() {
   if [[ "$text" == *"{merge-request-title}"* ]]; then
     format="$(title_format fill_ticket "$prompt_projects_dir/$project/project.json")" || return 1
     text="$(fill "$text" merge-request-title "$(title_rule "$format")")"
+  fi
+  # The project's numbered files (ASS-385, numbered-files.bash), asked only of a text that names them.
+  if [[ "$text" == *"{numbered-files}"* ]]; then
+    rules="$(numbered_rules fill_ticket "$prompt_projects_dir/$project/project.json")" || return 1
+    text="$(fill "$text" numbered-files "$(numbered_rule_text "$rules")")"
   fi
   text="$(fill "$text" ticket "$ticket")"
   text="$(fill "$text" project "$project")"

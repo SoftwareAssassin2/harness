@@ -250,3 +250,19 @@ test('ASS-219 AC1: agent:dispatch fills {merge-request-title} with the project\'
   set('shouty');
   await fails(f.agent('agent:dispatch', 'Daredevil'), /unknown "merge-request-title" "shouty"/);
 });
+
+// ASS-385 AC1: {numbered-files} is the project's numbered-files rule — Flyway's versioned migrations by the fallback
+// when project.json declares none, each declared kind with its glob and command; a malformed one fails the dispatch.
+test('ASS-385 AC1: agent:dispatch fills {numbered-files} with the project\'s numbered-files rule, the fallback when none is declared', async () => {
+  const f = fixture();
+  writeFileSync(join(f.dir, 'prompts', 'generate-solution', 'prompt.txt'), 'Rule: {numbered-files}.\n');
+  await f.agent('agent:dispatch', 'Daredevil');
+  assert.match(f.inbox('Daredevil').at(-1), /Rule: migration: files matching \*\*\/V\*__\*\.sql, the next free number one above the highest on the target branch and in the other open merge requests\./);
+  const file = join(f.dir, 'projects', 'p', 'project.json');
+  const set = rules => writeFileSync(file, JSON.stringify({ ...JSON.parse(readFileSync(file, 'utf8')), 'numbered-files': rules }));
+  set([{ kind: 'migration', glob: 'db/V*__*.sql', command: 'scripts/next-free-number.sh migration' }, { kind: 'test', glob: 'tests/*.sql' }]);
+  await f.agent('agent:dispatch', 'Daredevil');
+  assert.match(f.inbox('Daredevil').at(-1), /Rule: migration: files matching db\/V\*__\*\.sql, the next free number from `scripts\/next-free-number\.sh migration`, run in the repository; test: files matching tests\/\*\.sql, the next free number one above/);
+  set([{ kind: 'migration' }]);
+  await fails(f.agent('agent:dispatch', 'Daredevil'), /numbered-files\[0\]: "glob" must be a non-empty string/);
+});

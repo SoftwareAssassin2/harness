@@ -841,3 +841,28 @@ test('ASS-353 AC1, AC3: generate-automated-tests-grouped resets a compose stack 
   assert.match(solution, /When you rename or move a test file an entry of \{ticket-folder\}\/automated-tests-\{variation\}\.json names[^.]*, record that list again with the file's current path[^:]*: `\{agent-sh\} automated-tests:record \{project\} \{ticket\} \{variation\}`/);
   for (const flat of ['generate-automated-tests', 'generate-solution']) assert.doesNotMatch(text(flat), /down -v|record that list again|marks an entry ↻/, flat);
 });
+
+// ASS-385: an agent kept a migration's or numbered test's number across rebases while master and other open merge
+// requests took it. Every grouped prompt that rebases a branch and pushes — Generate Solution, Build's and Release's
+// Address Merge Request Feedback — gives the project's rule ({numbered-files}) and has the agent run the check after
+// every rebase and before every push, renumber what it names (git mv, every reference, the recorded automated tests
+// through automated-tests:record) and say so in the change log: one shared paragraph. The flat prompts are unchanged.
+test('ASS-385 AC2, AC5: the grouped prompts that rebase give the numbered-files rule and run merge-request:check-numbered-files after every rebase and before every push, renumbering and logging it; Generate Solution reads the check\'s last run; the flat prompts are unchanged', () => {
+  const REBASING = ['generate-solution-grouped', 'check-on-merge-request-build-grouped', 'check-on-merge-request-grouped'];
+  const paragraph = name => text(name).split('\n\n').find(b => b.startsWith('Numbered files'));
+  for (const name of REBASING) {
+    const p = paragraph(name);
+    assert.ok(p, name);
+    assert.equal(p, paragraph(REBASING[0]), `${name}: the same paragraph`);
+    assert.match(p, /this project's rule: \{numbered-files\}/);
+    assert.match(p, /After every rebase, and before every push, re-check each numbered file/);
+    assert.match(p, /`\{agent-sh\} merge-request:check-numbered-files \{project\} \{ticket\} \{variation\}`/);
+    assert.match(p, /at or below its target branch's highest, or a number another open merge request opened before yours adds/);
+    assert.match(p, /git mv it to that name, update every reference to it/);
+    assert.match(p, /`\{agent-sh\} automated-tests:record \{project\} \{ticket\} \{variation\}`/);
+    assert.match(p, /Say what you renumbered, from and to, and why, in \{ticket-folder\}\/change-log-\{variation\}\.md/);
+  }
+  assert.match(text('generate-solution-grouped'), /\{ticket-folder\}\/numbered-files-check-\{variation\}\.md/);
+  assert.doesNotMatch(text('check-on-merge-request-grouped'), /comments`|review comment/, 'Release\'s prompt still has no review comments (ASS-361)');
+  for (const flat of ['generate-solution', 'check-on-merge-request']) assert.doesNotMatch(text(flat), /numbered-files|check-numbered-files/, flat);
+});

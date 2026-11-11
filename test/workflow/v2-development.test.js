@@ -34,10 +34,11 @@ const engines = Object.fromEntries(engineNames().filter(d => existsSync(join(eng
 // grouped one alone (v2 engines unchanged): grouped-build without that step,
 // Automated Testing's exit 0 to Code Review again, the sequences closed up;
 // nor its Await Sequential Merge (ASS-335, grouped-build's
-// alone too): Generate Solution's finished turn to the refresh again.
+// alone too): Generate Solution's finished turn to the refresh again; nor its
+// Check Numbered Files (ASS-385, grouped-build's alone): the refresh straight on to Automated Testing.
 const groupedBuild = (() => {
   const g = structuredClone(engines['grouped-build']);
-  for (const [id, to] of [['ci-checks', 'code-review'], ['await-dependencies', 'refresh-before-testing']]) {
+  for (const [id, to] of [['ci-checks', 'code-review'], ['await-dependencies', 'refresh-before-testing'], ['check-numbered-files', 'automated-testing']]) {
     const at = g.steps.find(s => s.id === id).sequence;
     g.steps = g.steps.filter(s => s.id !== id).map(s => ({ ...s, ...(s.sequence > at ? { sequence: s.sequence - 1 } : {}) }));
     for (const s of g.steps) for (const e of s['exit-events'] ?? []) if (e['move-to-state'] === id) e['move-to-state'] = to;

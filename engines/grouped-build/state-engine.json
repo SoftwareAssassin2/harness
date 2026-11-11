@@ -235,7 +235,7 @@
                     "condition": {
                         "exit-code": 0
                     },
-                    "move-to-state": "automated-testing"
+                    "move-to-state": "check-numbered-files"
                 },
                 {
                     "condition": {
@@ -248,8 +248,42 @@
             ]
         },
         {
-            "id": "automated-testing",
+            "id": "check-numbered-files",
             "sequence": 8,
+            "name": "Check Numbered Files",
+            "description": "Each numbered file (a migration, a numbered test) the ticket's merge requests add must be above the highest on its target branch and taken by no older open merge request in its repository, by project.json's numbered-files (ASS-385): on the host, its checkouts read in the VM, the other open merge requests from the forge. One that is not goes back to Generate Solution (exit 1) with each file and the free number to use; a check that could not run (exit 3) ends Build at Blocked",
+            "max-visits": 3,
+            "on-max-visits": "blocked",
+            "action": {
+                "type": "script",
+                "command": "./agent.sh merge-request:check-numbered-files {project} {ticket} {variation}"
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "exit-code": 0
+                    },
+                    "move-to-state": "automated-testing"
+                },
+                {
+                    "condition": {
+                        "exit-code": 3
+                    },
+                    "move-to-state": "blocked"
+                },
+                {
+                    "condition": {
+                        "not": {
+                            "exit-code": 0
+                        }
+                    },
+                    "move-to-state": "generate-solution"
+                }
+            ]
+        },
+        {
+            "id": "automated-testing",
+            "sequence": 9,
             "name": "Automated Testing",
             "description": "Run automated tests",
             "max-visits": 3,
@@ -290,7 +324,7 @@
         },
         {
             "id": "ci-checks",
-            "sequence": 9,
+            "sequence": 10,
             "name": "CI Checks",
             "description": "Run the merge-request CI checks the project declares (ci-checks.json) for each repository the ticket changes; a project that declares none passes with nothing run",
             "max-visits": 3,
@@ -325,7 +359,7 @@
         },
         {
             "id": "code-review",
-            "sequence": 10,
+            "sequence": 11,
             "name": "Code Review",
             "description": "Reviewing the solution",
             "max-visits": 3,
@@ -372,7 +406,7 @@
         },
         {
             "id": "security-review",
-            "sequence": 11,
+            "sequence": 12,
             "name": "Security Review",
             "description": "Security review",
             "max-visits": 3,
@@ -425,7 +459,7 @@
             "action": {
                 "type": "none"
             },
-            "sequence": 12
+            "sequence": 13
         },
         {
             "id": "blocked",
@@ -435,7 +469,7 @@
             "action": {
                 "type": "none"
             },
-            "sequence": 13
+            "sequence": 14
         },
         {
             "id": "blocked-for-human",
@@ -445,7 +479,7 @@
             "action": {
                 "type": "none"
             },
-            "sequence": 14
+            "sequence": 15
         }
     ]
 }

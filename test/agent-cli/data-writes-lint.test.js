@@ -99,6 +99,7 @@ const ALLOWED = {
   'src/agent-cli/automated-tests.bash': { '"$f"': 'a mktemp flag file in the time limit\'s script, run where the tests run (ASS-329)' },
   'src/agent-cli/automated-tests/verify-success.sh': { '"$3"': 'a test run\'s output, to its own temp file', '"$tmp/master-$i"': 'a temp folder of its own' },
   'src/agent-cli/ci-checks/verify.sh': Object.fromEntries(['"$4"', '"$tmp/head"', '"$tmp/base"', '"$tmp/changed"', '"$tmp/master-tail"', '"$tmp/master-$i"'].map(t => [t, 'a temp folder of its own (mktemp -d)'])),
+  'src/agent-cli/merge-request/check-numbered-files.sh': Object.fromEntries(['"$tmp/out"', '"$tmp/added"', '"$tmp/tree"', '"$tmp/next"'].map(t => [t, 'a temp folder of its own (mktemp -d)'])),   // ASS-385
   'src/agent-cli/project/check-on-master.sh': { '"$why"': 'a temp file of its own' },
   'src/agent-cli/ticket/announce-ready.sh': { '"$note"': 'a mktemp file' },
   'src/agent-cli/ticket/join-sprint.sh': { '"$fetched"': 'a mktemp file' },

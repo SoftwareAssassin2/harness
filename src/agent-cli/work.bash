@@ -25,9 +25,10 @@ work_projects="${PROJECTS_DIR:-$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.
 # The files in a work folder other commands write, under locks of their own: shell patterns.
 # operator-review-<V>.md is the operator's notes from Human Review rejections (ticket:human-review, ASS-228).
 # ci-checks-results-<V>.md and ci-checks-baseline-<V>.json are ci-checks:verify's (ASS-249).
+# numbered-files-check-<V>.md is merge-request:check-numbered-files' (ASS-385).
 # split-proposal.json is ticket:propose-split's, the proposal ticket:apply-split creates its tickets from (ASS-252).
 WORK_MANAGED=(ticket.json '*.lock' acceptance-criteria.json questions-and-answers.json requirements-history.jsonl
-  'demo-plan-*' 'automated-tests-*' 'automated-test-results-*' jira-comments.json collaboration.json 'operator-review*' 'ci-checks-*' split-proposal.json)
+  'demo-plan-*' 'automated-tests-*' 'automated-test-results-*' jira-comments.json collaboration.json 'operator-review*' 'ci-checks-*' 'numbered-files-check-*' split-proposal.json)
 
 # work_path <command> <project> <ticket-key> <variation|-> <file-name> — the
 # file's absolute path, by its exact name (no <name>-<variation> suffixing),
