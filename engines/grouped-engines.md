@@ -411,7 +411,8 @@ Blocked for Human, saying what was found and what to do.
   (Backlog, Committed, Release, QA, Done) it is not needed: stopped. A paused
   variation or ticket (`is-paused`) and a set-aside one (lost Variation
   Selection) have theirs stopped too. A VM to be stopped, for any of these
-  reasons (or waiting for a slot, or for a ticket it depends on (ASS-355),
+  reasons (or waiting for a slot, a finished plan waiting for a build seat
+  (ASS-362), or for a ticket it depends on (ASS-355),
   or gone from the sprint), while an
   assignment is on its variation is left running until that ends — logged
   once, `waits until its agent finishes` — so its agent is never killed
@@ -479,6 +480,49 @@ Blocked for Human, saying what was found and what to do.
   needed again is recreated from the golden image (`vm:create`, by Setup or by
   control), and the variation's `vm.recreated-at` says so: work that lived
   only on the old disk is lost.
+
+## A finished plan holds no seat (ASS-362)
+
+A variation at Plan whose `grouped-plan` run has reached its `done` step has
+finished planning: it only waits for an in-progress slot to move on to Build
+(control logs `waits for an in-progress slot to move to build`). While it
+waits it holds no planning slot and no in-progress slot, so the next ticket at
+Committed may start planning under `max-tickets-in-planning`. The rule is
+generic (`src/control/engine.js` `finishedPlanning`, `src/control/plan.js`
+`slotKind`): a top-level planning step (`is-planning-stage`) whose sub-engine
+is at an `is-done` step, with an exit out of planning to a step that holds a
+slot (Plan's to Build). Setup's `done` goes on to Plan, more planning, so it
+keeps its planning slot. The flat engines have no sub-engines, so their seats
+are unchanged.
+
+- **Still seated:** anything that is not a finished plan keeps its slot as
+  before. That covers every other Plan step, a plan Review Plan sends back
+  for revision, a planning step at a human step or at a gate (a
+  `gate-when-leaving-state` on Plan, its work done, waits on a person), and
+  Requirements Changed.
+- **The queue:** the finished plans form a queue for Build, in rank order.
+  Control moves a sprint's variations highest-ranked first, so a freed
+  in-progress slot goes to the highest-ranked finished plan. A lower-ranked
+  one, or a ticket still planning, never takes it ahead of a ready one of
+  higher rank. `planDispatch` lists the queue as `ready`.
+- **Its VM:** stopped while it waits, like a variation waiting for a slot
+  (ASS-233), so the queue costs no RAM. The log says `planned, waits for a
+  build seat`. It needs no VM to move on, so its step is judged with the VM
+  stopped, and once a slot frees it moves to Build, which starts the VM.
+- **The cap:** `max-tickets-ready-for-build` is optional, in harness.json
+  (every project's together) and in project.json (the project's own), like
+  the other ticket limits. Unset means no limit, and 0 means none. It caps the
+  finished plans together with those still planning, which will join them.
+  While that count reaches the cap, no ticket enters planning (`free.planning`
+  is false). Tickets at Committed stay there, logged once per visit: `waits
+  to enter planning: max-tickets-ready-for-build reached (…)`. A ticket
+  already planning keeps its slot and its agents.
+- **Shown:** the sprint row has no 💺 (ASS-357), and its Status cell has
+  `Planned, waiting for a build seat` under the step chain. The ticket screen's
+  Status says the same. The progress update lists it under `In Progress:
+  planned, waiting for a build seat`, not `In Progress: planning`. It is not
+  counted as actively being built or planned; the net line counts it on its
+  own.
 
 ## Waiting on another ticket (ASS-195, ASS-355)
 
