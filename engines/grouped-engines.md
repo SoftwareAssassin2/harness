@@ -777,7 +777,12 @@ when every one is), and Ensure Auto-Merge sets auto-merge in depends-on order,
 a dependent only once its dependencies have merged, with the same stop and
 resume. The check's `auto-merge` says Ensure Auto-Merge has nothing to set
 now (ASS-351): every one not Closed is Merged, set to auto-merge, or Open and
-waiting on a depends-on neither Merged nor Closed. So a group whose later
+waiting on a depends-on neither Merged nor Closed. A planned one never
+created (`Not Created`, no key; one Generate Solution left out, a duplicate of
+one merged already, say) has no forge row to set or merge, so it counts for
+neither `auto-merge` nor `merged`, nor as a dependency to wait on (ASS-354):
+counted, it held both false for good, Team Code Review and Ensure Auto-Merge
+passing the group back and forth until Blocked. So a group whose later
 merge requests wait on earlier ones, every one it can set already set, just
 waits at Team Code Review for approvals: a timer poll that matches no exit
 leaves the step where it is, with no move and so no visit spent (control's

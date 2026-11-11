@@ -15,14 +15,16 @@ set -euo pipefail
 # on GitHub, changes requested), "build-failed" (its head pipeline failed or
 # was canceled; a failed check), "needs-rebase" (conflicts, or the forge says
 # it needs a rebase or is behind its base). auto-merge: Ensure Auto-Merge has
-# nothing to set now — every one not Closed is Merged, set to merge when its
-# checks pass, or Open and waiting on a depends-on neither Merged nor Closed
-# (MR_DEPS's unmerged_deps; Ensure Auto-Merge sets it only once those merge,
-# ASS-351), so Team Code Review's timer keeps polling, spending no visit,
-# while the group waits for approvals. Once a dependency merges, one it
-# unblocks that is not set yet makes it false again, and Ensure Auto-Merge
-# runs once to set it. merged: every one not Closed is Merged. A merged one
-# needs nothing and counts as auto-merged.
+# nothing to set now — every one created and not Closed is Merged, set to
+# merge when its checks pass, or Open and waiting on a created depends-on
+# neither Merged nor Closed (MR_DEPS's unmerged_deps; Ensure Auto-Merge sets
+# it only once those merge, ASS-351), so Team Code Review's timer keeps
+# polling, spending no visit, while the group waits for approvals. Once a
+# dependency merges, one it unblocks that is not set yet makes it false
+# again, and Ensure Auto-Merge runs once to set it. merged: every one created
+# and not Closed is Merged. A merged one needs nothing and counts as
+# auto-merged. A planned one never created (Not Created, no key) counts for
+# neither, nor as a dependency to wait on (ASS-354).
 #
 # A failed pipeline that only reflects a dependency is held back (ASS-346):
 #   - one whose depends-on names a merge request, in its repository or
@@ -150,10 +152,16 @@ entered="$(variation_field '[.["state-changes"] // [] | .[] | select(.["sub-stat
 result="$(jq -nc --argjson mrs "$MRS" --argjson views "$VIEWS" --argjson pending "$pending" --arg now "$now" --argjson days "$days" --argjson entered "$entered" \
   --argjson only "$ONLY" --argjson comments "$comments" --argjson loop "$LOOP" "$MR_DEPS$MR_TIME$MR_ONLY"'
   def name: if .id then "MR \(.id) (\(.key))" else .key end;
-  [range($mrs | length) as $i | { i: $i, m: $mrs[$i], v: $views[$i], held: any($pending[]; .i == $i) } | select(.m.status != "Closed" and (.m | in_set($only)))] as $live
+  # A planned one never created (Not Created, no key; one Generate Solution left out, say as a duplicate of one merged
+  # already) has no forge row to merge or set, and nothing ever moves it on, so it is not live (ASS-354): counted, it
+  # kept auto-merge and merged false for good, Team Code Review and Ensure Auto-Merge passing the group back and forth
+  # until Blocked. waits: an Open one waits on a depends-on that is created and neither Merged nor Closed; one never
+  # created is no wait, so a dependent of only such keeps auto-merge false rather than polling quietly for good.
+  def waits: (unmerged_deps($mrs) | map(select(.key != null))) != [];
+  [range($mrs | length) as $i | { i: $i, m: $mrs[$i], v: $views[$i], held: any($pending[]; .i == $i) } | select(.m.status != "Closed" and .m.status != "Not Created" and .m.key != null and (.m | in_set($only)))] as $live
   | [$live[] | select(.m.status == "Open") | .held as $held | (.v.reasons[] | select(($held and . == "build-failed") | not)), (if $comments[.i | tostring] then "review-comments" else empty end)] as $all
   | ["open-threads", "review-comments", "build-failed", "needs-rebase"] | map(select(IN($all[]))) as $reasons
-  | ($live != [] and all($live[]; .m.status == "Merged" or (.m.status == "Open" and (.v["auto-merge"] == true or (.m | unmerged_deps($mrs)) != [])))) as $auto
+  | ($live != [] and all($live[]; .m.status == "Merged" or (.m.status == "Open" and (.v["auto-merge"] == true or (.m | waits))))) as $auto
   | (($live != [] or $loop) and all($live[]; .m.status == "Merged")) as $merged
   # Each Open one set to auto-merge that has waited past the bound, when the whole group is only waiting.
   | ($now | epoch) as $at
@@ -172,7 +180,7 @@ result="$(jq -nc --argjson mrs "$MRS" --argjson views "$VIEWS" --argjson pending
       "ai-feedback-short": "Waited over \($bound) for approval: \($names)",
       "ai-feedback-long": ("Set to auto-merge with nothing for an agent to do, these merge requests have not merged within \($bound) (harness.json approval-wait-days): "
         + ([$expired[] | "\(name)\(if .url then " \(.url)" else "" end), waiting since \(.since)"] | join("; ")) + ". "
-        + ([$live[] | select(.m.status == "Open" and (.m | unmerged_deps($mrs)) != []) | .m | name] | if . == [] then "" else "Waiting for those before them to merge: \(join(", ")). " end)
+        + ([$live[] | select(.m.status == "Open" and (.m | waits)) | .m | name] | if . == [] then "" else "Waiting for those before them to merge: \(join(", ")). " end)
         + "They need a reviewer'"'"'s approval, or their pipeline to pass, on the forge. Once they have it, choose Resolved: the wait starts again.") } end)')"
 echo "$result"
 [[ "$LOOP" == true ]] || exit 0

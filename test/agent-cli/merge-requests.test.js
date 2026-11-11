@@ -1190,6 +1190,35 @@ test('ASS-351 AC4: an MR set to auto-merge that has waited past approval-wait-da
   assert.equal(attention['needs-attention'], true);
   assert.equal(attention['approval-wait-expired'], undefined);
 });
+// ASS-354: a planned merge request never created (Not Created, no key; one
+// Generate Solution left out as a duplicate of one merged already, say) has no
+// forge row, and nothing ever moves it on. merge-request:check counted it as
+// live, so auto-merge and merged stayed false for good and a Release passed
+// between Team Code Review and Ensure Auto-Merge until Blocked.
+test('ASS-354 AC1/AC2/AC3: a never-created planned MR holds back neither auto-merge nor merged — one Merged, the rest Open and set, is auto-merge; all created ones Merged is merged — and a dependent of only a never-created one is no wait', async () => {
+  const f = await planned([{ id: 1, repository: APP }, { id: 2, repository: APP }, { id: 3, repository: APP }, { id: 4, repository: LIB, 'depends-on': [3] }]);
+  f.record({ 2: { status: 'Open', key: '!6', base: 'master' }, 3: { status: 'Open', key: '!7', base: 'master' }, 4: { status: 'Open', key: '!9', base: 'master' } });
+  const check = async () => JSON.parse((await f.agent('merge-request:check', 'p', 'ABC-5', 'A')).stdout);
+  view(f, 'app', 6, { state: 'merged' });
+  view(f, 'app', 7, { merge_when_pipeline_succeeds: true });
+  view(f, 'lib', 9, { merge_when_pipeline_succeeds: true });
+  assert.deepEqual(await check(), WAITING);
+  assert.deepEqual(f.mrs().map(m => [m.id, m.status, m.key ?? null]), [[1, 'Not Created', null], [2, 'Merged', '!6'], [3, 'Open', '!7'], [4, 'Open', '!9']]);
+  // Ensure Auto-Merge, run anyway, has nothing to set and skips the keyless one.
+  await f.agent('merge-request:ensure-auto-merge', 'p', 'ABC-5', 'A');
+  assert.deepEqual(autoMerged(f), []);
+  view(f, 'app', 7, { state: 'merged' });
+  view(f, 'lib', 9, { state: 'merged' });
+  assert.deepEqual(await check(), { 'needs-attention': false, reasons: [], 'auto-merge': true, merged: true });
+  // An Open one depending only on the never-created one is no wait: Ensure Auto-Merge cannot set it, so auto-merge stays false.
+  const n = await planned([{ id: 1, repository: LIB }, { id: 2, repository: APP, 'depends-on': [1] }]);
+  n.record({ 2: { status: 'Open', key: '!9', base: 'master' } });
+  view(n, 'app', 9, {});
+  assert.deepEqual(JSON.parse((await n.agent('merge-request:check', 'p', 'ABC-5', 'A')).stdout), { 'needs-attention': false, reasons: [], 'auto-merge': false, merged: false });
+  // Every row never created: nothing live, neither auto-merge nor merged.
+  const none = await planned([{ id: 1, repository: APP }]);
+  assert.deepEqual(JSON.parse((await none.agent('merge-request:check', 'p', 'ABC-5', 'A')).stdout), { 'needs-attention': false, reasons: [], 'auto-merge': false, merged: false });
+});
 
 // ASS-365: Build merges the merge requests its Await Sequential Merge waits on,
 // where the project's workflow opts in (merges-awaited, read by control, which
