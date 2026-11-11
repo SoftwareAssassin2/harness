@@ -5,8 +5,8 @@ import { join } from 'node:path';
 import { fillArgs } from './placeholders.js';
 import { harnessProject, isHarnessProject } from './harness-project.js';
 
-// A command's placeholders for a ticket's step.
-export const ticketValues = (project, ticket, variation) => ({ ticket: ticket.key, project: project.id, variation: variation.name });
+// A command's placeholders for a ticket's step; {merge-request-ids} - (every one: no run names a set, ASS-365).
+export const ticketValues = (project, ticket, variation) => ({ ticket: ticket.key, project: project.id, variation: variation.name, 'merge-request-ids': '-' });
 
 // runValues(run, context) — a command's placeholders for a run's step:
 // {ticket} the key a create-ticket engine returned (the fix ticket) or else
@@ -18,13 +18,18 @@ export const ticketValues = (project, ticket, variation) => ({ ticket: ticket.ke
 // {failing-job} the failing check Troubleshoot named (ASS-163, for
 // project:check-on-master), - when none; {no-ticket-reason} and
 // {no-ticket-why} why create-ticket-grouped's write-ticket ended with an
-// empty key (ASS-316), - when none; {project}; {run} its id.
+// empty key (ASS-316), - when none; {merge-request-ids} the merge requests
+// the run works on (ASS-365: grouped-merge's set, its output's
+// merge-request-ids, which grouped-build's Merge the Awaited hands it through
+// pass-output) comma-separated, - (every one) when none; {project}; {run} its id.
 export function runValues(run, context) {
   const output = run['structured-output'] ?? {};
+  const ids = Array.isArray(output['merge-request-ids']) ? output['merge-request-ids'].filter(Number.isInteger) : [];
   return {
     ticket: output.key || context.workItem, 'work-item': context.workItem, variation: context.variation, summary: output.summary, 'ticket-url': output.url ?? '-', project: run.project,
     'pause-tickets': (output['pause-tickets'] ?? []).join(',') || '-', 'human-action': output['human-action'] || '-', 'missing-repository': output['missing-repository'] || '-',
-    'failing-repository': output['failing-repository'] || '-', 'failing-job': output['failing-job'] || '-', 'no-ticket-reason': output['no-ticket-reason'] || '-', 'no-ticket-why': output.why || '-', run: run.id,
+    'failing-repository': output['failing-repository'] || '-', 'failing-job': output['failing-job'] || '-', 'no-ticket-reason': output['no-ticket-reason'] || '-', 'no-ticket-why': output.why || '-',
+    'merge-request-ids': ids.join(',') || '-', run: run.id,
   };
 }
 

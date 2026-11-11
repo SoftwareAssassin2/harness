@@ -118,11 +118,74 @@
             "run-location": "vm"
         },
         {
-            "id": "await-dependencies",
+            "id": "merge-awaited",
             "sequence": 5,
+            "name": "Merge the Awaited",
+            "shows-merge-train": true,
+            "description": "Only from Await Sequential Merge's exit 5, where a step of the variation's status chain says merges-awaited: true (ASS-365): grouped-merge, the merge loop, over the merge requests waited on (its merge-request-ids) — Code Review and Security Review at their head commits, out of draft, Address Merge Request Feedback, auto-merge — until they are merged, then back to Await Sequential Merge. Merged here, the awaited merge request merges before the ticket's Test, Document, Review and Human Review",
+            "max-visits": 5,
+            "on-max-visits": "blocked",
+            "pass-output": [
+                "merge-request-ids"
+            ],
+            "action": {
+                "type": "state-engine",
+                "engine": "grouped-merge"
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "all": [
+                            {
+                                "is-done": true
+                            },
+                            {
+                                "sub-engine-ended-at": "blocked"
+                            }
+                        ]
+                    },
+                    "move-to-state": "blocked"
+                },
+                {
+                    "condition": {
+                        "all": [
+                            {
+                                "is-done": true
+                            },
+                            {
+                                "sub-engine-ended-at": "blocked-for-human"
+                            }
+                        ]
+                    },
+                    "move-to-state": "blocked-for-human"
+                },
+                {
+                    "condition": {
+                        "all": [
+                            {
+                                "is-done": true
+                            },
+                            {
+                                "sub-engine-ended-at": "rebuild"
+                            }
+                        ]
+                    },
+                    "move-to-state": "generate-solution"
+                },
+                {
+                    "condition": {
+                        "is-done": true
+                    },
+                    "move-to-state": "await-dependencies"
+                }
+            ]
+        },
+        {
+            "id": "await-dependencies",
+            "sequence": 6,
             "name": "Await Sequential Merge",
             "shows-merge-train": true,
-            "description": "Wait until every merge request a merge request of the ticket depends on in another repository is merged, so its tests do not run against what that repository has not yet published; polling while one is not (exit 2, its waiting-exit-code: no failure, ASS-335); nothing to wait for passes at once. What each dependency needs (draft, failed pipeline, open threads, rebase, approval) is the operator's feedback, written when it changes; one of the ticket's own planned merge requests never created is not waited on but sent back to Generate Solution (exit 3, under its max-visits) (ASS-359). One with review threads, review comments, a failed pipeline or a needed rebase of its own goes to Address Merge Request Feedback (exit 4, under its max-visits) (ASS-361); a draft or an approval alone keeps polling",
+            "description": "Wait until every merge request a merge request of the ticket depends on in another repository is merged, so its tests do not run against what that repository has not yet published; polling while one is not (exit 2, its waiting-exit-code: no failure, ASS-335); nothing to wait for passes at once. What each dependency needs (draft, failed pipeline, open threads, rebase, approval) is the operator's feedback, written when it changes; one of the ticket's own planned merge requests never created is not waited on but sent back to Generate Solution (exit 3, under its max-visits) (ASS-359). One with review threads, review comments, a failed pipeline or a needed rebase of its own goes to Address Merge Request Feedback (exit 4, under its max-visits) (ASS-361); a draft or an approval alone keeps polling. Where the project's workflow opts in (merges-awaited: true on a step of the variation's status chain, read by control) and the ticket has one variation in play, one awaited with nothing of its own to act on — a draft, an approval, or the merge itself — goes to Merge the Awaited (exit 5) (ASS-365)",
             "record-script-output": true,
             "action": {
                 "type": "script",
@@ -149,12 +212,18 @@
                         "exit-code": 4
                     },
                     "move-to-state": "address-merge-request-feedback"
+                },
+                {
+                    "condition": {
+                        "exit-code": 5
+                    },
+                    "move-to-state": "merge-awaited"
                 }
             ]
         },
         {
             "id": "refresh-before-testing",
-            "sequence": 6,
+            "sequence": 7,
             "name": "Refresh the Reference Repositories Before Testing",
             "description": "Bring the repositories the ticket does not change up to their default branch again, so the tests run against current upstream",
             "action": {
@@ -180,7 +249,7 @@
         },
         {
             "id": "automated-testing",
-            "sequence": 7,
+            "sequence": 8,
             "name": "Automated Testing",
             "description": "Run automated tests",
             "max-visits": 3,
@@ -221,7 +290,7 @@
         },
         {
             "id": "ci-checks",
-            "sequence": 8,
+            "sequence": 9,
             "name": "CI Checks",
             "description": "Run the merge-request CI checks the project declares (ci-checks.json) for each repository the ticket changes; a project that declares none passes with nothing run",
             "max-visits": 3,
@@ -256,7 +325,7 @@
         },
         {
             "id": "code-review",
-            "sequence": 9,
+            "sequence": 10,
             "name": "Code Review",
             "description": "Reviewing the solution",
             "max-visits": 3,
@@ -303,7 +372,7 @@
         },
         {
             "id": "security-review",
-            "sequence": 10,
+            "sequence": 11,
             "name": "Security Review",
             "description": "Security review",
             "max-visits": 3,
@@ -356,7 +425,7 @@
             "action": {
                 "type": "none"
             },
-            "sequence": 11
+            "sequence": 12
         },
         {
             "id": "blocked",
@@ -366,7 +435,17 @@
             "action": {
                 "type": "none"
             },
-            "sequence": 12
+            "sequence": 13
+        },
+        {
+            "id": "blocked-for-human",
+            "name": "Blocked for Human",
+            "description": "Only from Merge the Awaited (ASS-365): an awaited merge request's approvals have not come within approval-wait-days; the parent step, which sets merges-awaited, sends the ticket to Blocked for Human",
+            "is-done": true,
+            "action": {
+                "type": "none"
+            },
+            "sequence": 14
         }
     ]
 }

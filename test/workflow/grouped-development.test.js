@@ -249,7 +249,9 @@ test('ASS-75: the VM runs from Setup through Review and in Self Healing, and sto
     check(top);
   }
   const beneath = Object.keys(engines).filter(n => n.startsWith('grouped-')).flatMap(n => engines[n].steps.filter(s => s.vm).map(s => `${n}/${s.id}=${s.vm}`));
-  assert.deepEqual(beneath.sort(), ['grouped-blocked/add-repository=running', 'grouped-blocked/check-on-master=running', 'grouped-blocked/classify=running', 'grouped-blocked/count-attempts=running', 'grouped-blocked/find-where=running', 'grouped-blocked/plan-obstacle-fix=running', 'grouped-blocked/repair-environment=running', 'grouped-blocked/troubleshoot=running', 'grouped-release-example/address-merge-request-feedback=running']);
+  // ASS-365: grouped-merge's agents run in the VM wherever it runs — Build's, or a project Release's where the VM is not otherwise needed.
+  assert.deepEqual(beneath.sort(), ['grouped-blocked/add-repository=running', 'grouped-blocked/check-on-master=running', 'grouped-blocked/classify=running', 'grouped-blocked/count-attempts=running', 'grouped-blocked/find-where=running', 'grouped-blocked/plan-obstacle-fix=running', 'grouped-blocked/repair-environment=running', 'grouped-blocked/troubleshoot=running',
+    'grouped-merge/address-merge-request-feedback=running', 'grouped-merge/code-review=running', 'grouped-merge/security-review=running', 'grouped-release-example/address-merge-request-feedback=running']);
 });
 
 test('ASS-75: Create VM that cannot fit within the project\'s VM disk limit (vm:create exits 3) ends Setup at Blocked for Human, its output — the ai-feedback — kept by the run', () => {
@@ -423,11 +425,14 @@ const RELEASING = /merge-request:merge|merge-request:ensure-auto-merge|take-out-
 const releasing = name => engines[name].steps.filter(s => RELEASING.test(s.action.command ?? '')).map(s => s.id);
 
 test('ASS-118 AC4: no merge request leaves draft and nothing merges before Release — however low the risk; and Release is entered from Review alone (ASS-314: no Human Review waits in between)', () => {
-  // The only steps that ready or merge one are in Release.
+  // The only steps that ready or merge one are in Release — and in grouped-merge (ASS-365), which grouped-build runs
+  // only from Await Sequential Merge's exit 5, which merge-request:await-dependencies gives only where a step of the
+  // variation's status chain says merges-awaited (MERGES_AWAITED): none of these engines does (the ASS-365 tests below).
   const reach = (name, seen = new Set()) => { if (seen.has(name)) return seen; seen.add(name); for (const s of engines[name].steps) if (s.action.type === 'state-engine') reach(s.action.engine, seen); return seen; };
   for (const top of Object.keys(CURRENT)) {
     const found = [...reach(top)].filter(n => releasing(n).length).toSorted();
-    assert.deepEqual(found, [subEngineOf(top, 'release')], top);
+    assert.deepEqual(found, ['grouped-merge', subEngineOf(top, 'release')].toSorted(), top);
+    assert.ok(!JSON.stringify(engines[top]).includes('merges-awaited'), top);
   }
   // At the top level Release is entered from Review alone, once it is done (and from Blocked, returning a ticket already there).
   for (const top of Object.keys(CURRENT)) {
@@ -577,8 +582,8 @@ test('ASS-335 AC1/AC2: grouped-build waits at Await Sequential Merge before ever
   assert.equal(nextState(stepOf(build, 'generate-solution'), build, { turnComplete: true }).to, 'await-dependencies');
   // Every way into Automated Testing passes the gate: only the refresh moves there, and only the gate moves to the refresh.
   const into = id => build.steps.filter(s => (s['exit-events'] ?? []).some(e => e['move-to-state'] === id)).map(s => s.id);
-  // ASS-361: Address Merge Request Feedback, reached only from the gate, comes back to it.
-  assert.deepEqual([into('automated-testing'), into('refresh-before-testing'), into('await-dependencies')], [['refresh-before-testing'], ['await-dependencies'], ['generate-solution', 'address-merge-request-feedback']]);
+  // ASS-361: Address Merge Request Feedback, reached only from the gate, comes back to it; so does Merge the Awaited (ASS-365).
+  assert.deepEqual([into('automated-testing'), into('refresh-before-testing'), into('await-dependencies')], [['refresh-before-testing'], ['await-dependencies'], ['generate-solution', 'address-merge-request-feedback', 'merge-awaited']]);
   // AC1: a dependency in another repository not merged — the tests are not run, and nothing sends the ticket back to Generate Solution.
   assert.equal(nextState(step, build, { exitCode: 2 }, []), null, 'waiting stays');
   assert.equal(nextState(step, build, { exitCode: 1 }, []), null, 'an error matches no exit, so it is tried again where it is');
@@ -624,7 +629,8 @@ test('ASS-359 AC3: Await Sequential Merge\'s exit 3 (a planned merge request nev
 // alone is still 2, waiting.
 test('ASS-361 AC3: Await Sequential Merge\'s exit 4 goes to Build\'s own Address Merge Request Feedback, which returns to Await Sequential Merge on turn complete, under its max-visits (3), then Blocked; 2 still waits, 3 still goes to Generate Solution', () => {
   const build = engines['grouped-build'], step = stepOf(build, 'await-dependencies'), address = stepOf(build, 'address-merge-request-feedback');
-  assert.deepEqual(step['exit-events'].map(e => [e.condition, e['move-to-state']]), [[{ 'exit-code': 0 }, 'refresh-before-testing'], [{ 'exit-code': 3 }, 'generate-solution'], [{ 'exit-code': 4 }, 'address-merge-request-feedback']]);
+  // ASS-365: exit 5, after them, to Merge the Awaited — given only where merges-awaited is set (below).
+  assert.deepEqual(step['exit-events'].map(e => [e.condition, e['move-to-state']]), [[{ 'exit-code': 0 }, 'refresh-before-testing'], [{ 'exit-code': 3 }, 'generate-solution'], [{ 'exit-code': 4 }, 'address-merge-request-feedback'], [{ 'exit-code': 5 }, 'merge-awaited']]);
   assert.deepEqual([address.name, address.action, address['run-location'], address['max-visits'], address['on-max-visits']],
     ['Address Merge Request Feedback', { type: 'prompt', prompt: 'check-on-merge-request-build-grouped', 'agent-count': 1, 'run-in-dev-container': true }, 'vm', 3, 'blocked']);
   assert.deepEqual(address['exit-events'], [{ condition: { 'turn-complete': true }, 'move-to-state': 'await-dependencies' }]);

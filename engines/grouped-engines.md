@@ -13,7 +13,7 @@ rollback.
 | Backlog, Committed | (plain steps) | |
 | Setup | `grouped-setup` | Check Setup Complete, Create VM, Mark Setup Complete |
 | Plan | `grouped-plan` | Extract Acceptance Criteria, Root Cause Analysis, Review Root Cause Analysis, Write Execution Plan, Write Test Plan, Enrich Automated Test Data, Review Plan |
-| Build | `grouped-build` | Refresh the Reference Repositories, Generate Automated Tests, Generate Solution, Address Merge Request Feedback (only from Await Sequential Merge), Await Sequential Merge, Refresh the Reference Repositories Before Testing, Automated Testing, CI Checks, Code Review, Security Review |
+| Build | `grouped-build` | Refresh the Reference Repositories, Generate Automated Tests, Generate Solution, Address Merge Request Feedback (only from Await Sequential Merge), Merge the Awaited (`grouped-merge`; only from Await Sequential Merge, only with `merges-awaited`), Await Sequential Merge, Refresh the Reference Repositories Before Testing, Automated Testing, CI Checks, Code Review, Security Review |
 | Test | `grouped-test` | Local Testing (`grouped-local-testing`), Steps to Test (`grouped-steps-to-test`) |
 | Document | `grouped-document` | Update Documentation, Update Merge Request Details, Check Merge Request Details, Add Screenshots to Merge Request |
 | Review | `grouped-review` | Explain the Change, Risk Assessment, AI Token Expense Check, Payment Gate, Variation Selection |
@@ -143,6 +143,137 @@ forge again. It has its own max-visits (3), then Blocked. A control line in
 and the feedback adds "sent to Address Merge Request Feedback". A dependency
 that is only a draft or only needs approval is no agent's to act on: it keeps
 polling, exit 2, as before.
+
+### Build merges the awaited merge request (ASS-365)
+
+Await Sequential Merge only waits: a dependency that is a draft, needs an
+approval or is not set to auto-merge polls until a person does Release's job
+on it. A project's workflow can have Build do that job itself: its own main
+engine sets `"merges-awaited": true` on the parent step that runs
+grouped-build — its Build step. No engine in this repository sets it, so
+every project but one that opts in (the harness's own included) behaves as
+after ASS-361.
+
+- **The flag.** Any step of any engine may declare it, true or false (the
+  validator rejects any other type). Control reads it, never a step's id,
+  name or project: while any level of the variation's status chain is at a
+  step with it (`src/control/engine.js` `mergesAwaited`, as the TUI reads
+  `shows-merge-train` anywhere in the chain), every script step control runs
+  for that variation, on the host, gets `MERGES_AWAITED=1` in its environment
+  (`src/control/steps.js` `scriptEnv`); the variation's command lines are
+  unchanged. Only `merge-request:await-dependencies` reads it. On a
+  state-engine step whose sub-engine can end at `blocked-for-human`
+  (grouped-build), the validator also wants an exit reading that end, before
+  the bare `is-done` one: without it the run's Blocked for Human would match
+  `is-done` and move the ticket on, unmerged, as if Build had passed.
+- **Exit 5.** With the flag, Await Sequential Merge's command, after exit 3
+  (never created) and exit 4 (feedback of its own to act on) come first,
+  exits 5 while it waits on any dependency (a draft, an approval, or nothing
+  but the merge), printing the dependencies' planned ids as
+  `"merge-request-ids"` and noting them in `execution-plan-<variation>.md`.
+  grouped-build sends exit 5 to Merge the Awaited (`merge-awaited`, max-visits
+  5, then Blocked), a state-engine step running `grouped-merge`. It sets
+  `shows-merge-train`, so the `↳ AWAITING MERGE` line (ASS-363) still shows
+  while the loop runs, and `"pass-output": ["merge-request-ids"]`: a
+  state-engine step's `pass-output` names fields of its own run's
+  structured-output that the run it starts begins with (`steps.js`
+  `passedOutput`), here the ids Await Sequential Merge recorded
+  (`record-script-output`). Its ends: `done` (the set merged) back to Await
+  Sequential Merge, which reads the forge again and goes on to the tests or
+  merges the next awaited one in a chain; `rebuild` (a review rejected the
+  work) to Generate Solution; `blocked` to grouped-build's Blocked;
+  `blocked-for-human` to grouped-build's own `blocked-for-human` done step,
+  reached from nowhere else, which the parent step sends to Blocked for Human.
+- **One variation only.** A variation set aside at Variation Selection is
+  soft-deleted (`is-deleted`, `ticket:select-variation`). With more than one
+  variation not set aside, nothing is merged early, since the work merged
+  might be the losing variation's: the command exits 2 or 4 as without the
+  flag, and the feedback says why ("Build does not merge it early: the
+  ticket has 2 variations in play, until Variation Selection sets all but
+  one aside"), even for a dependency that only waits to merge.
+- **Nesting.** The loop runs three levels down: the project's Build step,
+  grouped-build's Merge the Awaited, grouped-merge's step. Control already
+  runs a sub-engine inside a run (`runTransient`'s state-engine case: Test's
+  Local Testing runs grouped-local-testing the same way), dispatches agents
+  for a run's prompt steps at any depth, and records the variation's status
+  at every level, so no control change was needed for the depth: the loop is
+  a sub-engine of grouped-build rather than steps added to it, so a
+  project's Release can run the same loop.
+- **The ordering decision.** grouped-build's order is unchanged, and so is
+  every project's without the flag. With it, the awaited merge request
+  merges in Build, before the ticket's Test, Document, Review and Human
+  Review (and before grouped-build's own Code Review and Security Review
+  after the tests): its dependents cannot be tested until it has merged, so
+  it cannot wait for them. It merges only after the harness's own Code Review
+  and Security Review have passed with it at its current head commit (the
+  loop runs them first, below), and only through its forge's approvals and
+  pipeline (auto-merge; nothing is approved automatically). The dependent
+  merge requests still wait, and go through Release as before.
+
+`grouped-merge` (`engines/grouped-merge`) is the shared merge loop: Release's
+loop over a set of a variation's merge requests, its commands generic and
+each given the set as `--only {merge-request-ids}` (control's placeholder for
+a run: the run's `merge-request-ids` comma-separated, `-` for every one when
+it names none, so a project's Release could run it over the whole variation).
+
+| Step | Command or prompt | Exits |
+|---|---|---|
+| Check Reviewed at Head (`check-review`, max 10) | `merge-request:reviewed-at-head … --only` | 0 out of draft; 2 to Code Review; else tried again |
+| Code Review, Security Review (max 3 each, in the VM) | `code-review-grouped`, `security-review-grouped` | approved on; rejected to `rebuild` |
+| Mark Reviewed (max 5) | `merge-request:reviewed-at-head … --only … --mark` | 0 back to the gate |
+| Take out of Draft Mode (max 5) | `code:take-out-of-draft-mode … --only` | 0 to the check; else tried again |
+| Check the Merge Requests (`check`, timer 5 min, max 10, record-script-output) | `merge-request:check … --only` | needs-attention to Address Merge Request Feedback; merged to `done`; approval-wait-expired to `blocked-for-human`; auto-merge false to Ensure Auto-Merge; only waiting polls, no visit spent |
+| Address Merge Request Feedback (max 3, in the VM) | `check-on-merge-request-build-grouped` | back to the gate |
+| Ensure Auto-Merge (max 3) | `merge-request:ensure-auto-merge … --only` | 0 to the check; else `blocked` |
+
+Each looping step's max-visits ends the run at `blocked`. Its prompt steps
+say `"vm": "running"`, as a project Release's Address Merge Request Feedback
+does, so they have the VM under a Release too. The ticket system's exits of
+Release's Team Code Review (In Testing, In Progress) are not the loop's: they
+are Release's own, and in Build the ticket is In Progress.
+
+- **Reviewed at the head commit.** `merge-request:reviewed-at-head` reads each
+  Open one of the set's head commit from its forge (GitLab's `sha`, GitHub's
+  `headRefOid`). One whose `reviewed-head` (on its merge request row) is that
+  commit passes; any other gets it as its `review-head` and the gate exits 2,
+  telling the operator "Reviewing acme/api !12 at 1a2b3c4d before it leaves
+  draft or is set to auto-merge". Code Review and Security Review then review
+  the variation's merge requests as grouped-build's do; once both pass,
+  `--mark` makes each `review-head` its `reviewed-head`, with no forge call,
+  and the gate is asked again: a commit pushed during the review is not the
+  one reviewed, so it is reviewed again. The only way out of draft is the
+  gate's exit 0, the only way to Ensure Auto-Merge the check after it, and
+  Address Merge Request Feedback, whose agent pushes, goes back to the gate,
+  so its new commit is reviewed before anything is set to auto-merge.
+  Merged or Closed ones need no review. A project whose Release runs the
+  loop and wants no second review switches off the loop's Code Review and
+  Security Review (`switched-off-steps`), and the heads are marked as they
+  are.
+- **The set (`--only`).** `code:take-out-of-draft-mode`, `merge-request:check`
+  and `merge-request:ensure-auto-merge` take an optional `--only <ids>`
+  (planned ids, comma-separated, or `-` for every one). Without it each is
+  exactly as before. With it each acts on the set alone: every merge request
+  is still read and recorded, and one outside the set still counts as a
+  dependency (Ensure Auto-Merge sets one only once all it depends on have
+  merged, in whatever set), but needs-attention, reasons, auto-merge, merged,
+  the held-back pipelines and the approval wait are the set's, and no
+  pipeline outside it is re-run. `merged` is true once every one of the set
+  is Merged or Closed. The check also counts a reviewer's plain comment not
+  yet answered (ASS-361) as `review-comments`, which stops the approval wait
+  and goes to Address Merge Request Feedback. An id the variation never
+  planned fails the command before the forge is asked.
+- **Feedback.** With `--only`, each command tells the operator what the loop
+  is doing, as the variation's ai-feedback (the TUI's Health), written only
+  when it changes and kept as `merge-loop-feedback`: "Taking acme/api !12 out
+  of draft", "Auto-merge set on acme/api !12; waiting for it to merge",
+  "acme/api !12 waits for 1 approval since <time>" (the approvals left from
+  the forge, the time its approval wait began), "acme/api !12: it has
+  unresolved review threads; sent to Address Merge Request Feedback",
+  "acme/api !12 waits for acme/lib !4 to merge first". Once the set has
+  merged it is cleared, when it is still the loop's own. Await Sequential
+  Merge's own feedback on exit 5 ends "Build merges it". An approval wait
+  past harness.json's `approval-wait-days` ends the loop at
+  `blocked-for-human` with the check's own feedback, as Release's does.
 
 Write Execution Plan (grouped/v2 Plan, `write-execution-plan-grouped`) never
 pins a consumer to a digest or tag a producer repository publishes only after
@@ -352,7 +483,8 @@ Blocked for Human, saying what was found and what to do.
   know the code or product run in the VM (`run-location: vm`): all of Plan and
   Build but its Refresh steps, the steps inside Local Testing's and Steps to Test's sub-engines, all of
   Document, Explain the Change, Risk Assessment, the AI Token Expense Check, a project Release's Address Merge
-  Request Feedback, and Blocked's troubleshooting and repair. A `state-engine` step always
+  Request Feedback, grouped-merge's Code Review, Security Review and Address Merge Request Feedback (ASS-365),
+  and Blocked's troubleshooting and repair. A `state-engine` step always
   runs on the host.
 - **run-in-repository** (ASS-119, prompt steps only). Missing means the folder
   holding every repository (`/repos/` in the VM). `"<repo>"` — a repository the
@@ -370,6 +502,9 @@ Blocked for Human, saying what was found and what to do.
   - `blocked`: a step failed or looped past its max-visits. The ticket goes to
     Blocked, which returns it to the start of the group (each group's
     `return-to-state` is itself).
+  - `blocked-for-human`: Setup's Create VM found no room, or (ASS-365)
+    grouped-build's merge loop waited past `approval-wait-days`; read only by
+    a Build step that sets `merges-awaited`.
   - `rebuild`: Local Testing rejected, or a project Release's Team Code Review sent the
     ticket back In Progress. The ticket goes into Build at Generate Solution
     (`start-sub-engine-at`, ASS-66).

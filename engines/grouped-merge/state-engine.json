@@ -1,0 +1,364 @@
+{
+    "steps": [
+        {
+            "id": "check-review",
+            "sequence": 1,
+            "name": "Check Reviewed at Head",
+            "description": "Whether Code Review and Security Review have passed with each merge request of the set at its head commit; one not reviewed there (exit 2) goes to Code Review first, so nothing leaves draft or is set to auto-merge unreviewed (ASS-365). A project that switches off this engine's Code Review and Security Review has the heads marked reviewed as they are",
+            "max-visits": 10,
+            "on-max-visits": "blocked",
+            "action": {
+                "type": "script",
+                "command": "./agent.sh merge-request:reviewed-at-head {project} {ticket} {variation} --only {merge-request-ids}"
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "exit-code": 0
+                    },
+                    "move-to-state": "take-out-of-draft-mode"
+                },
+                {
+                    "condition": {
+                        "exit-code": 2
+                    },
+                    "move-to-state": "code-review"
+                },
+                {
+                    "condition": {
+                        "not": {
+                            "exit-code": 0
+                        }
+                    },
+                    "move-to-state": "check-review"
+                }
+            ]
+        },
+        {
+            "id": "code-review",
+            "sequence": 2,
+            "name": "Code Review",
+            "description": "Reviewing the solution at the set's head commits before they merge (ASS-365)",
+            "vm": "running",
+            "max-visits": 3,
+            "on-max-visits": "blocked",
+            "action": {
+                "type": "prompt",
+                "prompt": "code-review-grouped",
+                "agent-count": 1,
+                "run-in-dev-container": false
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "all": [
+                            {
+                                "turn-complete": true
+                            },
+                            {
+                                "structured-output": {
+                                    "is-approved": true
+                                }
+                            }
+                        ]
+                    },
+                    "move-to-state": "security-review"
+                },
+                {
+                    "condition": {
+                        "all": [
+                            {
+                                "turn-complete": true
+                            },
+                            {
+                                "structured-output": {
+                                    "is-approved": false
+                                }
+                            }
+                        ]
+                    },
+                    "move-to-state": "rebuild"
+                }
+            ],
+            "run-location": "vm"
+        },
+        {
+            "id": "security-review",
+            "sequence": 3,
+            "name": "Security Review",
+            "description": "Security review at the set's head commits before they merge (ASS-365)",
+            "vm": "running",
+            "max-visits": 3,
+            "on-max-visits": "blocked",
+            "action": {
+                "type": "prompt",
+                "prompt": "security-review-grouped",
+                "agent-count": 1,
+                "run-in-dev-container": false
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "all": [
+                            {
+                                "turn-complete": true
+                            },
+                            {
+                                "structured-output": {
+                                    "is-approved": true
+                                }
+                            }
+                        ]
+                    },
+                    "move-to-state": "mark-reviewed"
+                },
+                {
+                    "condition": {
+                        "all": [
+                            {
+                                "turn-complete": true
+                            },
+                            {
+                                "structured-output": {
+                                    "is-approved": false
+                                }
+                            }
+                        ]
+                    },
+                    "move-to-state": "rebuild"
+                }
+            ],
+            "run-location": "vm"
+        },
+        {
+            "id": "mark-reviewed",
+            "sequence": 4,
+            "name": "Mark Reviewed",
+            "description": "Record the head commits the passing reviews saw as reviewed, then check them again: a commit pushed during the review is reviewed again (ASS-365)",
+            "max-visits": 5,
+            "on-max-visits": "blocked",
+            "action": {
+                "type": "script",
+                "command": "./agent.sh merge-request:reviewed-at-head {project} {ticket} {variation} --only {merge-request-ids} --mark"
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "exit-code": 0
+                    },
+                    "move-to-state": "check-review"
+                },
+                {
+                    "condition": {
+                        "not": {
+                            "exit-code": 0
+                        }
+                    },
+                    "move-to-state": "mark-reviewed"
+                }
+            ]
+        },
+        {
+            "id": "take-out-of-draft-mode",
+            "sequence": 5,
+            "name": "Take out of Draft Mode",
+            "description": "Finalizing the set's merge requests",
+            "max-visits": 5,
+            "on-max-visits": "blocked",
+            "action": {
+                "type": "script",
+                "command": "./agent.sh code:take-out-of-draft-mode {project} {ticket} {variation} --only {merge-request-ids}"
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "exit-code": 0
+                    },
+                    "move-to-state": "check"
+                },
+                {
+                    "condition": {
+                        "not": {
+                            "exit-code": 0
+                        }
+                    },
+                    "move-to-state": "take-out-of-draft-mode"
+                }
+            ]
+        },
+        {
+            "id": "check",
+            "sequence": 6,
+            "name": "Check the Merge Requests",
+            "description": "The set's merge requests read from their forges; polled until every one is merged",
+            "max-visits": 10,
+            "on-max-visits": "blocked",
+            "action": {
+                "type": "script",
+                "command": "./agent.sh merge-request:check {project} {ticket} {variation} --only {merge-request-ids}",
+                "mode": "timer",
+                "timer-minutes": 5
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "all": [
+                            {
+                                "exit-code": 0
+                            },
+                            {
+                                "script-output": {
+                                    "needs-attention": true
+                                }
+                            }
+                        ]
+                    },
+                    "move-to-state": "address-merge-request-feedback"
+                },
+                {
+                    "condition": {
+                        "all": [
+                            {
+                                "exit-code": 0
+                            },
+                            {
+                                "script-output": {
+                                    "merged": true
+                                }
+                            }
+                        ]
+                    },
+                    "move-to-state": "done"
+                },
+                {
+                    "condition": {
+                        "all": [
+                            {
+                                "exit-code": 0
+                            },
+                            {
+                                "script-output": {
+                                    "approval-wait-expired": true
+                                }
+                            }
+                        ]
+                    },
+                    "move-to-state": "blocked-for-human"
+                },
+                {
+                    "condition": {
+                        "all": [
+                            {
+                                "exit-code": 0
+                            },
+                            {
+                                "script-output": {
+                                    "needs-attention": false
+                                }
+                            },
+                            {
+                                "script-output": {
+                                    "auto-merge": false
+                                }
+                            }
+                        ]
+                    },
+                    "move-to-state": "ensure-auto-merge"
+                }
+            ],
+            "record-script-output": true
+        },
+        {
+            "id": "address-merge-request-feedback",
+            "sequence": 7,
+            "name": "Address Merge Request Feedback",
+            "description": "Act on the review threads, plain review comments, failed pipeline or needed rebase of the set's merge requests, then check their review at the new head commit again before anything is set to auto-merge (ASS-365)",
+            "vm": "running",
+            "max-visits": 3,
+            "on-max-visits": "blocked",
+            "action": {
+                "type": "prompt",
+                "prompt": "check-on-merge-request-build-grouped",
+                "agent-count": 1,
+                "run-in-dev-container": true
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "turn-complete": true
+                    },
+                    "move-to-state": "check-review"
+                }
+            ],
+            "run-location": "vm"
+        },
+        {
+            "id": "ensure-auto-merge",
+            "sequence": 8,
+            "name": "Ensure Auto-Merge",
+            "description": "Setting the set's merge requests to auto-merge, in depends-on order, once every flag is cleared",
+            "max-visits": 3,
+            "on-max-visits": "blocked",
+            "action": {
+                "type": "script",
+                "command": "./agent.sh merge-request:ensure-auto-merge {project} {ticket} {variation} --only {merge-request-ids}"
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "exit-code": 0
+                    },
+                    "move-to-state": "check"
+                },
+                {
+                    "condition": {
+                        "not": {
+                            "exit-code": 0
+                        }
+                    },
+                    "move-to-state": "blocked"
+                }
+            ]
+        },
+        {
+            "id": "done",
+            "name": "Done",
+            "description": "Every merge request of the set is merged or closed; the parent step moves on",
+            "is-done": true,
+            "action": {
+                "type": "none"
+            },
+            "sequence": 9
+        },
+        {
+            "id": "blocked",
+            "name": "Blocked",
+            "description": "A step failed or looped too many times; the parent step sends the ticket to Blocked",
+            "is-done": true,
+            "action": {
+                "type": "none"
+            },
+            "sequence": 10
+        },
+        {
+            "id": "blocked-for-human",
+            "name": "Blocked for Human",
+            "description": "Approvals have not come within approval-wait-days; the parent step sends the ticket to Blocked for Human",
+            "is-done": true,
+            "action": {
+                "type": "none"
+            },
+            "sequence": 11
+        },
+        {
+            "id": "rebuild",
+            "name": "Back to Build",
+            "description": "Code Review or Security Review rejected the work at its head commit; the parent step sends it back to Generate Solution",
+            "is-done": true,
+            "action": {
+                "type": "none"
+            },
+            "sequence": 12
+        }
+    ]
+}

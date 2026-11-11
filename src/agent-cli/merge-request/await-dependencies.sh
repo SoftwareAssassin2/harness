@@ -58,7 +58,19 @@ set -euo pipefail
 #      comes back here once its turn is complete, under its max-visits (3),
 #      then Blocked. A note in execution-plan-<variation>.md names which and
 #      what each needs. A draft or an approval alone is no agent's to act
-#      on: still 2, polled;
+#      on: still 2, polled — unless merged early (5);
+#   5  (ASS-365) merged early: control set MERGES_AWAITED=1 (a step of the
+#      variation's status chain says merges-awaited: true), the ticket has
+#      one variation in play, and one waits on a dependency with nothing
+#      never created (3) or of its own to act on (4) — a draft, an approval,
+#      or nothing but the merge. grouped-build sends exit 5 to Merge the
+#      Awaited (engines/grouped-merge, the merge loop) over the dependencies
+#      waited on, whose planned ids it prints as "merge-request-ids": Code
+#      Review and Security Review at their head commits, out of draft,
+#      auto-merge, merged. A note in execution-plan-<variation>.md names them.
+#      With more than one variation in play none is merged early: 2 or 4 as
+#      without the flag, and the feedback says why, even for a dependency
+#      that only waits to merge. Without MERGES_AWAITED, never 5;
 #   1  any other failure — the ticket or variation missing, a forge call
 #      failing — matching no exit, so the step tries again.
 #
@@ -147,7 +159,18 @@ for at in $(jq -r '[.[].at] | unique | .[]' <<< "$waiting"); do
                        (if $approvals != "0" then "needs-approval" else empty end) ] end) }' <<< "$found")"
 done
 
-out="$(jq -c --argjson found "$found" '{ waiting: map(del(.at) + { needs: $found[.at | tostring].needs }) }' <<< "$waiting")"
+# Build merges the awaited ones itself (ASS-365) where the project's workflow
+# opts in: control sets MERGES_AWAITED=1 when a step of the variation's status
+# chain, at any level, says merges-awaited: true (src/control/steps.js). Then,
+# with one variation in play — none other but those set aside at Variation
+# Selection (is-deleted) — the dependencies waited on are merged early ("merge");
+# with more, none is, and the feedback says why ("held": a set-aside one
+# would merge the losing variation's work). early is "" without the flag.
+early=""
+if [[ "${MERGES_AWAITED:-}" == 1 ]]; then
+  in_play="$(ticket_field "$command" "$project" "$key" variations | jq '[.[]? | select(.["is-deleted"] | not)] | length')"
+  if [[ "$in_play" -le 1 ]]; then early=merge; else early="held:$in_play"; fi
+fi
 
 # The feedback: each dependency that needs something, named and said in plain words; the needs that changed it.
 # OWN: the needs an agent acts on in Address Merge Request Feedback (ASS-361, exit 4).
@@ -155,50 +178,67 @@ OWN='["open-threads", "review-comments", "build-failed", "needs-rebase"]'
 FEEDBACK='
   def repo: .repository // "" | rtrimstr(".git") | sub("^[a-z]+://[^/]+/"; "");
   def name: if .key then repo + " " + .key else "MR \(.id) (" + repo + ")" end;
-  # Each need of a dependency in plain words, with its failed jobs and the approvals it still needs.
-  def said: . as $f | [ .needs[] | {
+  # Each need of a dependency in plain words, with its failed jobs and the approvals it still needs; none: not merged yet (ASS-365, held).
+  def said: . as $f | if .needs == [] then ["is not merged yet"] else [ .needs[] | {
       "not-created": "was never created",
       draft: "is a draft",
       "build-failed": ("its pipeline failed" + (if $f.jobs == [] then "" else " (" + ($f.jobs | join(", ")) + ")" end)),
       "open-threads": "it has unresolved review threads",
       "review-comments": ((if $f.count == 1 then "it has a review comment from " else "it has \($f.count) review comments from " end) + ($f.from | join(", "))),
       "needs-rebase": "it needs a rebase onto its target branch",
-      "needs-approval": (if $f.approvals == "unknown" then "it needs approval" elif $f.approvals == "1" then "it needs 1 approval" else "it needs " + $f.approvals + " approvals" end) }[.] ];
+      "needs-approval": (if $f.approvals == "unknown" then "it needs approval" elif $f.approvals == "1" then "it needs 1 approval" else "it needs " + $f.approvals + " approvals" end) }[.] ] end;
   def about: (.dep | name) + (if .dep.url then " " + .dep.url else "" end) + ": " + (said | join("; ")) + ". "
     + (.by | join(", ")) + (if (.by | length) > 1 then " depend" else " depends" end) + " on it.";
-  [ $waiting | group_by(.at)[] | { at: .[0].at, dep: .[0]["depends-on"], by: map("MR \(.id)") }
-    | . + $found[.at | tostring] | select(.needs != []) ] as $deps
+  ($early | startswith("held:")) as $held
+  | ($early | ltrimstr("held:")) as $count
+  | [ $waiting | group_by(.at)[] | { at: .[0].at, dep: .[0]["depends-on"], by: map("MR \(.id)") }
+    | . + $found[.at | tostring] | select(.needs != [] or $held) ] as $deps
   | [ $deps[] | select(.needs | index("not-created")) | .dep | name ] as $unmade
   | [ $deps[] | select(any(.needs[]; IN($own[]))) | .dep | name ] as $ours
+  | (if $held then " Build does not merge it early: the ticket has \($count) variations in play, until Variation Selection sets all but one aside." else "" end) as $why
   | if $deps == [] then { needs: null, short: "", long: "" } else
       (if $unmade != [] then "Never created: " + ($unmade | join(", ")) + "; back to Generate Solution"
        else "Waiting on " + ([$deps[] | (.dep | name) + ": " + (said | join(", "))] | join("; "))
-         + (if $ours != [] then "; sent to Address Merge Request Feedback" else "" end) end) as $short
+         + (if $ours != [] then "; sent to Address Merge Request Feedback" elif $early == "merge" then "; Build merges it" else "" end)
+         + (if $held then "; not merged early: \($count) variations in play" else "" end) end) as $short
     | ([$deps[] | about] | join(" ")
        + (if $unmade != [] then " A planned merge request Generate Solution never created is not waited on: the ticket goes back to Generate Solution to create it."
-          elif $ours != [] then " Build has sent " + ($ours | join(", ")) + " to Address Merge Request Feedback, to act on its review and pipeline; then this step waits again."
-          else " The tests run once it merges: act on it on the forge, and this step goes on by itself." end)) as $long
-    | { needs: [$deps[] | { id: .dep.id, key: .dep.key, needs } + (if .from != [] then { from } else {} end)], short: $short, long: $long } end'
-feedback="$(jq -nc --argjson found "$found" --argjson waiting "$waiting" --argjson own "$OWN" "$FEEDBACK")"
+          elif $ours != [] then " Build has sent " + ($ours | join(", ")) + " to Address Merge Request Feedback, to act on its review and pipeline; then this step waits again." + $why
+          elif $early == "merge" then " Build merges it: Code Review and Security Review at its head commit, then out of draft and set to auto-merge; this step goes on once it has merged."
+          else " The tests run once it merges: act on it on the forge, and this step goes on by itself." + $why end)) as $long
+    | { needs: [$deps[] | { id: .dep.id, key: .dep.key, needs } + (if .from != [] then { from } else {} end) + (if $early != "" then { early: $early } else {} end)], short: $short, long: $long } end'
+feedback="$(jq -nc --argjson found "$found" --argjson waiting "$waiting" --argjson own "$OWN" --arg early "$early" "$FEEDBACK")"
+
+# A dependency never created (exit 3), else feedback of its own to act on (exit 4), else, merged early, the merge loop (exit 5).
+unmade="$(jq -r --argjson found "$found" '[.[] | select($found[.at | tostring].needs | index("not-created"))]
+  | if . == [] then empty else "MR \([.[]["depends-on"].id] | unique | join(", MR ")) never created, though MR \([.[].id] | unique | join(", MR ")) in another repository depends on it" end' <<< "$waiting")"
+ours="$(jq -r --argjson found "$found" --argjson own "$OWN" '[.[] | .at as $at | ($found[$at | tostring].needs | map(select(IN($own[])))) as $n
+    | select($n != []) | "MR \(.["depends-on"].id) (\(.["depends-on"].key)) has \($n | join(", "))"] | unique
+  | if . == [] then empty else join("; ") end' <<< "$waiting")"
+merging=false
+[[ "$early" != merge || -n "$unmade" || -n "$ours" ]] || merging=true
 
 needs="$(jq -c '.needs' <<< "$feedback")"
 record_feedback "$needs" "$(jq -r '.short' <<< "$feedback")" "$(jq -r '.long' <<< "$feedback")"
-echo "$out"
+# The merge loop's set (ASS-365): every merge request waited on, its planned id, for {merge-request-ids}.
+jq -c --argjson found "$found" --argjson merging "$merging" '{ waiting: map(del(.at) + { needs: $found[.at | tostring].needs }) }
+  + (if $merging then { "merge-request-ids": ([.[]["depends-on"].id] | unique) } else {} end)' <<< "$waiting"
 
 # A dependency never created: back to Generate Solution, told which in its execution plan.
-unmade="$(jq -r --argjson found "$found" '[.[] | select($found[.at | tostring].needs | index("not-created"))]
-  | if . == [] then empty else "MR \([.[]["depends-on"].id] | unique | join(", MR ")) never created, though MR \([.[].id] | unique | join(", MR ")) in another repository depends on it" end' <<< "$waiting")"
 if [[ -n "$unmade" ]]; then
   plan_note "$project" "$key" "$variation" "$unmade: back to Generate Solution to build it and record it (merge-request:create)."
   exit 3
 fi
 
 # Feedback of its own to act on (ASS-361): to Address Merge Request Feedback, told which in its execution plan.
-ours="$(jq -r --argjson found "$found" --argjson own "$OWN" '[.[] | .at as $at | ($found[$at | tostring].needs | map(select(IN($own[])))) as $n
-    | select($n != []) | "MR \(.["depends-on"].id) (\(.["depends-on"].key)) has \($n | join(", "))"] | unique
-  | if . == [] then empty else join("; ") end' <<< "$waiting")"
 if [[ -n "$ours" ]]; then
   plan_note "$project" "$key" "$variation" "$ours, and another repository's merge request of this ticket waits on it: to Address Merge Request Feedback to act on it (merge-request:view lists its threads, comments and failed jobs)."
   exit 4
+fi
+
+# Merged early (ASS-365): to the merge loop, told which in its execution plan.
+if [[ "$merging" == true ]]; then
+  plan_note "$project" "$key" "$variation" "$(jq -r '[.[] | "MR \(.["depends-on"].id) (\(.["depends-on"].key))"] | unique | join(", ")' <<< "$waiting"), which another repository's merge request of this ticket waits on: to the merge loop (merges-awaited) — Code Review and Security Review at its head commit, out of draft, auto-merge."
+  exit 5
 fi
 exit 2

@@ -1190,3 +1190,155 @@ test('ASS-351 AC4: an MR set to auto-merge that has waited past approval-wait-da
   assert.equal(attention['needs-attention'], true);
   assert.equal(attention['approval-wait-expired'], undefined);
 });
+
+// ASS-365: Build merges the merge requests its Await Sequential Merge waits on,
+// where the project's workflow opts in (merges-awaited, read by control, which
+// sets MERGES_AWAITED for the command): merge-request:await-dependencies exits
+// 5 with their ids, and grouped-merge's loop runs Release's commands over that
+// set (--only <ids>), reviewing each at its head commit first
+// (merge-request:reviewed-at-head). Without --only and MERGES_AWAITED every
+// command is as before (the tests above). The engine and control side:
+// test/workflow/grouped-merge.test.js and test/control/tick-merge-awaited.test.js.
+const flaggedAwait = async (f, env = { MERGES_AWAITED: '1' }) => {
+  try { const { stdout, stderr } = await run(AGENT, ['merge-request:await-dependencies', 'p', 'ABC-5', 'A'], { env: { ...process.env, PROJECTS_DIR: f.dir, PATH: f.forge.path, ...env } }); return { code: 0, out: JSON.parse(stdout), err: stderr }; }
+  catch (e) { return { code: e.code, out: e.stdout ? JSON.parse(e.stdout) : null, err: e.stderr }; }
+};
+// A second variation, B, of ABC-5: in play, or set aside at Variation Selection (is-deleted).
+const withB = (f, setAside) => {
+  const sprint = JSON.parse(readFileSync(f.file, 'utf8'));
+  sprint.features[0].variations.push({ name: 'B', 'merge-request': [], ...(setAside ? { 'is-deleted': true, 'deleted-timestamp': T(9) } : {}) });
+  writeFileSync(f.file, JSON.stringify(sprint, null, 4));
+};
+const ran = async (f, ...args) => {
+  try { const { stdout, stderr } = await f.agent(...args); return { code: 0, out: stdout.trim(), err: stderr }; }
+  catch (e) { return { code: e.code, out: (e.stdout ?? '').trim(), err: e.stderr }; }
+};
+
+test('ASS-365 AC2/AC4: with MERGES_AWAITED and one variation in play, a dependency waited on with nothing of its own to act on exits 5 with its ids, the plan noted and the operator told Build merges it; with another variation in play it waits as before, the feedback saying why; without the flag, as before', async () => {
+  const f = await dependedOn({ draft: true }, 1);
+  const merged = await flaggedAwait(f);
+  assert.equal(merged.code, 5, merged.err);
+  assert.deepEqual(merged.out, { waiting: [{ id: 2, repository: APP, 'depends-on': { id: 1, repository: LIB, status: 'Open', key: '!7', url: LIB_7 }, needs: ['draft', 'needs-approval'] }], 'merge-request-ids': [1] });
+  assert.equal(variationOf(f)['ai-feedback-short'], 'Waiting on g/lib !7: is a draft, it needs 1 approval; Build merges it');
+  assert.match(variationOf(f)['ai-feedback-long'], /MR 2 depends on it\. Build merges it: Code Review and Security Review at its head commit, then out of draft and set to auto-merge/);
+  assert.ok(f.notes().some(l => /MR 1 \(!7\), which another repository's merge request of this ticket waits on: to the merge loop \(merges-awaited\)/.test(l)), f.notes().join('\n'));
+  // The same without the flag: polled (2), no ids, as after ASS-361.
+  const plain = await dependedOn({ draft: true }, 1);
+  const polled = await awaiting(plain);
+  assert.deepEqual([polled.code, Object.keys(polled.out)], [2, ['waiting']]);
+  assert.doesNotMatch(variationOf(plain)['ai-feedback-short'], /Build merges it|not merged early/);
+  // Feedback of its own to act on still goes to Address Merge Request Feedback first (4); one never created back to Generate Solution (3).
+  const own = await dependedOn({ draft: true, has_conflicts: true }, 1);
+  const acted = await flaggedAwait(own);
+  assert.deepEqual([acted.code, acted.out['merge-request-ids']], [4, undefined]);
+  // Only waiting to merge (nothing it needs): merged early too, no feedback of this step's.
+  const ready = await dependedOn({ draft: false, merge_when_pipeline_succeeds: true });
+  const quiet = await flaggedAwait(ready);
+  assert.deepEqual([quiet.code, quiet.out['merge-request-ids'], variationOf(ready)['ai-feedback-short'] ?? null], [5, [1], null]);
+  // A second variation set aside at Variation Selection is not in play: merged early.
+  const aside = await dependedOn({ draft: true }, 1);
+  withB(aside, true);
+  assert.equal((await flaggedAwait(aside)).code, 5);
+  // A second variation in play: nothing merged early — 2 (or 4) as without the flag — and the feedback says why, even when it only waits to merge.
+  const two = await dependedOn({ draft: true }, 1);
+  withB(two, false);
+  const held = await flaggedAwait(two);
+  assert.deepEqual([held.code, held.out['merge-request-ids']], [2, undefined]);
+  assert.equal(variationOf(two)['ai-feedback-short'], 'Waiting on g/lib !7: is a draft, it needs 1 approval; not merged early: 2 variations in play');
+  assert.match(variationOf(two)['ai-feedback-long'], /Build does not merge it early: the ticket has 2 variations in play, until Variation Selection sets all but one aside\.$/);
+  const idle = await dependedOn({ draft: false, merge_when_pipeline_succeeds: true });
+  withB(idle, false);
+  assert.equal((await flaggedAwait(idle)).code, 2);
+  assert.match(variationOf(idle)['ai-feedback-long'], /^g\/lib !7 .*: is not merged yet\. MR 2 depends on it\. The tests run once it merges: .* Build does not merge it early/);
+});
+
+test('ASS-365 AC1: --only <ids> runs Take out of Draft Mode, Ensure Auto-Merge and the check over the set alone — every merge request still read, one outside it still a dependency — and tells the operator what it does; an id not planned fails, acting on nothing', async () => {
+  const f = await example();
+  view(f, 'app', 7, { draft: true });
+  view(f, 'lib', 9, { draft: true, blocking_discussions_resolved: false });
+  // Out of draft: MR 1 (app !7) alone, the operator told.
+  const ready = await ran(f, 'code:take-out-of-draft-mode', 'p', 'ABC-5', 'A', '--only', '1');
+  assert.equal(ready.code, 0, ready.err);
+  assert.deepEqual(ready.out.split('\n').map(l => JSON.parse(l)), [{ iid: 7, ready: true }]);
+  assert.deepEqual(f.forge.log('glab').filter(l => / -X PUT -f title=/.test(l)), ['api projects/g%2Fapp/merge_requests/7 --hostname gitlab.com -X PUT -f title=ABC-5: Close the account']);
+  assert.equal(variationOf(f)['ai-feedback-short'], 'Taking g/app !7 out of draft');
+  // The check over the set: lib !9's open threads are not the set's; with --only - every one is, as without it but for the feedback.
+  view(f, 'app', 7, {});
+  assert.deepEqual(JSON.parse((await ran(f, 'merge-request:check', 'p', 'ABC-5', 'A', '--only', '1')).out), { 'needs-attention': false, reasons: [], 'auto-merge': false, merged: false });
+  assert.deepEqual(JSON.parse((await ran(f, 'merge-request:check', 'p', 'ABC-5', 'A', '--only', '-')).out), JSON.parse((await ran(f, 'merge-request:check', 'p', 'ABC-5', 'A')).out));
+  // Auto-merge: MR 1 alone; MR 2, outside the set, is not set, though nothing waits.
+  const armed = await ran(f, 'merge-request:ensure-auto-merge', 'p', 'ABC-5', 'A', '--only', '1');
+  assert.equal(armed.code, 0, armed.err);
+  assert.deepEqual(autoMerged(f), [7]);
+  assert.equal(variationOf(f)['ai-feedback-short'], 'Auto-merge set on g/app !7; waiting for it to merge');
+  // Set to auto-merge, one approval left: the check waits on it, its approval wait recorded and said.
+  view(f, 'app', 7, { merge_when_pipeline_succeeds: true });
+  f.forge.route('glab', /^api projects\/g%2Fapp\/merge_requests\/7\/approvals --hostname gitlab.com$/, { out: { approvals_left: 1 } });
+  const waiting = JSON.parse((await ran(f, 'merge-request:check', 'p', 'ABC-5', 'A', '--only', '1')).out);
+  assert.deepEqual(waiting, { 'needs-attention': false, reasons: [], 'auto-merge': true, merged: false });
+  const since = f.mrs()[0]['approval-wait-since'];
+  assert.ok(since && f.mrs()[2]['approval-wait-since'] == null, JSON.stringify(f.mrs()));
+  assert.equal(variationOf(f)['ai-feedback-short'], `g/app !7 waits for 1 approval since ${since}`);
+  // Merged: the set is done, though MR 2 and MR 3 are Open; the loop's feedback cleared.
+  view(f, 'app', 7, { state: 'merged' });
+  f.forge.route('glab', /^api projects\/g%2Fapp\/merge_requests\/8 --hostname gitlab.com -X PUT -f target_branch=master$/, { out: {} });
+  assert.deepEqual(JSON.parse((await ran(f, 'merge-request:check', 'p', 'ABC-5', 'A', '--only', '1')).out), { 'needs-attention': false, reasons: [], 'auto-merge': true, merged: true });
+  assert.deepEqual([variationOf(f)['ai-feedback-short'], variationOf(f)['merge-loop-feedback']], [null, undefined]);
+  assert.equal(JSON.parse((await ran(f, 'merge-request:check', 'p', 'ABC-5', 'A')).out).merged, false, 'without --only, every one');
+  // An id the variation has not planned: refused, nothing done.
+  const before = f.forge.log('glab').length;
+  for (const command of ['code:take-out-of-draft-mode', 'merge-request:ensure-auto-merge', 'merge-request:check', 'merge-request:reviewed-at-head']) {
+    const bad = await ran(f, command, 'p', 'ABC-5', 'A', '--only', '1,4');
+    assert.equal(bad.code, 1, command);
+    assert.match(bad.err, /ABC-5 A has no planned merge request 4/, command);
+    assert.match((await ran(f, command, 'p', 'ABC-5', 'A', '--only', 'x')).err, /--only takes planned merge request ids/, command);
+    assert.match((await ran(f, command, 'p', 'ABC-5', 'A', '--other')).err, /^usage: /, command);
+  }
+  assert.ok(!f.forge.log('glab').slice(before).some(l => / -X (PUT|POST)/.test(l)), 'nothing changed on the forge');
+});
+
+test('ASS-365 AC1: with --only, the check counts a reviewer\'s plain comment not yet answered as review-comments, stopping the approval wait, and says what the set needs; a set all Closed is done', async () => {
+  const f = await dependedOn({ draft: false, merge_when_pipeline_succeeds: true });
+  noted(f, 'lib', 7, [note(31, 'sam', 11)]);
+  const check = async (...only) => JSON.parse((await ran(f, 'merge-request:check', 'p', 'ABC-5', 'A', ...only)).out);
+  assert.deepEqual(await check('--only', '1'), { 'needs-attention': true, reasons: ['review-comments'], 'auto-merge': true, merged: false });
+  assert.equal(f.mrs()[0]['approval-wait-since'] ?? null, null);
+  assert.equal(variationOf(f)['ai-feedback-short'], 'g/lib !7: it has review comments not yet answered; sent to Address Merge Request Feedback');
+  assert.deepEqual((await check()).reasons, [], 'Release\'s check, without --only, as before');
+  const g = await dependedOn({ state: 'closed' });
+  assert.equal((await ran(g, 'merge-request:check', 'p', 'ABC-5', 'A', '--only', '1').then(r => JSON.parse(r.out))).merged, true);
+});
+
+test('ASS-365 AC3: merge-request:reviewed-at-head exits 2 for a merge request of the set whose head commit has not passed review, recording the head the review will see; --mark records it reviewed; a new commit needs review again, and one pushed during the review is not marked reviewed', async () => {
+  const f = await dependedOn({ draft: true, sha: 'a'.repeat(40) });
+  const gate = () => ran(f, 'merge-request:reviewed-at-head', 'p', 'ABC-5', 'A', '--only', '1');
+  const first = await gate();
+  assert.equal(first.code, 2, first.err);
+  assert.deepEqual(JSON.parse(first.out), { reviewed: [], unreviewed: [{ id: 1, key: '!7', head: 'a'.repeat(40) }] });
+  assert.deepEqual([f.mrs()[0]['review-head'], f.mrs()[0]['reviewed-head']], ['a'.repeat(40), undefined]);
+  assert.equal(variationOf(f)['ai-feedback-short'], 'Reviewing g/lib !7 at aaaaaaaa before it leaves draft or is set to auto-merge');
+  assert.ok(!f.forge.log('glab').some(l => l.includes('g%2Fapp/merge_requests/9')), 'MR 2, outside the set, not read');
+  const marked = await ran(f, 'merge-request:reviewed-at-head', 'p', 'ABC-5', 'A', '--only', '1', '--mark');
+  assert.deepEqual([marked.code, JSON.parse(marked.out)], [0, { marked: [{ id: 1, key: '!7', head: 'a'.repeat(40) }] }]);
+  assert.deepEqual(JSON.parse((await gate()).out).reviewed.map(m => m.id), [1]);
+  assert.equal((await gate()).code, 0);
+  // A new commit (Address Merge Request Feedback's): reviewed again before auto-merge.
+  view(f, 'lib', 7, { web_url: LIB_7, sha: 'b'.repeat(40) });
+  assert.equal((await gate()).code, 2);
+  // Pushed again during that review: what is marked is the head the review saw, so the gate sends it back.
+  view(f, 'lib', 7, { web_url: LIB_7, sha: 'c'.repeat(40) });
+  await ran(f, 'merge-request:reviewed-at-head', 'p', 'ABC-5', 'A', '--only', '1', '--mark');
+  assert.equal(f.mrs()[0]['reviewed-head'], 'b'.repeat(40));
+  assert.equal((await gate()).code, 2);
+  // Merged or Closed ones need no review; a forge that fails is exit 1, never 2.
+  f.record({ 1: { status: 'Merged' } });
+  assert.equal((await gate()).code, 0);
+  f.record({ 1: { status: 'Open' } });
+  view(f, 'lib', 7, {}, { exit: 1 });
+  assert.equal((await gate()).code, 1);
+  // GitHub: its head is the pull request's headRefOid.
+  const g = await hubDependedOn();
+  g.forge.route('gh', /^pr view 12 --repo o\/h --json headRefOid$/, { out: { headRefOid: 'd'.repeat(40) } });
+  const hub = await ran(g, 'merge-request:reviewed-at-head', 'p', 'ABC-5', 'A', '--only', '1');
+  assert.deepEqual([hub.code, JSON.parse(hub.out).unreviewed[0].head], [2, 'd'.repeat(40)]);
+});

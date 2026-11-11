@@ -305,6 +305,17 @@ export function finishedPlanning(engines, chain, variation) {
 const leavesPlanning = step => step != null && step['is-planning-stage'] !== true && step['is-done'] !== true
   && step['is-blocked-state'] !== true && step['follow-return-to-state'] !== true;
 
+// mergesAwaited(status) — the status (statusOf) is, at any level of its
+// chain, at a step with merges-awaited: true (ASS-365): the project's workflow
+// has Build merge the merge requests its Await Sequential Merge waits on
+// (merge-request:await-dependencies, told by MERGES_AWAITED, steps.js
+// scriptEnv). The flag says so, never a step's id or name, nor the project:
+// it goes on the parent step that runs grouped-build (a project's own Build),
+// so grouped-build, shared, is the same for every project and acts on it only
+// where that project's engine sets it, as the TUI reads shows-merge-train
+// (ASS-363) anywhere in the chain.
+export const mergesAwaited = status => status.chain.some(l => l.step?.['merges-awaited'] === true);
+
 // inPlanning(status) — the status (statusOf) is in planning: the deepest
 // step of its chain that sets is-planning-stage says, falling back up; false
 // when none does.

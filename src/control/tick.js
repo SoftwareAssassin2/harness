@@ -71,7 +71,7 @@ import { pushAccount } from '../agents/forge.js';
 // changes counted, the rate-limit reset last logged, each dev container's
 // mounts, the failing steps backing off — see backoff.js; the script steps
 // running in the background, steps.js), and the ways to act: cli(args), script(argv), succeeds(argv) (see
-// cli.js; script and succeeds take a VM to run in, ASS-74), load() (see state.js), stopAgents(), stopScripts(), mounts(container) (docker
+// cli.js; script and succeeds take a VM to run in, ASS-74, and script an env over its own, ASS-365), load() (see state.js), stopAgents(), stopScripts(), mounts(container) (docker
 // inspect's Mounts, [{ Source, Destination }], asked once; tests replace it).
 // With `project` (a project's id) the control is that project's alone
 // (ASS-9): load() lists it alone in `projects` — every phase acts on it only —
@@ -122,7 +122,7 @@ export function createContext({ root, env = process.env, command, log = () => {}
   // control never reads a forge token or calls a forge. Tests replace it.
   ctx.pushAccount = env.PUSH_ACCOUNT_DISABLED === '1' ? null : args => pushAccount({ ...args, env });
   ctx.cli = (args, env) => runCli(ctx, args, env);
-  ctx.script = (argv, vm) => runScript(ctx, argv, vm);
+  ctx.script = (argv, vm, env) => runScript(ctx, argv, vm, env);
   ctx.succeeds = (argv, vm) => scriptSucceeds(ctx, argv, vm);
   ctx.load = () => {
     const state = loadState(ctx.paths);

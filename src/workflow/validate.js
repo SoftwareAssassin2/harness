@@ -20,8 +20,8 @@ const LEAVES = new Set([
 const CHECKED_LEAVES = ['exit-code', 'script-succeeds', 'file-updated'];
 // The placeholders control fills in a script command: the ticket, its
 // project and variation, and what a transient run's structured output
-// carries (see the self-healing engine).
-const PLACEHOLDERS = new Set(['ticket', 'work-item', 'project', 'variation', 'summary', 'ticket-url', 'pause-tickets', 'human-action', 'missing-repository', 'failing-repository', 'failing-job', 'no-ticket-reason', 'no-ticket-why', 'run']);
+// carries (see the self-healing engine; merge-request-ids, ASS-365: grouped-merge's set).
+const PLACEHOLDERS = new Set(['ticket', 'work-item', 'project', 'variation', 'summary', 'ticket-url', 'pause-tickets', 'human-action', 'missing-repository', 'failing-repository', 'failing-job', 'no-ticket-reason', 'no-ticket-why', 'merge-request-ids', 'run']);
 
 // Where each list's run starts: its lowest-sequence step (moves.js firstStepId), which may not be switched off.
 const firstsOf = engine => new Set(Object.entries(engine).filter(([key]) => /(^|-)(steps|trigger)$/.test(key)).map(([, list]) => list.toSorted((a, b) => a.sequence - b.sequence)[0]?.id));
@@ -112,6 +112,22 @@ export function validateStateEngine(engine, root, name, own) {
     // "↳ AWAITING MERGE" Ticket-cell line (sprint.js mergeTrains) — the flag says so, never the step's id or name.
     // Any step may have it; it must be true or false.
     if (s['shows-merge-train'] !== undefined && typeof s['shows-merge-train'] !== 'boolean') errors.push(`${at} shows-merge-train "${s['shows-merge-train']}" is not true or false`);
+    // merges-awaited (ASS-365): while a variation's status chain is at the step, control has Build's Await Sequential
+    // Merge merge the merge requests it waits on (engine.js mergesAwaited) — the flag says so, never the step's id or name.
+    // It must be true or false. Set on a state-engine step whose sub-engine can end at blocked-for-human (grouped-build,
+    // when an awaited merge request's approval wait expires), the step must read that end: else the ended run matches
+    // its bare is-done exit and the ticket moves on, unmerged, as if Build had passed.
+    if (s['merges-awaited'] !== undefined && typeof s['merges-awaited'] !== 'boolean') errors.push(`${at} merges-awaited "${s['merges-awaited']}" is not true or false`);
+    else if (s['merges-awaited'] === true && action?.type === 'state-engine' && stepsOf(action.engine, root, subSteps, own)?.some(x => x.id === 'blocked-for-human' && x['is-done'] === true)
+      && !(s['exit-events'] ?? []).some(e => leavesOf(e.condition).some(l => l.key === 'sub-engine-ended-at' && l.value === 'blocked-for-human')))
+      errors.push(`${at} has merges-awaited but no exit for sub-engine-ended-at "blocked-for-human", where "${action.engine}" ends when an awaited merge request's approval wait expires`);
+    // pass-output (ASS-365): the fields of the step's own run's structured-output the sub-engine run it starts begins with
+    // (steps.js passedOutput: grouped-build's Merge the Awaited hands grouped-merge its merge-request-ids) — a list of
+    // field names, on a state-engine step alone.
+    if (s['pass-output'] !== undefined) {
+      if (!Array.isArray(s['pass-output']) || !s['pass-output'].every(f => typeof f === 'string' && f !== '')) errors.push(`${at} pass-output is not a list of field names`);
+      else if (action?.type !== 'state-engine') errors.push(`${at} has pass-output but is no state-engine step`);
+    }
     // color paints the step on the dashboard: its progress-bar run and status square.
     if (s.color !== undefined && !/^#[0-9a-f]{6}$/i.test(s.color)) errors.push(`${at} color "${s.color}" is not #rrggbb`);
 

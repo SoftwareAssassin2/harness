@@ -22,6 +22,12 @@
 #   MR_DEPS                                     # (jq defs) done; unmerged_deps($all): the rows it depends on, neither Merged nor Closed
 #   MR_TIME                                     # (jq def) epoch: a forge's ISO 8601 time as seconds
 #   mr_close <command> <url>                    # the merge request at <url> closed on its forge, unmerged (ASS-104)
+#   merge_request_options <command> <usage> <args…>   # the options after <project> <ticket-key> <variation>: --only, --mark (ASS-365)
+#   only_checked <command> <ticket-key> <variation>   # fails unless every id of --only names a planned merge request (ASS-365)
+#   MR_ONLY                                     # (jq def) in_set: this row is in --only's set, every row without one (ASS-365)
+#   MR_LABEL                                    # (jq def) label: "acme/api !12" — its repository's path and key (ASS-365)
+#   mr_head <command> <index>                   # its head commit's sha, from its forge (ASS-365)
+#   loop_feedback <command> <project> <ticket-key> <variation> <short> <long>   # the merge loop's word to the operator; "" "" clears its own (ASS-365)
 #
 # Each merge request is on its own repository's forge: a planned one (ASS-80)
 # names its repository; one merge-request:create recorded from the worktree
@@ -451,5 +457,88 @@ mr_close() {
   else
     [[ "$url" =~ ^(https://[^/]+/.+)/-/merge_requests/([0-9]+)$ ]] || { echo "$command: $url is not a GitLab merge request" >&2; return 1; }
     lab "$command" "${BASH_REMATCH[1]}" "/merge_requests/${BASH_REMATCH[2]}" -X PUT -f state_event=close >/dev/null
+  fi
+}
+
+# The merge loop's subset (ASS-365). engines/grouped-merge runs Release's loop
+# — out of draft, check, address feedback, auto-merge — over a set of a
+# variation's merge requests: grouped-build's Await Sequential Merge hands it
+# the ones another of the ticket's merge requests waits on in another
+# repository, where the project's workflow opts in (merges-awaited). Its
+# commands take the set as `--only <ids>`, the planned ids comma-separated
+# (`--only 1,3`), or `--only -` for every one (the run names none: control's
+# {merge-request-ids} placeholder, src/control/facts.js runValues). Given
+# --only, each acts on the set's merge requests alone and says what it does in
+# the variation's feedback (loop_feedback); without it each does exactly what
+# it did before. merge_request_options parses what follows <project>
+# <ticket-key> <variation>: --only <ids> into ONLY (a JSON array of ids, null
+# for every one) and LOOP (true once --only is given), --mark into MARK (true)
+# where <usage> allows it; anything else fails, printing <usage>.
+merge_request_options() {
+  local command="$1" usage="$2"
+  shift 2
+  ONLY=null LOOP=false MARK=false
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --only)
+        [[ $# -ge 2 && "$2" =~ ^(-|[0-9]+(,[0-9]+)*)$ ]] || { echo "$command: --only takes planned merge request ids, comma-separated, or - for every one" >&2; return 1; }
+        LOOP=true
+        [[ "$2" == - ]] || ONLY="$(jq -c 'split(",") | map(tonumber) | unique' <<< "\"$2\"")"
+        shift 2 ;;
+      --mark) [[ "$usage" == *--mark* ]] || { echo "usage: $usage" >&2; return 1; }; MARK=true; shift ;;
+      *) echo "usage: $usage" >&2; return 1 ;;
+    esac
+  done
+}
+
+# only_checked — every id --only names is one of MRS's planned ids, so a set that names none acts on nothing by mistake.
+only_checked() {
+  local missing
+  missing="$(jq -r --argjson only "$ONLY" '. as $mrs | [$only // [] | .[] as $id | select(all($mrs[]; .id != $id)) | $id] | map(tostring) | join(", ")' <<< "$MRS")"
+  [[ -z "$missing" ]] || { echo "$1: $2 $3 has no planned merge request $missing" >&2; return 1; }
+}
+
+# MR_ONLY — in_set($only): the row is in the set ($only, ONLY's ids), or there is no set (null).
+MR_ONLY='def in_set($only): $only == null or (.id as $id | $id != null and any($only[]; . == $id));'
+
+# MR_LABEL — label: a merge request as the operator reads it, "acme/api !12":
+# its repository's path on its forge (the url without scheme, host or .git)
+# and key; "MR <id> (acme/api)" for a planned one with no key yet; its key
+# alone for one with no repository (recorded from a worktree).
+MR_LABEL='def mr_label: ((.repository // "") | rtrimstr(".git") | sub("^[a-z]+://[^/]+/"; "")) as $r
+  | if .key == null then "MR \(.id)" + (if $r != "" then " (" + $r + ")" else "" end) elif $r == "" then .key else $r + " " + .key end;'
+
+# mr_head <command> <index> — the sha of its head commit, as its forge says: GitLab's merge request sha
+# (its API for a planned one; glab mr view for one from a worktree), GitHub's headRefOid. Fails when it says none.
+mr_head() {
+  local command="$1" url iid planned out
+  IFS=$'\t' read -r url iid planned < <(mr_at "$2")
+  if on_github "$url"; then out="$(gh_run "$command" pr view "$iid" --repo "$(path_of "$url")" --json headRefOid)" || return 1
+  elif [[ "$planned" == true ]]; then out="$(lab "$command" "$url" "/merge_requests/$iid")" || return 1
+  else out="$(glab_run "$command" mr view "$iid" --repo "$(path_of "$url")" -F json)" || return 1; fi
+  jq -re '.headRefOid // .sha // empty' <<< "$out" || { echo "$command: no head commit for $(mr_name "$2")" >&2; return 1; }
+}
+
+# loop_feedback — the merge loop tells the operator what it is doing (ASS-365):
+# <short> and <long> become the variation's ai-feedback-short and -long (as
+# ticket:set-ai-feedback writes them; the TUI's Health), and <long> is kept
+# as merge-loop-feedback, so it is written, and said once on stderr (control's
+# log), only when the feedback shown is not that already, never on every poll.
+# Empty, the feedback is cleared when it is still the loop's own (another
+# step's since is left), and the kept one dropped.
+loop_feedback() {
+  local command="$1" project="$2" key="$3" variation="$4" short="$5" long="$6" was
+  was="$(variation_field '{ kept: .["merge-loop-feedback"], long: .["ai-feedback-long"] }' "$command" "$project" "$key" "$variation")" || return 1
+  if [[ -n "$long" ]]; then
+    jq -e --arg long "$long" '.long == $long' <<< "$was" >/dev/null && return 0
+    update_whole_ticket "$command" "$project" "$key" --arg name "$variation" --arg short "$short" --arg long "$long" '
+      .variations |= map(if .name != $name or .["is-deleted"] then . else
+        .["ai-feedback-short"] = $short | .["ai-feedback-long"] = $long | .["merge-loop-feedback"] = $long end)' || return 1
+    echo "$command: $key $variation: $long" >&2
+  elif jq -e '.kept != null' <<< "$was" >/dev/null; then
+    update_whole_ticket "$command" "$project" "$key" --arg name "$variation" '
+      .variations |= map(if .name != $name or .["is-deleted"] then . else
+        (if .["ai-feedback-long"] == .["merge-loop-feedback"] then .["ai-feedback-short"] = null | .["ai-feedback-long"] = null else . end)
+        | del(.["merge-loop-feedback"]) end)' || return 1
   fi
 }

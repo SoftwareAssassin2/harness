@@ -4,7 +4,7 @@
 // its dependencies hold (dependencies.js awaitsDependencies, ASS-355), and
 // every run under it, is left where it is: no move, script, sub-engine run or
 // VM wait, at any step but a done or a person's one.
-import { stepOf, engineSteps, nextState, pairedStatus, isManual, isDoneStep, isActive, answersGap, clearedByFix, FIX_LANDED, resumeAt, whyNotResume } from './engine.js';
+import { stepOf, engineSteps, nextState, pairedStatus, isManual, isDoneStep, isActive, answersGap, clearedByFix, FIX_LANDED, resumeAt, whyNotResume, statusIn, mergesAwaited } from './engine.js';
 import { enginesFor } from './state.js';
 import { rankSprint, rankBacklog } from './rank.js';
 import { planFor, slotKind } from './plan.js';
@@ -90,14 +90,38 @@ const heldAtGate = (variation, ...at) => gated(variation, ...at) && variation['s
 // a run-location: vm step (ASS-74) — the facts exitCode and scriptOutput
 // (stdout as JSON when it parses); a command that cannot be filled, or a vm
 // step whose variation has no VM yet, is a failure (exit code 1), logged.
-async function runScriptStep(ctx, step, values, who, variation) {
+// `env`, when given, over the command's own (scriptEnv).
+async function runScriptStep(ctx, step, values, who, variation, env) {
   let argv, vm;
   try {
     argv = fillArgs(step.action.command, values);
     if (runsInVm(step)) vm = vmOf(variation, who);
   } catch (error) { ctx.log(PHASE, `${who}: ${error.message}`); return { exitCode: 1 }; }
-  const { exitCode, stdout } = await ctx.script(argv, vm);
+  const { exitCode, stdout } = await (env ? ctx.script(argv, vm, env) : ctx.script(argv, vm));
   return { exitCode, scriptOutput: parseOutput(stdout) };
+}
+
+// scriptEnv(state, project, variation) — what a script step's command is told
+// of where its variation stands, beyond its arguments: MERGES_AWAITED=1 while
+// its status chain, at any level, is at a step with merges-awaited: true
+// (ASS-365, engine.js mergesAwaited: merge-request:await-dependencies then
+// merges the awaited merge requests early, exit 5); undefined otherwise — no
+// variation (a trigger's run), or no such step — so every other command runs
+// as it always has.
+function scriptEnv(state, project, variation) {
+  if (!project || !variation) return undefined;
+  return mergesAwaited(statusIn(project.engine, variation, enginesFor(state, project.id))) ? { MERGES_AWAITED: '1' } : undefined;
+}
+
+// passedOutput(step, output) — what a state-engine step hands the run it
+// starts (ASS-365): the fields its pass-output names, from the step's own
+// run's structured-output `output` (grouped-build's Merge the Awaited: the
+// merge-request-ids Await Sequential Merge recorded), the run starting with
+// them as its own; undefined when it names none or none is there, the run
+// starting with none, as before.
+function passedOutput(step, output) {
+  const fields = (step['pass-output'] ?? []).filter(f => output && typeof output === 'object' && output[f] !== undefined);
+  return fields.length ? Object.fromEntries(fields.map(f => [f, output[f]])) : undefined;
 }
 
 // Script steps run in the background (ASS-328): awaited, a long one — a
@@ -248,7 +272,7 @@ async function runVariation(ctx, state, project, key, name) {
           if (waiting(ctx.memory, held, ctx.now().getTime()) || (!timer && heldAtGate(variation))) return;
           if (diskWaits(ctx, state, step, who)) return;
           if (!scriptDue(ctx, who, running, visit, step, ctx.now().getTime())) return;
-          startScript(ctx, running, visit, runScriptStep(ctx, step, values, who, variation), who);
+          startScript(ctx, running, visit, runScriptStep(ctx, step, values, who, variation, backlog ? undefined : scriptEnv(state, project, variation)), who);
           wait = ctx.scriptWait ?? SCRIPT_WAIT;
         }
         const exited = await scriptExit(ctx, running, wait);
@@ -384,7 +408,7 @@ async function runTransient(ctx, state, id) {
           if (waiting(ctx.memory, held, ctx.now().getTime()) || (!timer && variation && at && heldAtGate(variation, run['state-engine'], run.state, at.path.length + 1))) return;
           if (diskWaits(ctx, state, step, who)) return;
           if (!scriptDue(ctx, who, running, visit, step, ctx.now().getTime())) return;
-          startScript(ctx, running, visit, runScriptStep(ctx, step, values, who, variation), who);
+          startScript(ctx, running, visit, runScriptStep(ctx, step, values, who, variation, ticket && variation && !backlog ? scriptEnv(state, project, variation) : undefined), who);
           wait = ctx.scriptWait ?? SCRIPT_WAIT;
         }
         const exited = await scriptExit(ctx, running, wait);
@@ -401,9 +425,10 @@ async function runTransient(ctx, state, id) {
         const child = state.transient.find(r => r.parent?.['transient-state-engine'] === run.id && r.parent.state === run.state);
         if (!child) {
           // The run, then — for a ticket step's run — the ticket entered into it beneath this run's state (ASS-67).
+          // …starting with what the step hands it (pass-output, ASS-365), from this run's output.
           const parent = { 'transient-state-engine': run.id, 'state-engine': run['state-engine'], state: run.state };
-          const start = firstStepId(enginesFor(state, run.project)[step.action.engine]), at = ticketPath(run, state.transient);
-          await ctx.cli(['transient-state-engine:create', run.project, step.action.engine, start, JSON.stringify(parent)]);
+          const start = firstStepId(enginesFor(state, run.project)[step.action.engine]), at = ticketPath(run, state.transient), passed = passedOutput(step, run['structured-output']);
+          await ctx.cli(['transient-state-engine:create', run.project, step.action.engine, start, JSON.stringify(parent), ...(passed ? [JSON.stringify(passed)] : [])]);
           if (at) await ctx.cli(['ticket:change-sub-state', run.project, at.workItem, at.variation, step.action.engine, '-', start, ...at.path, run.state]);
           ctx.log(PHASE, `${who}: started a ${step.action.engine} run`);
           return;

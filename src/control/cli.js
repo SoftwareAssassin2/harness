@@ -34,15 +34,16 @@ function where(ctx, argv, vm) {
   return { argv: inVm(vm, argv[0] === './agent.sh' ? ['agent.sh', ...argv.slice(1)] : argv), env: limaEnv(ctx.env) };
 }
 
-// runScript(ctx, argv, vm) — runs a step's filled command (see placeholders.js)
+// runScript(ctx, argv, vm, extra) — runs a step's filled command (see placeholders.js)
 // in ctx.root with ctx.env, or in the VM `vm` (where), logging it under
-// "script". Resolves to { exitCode, stdout }; never rejects: a command that
+// "script"; `extra`, when given, over its env (ASS-365: steps.js scriptEnv's
+// MERGES_AWAITED, for a command run on the host). Resolves to { exitCode, stdout }; never rejects: a command that
 // cannot start has exit code 127, its error logged. It runs in its own
 // process group (detached), kept in ctx.scripts while it runs, so control
 // can stop it and everything it started on its way out (tick.js
 // stopScripts, ASS-328: a script step runs in the background).
-export function runScript(ctx, given, vm) {
-  const { argv, env } = where(ctx, given, vm);
+export function runScript(ctx, given, vm, extra) {
+  const { argv, env: base } = where(ctx, given, vm), env = extra ? { ...base, ...extra } : base;
   ctx.log('script', vm ? `${vm}: ${show(argv.slice(6))}` : show(argv));
   return new Promise(resolve => {
     const child = spawn(argv[0], argv.slice(1), { cwd: ctx.root, env, detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
