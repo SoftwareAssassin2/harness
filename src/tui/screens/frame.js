@@ -113,10 +113,10 @@ export const headerLines = (state, columns, now) => (state.screen === 'S' || sta
 ]);
 
 // The platform boxes above the legend, and a blank line under them: the
-// selected project's control process, one per local environment, then its
-// models. Each box is titled and lists its fields as "field: value";
-// environments leave out type; control and environments add 🤖 to the title
-// when an assignment has control true or a local-environment naming them.
+// selected project's control process, then its models. Each box is titled
+// and lists its fields as "field: value"; control adds 🤖 to the title when
+// an assignment has control true. ASS-368: project.json's local-environments
+// (local-pc, dev-container) get no box — tickets run in VMs now.
 // The control box is built from the control the dashboard started
 // (state.controls, ASS-310): its status — Draining while it drains,
 // Restarting through a restart, else Online — its process id and its uptime,
@@ -132,17 +132,14 @@ export const headerLines = (state, columns, now) => (state.screen === 'S' || sta
 export function platform(state, columns, now) {
   if (state.screen === 'S' || state.screen === 'B') return []; // the flow screens give the diagram the room (ASS-187)
   const project = state.projects[state.project];
-  const { environments = [] } = project ?? {};
   const control = state.controls?.[project?.id];
   const models = Map.groupBy(projectAssignments(state), a => a.model);
-  const watched = new Set(projectAssignments(state).map(a => a['local-environment']));
   const box = (title, fields) => [title, ...Object.entries(fields).map(([field, value]) => `${field}: ${value}`)];
   const status = state.draining?.[project?.id] != null ? 'Draining' : state.restart ? 'Restarting' : 'Online';
   const down = state.controlsDown?.[project?.id];
   const boxes = [
     ...(down ? [[red('control DOWN'), `exited: code ${down.code}`, `last: ${ellipsis(down.line, 60)}`, ...machineLines(state.disk, project, state.memoryHealth)]] : []),
     ...(control && !down ? [[...box(projectAssignments(state).some(a => a.control === true) ? 'control 🤖' : 'control', { status, 'process-id': control.pid, uptime: since(control.startTime, now) }), ...forgeLines(project), ...machineLines(state.disk, project, state.memoryHealth)]] : []),
-    ...environments.map(({ name, type, ...fields }) => box(watched.has(name) ? `${name} 🤖` : name, fields)),
     ...(project ? [['models', ...[...models]
       .toSorted(([a, x], [b, y]) => y.length - x.length || String(a).localeCompare(String(b)))
       .map(([model, list]) => `${model} 🤖x${list.length}`), ...billingLines(project, now)]] : []),

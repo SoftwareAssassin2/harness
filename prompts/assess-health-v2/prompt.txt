@@ -1,6 +1,6 @@
 Decide whether the health check on project {project} found something that must be fixed now.
 
-1. Read the five reports in {ticket-folder}/: harness.md, local-environment.md, local-data.md, project.md, worktrees.md — and disk.md when it is there: written only when a volume holding the VMs or the data is below the harness's disk warning level. Low disk is a real problem; control already deletes the VMs no ticket needs and holds new work by itself, so it needs a fix of yours only when that cannot free enough (the report names the volumes): then the summary names the volume and its free space.
+1. Read the four reports in {ticket-folder}/: harness.md, local-data.md, project.md, worktrees.md — and disk.md when it is there: written only when a volume holding the VMs or the data is below the harness's disk warning level. Low disk is a real problem; control already deletes the VMs no ticket needs and holds new work by itself, so it needs a fix of yours only when that cannot free enough (the report names the volumes): then the summary names the volume and its free space.
 2. Ignore cosmetic findings. For each real problem answer:
    - Does it block, or will it block, any sprint ticket?
    - Would fixing it mean pausing agent work: a shared resource (dev container, database, harness, sign-in) that sprint tickets depend on?

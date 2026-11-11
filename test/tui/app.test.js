@@ -1411,7 +1411,8 @@ test('the dashboard opens with the progress bar, full width', () => {
   assert.ok(!lines(handleKey(state, key('f'))).some(l => l.startsWith('┌')));
 });
 
-test('above the bottom line, with a blank line between: a control box and one box per environment, each field as field: value, without control start-time or environment type', () => {
+// ASS-368: the local-environments entries no longer get a box; only control and models.
+test('above the bottom line, with a blank line between: a control box and the models box, each field as field: value, without control start-time; no box for a local environment', () => {
   const project = {
     id: 'p', name: 'P', sprint: null,
     environments: [
@@ -1424,15 +1425,16 @@ test('above the bottom line, with a blank line between: a control box and one bo
   const boxes = out.slice(-11, -2);
   assert.match(out.at(-1), /press \? for menu/);
   assert.equal(out.at(-2), '');
-  assert.match(boxes[0], /^ +┌─+┐ {4}┌─+┐ {4}┌─+┐ {4}┌─+┐$/);                 // the models box last, always there
-  assert.match(boxes[1], /│ control +│ {4}│ local-pc +│ {4}│ dev-container +│ {4}│ models +│$/);
-  assert.match(boxes[2], /│ status: Online +│ {4}│ folder: \/src\/example +│ {4}│ +│ {4}│ session: — +│$/);
-  assert.match(boxes[3], /│ process-id: 44704 +│ {4}│ active-branch: master +│ {4}│ +│ {4}│ weekly: — +│$/);
-  assert.match(boxes[4], /│ uptime: 13m +│ {4}│ +│ {4}│ +│ {4}│ account: — +│$/);
-  assert.match(boxes[5], /│ disk free: unknown +│ {4}│ +│ {4}│ +│ {4}│ +│$/);   // ASS-292
-  assert.match(boxes[6], /│ golden image: none +│ {4}│ +│ {4}│ +│ {4}│ +│$/);
-  assert.match(boxes[7], /│ hindsight: none +│ {4}│ +│ {4}│ +│ {4}│ +│$/);   // ASS-293
-  assert.match(boxes[8], /^ +└─+┘ {4}└─+┘ {4}└─+┘ {4}└─+┘$/);
+  assert.match(boxes[0], /^ +┌─+┐ {4}┌─+┐$/);                 // the models box last, always there
+  assert.match(boxes[1], /│ control +│ {4}│ models +│$/);
+  assert.match(boxes[2], /│ status: Online +│ {4}│ session: — +│$/);
+  assert.match(boxes[3], /│ process-id: 44704 +│ {4}│ weekly: — +│$/);
+  assert.match(boxes[4], /│ uptime: 13m +│ {4}│ account: — +│$/);
+  assert.match(boxes[5], /│ disk free: unknown +│ {4}│ +│$/);   // ASS-292
+  assert.match(boxes[6], /│ golden image: none +│ {4}│ +│$/);
+  assert.match(boxes[7], /│ hindsight: none +│ {4}│ +│$/);   // ASS-293
+  assert.match(boxes[8], /^ +└─+┘ {4}└─+┘$/);
+  assert.ok(!boxes.join().includes('local-pc') && !boxes.join().includes('dev-container') && !boxes.join().includes('folder:'));
   assert.ok(!boxes.join().includes('start-time'));
   assert.ok(!boxes.join().includes('model:'));
   assert.ok(!boxes.join().includes('type'));
@@ -1446,7 +1448,7 @@ test('after the other platform boxes, a models box: one line per model in use in
   const out = lines(initialState({ projects: [project], assignments: team, controls: { p: { pid: 1, startTime: '2026-10-01T15:51:00Z' } } }));
   const top = out.findLastIndex(l => /^ +┌/.test(l));
   assert.match(out[top], /┐ {4}┌─+┐$/);
-  assert.match(out[top + 1], /│ control +│ {4}│ local-pc +│ {4}│ models +│$/);
+  assert.match(out[top + 1], /│ control +│ {4}│ models +│$/);   // no local-pc box (ASS-368)
   assert.match(out[top + 2], /│ opus-5 🤖x2 +│$/);
   assert.match(out[top + 3], /│ haiku-4 🤖x1 +│$/);
   assert.match(out[top + 4], /│ opus-4\.8 🤖x1 +│$/);
@@ -1519,13 +1521,21 @@ test('ASS-221 AC1, AC2, AC4: the models box shows each project\'s billing — an
   assert.deepEqual(box(null).map(l => l.split(':')[0]), ['models', 'session', 'weekly', 'account']);   // nothing read yet: as before
 });
 
-test('an environment box title carries a robot when one of this project\'s agents is assigned to its local environment', () => {
-  const project = { id: 'p', name: 'P', sprint: null, environments: [{ name: 'local-pc', type: 'local-pc' }, { name: 'dev-container', type: 'dev-container' }] };
-  const watcher = (env, projectId = 'p') => ({ project: projectId, model: 'm', 'agent-name': 'X', 'work-item': null, 'local-environment': env });
-  const titles = team => lines(initialState({ projects: [project], assignments: team })).find(l => l.includes('│ local-pc'));
-  assert.match(titles([watcher('dev-container')]), /│ local-pc +│ {4}│ dev-container 🤖 +│/);
-  assert.match(titles([watcher('local-pc'), watcher('dev-container')]), /│ local-pc 🤖 +│ {4}│ dev-container 🤖 +│/);
-  assert.match(titles([watcher('dev-container', 'other'), watcher(null)]), /│ local-pc +│ {4}│ dev-container +│/);
+// ASS-368 AC1: project.json's local-environments get no box, on any screen,
+// with or without an agent assigned to one; control and models still show.
+test('ASS-368: no box is drawn for a local-environments entry (local-pc, dev-container), on any screen; the control and models boxes stay', () => {
+  const project = { id: 'p', name: 'P', sprint: null, environments: [{ name: 'local-pc', type: 'local-pc', folder: '/src/x', 'ai-feedback-short': 'Healthy' }, { name: 'dev-container', type: 'dev-container' }] };
+  const watcher = env => ({ project: 'p', model: 'm', 'agent-name': 'X', 'work-item': null, 'local-environment': env });
+  for (const screen of ['a', 'b', 'c', 'm', 's', 'S', 'B']) {
+    const st = { ...initialState({ projects: [project], assignments: [watcher('local-pc'), watcher('dev-container')], controls: { p: { pid: 1, startTime: '2026-10-01T15:51:00Z' } } }), screen };
+    const out = lines(st);
+    assert.ok(!out.some(l => /│ (local-pc|dev-container)( 🤖)? +│/.test(l)), `screen ${screen}: no environment box`);
+    assert.ok(!out.some(l => l.includes('folder: /src/x') || l.includes('Healthy')), `screen ${screen}: no environment fields`);
+    if (screen !== 'S' && screen !== 'B') {
+      assert.ok(out.some(l => /│ control +│/.test(l)), `screen ${screen}: control box`);
+      assert.ok(out.some(l => /│ models +│/.test(l)), `screen ${screen}: models box`);
+    }
+  }
 });
 
 test('the control box title carries a robot when one of this project\'s agents is assigned to control', () => {
@@ -6980,15 +6990,15 @@ test('ASS-310 AC3: another project draining leaves the selected project Online',
   assert.equal(controlCells(state)[1], 'status: Online');
 });
 
-test('ASS-310 AC4: the control box fits beside the environment and models boxes at every frame-test width (narrow included), nothing wrapped or clipped', () => {
+test('ASS-310 AC4: the control box fits beside the models box at every frame-test width (narrow included), nothing wrapped or clipped', () => {
   const project = { id: 'p', name: 'P', sprint: null, environments: [{ name: 'local-pc', type: 'local-pc' }], golden: goldenBuilt, hindsight: { port: 9077 } };
   const state = app.controlStarted(initialState({ projects: [project], disk: diskAt('ok', 120) }), 'p', { pid: 44704, startTime: '2026-10-01T15:51:00Z' });
   for (const size of [at80, screen, wide]) {
     const out = render(state, size);
     const stripped = out.map(strip);
     const top = stripped.findLastIndex(l => /^ *┌/.test(l));
-    assert.equal((stripped[top].match(/┌/g) || []).length, 3, `three boxes side by side at ${size.columns}`);   // control, local-pc, models
-    assert.match(stripped[top + 1], /│ control .*│ local-pc .*│ models /);
+    assert.equal((stripped[top].match(/┌/g) || []).length, 2, `two boxes side by side at ${size.columns}`);   // control, models: no local-pc box (ASS-368)
+    assert.match(stripped[top + 1], /│ control .*│ models /);
     for (const l of out) assert.ok(visible(l) <= size.columns, `${size.columns}: ${strip(l)}`);
   }
 });

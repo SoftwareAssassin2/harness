@@ -57,8 +57,8 @@ const asShown = sprint => sprint && Object.fromEntries(Object.entries(sprint).ma
 // One project per <dir>/<id>/project.json, sorted by display name.
 // stateEngine names the engines/ folder of its execution state engine;
 // switchedOffSteps its switched-off-steps (ASS-209, shared.js projectWorkflows);
-// environments and repositories are its local-environments and
-// repositories (its running control comes from the dashboard, not
+// environments and repositories are its local-environments (no longer
+// drawn as boxes, ASS-368) and repositories (its running control comes from the dashboard, not
 // project.json — ASS-310); backlog its backlog.json tickets not in
 // its active sprint, backlogOfSprint those in it (their refinement history,
 // ASS-42); days its end-of-day sprint snapshots;

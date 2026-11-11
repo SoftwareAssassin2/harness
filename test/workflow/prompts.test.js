@@ -490,7 +490,8 @@ test('ASS-180 AC4: groom names ticket:set-requirements, ticket:set-acceptance-cr
 // last argument. Runs overlap, so each staged name is unique to the run (its
 // <folder>, or {ticket}), and the path is the resolved absolute one, not a
 // $TMPDIR left for the shell to expand.
-const REFLECT = ['reflect-on-harness', 'reflect-on-project', 'reflect-on-local-environment', 'reflect-on-local-data', 'reflect-on-worktrees'];
+// ASS-368: reflect-on-local-environment is gone with its health-check step.
+const REFLECT = ['reflect-on-harness', 'reflect-on-project', 'reflect-on-local-data', 'reflect-on-worktrees'];
 
 test('ASS-298 AC3: each reflect-on-* prompt writes its report with work:write\'s trailing file-path argument, not stdin', () => {
   for (const p of REFLECT) {

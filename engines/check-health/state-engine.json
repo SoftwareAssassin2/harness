@@ -4,48 +4,42 @@
         { "id": "check-harness", "sequence": 1, "name": "Check Harness", "description": "Checking the agent harnesses: CLIs, models, sign-ins",
             "action": { "type": "prompt", "prompt": "reflect-on-harness", "agent-count": 1, "run-in-dev-container": false },
             "exit-events": [
-                { "condition": { "turn-complete": true }, "move-to-state": "check-local-environment" }
-            ]
-        },
-        { "id": "check-local-environment", "sequence": 2, "name": "Check Local Environment", "description": "Checking the project's local environments and dev containers",
-            "action": { "type": "prompt", "prompt": "reflect-on-local-environment", "agent-count": 1, "run-in-dev-container": false },
-            "exit-events": [
                 { "condition": { "turn-complete": true }, "move-to-state": "check-local-data" }
             ]
         },
-        { "id": "check-local-data", "sequence": 3, "name": "Check Local Data", "description": "Checking the factory's local data for inconsistencies",
+        { "id": "check-local-data", "sequence": 2, "name": "Check Local Data", "description": "Checking the factory's local data for inconsistencies",
             "action": { "type": "prompt", "prompt": "reflect-on-local-data", "agent-count": 1, "run-in-dev-container": false },
             "exit-events": [
                 { "condition": { "turn-complete": true }, "move-to-state": "check-project" }
             ]
         },
-        { "id": "check-project", "sequence": 4, "name": "Check Project", "description": "Comparing project.json and the sprint data against reality",
+        { "id": "check-project", "sequence": 3, "name": "Check Project", "description": "Comparing project.json and the sprint data against reality",
             "action": { "type": "prompt", "prompt": "reflect-on-project", "agent-count": 1, "run-in-dev-container": false },
             "exit-events": [
                 { "condition": { "turn-complete": true }, "move-to-state": "check-worktrees" }
             ]
         },
-        { "id": "check-worktrees", "sequence": 5, "name": "Check Worktrees", "description": "Flagging stale or dirty worktrees",
+        { "id": "check-worktrees", "sequence": 4, "name": "Check Worktrees", "description": "Flagging stale or dirty worktrees",
             "action": { "type": "prompt", "prompt": "reflect-on-worktrees", "agent-count": 1, "run-in-dev-container": false },
             "exit-events": [
                 { "condition": { "turn-complete": true }, "move-to-state": "assess" }
             ]
         },
-        { "id": "assess", "sequence": 6, "name": "Assess Health", "description": "Reading the five reports and deciding whether a fix is needed now",
+        { "id": "assess", "sequence": 5, "name": "Assess Health", "description": "Reading the four reports and deciding whether a fix is needed now",
             "action": { "type": "prompt", "prompt": "assess-health", "agent-count": 1, "run-in-dev-container": false },
             "exit-events": [
                 { "condition": { "all": [ { "turn-complete": true }, { "structured-output": { "needs-fix": true } }, { "structured-output": { "can-continue-without-fix": false } } ] }, "move-to-state": "self-heal" },
                 { "condition": { "turn-complete": true }, "move-to-state": "done" }
             ]
         },
-        { "id": "self-heal", "sequence": 7, "name": "Self Heal", "description": "Fixing what the health check found",
+        { "id": "self-heal", "sequence": 6, "name": "Self Heal", "description": "Fixing what the health check found",
             "action": { "type": "state-engine", "engine": "self-healing" },
             "exit-events": [
                 { "condition": { "is-done": true }, "move-to-state": "done" }
             ]
         },
 
-        { "id": "done", "sequence": 8, "name": "Done", "description": "Health check is completed", "is-done": true,
+        { "id": "done", "sequence": 7, "name": "Done", "description": "Health check is completed", "is-done": true,
             "action": { "type": "none" }
         }
     ]
