@@ -25,6 +25,7 @@ import { awaitsVm, credentialKindOf } from './vm-lifecycle.js';
 import { awaitsDependencies } from './dependencies.js';
 import { repositoryName, nextRepository, visitOf } from './repositories.js';
 import { overSpent, runningOn } from './spend.js';
+import { credentialsHeld } from './credentials.js';
 
 const PHASE = 'dispatch';
 
@@ -562,9 +563,9 @@ export async function dispatch(ctx, state) {
   const mine = new Set(state.projects.map(p => p.id));
   const others = state.assignments.filter(a => !mine.has(a.project)).length;
   const allAgents = () => ctx.agents.size + others;
-  // A project on the wrong Claude account starts none of its agents (accountHold).
+  // A project on the wrong Claude account starts none of its agents (accountHold); nor does one its credentials hold (ASS-395, credentials.js).
   const accountHeld = new Set();
-  for (const project of state.projects) if (await accountHold(ctx, project)) accountHeld.add(project.id);
+  for (const project of state.projects) if (await accountHold(ctx, project) || credentialsHeld(project)) accountHeld.add(project.id);
   // Each project's credential kinds held by a rate limit (rateHeld).
   const limited = new Map(state.projects.map(p => [p.id, heldKinds(p, ctx.now().getTime())]));
   // Each project at its weekly usage limit (weeklyLimit: 'held' or 'api'), asked every tick so its hold is logged as it starts and lifts.

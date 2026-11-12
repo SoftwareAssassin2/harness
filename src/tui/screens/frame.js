@@ -40,8 +40,9 @@ function idle(state) {
   const keys = new Set(Object.keys(ICONS).flatMap(type => sprint[type] ?? []).map(t => t.key.toLowerCase()));
   return !liveAssignments(state).some(a => !refining(state, a) && keys.has(String(a['work-item']).toLowerCase()));
 }
-// The sprint header's warnings, in the order they show: the logins to renew, background work off (ASS-127), the memory and disk holds (ASS-398), then idleness.
+// The sprint header's warnings, in the order they show: the project held by its credentials (ASS-395), the logins to renew, background work off (ASS-127), the memory and disk holds (ASS-398), then idleness.
 const warnings = state => [
+  state.projects[state.project]?.credentialsHold && 'Project blocked by credentials',
   state.projects[state.project]?.gcloudReauthentication && "run 'gcloud auth login' asap",
   state.projects[state.project]?.glabReauthentication && "run 'glab auth login' asap",
   state.projects[state.project]?.backgroundWorkOff && 'Background work off',

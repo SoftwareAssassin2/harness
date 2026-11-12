@@ -19,6 +19,7 @@ const LONGEST = 200;
 export function fallback({ step, reason = {} }) {
   const one = text => String(text).split('\n')[0].trim();
   const clip = text => (text.length > 120 ? `${text.slice(0, 119)}…` : text);
+  if (reason.credentials) return clip(`Project blocked by credentials: ${one(reason.credentials)}`);   // ASS-395
   if (reason.change != null) return 'Requirements changed: keep the current description or take the new one';
   if (reason.blocked) return clip(`Blocked for Human${reason.short ? `: ${one(reason.short)}` : reason.long ? `: ${one(reason.long)}` : ''}`);
   if (reason.gate) return clip(`${reason.gate}${reason.choices?.length ? `: ${reason.choices.join(' or ')}` : ''}`);
@@ -38,6 +39,7 @@ export function promptOf({ key, title, step, reason = {} }) {
     ['AI feedback (long)', reason.long],
     ...(reason.questions ?? []).map(q => ['Blocking question', q]),
     ['Pending requirements change, new description', reason.change],
+    ['Project blocked by credentials (what fails, and the fix)', reason.credentials],
   ].filter(([, value]) => value != null && value !== '').map(([name, value]) => `- ${name}: ${value}`);
   return [
     'Write the text of a macOS notification telling a software operator what they need to do for this ticket and why.',

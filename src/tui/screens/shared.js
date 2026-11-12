@@ -66,10 +66,14 @@ const assuming = state => keysOf(state, q => isOpenQuestion(q) && q.blocking ===
 // keeps its mark on the backlog screen and is never counted (ASS-254). A
 // complete ticket — a variation at a step its engine marks is-done
 // (isDoneStep), or a ticket-system status of Done — waits on no one, whatever
-// its other variations or open questions (ASS-247).
+// its other variations or open questions (ASS-247). A project its
+// credentials hold (ASS-395) adds one item, CREDENTIALS_ITEM, however many
+// of its tickets that holds: the project waits on the operator once.
+export const CREDENTIALS_ITEM = 'credentials';
 export const operatorNeeded = (state, tickets = sprintTickets(state).tickets) => {
   const shown = new Set(tickets.map(t => t.key));
-  return new Set([...ticketMarks(state, tickets).needed].filter(key => shown.has(key)));
+  const needed = new Set([...ticketMarks(state, tickets).needed].filter(key => shown.has(key)));
+  return state.projects[state.project]?.credentialsHold ? needed.add(CREDENTIALS_ITEM) : needed;
 };
 
 // ticketMarks(state, tickets) — { needed, assumed }: `needed`, operatorNeeded's

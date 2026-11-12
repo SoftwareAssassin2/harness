@@ -20,6 +20,7 @@ import { overSpent, spendText, runningOn } from './spend.js';
 import { readSession } from '../agents/session.js';
 import { diskHeld, makesDisk } from './disk.js';
 import { memoryShort, startsVm } from './host-memory.js';
+import { credentialsHeld } from './credentials.js';
 
 const PHASE = 'steps';
 const CHAIN = 20;   // moves one variation or run may make in a tick
@@ -88,6 +89,16 @@ async function memoryWaits(ctx, state, project, step, who) {
   if (!startsVm(step.action?.command)) return false;
   if (!await memoryShort(ctx, state, project, null)) { ctx.memory.warned.delete(`memory/${who}`); return false; }
   warnOnce(ctx, `memory/${who}`, `${who}: waits: out of memory`);
+  return true;
+}
+
+// setupWaits(ctx, project, step, who) — the same script steps (a VM's or a
+// golden image's setup) wait while the project's credentials hold it
+// (credentials.js, ASS-395), said once per hold; they run once it lifts.
+function setupWaits(ctx, project, step, who) {
+  if (!makesDisk(step.action?.command)) return false;
+  if (!credentialsHeld(project)) { ctx.memory.warned.delete(`credentials/${who}`); return false; }
+  warnOnce(ctx, `credentials/${who}`, `${who}: waits: ${project.id} is blocked by credentials`);
   return true;
 }
 
@@ -282,7 +293,7 @@ async function runVariation(ctx, state, project, key, name) {
         let wait = 0;
         if (!scriptRunning(ctx, running, visit)) {
           if (waiting(ctx.memory, held, ctx.now().getTime()) || (!timer && heldAtGate(variation))) return;
-          if (diskWaits(ctx, state, step, who)) return;
+          if (diskWaits(ctx, state, step, who) || setupWaits(ctx, project, step, who)) return;
           if (await memoryWaits(ctx, state, project, step, who)) return;   // ASS-398
           if (!scriptDue(ctx, who, running, visit, step, ctx.now().getTime())) return;
           startScript(ctx, running, visit, runScriptStep(ctx, step, values, who, variation, backlog ? undefined : scriptEnv(state, project, variation)), who);
@@ -420,7 +431,7 @@ async function runTransient(ctx, state, id) {
         let wait = 0;
         if (!scriptRunning(ctx, running, visit)) {
           if (waiting(ctx.memory, held, ctx.now().getTime()) || (!timer && variation && at && heldAtGate(variation, run['state-engine'], run.state, at.path.length + 1))) return;
-          if (diskWaits(ctx, state, step, who)) return;
+          if (diskWaits(ctx, state, step, who) || setupWaits(ctx, project, step, who)) return;
           if (await memoryWaits(ctx, state, project, step, who)) return;   // ASS-398
           if (!scriptDue(ctx, who, running, visit, step, ctx.now().getTime())) return;
           startScript(ctx, running, visit, runScriptStep(ctx, step, values, who, variation, ticket && variation && !backlog ? scriptEnv(state, project, variation) : undefined), who);

@@ -4,7 +4,8 @@
 // reuse neededTickets and entered as they are.
 import { readFileSync, writeFileSync, renameSync } from 'node:fs';
 import { blocksTicket } from '../control/engine.js';
-import { operatorNeeded, sprintTickets } from '../tui/screens/shared.js';
+import { operatorNeeded, sprintTickets, CREDENTIALS_ITEM } from '../tui/screens/shared.js';
+import { problemText } from '../control/credentials.js';
 import { gateWaits, needsYou } from '../tui/ticket.js';
 
 // How much of one field goes to the summarizer: enough for its point, never a whole document.
@@ -38,13 +39,17 @@ export function reasonOf(project, row) {
 // every project's Operator Needed tickets, operatorNeeded on its live sprint
 // as the project menu's dots count them (ASS-370: the project selected, day
 // null), each with the variation that waits — one at a gate or the blocked
-// state ahead of the rest —, the step it waits at (its deepest) and reasonOf.
+// state ahead of the rest —, the step it waits at (its deepest) and reasonOf;
+// a project its credentials hold, one item more (CREDENTIALS_ITEM, ASS-395:
+// project true, its problems the reason's `credentials`).
 export function neededTickets(state) {
   return Object.fromEntries(state.projects.map((project, i) => {
     const live = { ...state, project: i, day: null };
     const { tickets } = sprintTickets(live);
     const keys = operatorNeeded(live, tickets);
     return [project.id, [...keys].map(key => {
+      // ASS-395: the project held by its credentials, one item for the project: its problems the reason.
+      if (key === CREDENTIALS_ITEM) return { key, title: 'Project blocked by credentials', variation: null, step: null, project: true, reason: { credentials: project.credentialsHold.problems.map(problemText).join('; ') } };
       const rows = tickets.filter(t => t.key === key);
       const row = rows.find(t => gateWaits(t.gate) || t.step?.['is-blocked-state'] === true) ?? rows[0];
       const step = row.gate?.step ?? row.status?.detailStep ?? row.step;

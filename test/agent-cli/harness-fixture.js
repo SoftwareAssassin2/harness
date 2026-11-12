@@ -131,6 +131,8 @@ export function fixture() {
     DISK_SPACE_DISABLED: '1', DISK_SPACE_FILE: at('disk-space.json'),
     // Control's memory hold (ASS-398) is off, so a test's control never holds a VM for the real Mac's memory.
     HOST_MEMORY_DISABLED: '1',
+    // Control's credentials check (ASS-395) is off, so a test's control never reads the real keychain or forge logins.
+    CREDENTIALS_CHECK_DISABLED: '1',
     // memory:up finds no Hindsight installed and no Python to install one, so a test's control never starts the real one (ASS-62).
     HINDSIGHT_DIR: at('hindsight-install'), HINDSIGHT_PYTHON: 'false',
   };

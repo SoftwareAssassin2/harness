@@ -93,8 +93,9 @@ export function operatorNeededNotifier({ seenFile, projectsDir, agentSh, env = p
     const record = (usd, billing) => exec(agentSh, ['chat:add-spend', project.id, SPEND_ID, String(usd), ...(billing ? [billing] : [])]);
     const message = await describe(ticket, { envs: loginEnvs(projectsDir, project, env), ask, record, ...(timeoutMs ? { timeoutMs } : {}) });
     const texts = {
-      title: `${ticket.key} needs you`, subtitle: `${project.name} — ${ticket.title}`, message,
-      group: `${project.id}/${ticket.key}`, execute: openCommand(agentSh, project.id, ticket.key), activate: GHOSTTY,
+      title: ticket.project ? `${project.name} needs you` : `${ticket.key} needs you`, subtitle: `${project.name} — ${ticket.title}`, message,
+      // ASS-395: a project-level item (its credentials hold) opens no ticket.
+      group: `${project.id}/${ticket.key}`, execute: ticket.project ? null : openCommand(agentSh, project.id, ticket.key), activate: GHOSTTY,
     };
     let error = await exec(...notification(kind, texts));
     // terminal-notifier exiting non-zero — 3 when macOS refuses it permission —

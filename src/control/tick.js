@@ -36,6 +36,9 @@
 // While the disk is nearly full (disk.js, ASS-288: its hold, harness-wide)
 // no agent starts either, and no VM, clone or golden build; it lifts by itself
 // once the free space is back above the warn level.
+// A project missing or failing a credential (credentials.js, ASS-395: checked
+// at the first tick and every few minutes, with the disk) starts none of its
+// agents or VM setups, until a check passes again.
 import { spawnSync, execFile } from 'node:child_process';
 import { paths, loadState, readDiskSpace } from './state.js';
 import { runCli, runScript, scriptSucceeds } from './cli.js';
@@ -58,6 +61,7 @@ import { detectReverts } from './reverts.js';
 import { raiseDependencies } from './dependencies.js';
 import { checkDisk, diskHeld } from './disk.js';
 import { readAvailableMemory } from './host-memory.js';
+import { checkCredentials } from './credentials.js';
 import { sessionUsage } from '../agents/usage.js';
 import { monthCost } from '../agents/api-cost.js';
 import { pushAccount } from '../agents/forge.js';
@@ -184,6 +188,7 @@ export async function tick(ctx) {
       await checkRateLimits(ctx, now);
       await ctx.attempt('disk', 'check', () => checkDisk(ctx));
       held = diskHeld({ diskSpace: readDiskSpace(ctx.paths.diskSpace) });
+      await ctx.attempt('credentials', 'check', () => checkCredentials(ctx, ctx.load()));   // ASS-395: a project held by its credentials starts no new work (dispatch.js, steps.js)
     }
     if ((ctx.drain || held) && NEW_WORK.has(phase)) continue;
     try {
