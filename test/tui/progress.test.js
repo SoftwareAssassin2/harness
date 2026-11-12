@@ -130,3 +130,22 @@ test('a run too narrow for its label keeps the change and shortens the name; the
   // a name cut at a space drops it: "Setup -1", not "Setup  -1"
   assert.equal(progressBar([{ sequence: 0, count: 1, name: 'Setup Review', change: -1 }, { sequence: 29, count: 1, name: 'Done' }], { steps, columns: 22 })[3], ' Setup -1  Done');
 });
+
+// ASS-405
+test('ASS-405: the top border carries the total in its right corner, two dashes before it', () => {
+  const top = progressBar([{ sequence: 0, count: 20 }, { sequence: 29, count: 2 }], { steps, columns: 26 })[0];
+  assert.equal(top, '┌──── 22 total tickets ──┐');
+  assert.equal(top.length, 26);
+});
+
+test('ASS-405: one ticket reads "1 total ticket"; zero shows no label', () => {
+  assert.equal(progressBar([{ sequence: 29, count: 1 }], { steps, columns: 24 })[0], '┌──── 1 total ticket ──┐');
+  assert.equal(progressBar([{ sequence: 29, count: 0 }], { steps, columns: 24 })[0], `┌${'─'.repeat(22)}┐`);
+  assert.equal(progressBar([], { steps, columns: 24 })[0], `┌${'─'.repeat(22)}┐`);
+});
+
+test('ASS-405: a box too narrow for the label draws the plain border', () => {
+  assert.equal(progressBar([{ sequence: 29, count: 22 }], { steps, columns: 23 })[0], '┌─ 22 total tickets ──┐');
+  assert.equal(progressBar([{ sequence: 29, count: 22 }], { steps, columns: 22 })[0], `┌${'─'.repeat(20)}┐`);
+  assert.equal(progressBar([{ sequence: 29, count: 22 }], { steps, columns: 8 })[0], '┌──────┐');
+});

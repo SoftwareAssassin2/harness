@@ -1406,7 +1406,7 @@ test('the dashboard opens with the progress bar, full width', () => {
   const out = lines(state);
   const top = out.findIndex(l => l.startsWith('┌'));
   assert.ok(top > 0);
-  assert.equal(out[top], `┌${'─'.repeat(118)}┐`);
+  assert.equal(out[top], `┌${'─'.repeat(99)} 2 total tickets ──┐`);   // ASS-405: the total in the corner
   assert.match(out[top + 1], /^│█{118}│$/);
   assert.ok(!lines(handleKey(state, key('f'))).some(l => l.startsWith('┌')));
 });

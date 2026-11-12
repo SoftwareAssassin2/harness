@@ -32,7 +32,18 @@ export function progressBar(segments, { steps, columns }) {
     names = names.padEnd(start) + label(s, Math.max(0, room));
     start += widths[i];
   });
-  return [`┌${'─'.repeat(inner)}┐`, `│${bar}\x1b[0m${' '.repeat(empty)}│`, `└${bottom}┘`, names && ` ${names}`];
+  return [top(filled.reduce((n, s) => n + s.count, 0), inner), `│${bar}\x1b[0m${' '.repeat(empty)}│`, `└${bottom}┘`, names && ` ${names}`];
+}
+
+// top(total, inner) — the box's top border, the total in its right corner,
+// two dashes before ┐: "┌──── 22 total tickets ──┐", "1 total ticket" for
+// one. Plain dashes for zero, or when the label wouldn't leave a dash after ┌
+// (ASS-405).
+function top(total, inner) {
+  const text = ` ${total} total ticket${total === 1 ? '' : 's'} `;
+  const left = inner - text.length - 2;
+  if (!total || left < 1) return `┌${'─'.repeat(inner)}┐`;
+  return `┌${'─'.repeat(left)}${text}──┐`;
 }
 
 // label({ name, change }, room) — a run's name, then its change since
