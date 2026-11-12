@@ -14,7 +14,15 @@ set -euo pipefail
 # Each ask, in order (the lock tried first, for at most a second):
 # - The gate has finished (its result, work/<KEY>/merge-gate-<variation>.json,
 #   taken): merged — { "merged": true, "branch", "tested" }, exit 0; red —
-#   exit 2, the reason on stderr; any other failure exit 1.
+#   exit 2, the reason on stderr; master's (ASS-394, below) — waiting for
+#   master; any other failure exit 1.
+# - Waiting for master (work/<KEY>/merge-gate-wait-<variation>.json, written
+#   when a master's result is taken): while origin's default branch is still
+#   at the commit the tests failed on (git ls-remote; or origin cannot be
+#   asked), { "waiting": true, "master-red": true, tests, tickets }, exit 0,
+#   the board's ai-feedback "waiting for master: …" naming the tickets — no
+#   exit, so no visit charged and nothing sent back to Build. Once it moves,
+#   the record goes and the ask goes on below: the gate runs again.
 # - The lock is held: { "waiting": true, "behind": <holder's key> }, exit 0, and
 #   the board's ai-feedback says "waiting to merge behind <key>" — or, the
 #   holder being this ticket, that its gate is running.
@@ -33,7 +41,21 @@ set -euo pipefail
 # what was tested. A variation with no Open pull request has nothing to test
 # and merges nothing. More than one Open one, or a failing fetch, push or
 # merge, is a failure (exit 1, to Blocked).
+# A failing test is not red at once (ASS-394). The failing tests run again,
+# once, in the same worktree: node --test's failed files alone, when its
+# output names them (merge-gate-tests.js files), else the whole command.
+# Passing then, the gate goes on to push and merge (a flake). Failing again,
+# the same run is made on the latest master (a worktree of the fetched
+# default branch) and the two compared by test (merge-gate-tests.js judge,
+# test-results.js's keys): every test that failed again fails on master too
+# (or, no test named, the command is red there too) — master's: each such
+# test raised once in the project (master-test-failures.bash: the harness
+# backlog for the harness project, else the project's own ticket system),
+# the result master, and the ticket waits for master as above. A test that
+# passes on master, or a failed test file master has not got, is red as
+# before (those that do fail on master still raised once).
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../merge-requests.bash"
+source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../master-test-failures.bash"
 here="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
 command=merge-request:merge-in-turn
 
@@ -46,10 +68,14 @@ workspace="$(workspace_of "$command" "$project")"
 folder="$projects/$project/work/$key"
 lock="$projects/$project/merge.lock" holder="$projects/$project/merge-lock.json"
 result="$folder/merge-gate-$variation.json" log="$folder/merge-gate-$variation.log"
+master_wait="$folder/merge-gate-wait-$variation.json"
 
 if [[ $gate -eq 1 ]]; then
   scratch="$(mktemp -d)"
-  finish() { git -C "$workspace" worktree remove --force "$scratch/gate" 2>/dev/null || true; rm -rf "$scratch"; rm -f "$holder"; }
+  finish() { local w; for w in gate master; do git -C "$workspace" worktree remove --force "$scratch/$w" 2>/dev/null || true; done; rm -rf "$scratch"; rm -f "$holder"; }
+  # tests_in <folder> <output-file> <command…> — the command run in <folder>, its output kept in <output-file> (and the log); its exit status.
+  tests_in() { local s=0 dir="$1" out="$2"; shift 2; (cd "$dir" && "$@") > "$out" 2>&1 6>&- || s=$?; cat "$out"; return $s; }
+  extra='{}' files=()
   # A gate that stops on an error of its own ends failed, so the step blocks rather than start it again and again.
   trap 'ends failed "the merge gate stopped (exit $?)"' EXIT
   { jq --argjson pid $$ '. + { pid: $pid }' "$holder" | replace_file "$holder"; } 2>/dev/null || true
@@ -57,7 +83,7 @@ if [[ $gate -eq 1 ]]; then
   ends() {
     trap - EXIT
     [[ "$1" != red ]] || plan_note "$project" "$key" "$variation" "the merge gate sent it back to Build, nothing merged: $2" 6>&-
-    jq -n --arg r "$1" --arg why "$2" --arg branch "${branch-}" --arg tested "${tested-}" '{ result: $r, reason: $why, branch: $branch, tested: $tested }' | replace_file "$result"
+    jq -n --arg r "$1" --arg why "$2" --arg branch "${branch-}" --arg tested "${tested-}" --argjson extra "$extra" '{ result: $r, reason: $why, branch: $branch, tested: $tested } + $extra' | replace_file "$result"
     finish
     exit 0
   }
@@ -89,8 +115,43 @@ if [[ $gate -eq 1 ]]; then
     ends red "$branch does not rebase onto $main: conflicts in ${conflicts:-its changes}; bring $main into the branch and resolve them"
   fi
   tested="$(git -C "$scratch/gate" rev-parse HEAD)"
-  (cd "$scratch/gate" && "$@") 6>&- \
-    || ends red "$* fails on $branch rebased onto $main ($(git -C "$workspace" rev-parse --short "refs/merge-gate/$main")) — its output: $log; bring $main into the branch and make it pass"
+  master="$(git -C "$workspace" rev-parse "refs/merge-gate/$main")"
+  red="$* fails on $branch rebased onto $main ($(git -C "$workspace" rev-parse --short "$master")) — its output: $log; bring $main into the branch and make it pass"
+  status=0; tests_in "$scratch/gate" "$scratch/first" "$@" || status=$?
+  if [[ $status -ne 0 ]]; then
+    # ASS-394 AC1: red once is not yet the ticket's: the failing tests run again.
+    mapfile -t files < <(node "$here/merge-gate-tests.js" files "$scratch/first" 2>/dev/null || true)
+    if [[ ${#files[@]} -gt 0 ]]; then again=(node --test --test-force-exit "${files[@]}"); else again=("$@"); fi
+    echo "$command: red; the failing tests run again: ${again[*]}"
+    status=0; tests_in "$scratch/gate" "$scratch/again" "${again[@]}" || status=$?
+    [[ $status -ne 0 ]] || echo "$command: the failing tests pass when run again: a flake, not the ticket's"
+  fi
+  if [[ $status -ne 0 ]]; then
+    # AC2: red again, so the same tests run on the latest master. A test file
+    # master has not got is the branch's own, not master's.
+    for f in "${files[@]}"; do
+      git -C "$workspace" cat-file -e "refs/merge-gate/$main:$f" 2>/dev/null || ends red "$red (it failed again; $f is not on $main)"
+    done
+    git -C "$workspace" worktree add --quiet --detach "$scratch/master" "$master" 6>&- || ends failed "could not check out $main"
+    echo "$command: red again; the same tests on $main ($master)"
+    mstatus=0; tests_in "$scratch/master" "$scratch/master.out" "${again[@]}" || mstatus=$?
+    verdict="$(node "$here/merge-gate-tests.js" judge "$status" "$scratch/again" "$mstatus" "$scratch/master.out")" \
+      || ends failed "could not compare the failing tests with $main's"
+    # The tests that fail on master too (the command, when no test is named), each raised once.
+    names='[]'
+    [[ $mstatus -eq 0 ]] || names="$(jq -c --arg c "${again[*]}" 'if .tests == [] and .master then [$c] else .tests end' <<< "$verdict")"
+    tickets='[]'
+    if [[ "$names" != '[]' ]]; then
+      tickets="$(raise_master_failures "$command" "$project" "$names" \
+        "The merge gate (merge-request:merge-in-turn, ASS-394) ran \`$*\` for $key $variation rebased onto $main: these failed, failed again when run again, and failed on the latest $main ($master) too: $main's flake or bug, not the ticket's. Its output: $log." 6>&-)" \
+        || tickets='[]'
+    fi
+    # AC3: a failure that passes on master counts against the ticket, as before.
+    [[ "$(jq -r .master <<< "$verdict")" == true && $mstatus -ne 0 ]] \
+      || ends red "$red$(jq -r 'if .new == [] then "" else " (failed again, not on master: \(.new | join("; ")))" end' <<< "$verdict")"
+    extra="$(jq -nc --arg m "$main" --arg at "$master" --argjson t "$names" --argjson k "$tickets" '{ main: $m, master: $at, tests: $t, tickets: $k }')"
+    ends master "$(jq -r 'join("; ")' <<< "$names") fail(s) on the latest $main ($(git -C "$workspace" rev-parse --short "$master")) too: $main's, not the ticket's"
+  fi
   if [[ "$tested" != "$before" ]]; then
     git -C "$scratch/gate" push --quiet --force-with-lease="refs/heads/$branch:$before" origin "HEAD:refs/heads/$branch" 6>&- \
       || ends failed "could not push $branch rebased onto $main"
@@ -103,19 +164,37 @@ fi
 # gate writes before it lets go.
 locked=0
 lock_on 6 "$lock" "$command" 1 2>/dev/null && locked=1
+# says <short> <long> — the board's ai-feedback for the variation.
+says() { "$here/../ticket/set-ai-feedback.sh" "$project" "$key" "$variation" "$1" "$2" >/dev/null 6>&-; }
+running() { says "merging: rebasing onto main and running the full tests" "Its merge gate runs (log: $log); asked again every minute."; }
+# ASS-394: a gate red on tests that fail on master too waits for master: no
+# exit, so no visit charged and nothing sent back to Build.
+waiting_for_master() {
+  local tickets
+  tickets="$(jq -r '.tickets | if length == 0 then "no ticket raised" else join(", ") end' "$master_wait")"
+  says "waiting for master: its failing tests fail on $(jq -r .main "$master_wait") too ($tickets)" \
+    "The merge gate's tests failed, failed again, and fail on the latest $(jq -r .main "$master_wait") ($(jq -r .master "$master_wait")) too: $(jq -r '.tests | join("; ")' "$master_wait"). That is master's flake or bug, not this ticket's: raised once as $tickets, and this ticket is not charged for it. It waits for $(jq -r .main "$master_wait") to move, then runs its merge gate again; asked every minute."
+  jq -c '{ waiting: true, behind: null, "master-red": true, tests, tickets }' "$master_wait"
+}
 if [[ -f "$result" ]]; then
   done="$(cat "$result")"
   rm -f "$result"
   case "$(jq -r .result <<< "$done")" in
     merged) jq -c '{ merged: true, branch, tested }' <<< "$done"; exit 0 ;;
     red) echo "$command: $(jq -r .reason <<< "$done")" >&2; exit 2 ;;
+    master) jq '{ main, master, tests, tickets, reason, "since": (now | todate) }' <<< "$done" | replace_file "$master_wait"
+      waiting_for_master; exit 0 ;;
     *) echo "$command: $(jq -r .reason <<< "$done") — see $log" >&2; exit 1 ;;
   esac
 fi
+# Waiting for master: until origin's master moves past the one the tests
+# failed on (or origin cannot be asked), it waits; then the gate runs again.
+if [[ -f "$master_wait" ]]; then
+  now="$(git -C "$workspace" ls-remote origin "refs/heads/$(jq -r .main "$master_wait")" 2>/dev/null 6>&- | cut -f1 || true)"
+  if [[ -z "$now" || "$now" == "$(jq -r .master "$master_wait")" ]]; then waiting_for_master; exit 0; fi
+  rm -f "$master_wait"
+fi
 
-# says <short> <long> — the board's ai-feedback for the variation.
-says() { "$here/../ticket/set-ai-feedback.sh" "$project" "$key" "$variation" "$1" "$2" >/dev/null 6>&-; }
-running() { says "merging: rebasing onto main and running the full tests" "Its merge gate runs (log: $log); asked again every minute."; }
 if [[ $locked -eq 0 ]]; then
   behind="$(jq -r '.ticket // empty' "$holder" 2>/dev/null || true)"
   if [[ "$behind" == "$key" ]]; then running

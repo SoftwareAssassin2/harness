@@ -1145,6 +1145,29 @@ stay the reference to copy from.
   so that move restarts Build/Test/Document/Review's visit counting (ASS-315,
   above) rather than spending it on a gate red unrelated to the change. The
   grouped engines keep the plain merge.
+- **A merge-gate red on master's flake (ASS-394).** A red test run in the
+  merge gate (`merge-request:merge-in-turn`) is not at once the ticket's. The
+  failing tests run again, once, in the same rebased worktree: node --test's
+  failed files alone when its output names them (`merge-gate-tests.js`,
+  reading it with automated-tests' `test-results.js`), else the whole
+  command. Passing, it was a flake: the gate pushes and merges. Failing
+  again, the same run is made on a checkout of the latest main and the two
+  compared test by test. Every test that failed again fails on main too (or,
+  no test named, the command is red there too): main's flake or bug, not the
+  ticket's. The gate ends with no exit at all — `{ waiting, master-red,
+  tests, tickets }`, the board's feedback "waiting for master: …" — so no
+  visit is charged and nothing goes back to Build; the ticket waits
+  (`work/<KEY>/merge-gate-wait-<variation>.json`) until origin's main moves
+  past the commit they failed on, then its gate runs again. Each such test is
+  raised once in its project (`master-test-failures.bash`), as a project
+  issue is (ASS-163: only a failure on the latest master, which the gate has
+  just run), through create-ticket-grouped's own commands: the harness
+  project's into its backlog and any off-board project's by `off-board.sh
+  ticket:create`, a Jira project's by `ticket:raise-bug`, one with neither
+  only recorded. `data/projects/<p>/master-test-failures.json` names every
+  test raised and its ticket; a test in it is never raised again, by any
+  ticket's gate. A test that passes on main, or a failed test file main has
+  not got, counts against the ticket as before: red, exit 2, back to Build.
 
 ### Switching
 

@@ -75,7 +75,9 @@ esac
   };
   const sprintFile = join(f.dir, 'projects', 'p', 'sprints', 'sprint-10', 'sprint.json');
   writeFileSync(sprintFile, JSON.stringify({ number: 10, bugs: [], spikes: [], features: [ticket('ABC-3', 3), ticket('ABC-4', 4)] }, null, 4));
-  const env = { ...f.env, ...ID, PATH: `${bin}:${process.env.PATH}`, GATE_RUNS: runs, GATE_SLOW: slowFlag, GATE_GROUPS: groupsLog };
+  // ASS-394: not a part of this test run, so a gate's own node --test runs its files (NODE_TEST_CONTEXT would skip them).
+  const { NODE_TEST_CONTEXT, ...outside } = f.env;
+  const env = { ...outside, ...ID, PATH: `${bin}:${process.env.PATH}`, GATE_RUNS: runs, GATE_SLOW: slowFlag, GATE_GROUPS: groupsLog, OFF_BOARD_DIR: join(dir, 'off-board') };  // ASS-394: tickets the gate raises off-board land here
   const step = key => run(AGENT, ['merge-request:merge-in-turn', 'p', key, 'A', './check.sh'], { env, timeout: 60_000 }).then(r => ({ code: 0, out: JSON.parse(r.stdout) }), e => ({ code: e.code, err: e.stderr }));
   // until <condition> <what> [ms] — polls until it holds; past the deadline, an error naming what never happened.
   const until = async (condition, what, ms = 60_000) => {

@@ -4,7 +4,7 @@
             "id": "merge-pull-request",
             "sequence": 1,
             "name": "Merge Pull Request",
-            "description": "Merge the ticket's own pull request in its turn — one ticket of the project at a time (the merge lock): its branch rebased onto the latest main and the full tests (npm test) run first, in the background, asked again every minute; red goes back to Build with nothing merged — no team review",
+            "description": "Merge the ticket's own pull request in its turn — one ticket of the project at a time (the merge lock): its branch rebased onto the latest main and the full tests (npm test) run first, in the background, asked again every minute; red goes back to Build with nothing merged — no team review. ASS-394: failing tests run again once (passing, a flake: it merges); failing again, run on the latest main: failing there too, master's — raised once in the harness backlog, the ticket waits (no exit, no visit) until main moves",
             "max-visits": 3,
             "on-max-visits": "blocked",
             "action": {

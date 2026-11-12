@@ -77,7 +77,7 @@ const ALLOWED = {
     '"$3"': 'the run log, one start at a time (golden-build-start.lock)',
     '"$4"': 'the run exit code, one start at a time (golden-build-start.lock)',
   },
-  'src/agent-cli/merge-request/merge-in-turn.sh': { '"$log"': 'the merge gate\'s log, started by the one ask holding merge.lock (ASS-197)' },
+  'src/agent-cli/merge-request/merge-in-turn.sh': { '"$log"': 'the merge gate\'s log, started by the one ask holding merge.lock (ASS-197)', '"$out"': 'a test run\'s output, a file of the gate\'s own temp folder (mktemp -d, ASS-394)' },
   'src/agent-cli/vm/test-repos.sh': { '"$log"': 'its test log', '"$out"': 'a scratch file of its own' },
   'src/agent-cli/vm/demo.sh': { '"$log"': 'a temp file inside the VM' },
   'src/agent-cli/vm/start.sh': {

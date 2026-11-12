@@ -50,8 +50,8 @@ const DIRECTIVE = /\s+#\s*(TODO|SKIP)\b.*$/i;
 // TAP — prove -v's (a "<file> ....." line before each file's), node --test's
 // (nested by indentation under "# Subtest:" lines) or a bare stream — node
 // --test's spec reporter, vitest's and jest's default reporters, and their
-// JSON reports.
-function failures(output) {
+// JSON reports. Exported for the merge gate too (merge-gate-tests.js, ASS-394).
+export function failures(output) {
   const failed = new Map(), seen = new Map(), suites = [];
   let found = false, file = null, jestFile = '', specFile = null, yaml = false;
   const fail = (where, test, n = 1) => failed.set(JSON.stringify([where, test, n]), `${where ? `${where}: ` : ''}${test}${n > 1 ? ` (#${n})` : ''}`);
