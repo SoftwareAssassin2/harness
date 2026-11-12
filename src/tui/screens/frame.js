@@ -40,13 +40,16 @@ function idle(state) {
   const keys = new Set(Object.keys(ICONS).flatMap(type => sprint[type] ?? []).map(t => t.key.toLowerCase()));
   return !liveAssignments(state).some(a => !refining(state, a) && keys.has(String(a['work-item']).toLowerCase()));
 }
-// The sprint header's warnings, in the order they show: the logins to renew, background work off (ASS-127), then idleness.
+// The sprint header's warnings, in the order they show: the logins to renew, background work off (ASS-127), the memory and disk holds (ASS-398), then idleness.
 const warnings = state => [
   state.projects[state.project]?.gcloudReauthentication && "run 'gcloud auth login' asap",
   state.projects[state.project]?.glabReauthentication && "run 'glab auth login' asap",
   state.projects[state.project]?.backgroundWorkOff && 'Background work off',
+  ...holdFlags(state),
   idle(state) && 'No work in progress',
 ].filter(Boolean);
+// ASS-398: while control holds new VMs for want of the Mac's memory (any project's memory-hold.json) or disk (the disk hold, ASS-288).
+const holdFlags = state => [state.projects.some(p => p.memoryHold) && 'Out of memory', state.disk?.level === 'hold' && 'Out of disk space'];
 
 // The disk (ASS-288), harness-wide, as control last read it (disk-space.json,
 // state.disk): below disk-free-warn-gb the free space in amber — never red,

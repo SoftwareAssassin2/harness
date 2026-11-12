@@ -122,6 +122,7 @@ export const loadProjects = (dir, lima = limaHome()) => readdirSync(dir)
       rateLimit: existsSync(join(dir, name, 'rate-limit.json')) ? readJson(join(dir, name, 'rate-limit.json')) : null,
       claudeUsage: existsSync(join(dir, name, 'claude-usage.json')) ? readJson(join(dir, name, 'claude-usage.json')) : null,
       pushAccount: existsSync(join(dir, name, 'push-account.json')) ? readJson(join(dir, name, 'push-account.json')) : null,   // ASS-307: control's last push-account check
+      memoryHold: loadMemoryHold(join(dir, name)),   // ASS-398: control holding its new VMs for want of memory
       accountHold: project['account-hold'] ?? null,
       apiCapHold: project['api-cap-hold'] ?? null,   // ASS-217: the API cap holding its fallback, control's
       apiKey: hasApiKey(join(dir, name)),   // ASS-333: whether its agents can fall back to an API key (see hasApiKey)
@@ -211,6 +212,13 @@ export function loadGolden(id, project, lima) {
   if (!project?.['golden-image']) return null;
   const name = `golden-${id}`;
   try { return { name, 'built-at': readJson(join(lima, name, 'golden-image.json'))['built-at'] ?? null }; } catch { return { name, 'built-at': null }; }
+}
+
+// loadMemoryHold(dir) — the project folder's memory-hold.json (ASS-398:
+// control's hold on its new VMs while the Mac is short of memory, src/control/host-memory.js),
+// or null without one, or one caught half-written.
+export function loadMemoryHold(dir) {
+  try { return existsSync(join(dir, 'memory-hold.json')) ? readJson(join(dir, 'memory-hold.json')) : null; } catch { return null; }
 }
 
 // loadDiskSpace(dir) — the data folder's disk-space.json (ASS-288: control's
@@ -372,7 +380,7 @@ export function dataFiles(root, { projects, workflows, project, day }, lima = li
     join(dataDir(root), 'disk-space.json'),
     ...workflows.map(w => w.file ?? join(root, 'engines', w.name, 'state-engine.json')),   // a project's own at its file (ASS-277)
     ...projects.flatMap(({ id }) => [
-      join(dir(id), 'project.json'), join(dir(id), 'gcloud-requires-reauthentication'), join(dir(id), 'glab-requires-reauthentication'), join(dir(id), 'rate-limit.json'), join(dir(id), 'claude-usage.json'), join(dir(id), 'push-account.json'), join(dir(id), 'api-cost.json'), join(dir(id), 'memory-spend.json'), join(dir(id), 'sprints.json'), join(dir(id), 'backlog.json'), join(dir(id), 'global-questions-and-answers.json'), join(dir(id), 'chat-spend.json'), join(dir(id), 'vms.json'), join(dir(id), 'outside-tickets.json'),   // vms.json: its VMs' credential kinds (ASS-333, hasApiKey); outside-tickets.json: ASS-355
+      join(dir(id), 'project.json'), join(dir(id), 'gcloud-requires-reauthentication'), join(dir(id), 'glab-requires-reauthentication'), join(dir(id), 'rate-limit.json'), join(dir(id), 'claude-usage.json'), join(dir(id), 'push-account.json'), join(dir(id), 'api-cost.json'), join(dir(id), 'memory-spend.json'), join(dir(id), 'sprints.json'), join(dir(id), 'backlog.json'), join(dir(id), 'global-questions-and-answers.json'), join(dir(id), 'chat-spend.json'), join(dir(id), 'vms.json'), join(dir(id), 'outside-tickets.json'), join(dir(id), 'memory-hold.json'),   // memory-hold.json: ASS-398; vms.json: its VMs' credential kinds (ASS-333, hasApiKey); outside-tickets.json: ASS-355
       ...(existsSync(work(id)) ? readdirSync(work(id)).toSorted() : []).flatMap(ticket => ['questions-and-answers.json', 'collaboration.json'].map(file => join(work(id), ticket, file))),
     ]),
     ...(shown ? [shown] : []),

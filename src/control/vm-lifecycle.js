@@ -69,7 +69,10 @@
 // logged and tried again after a failing step's backoff (backoff.js: 30
 // seconds doubling to 30 minutes). While the disk hold is on (ASS-288,
 // disk.js) no VM is recreated or started — said once per VM — stops and
-// credential refreshes going on.
+// credential refreshes going on. Nor, while the Mac is short of memory
+// (ASS-398, host-memory.js), is one recreated or started: its variation waits
+// as for a slot (awaitsVm), no failure counted, said once per VM; the hold is
+// read again every tick and lifts by itself.
 //
 // A step judged while its VM is still starting reads it as down (ASS-133:
 // Check Setup Complete sent a set-up ticket on to Create VM), so a variation
@@ -94,6 +97,7 @@ import { holdOf, heldBy } from './dependencies.js';
 import { backoffDelay, held } from './backoff.js';
 import { limaEnv } from './vm.js';
 import { diskHeld } from './disk.js';
+import { memoryShort, memoryHeldVm, liftMemoryHolds } from './host-memory.js';
 import { humanPause } from './moves.js';
 import { declaredCredentials } from './vm-credentials.js';
 
@@ -122,6 +126,7 @@ export function awaitsVm(ctx, state, project, variation, who) {
   if (ticket && heldBy(state, project)(ticket, variation)) return true;   // its VM stopped while its dependencies hold it (ASS-355)
   if (statusOf(project.engines ?? state.engines, project.engineName, variation).planned) return false;   // ASS-362: moves on to Build without it
   if (waitsForSlot(planFor(state, project), ticket, variation)) return true;   // its VM stopped till it holds one
+  if (memoryHeldVm(ctx, project, name)) return true;   // ASS-398: not started for want of memory — waits as for a slot
   const waits = (ctx.memory.vmWaits ??= new Map()), now = ctx.now().getTime();
   let w = waits.get(name);
   if (!w) { waits.set(name, w = { since: now, over: false }); ctx.log(PHASE, `${who}: waits for its VM ${name} to be running`); }
@@ -194,6 +199,7 @@ const statuses = ctx => new Promise((resolve, reject) => execFile('limactl', ['l
 // running, its job (match); memory.vms: id → { job, held: name → { failures, until } }.
 export async function superviseVms(ctx, state) {
   const jobs = (ctx.memory.vms ??= new Map());
+  await liftMemoryHolds(ctx, state);   // ASS-398: a memory hold lifts by itself once there is enough
   const projects = state.projects.map(project => [project, vmsOf(ctx, state, project)]).filter(([, vms]) => vms.size);
   if (!projects.length) return;
   let status;
@@ -206,7 +212,7 @@ export async function superviseVms(ctx, state) {
   for (const [project, vms] of projects) {
     const r = jobs.get(project.id) ?? { job: null, held: new Map() };
     jobs.set(project.id, r);
-    r.job ??= match(ctx, project.id, vms, r, status, diskHeld(state), stampEvery).catch(error => ctx.log('error', `${PHASE} ${project.id}: ${error.message}`)).finally(() => { r.job = null; });
+    r.job ??= match(ctx, project.id, vms, r, status, diskHeld(state), stampEvery, name => memoryShort(ctx, state, project, name)).catch(error => ctx.log('error', `${PHASE} ${project.id}: ${error.message}`)).finally(() => { r.job = null; });
   }
 }
 
@@ -251,7 +257,7 @@ async function stampsOf(ctx, id, every) {
 // seconds before its sshd accepts connections) — silently, so a VM not yet
 // reachable is simply tried again next job, same as one still starting; then
 // each VM started, recreated, stopped, refreshed or deleted (ASS-325) as it should be (not while backed off).
-async function match(ctx, id, vms, r, status, diskHold = false, stampEvery = CREDENTIAL_STAMP_INTERVAL * 1000) {
+async function match(ctx, id, vms, r, status, diskHold = false, stampEvery = CREDENTIAL_STAMP_INTERVAL * 1000, memoryShortFor = async () => false) {
   const up = (ctx.memory.vmsUp ??= new Set());
   const declared = declaredVmKind(ctx, id);
   // ASS-350 AC4, ASS-356: the keychain items' stamps now — read only when a VM is due the comparison, and at most once per `stampEvery` ms (stampsOf's cache); null when unreadable.
@@ -310,6 +316,13 @@ async function match(ctx, id, vms, r, status, diskHold = false, stampEvery = CRE
     ctx.memory.warned.delete(`disk/${name}`);
     const h = r.held.get(name) ?? { failures: 0, until: 0 };
     if (now < h.until) continue;
+    // ASS-398: the Mac short of memory (host-memory.js): not started or recreated, no failure counted; its variation waits as for a slot.
+    if ((args[0] === 'vm:create' || (args[0] === 'vm:start' && !refreshing)) && await memoryShortFor(name)) {
+      if (!ctx.memory.warned.has(`memory/${name}`)) { ctx.memory.warned.add(`memory/${name}`); ctx.log(PHASE, `${id} ${name}: not ${args[0] === 'vm:create' ? 'recreated' : 'started'}: out of memory; waits as for a slot`); }
+      continue;
+    }
+    ctx.memory.warned.delete(`memory/${name}`);
+    ctx.memory.memoryHolds?.get(id)?.vms.delete(name);
     let doing = first ?? args;
     try {
       if (!vm.run || refreshing) up.delete(name);   // a stopping or refreshing VM is not up until it is reached again

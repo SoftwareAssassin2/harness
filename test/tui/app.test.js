@@ -6572,6 +6572,18 @@ test('ASS-288 AC4: below disk-free-hold-gb the header says "Disk nearly full —
   }
 });
 
+test('ASS-398 AC2: while control holds new VMs for want of memory (any project\'s memory-hold.json) the sprint header says "Out of memory", and while the disk hold is on "Out of disk space", in white on red like No work in progress', () => {
+  const held = { since: '2026-11-12T10:00:00Z', 'available-bytes': 60 * 2 ** 20, 'need-bytes': 6 * GIB, vm: 'abc-1-a' };
+  const short = { ...state, projects: [projects[0], { ...projects[1], memoryHold: held }, ...projects.slice(2)] };
+  assert.ok(render(short, wide).some(l => l.includes('\x1b[41;97m Out of memory \x1b[0m')));
+  assert.equal(lines(short, wide).filter(l => l.includes('Out of memory')).length, 1);
+  assert.ok(!lines(state, wide).some(l => l.includes('Out of memory')));
+  const full = { ...state, disk: diskAt('hold', 12) };
+  assert.ok(render(full, wide).some(l => l.includes('\x1b[41;97m Out of disk space \x1b[0m')));
+  assert.ok(!lines({ ...state, disk: diskAt('warn', 42) }, wide).some(l => l.includes('Out of disk space')));
+  assert.ok(!lines(state, wide).some(l => l.includes('Out of disk space')));
+});
+
 // ===== ASS-292: the disk's free space and the project's golden image in the control box =====
 const goldenBuilt = { name: 'golden-p', 'built-at': '2026-11-01T05:42:33Z' };
 // A running control the dashboard started (ASS-310: the box is built from state.controls, not project.json's control).

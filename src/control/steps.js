@@ -19,6 +19,7 @@ import { awaitsDependencies } from './dependencies.js';
 import { overSpent, spendText, runningOn } from './spend.js';
 import { readSession } from '../agents/session.js';
 import { diskHeld, makesDisk } from './disk.js';
+import { memoryShort, startsVm } from './host-memory.js';
 
 const PHASE = 'steps';
 const CHAIN = 20;   // moves one variation or run may make in a tick
@@ -76,6 +77,17 @@ function diskWaits(ctx, state, step, who) {
   if (!makesDisk(step.action?.command)) return false;
   if (!diskHeld(state)) { ctx.memory.warned.delete(`disk/${who}`); return false; }
   warnOnce(ctx, `disk/${who}`, `${who}: waits: the disk is nearly full`);
+  return true;
+}
+
+// memoryWaits(ctx, state, project, step, who) — a script step that starts or
+// creates a VM (vm:create, vm:start) waits, not run, while the Mac is short of
+// memory for one of the project's VMs (ASS-398, host-memory.js: the hold put
+// on or kept), said once per hold, no failure counted; it runs once there is enough.
+async function memoryWaits(ctx, state, project, step, who) {
+  if (!startsVm(step.action?.command)) return false;
+  if (!await memoryShort(ctx, state, project, null)) { ctx.memory.warned.delete(`memory/${who}`); return false; }
+  warnOnce(ctx, `memory/${who}`, `${who}: waits: out of memory`);
   return true;
 }
 
@@ -271,6 +283,7 @@ async function runVariation(ctx, state, project, key, name) {
         if (!scriptRunning(ctx, running, visit)) {
           if (waiting(ctx.memory, held, ctx.now().getTime()) || (!timer && heldAtGate(variation))) return;
           if (diskWaits(ctx, state, step, who)) return;
+          if (await memoryWaits(ctx, state, project, step, who)) return;   // ASS-398
           if (!scriptDue(ctx, who, running, visit, step, ctx.now().getTime())) return;
           startScript(ctx, running, visit, runScriptStep(ctx, step, values, who, variation, backlog ? undefined : scriptEnv(state, project, variation)), who);
           wait = ctx.scriptWait ?? SCRIPT_WAIT;
@@ -408,6 +421,7 @@ async function runTransient(ctx, state, id) {
         if (!scriptRunning(ctx, running, visit)) {
           if (waiting(ctx.memory, held, ctx.now().getTime()) || (!timer && variation && at && heldAtGate(variation, run['state-engine'], run.state, at.path.length + 1))) return;
           if (diskWaits(ctx, state, step, who)) return;
+          if (await memoryWaits(ctx, state, project, step, who)) return;   // ASS-398
           if (!scriptDue(ctx, who, running, visit, step, ctx.now().getTime())) return;
           startScript(ctx, running, visit, runScriptStep(ctx, step, values, who, variation, ticket && variation && !backlog ? scriptEnv(state, project, variation) : undefined), who);
           wait = ctx.scriptWait ?? SCRIPT_WAIT;
