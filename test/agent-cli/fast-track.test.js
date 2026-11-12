@@ -118,3 +118,27 @@ test('ASS-306 AC3 / ASS-83 AC5: a failed join (no active sprint) leaves the fix 
   const got = JSON.parse((await run(OFF_BOARD, ['ticket:get', 'p', 'HD-2'], { env: f.env })).stdout);
   assert.deepEqual([got.status, got['fast-track']], ['Backlog', true]);
 });
+
+// ASS-393 AC1: a harness fix ticket (its home harness.json's harness-project) Blocked raises is fast-tracked unless
+// the operator turns that off — fast-track-harness-fixes: false leaves it in the backlog, unmarked; true, or absent,
+// fast-tracks it as before; and the setting leaves a fix in any other project alone.
+test('ASS-393 AC1: fast-track-harness-fixes: false leaves a harness fix ticket in the backlog; true or absent fast-tracks it; another project\'s fix is unaffected', async () => {
+  const f = await offBoard();
+  const setting = value => f.edit(['harness.json'], h => { h['harness-project'] = 'p'; if (value === undefined) delete h['fast-track-harness-fixes']; else h['fast-track-harness-fixes'] = value; });
+  const got = async key => JSON.parse((await run(OFF_BOARD, ['ticket:get', 'p', key], { env: f.env })).stdout);
+  setting(false);
+  const off = await f.agent('ticket:fast-track', 'p', 'X-1', 'HD-2');
+  assert.deepEqual(JSON.parse(off.stdout), { ticket: 'HD-2', marked: false, joined: false });
+  assert.match(off.stderr, /fast-track-harness-fixes is false/);
+  assert.equal(f.sprint().bugs.some(t => t.key === 'HD-2'), false);
+  const held = await got('HD-2');
+  assert.deepEqual([held.status, 'fast-track' in held], ['Backlog', false]);
+  setting(undefined);
+  await f.agent('ticket:fast-track', 'p', 'X-1', 'HD-2');
+  assert.equal(f.ticket('HD-2')['fast-track'], true);
+  // Another project the harness project: p's fix is no harness fix, so the setting does not hold it back.
+  f.edit(['harness.json'], h => { h['harness-project'] = 'q'; h['fast-track-harness-fixes'] = false; });
+  await run(OFF_BOARD, ['ticket:create', 'p', 'Bug', 'Another'], { env: f.env });
+  await f.agent('ticket:fast-track', 'p', 'X-1', 'HD-3');
+  assert.equal(f.ticket('HD-3')['fast-track'], true);
+});

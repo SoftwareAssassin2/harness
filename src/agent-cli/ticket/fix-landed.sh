@@ -37,9 +37,26 @@ set -euo pipefail
 # attempt); 1 until then. When
 # the variation waits on nothing, or is missing, exit 4, printing why as { ai-feedback-short, ai-feedback-long } (ASS-107 AC7: the
 # fix cannot be waited on).
+# ASS-393: a harness fix (its home the harness project, harness-project.bash)
+# that landed by a merge or a "<KEY>:" commit is code the running control
+# loads only when it starts again: control records the commit it started from
+# in data/control-commit-<project> (main.js; data/control-commit for one run
+# without --project), and such a fix is landed only once each of its commits
+# on the default branch — a "<KEY>:" subject, or the merge of its change/<KEY>
+# branch — is an ancestor of that commit (read in the harness's workspace,
+# else this checkout). Until then exit 1, printing { waits-on, status, landed:
+# false, awaiting-restart: <fix> }, the variation's awaiting-restart set to
+# the fix's key (the dashboard's one "Restart to load <n> landed fixes"
+# notice counts them, never as Operator Needed) and its Health "Fix <KEY>
+# landed; waiting for a harness restart to load it", written and logged only
+# when it changes. Once landed, or on any other end, awaiting-restart is
+# cleared (and the Health with it, printed as null). With no recorded commit,
+# no commit of the fix found, or an ancestry git cannot tell, it lands as
+# before, saying so on stderr; a fix in any other project is unchanged.
 here="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
 source "$here/../code.bash"
 source "$here/../work.bash"
+source "$here/../harness-project.bash"
 
 # committed <project> <ticket-key> — whether a commit whose subject starts
 # "<ticket-key>:" is reachable from the default branch of the project's
@@ -55,6 +72,51 @@ committed() {
   [[ ${#refs[@]} -gt 0 ]] || return 1
   git -C "$workspace" log --fixed-strings --grep="$2:" --format=%s "${refs[@]}" 2>/dev/null \
     | awk -v prefix="$2:" 'index($0, prefix) == 1 { found = 1 } END { exit !found }'
+}
+
+# fix_commits <workspace> <ticket-key> — ASS-393: the fix's commits on the
+# default branch of <workspace>, locally and on origin as last fetched: each
+# whose subject starts "<ticket-key>:", or merges its change/<ticket-key>
+# branch (change/<KEY>, change/<KEY>.<variation>, change/<KEY>-<n>; not
+# change/<KEY>0). One hash a line; nothing when none, or none can be read.
+fix_commits() {
+  local branch ref refs=()
+  branch="$(default_branch "$1")"
+  for ref in "refs/heads/$branch" "refs/remotes/origin/$branch"; do
+    git -C "$1" rev-parse --verify --quiet "$ref^{commit}" >/dev/null 2>&1 && refs+=("$ref")
+  done
+  [[ ${#refs[@]} -gt 0 ]] || return 0
+  git -C "$1" log --format='%H %s' "${refs[@]}" 2>/dev/null \
+    | awk -v key="$2" '{ s = substr($0, index($0, " ") + 1) }
+        index(s, key ":") == 1 { print $1; next }
+        { i = index(s, "change/" key); if (i && substr(s, i + 7 + length(key), 1) !~ /^[0-9A-Za-z]$/) print $1 }'
+}
+
+# loaded <project> <home> <fix> — ASS-393: whether the harness fix <fix> (of
+# the harness project <home>) is in the commit the control of <project> runs
+# (data/control-commit-<project>, else data/control-commit): each of its
+# fix_commits an ancestor of it. Succeeds, saying why on stderr, when that
+# cannot be told — no commit recorded, no workspace, none of its commits
+# found, or git cannot answer — as fix-landed did before; fails only when one
+# of its commits is surely not in it.
+loaded() {
+  local file="$projects/../control-commit-$1" running workspace commit at rc found=0
+  [[ -f "$file" ]] || file="$projects/../control-commit"
+  running="$(tr -d '[:space:]' < "$file" 2>/dev/null || true)"
+  [[ -n "$running" ]] || { echo "ticket:fix-landed: no commit recorded for $1's control; $3 counted as loaded" >&2; return 0; }
+  workspace="$(workspace_of ticket:fix-landed "$2" 2>/dev/null)" || { echo "ticket:fix-landed: $2 has no workspace to find $3's commits in; counted as loaded" >&2; return 0; }
+  while read -r commit; do
+    [[ -n "$commit" ]] || continue
+    found=1 rc=2
+    for at in "$workspace" "$here/../../.."; do
+      rc=0; git -C "$at" merge-base --is-ancestor "$commit" "$running" 2>/dev/null || rc=$?
+      [[ $rc -le 1 ]] && break
+    done
+    [[ $rc -ne 1 ]] || return 1
+    [[ $rc -eq 0 ]] || echo "ticket:fix-landed: cannot tell whether $3's commit $commit is in $running; counted as loaded" >&2
+  done < <(fix_commits "$workspace" "$3")
+  [[ $found -eq 1 ]] || echo "ticket:fix-landed: no commit of $3 found on $2's default branch; counted as loaded" >&2
+  return 0
 }
 
 # edited <project> <ticket-key> <variation> <wait-began> — whether one of the
@@ -143,11 +205,31 @@ found="$(jq -cs --arg key "$fix" '
       merged: any(.variations // [] | .[] | select(.["is-deleted"] | not) | .["state-changes"] // [] | .[] | .. | objects | select(has("from-state")); .["from-state"] | IN("merge-pull-request", "ensure-auto-merge")) }' "${files[@]}")"
 status="$(jq -r '.status // "unknown"' <<< "${found:-null}")"
 merged="$(jq -r '.merged // false' <<< "${found:-null}")"
-landed=false
-[[ "$status" == Done && "$merged" == true ]] && landed=true
-[[ "$status" == Done && "$landed" == false ]] && committed "$home" "$fix" && landed=true
+landed=false code=false
+[[ "$status" == Done && "$merged" == true ]] && landed=true code=true
+[[ "$status" == Done && "$landed" == false ]] && committed "$home" "$fix" && landed=true code=true
 [[ "$status" == Done && "$landed" == false && -n "$began" ]] && edited "$1" "$key" "$3" "$began" && landed=true
-jq -nc --argjson w "$waits" --arg s "$status" --argjson l "$landed" '{ "waits-on": $w, status: $s, landed: $l }'
+restart="$(jq -r '.["awaiting-restart"] // empty' <<< "$variation")"
+# ASS-393: a harness fix landed in code waits for the running control to load it.
+if [[ "$code" == true ]] && is_harness_project "$home" && ! loaded "$1" "$home" "$fix"; then
+  short="Fix $fix landed; waiting for a harness restart to load it"
+  long="The fix ticket $fix landed in the harness's own repository, but the running control started from a commit without it, so $key would fail again on the same bug. Restart the harness to load it: $key resumes once control runs a commit that contains the fix."
+  if [[ "$restart" != "$fix" ]]; then
+    update_whole_ticket ticket:fix-landed "$1" "$key" --arg name "$3" --arg f "$fix" --arg s "$short" --arg l "$long" '
+      .variations |= map(if .name != $name or .["is-deleted"] then . else .["awaiting-restart"] = $f | .["ai-feedback-short"] = $s | .["ai-feedback-long"] = $l end)'
+    blocked_log "$1" "$key" "$3" "Await the Fix" "The fix ticket $fix landed, but the running harness started from a commit without it: $key waits for a harness restart to load it."
+    echo "ticket:fix-landed: $key $3: $short" >&2
+  fi
+  jq -nc --argjson w "$waits" --arg s "$status" --arg f "$fix" '{ "waits-on": $w, status: $s, landed: false, "awaiting-restart": $f }'
+  exit 1
+fi
+cleared='{}'
+if [[ -n "$restart" ]]; then
+  update_whole_ticket ticket:fix-landed "$1" "$key" --arg name "$3" '
+    .variations |= map(if .name != $name or .["is-deleted"] then . else del(.["awaiting-restart"]) | .["ai-feedback-short"] = null | .["ai-feedback-long"] = null end)' 2>/dev/null || true
+  cleared='{ "ai-feedback-short": null, "ai-feedback-long": null }'
+fi
+jq -nc --argjson w "$waits" --arg s "$status" --argjson l "$landed" --argjson c "$cleared" '{ "waits-on": $w, status: $s, landed: $l } + $c'
 [[ "$landed" == true ]] && { blocked_log "$1" "$key" "$3" "Await the Fix" "The fix ticket $fix landed (status $status): $key resumes."; exit 0; }
 [[ "$status" == Done ]] && { blocked_log "$1" "$key" "$3" "Await the Fix" "The fix ticket $fix is Done without its fix landed: a failed fix attempt; Blocked goes round again."; echo "ticket:fix-landed: $fix is Done without its fix landed" >&2; exit 3; }
 exit 1

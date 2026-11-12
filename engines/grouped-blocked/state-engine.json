@@ -739,7 +739,7 @@
             "id": "fast-track-fix",
             "sequence": 21,
             "name": "Fast-Track the Fix",
-            "description": "ASS-306: a harness off-board fix ticket is marked fast-track and joined to the sprint at committed, so it is built at once instead of waiting in the backlog for grooming (agent.sh ticket:fast-track, host-side). Best-effort: a project issue in its own ticket system, one already in the sprint, or none raised is left alone, and a failed join leaves the ticket off-board at Backlog with its mark — whatever happens, the fix is waited on as before",
+            "description": "ASS-306: a harness off-board fix ticket is marked fast-track and joined to the sprint at committed, so it is built at once instead of waiting in the backlog for grooming (agent.sh ticket:fast-track, host-side). Best-effort: a project issue in its own ticket system, one already in the sprint, or none raised is left alone, as is a harness fix when harness.json's fast-track-harness-fixes is false (ASS-393 AC1), and a failed join leaves the ticket off-board at Backlog with its mark — whatever happens, the fix is waited on as before",
             "action": {
                 "type": "script",
                 "command": "./agent.sh ticket:fast-track {project} {work-item} {ticket}"
@@ -792,7 +792,7 @@
             "id": "await-fix",
             "sequence": 23,
             "name": "Await the Fix",
-            "description": "Wait until the fix ticket is Done and merged (or Done with a <KEY>: commit on its project's default branch, ASS-340, or Done after re-recording the blocked variation's own inputs since the wait began, ASS-342), polling while it is not (exit 1, its waiting-exit-code: no failure, ASS-253); one closed unmerged is a failed attempt: Blocked again, afresh; nothing to wait on is Blocked for Human (AC7)",
+            "description": "Wait until the fix ticket is Done and merged (or Done with a <KEY>: commit on its project's default branch, ASS-340, or Done after re-recording the blocked variation's own inputs since the wait began, ASS-342) — and, for a harness fix landed in code, loaded: its commits ancestors of the commit the running control started from (data/control-commit-<project>), else it waits for a harness restart, its Health saying so (ASS-393) — polling while it is not (exit 1, its waiting-exit-code: no failure, ASS-253); one closed unmerged is a failed attempt: Blocked again, afresh; nothing to wait on is Blocked for Human (AC7)",
             "record-script-output": true,
             "action": {
                 "type": "script",

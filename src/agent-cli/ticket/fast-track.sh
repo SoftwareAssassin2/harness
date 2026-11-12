@@ -15,6 +15,9 @@ set -euo pipefail
 # whatever happens. It no-ops, saying so on stderr, when
 #   - <ticket> is <work-item>: no fix ticket was raised (facts.js falls back to
 #     the blocked ticket's own key), so there is nothing to fast-track;
+#   - <ticket> is a harness fix (its home the harness project) and the
+#     operator turned that off: harness.json's fast-track-harness-fixes is
+#     false (ASS-393 AC1; true or absent, it is fast-tracked);
 #   - <ticket> is not an off-board key (a project issue in the project's own
 #     ticket system, ASS-83 Q2): fast-track is off-board only;
 #   - <ticket> is in the active sprint already: it is left where it is;
@@ -30,6 +33,7 @@ set -euo pipefail
 here="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
 source "$here/../sprint.bash"
 source "$here/../ticket-system.bash"
+source "$here/../harness-project.bash"
 agent="$here/../../../agent.sh"
 
 command=ticket:fast-track
@@ -41,6 +45,11 @@ skip() { echo "$command: $1" >&2; jq -nc --arg t "$key" '{ ticket: $t, marked: f
 home="$(home_project "$command" "$project" "$key")" || skip "$project has no project.json to read $key's home from"
 prefix="$(off_board_prefix "$command" "$home")" || skip "$home has no project.json to read its off-board key prefix from"
 [[ -n "$prefix" && "$key" == "$prefix-"* ]] || skip "$key is not an off-board ticket: fast-track is off-board only"
+# ASS-393 AC1: a harness fix ticket (its home the harness project) is
+# fast-tracked unless the operator turns that off in harness.json:
+# "fast-track-harness-fixes": false (true, or absent, fast-tracks).
+! is_harness_project "$home" || [[ "$(jq -r '.["fast-track-harness-fixes"] != false' "$harness_project_file" 2>/dev/null || echo true)" != false ]] \
+  || skip "$key is a harness fix and harness.json's fast-track-harness-fixes is false: left in the backlog"
 
 # in_sprint — the ticket is in its home project's active sprint already.
 in_sprint() {

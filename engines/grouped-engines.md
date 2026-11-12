@@ -494,7 +494,16 @@ missing) in the variation's `wait-began`. Nothing the harness writes on its
 own while the ticket is blocked or waiting counts — ticket.json, locks, step
 outputs, Blocked's change-log, the obstacle fix appended to the plan — nor
 another variation's file, an edit made before the wait began or a removed
-file; a wait recorded with no `wait-began` finds no such edit (ASS-342); an
+file; a wait recorded with no `wait-began` finds no such edit (ASS-342). A
+harness fix (its home harness.json's `harness-project`) is fast-tracked
+unless harness.json's `fast-track-harness-fixes` is false, and one landed by
+a merge or a commit is landed only once the running control has loaded it:
+control records the commit it started from in `data/control-commit-<project>`
+and each of the fix's commits on the default branch (`<KEY>:` subjects, the
+merge of its `change/<KEY>` branch) must be its ancestor; until then the
+ticket waits, its Health "Fix <KEY> landed; waiting for a harness restart to
+load it", counted in the dashboard's one "Restart to load <n> landed fixes"
+notice, never as Operator Needed (ASS-393). An
 environment issue repaired in place, else Blocked for Human. It never
 resumes as if fixed when no fix can be raised or waited on: an empty fix key
 carries a no-ticket-reason (analysis-did-not-hold or create-failed) and a

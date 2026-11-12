@@ -11,7 +11,7 @@ import { visible, link } from '../text.js';
 import { utcDate } from '../../downloader/cycle.js';
 import { flattenSprint } from '../../control/rank.js';
 import { spendRecords, daySpend, sprintSpend, spendText } from '../../control/spend.js';
-import { ellipsis, refining, agentLine, projectAssignments, liveAssignments, viewedSprint, operatorNeeded, markDot, ICONS, since, indent, center, middle, color, green, red, gold, timestamp, sprintTickets } from './shared.js';
+import { ellipsis, refining, agentLine, projectAssignments, liveAssignments, viewedSprint, operatorNeeded, restartFixes, markDot, ICONS, since, indent, center, middle, color, green, red, gold, timestamp, sprintTickets } from './shared.js';
 
 // Screens where space pauses and releases the agents.
 export const PAUSABLE = new Set(['s', 'S', 'b', 'B', 'c', 'a', 'A']);
@@ -40,15 +40,21 @@ function idle(state) {
   const keys = new Set(Object.keys(ICONS).flatMap(type => sprint[type] ?? []).map(t => t.key.toLowerCase()));
   return !liveAssignments(state).some(a => !refining(state, a) && keys.has(String(a['work-item']).toLowerCase()));
 }
-// The sprint header's warnings, in the order they show: the project held by its credentials (ASS-395), the logins to renew, background work off (ASS-127), the memory and disk holds (ASS-398), then idleness.
+// The sprint header's warnings, in the order they show: the project held by its credentials (ASS-395), the logins to renew, background work off (ASS-127), the memory and disk holds (ASS-398), the landed fixes a restart would load (ASS-393), then idleness.
 const warnings = state => [
   state.projects[state.project]?.credentialsHold && 'Project blocked by credentials',
   state.projects[state.project]?.gcloudReauthentication && "run 'gcloud auth login' asap",
   state.projects[state.project]?.glabReauthentication && "run 'glab auth login' asap",
   state.projects[state.project]?.backgroundWorkOff && 'Background work off',
   ...holdFlags(state),
+  restartNotice(state),
   idle(state) && 'No work in progress',
 ].filter(Boolean);
+// ASS-393: one notice for every landed harness fix the running control has not loaded (restartFixes), never one per ticket.
+const restartNotice = state => {
+  const n = restartFixes(state).size;
+  return n > 0 && `Restart to load ${n} landed fix${n === 1 ? '' : 'es'}`;
+};
 // ASS-398: while control holds new VMs for want of the Mac's memory (any project's memory-hold.json) or disk (the disk hold, ASS-288).
 const holdFlags = state => [state.projects.some(p => p.memoryHold) && 'Out of memory', state.disk?.level === 'hold' && 'Out of disk space'];
 

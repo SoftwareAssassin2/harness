@@ -14,7 +14,8 @@
 //
 // On start it writes its pid to $HARNESS_HOME/run.pid (~/.harness by
 // default; run-<id>.pid for a project's control) and refuses to start while
-// that file names a live process; it then removes every assignment — its
+// that file names a live process; it records the commit it runs
+// (control-commit.js, ASS-393); it then removes every assignment — its
 // project's only, for a project's control — with what its agent cost, so
 // their steps are dispatched again. It exits when its stdin closes (the supervisor's pipe: a
 // supervisor that died cannot leave it running) or on SIGTERM: every agent's
@@ -34,6 +35,7 @@ import { join } from 'node:path';
 import { createContext, tick, startDrain, drained } from './tick.js';
 import { startForwarder } from './forwarder.js';
 import { sessionSpend } from './finish.js';
+import { recordControlCommit } from './control-commit.js';
 
 const ROOT = join(import.meta.dirname, '..', '..');
 const args = process.argv.slice(2);
@@ -58,6 +60,9 @@ writeFileSync(pidfile, `${process.pid}\n`);
 
 const ctx = createContext({ root: ROOT, env: process.env, log: say, project });
 say('startup', `control ${process.pid}, tick every ${tickMs}ms`);
+// ASS-393: the commit this control runs, for ticket:fix-landed (control-commit.js).
+const commit = recordControlCommit(ROOT, ctx.paths, project);
+say('startup', commit ? `running commit ${commit}` : 'the commit this checkout runs could not be read; none recorded');
 
 // A control that starts owns no agent, so every record is stale: one whose
 // process is gone died with its control; one whose process is still alive is

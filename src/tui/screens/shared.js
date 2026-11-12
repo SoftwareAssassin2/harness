@@ -76,6 +76,19 @@ export const operatorNeeded = (state, tickets = sprintTickets(state).tickets) =>
   return state.projects[state.project]?.credentialsHold ? needed.add(CREDENTIALS_ITEM) : needed;
 };
 
+// ASS-393: a sprint ticket (sprintTickets') whose variation waits only for a
+// harness restart to load the harness fix it waits on — ticket:fix-landed
+// found it landed but not in the commit control runs, and set the
+// variation's awaiting-restart to the fix's key — while it is still at that
+// ticket:fix-landed step (a stale mark elsewhere is ignored). restartFixes:
+// the keys of those fixes in the live sprint (none on a past day), for the
+// header's single "Restart to load <n> landed fixes" notice; never counted
+// as Operator Needed, ticket by ticket.
+export const awaitsRestart = t => Boolean(t?.variation?.['awaiting-restart'])
+  && /(^|\s)ticket:fix-landed(\s|$)/.test(t.status?.detailStep?.action?.command ?? '');
+export const restartFixes = (state, tickets = sprintTickets(state).tickets) => (state.day ? new Set()
+  : new Set(tickets.filter(awaitsRestart).map(t => t.variation['awaiting-restart'])));
+
 // ticketMarks(state, tickets) — { needed, assumed }: `needed`, operatorNeeded's
 // keys; `assumed`, the keys of the tickets, open and not held, whose only call
 // on the operator is an open non-blocking question (ASS-248): work goes on, on
@@ -92,7 +105,8 @@ export function ticketMarks(state, tickets = sprintTickets(state).tickets) {
   ];
   const complete = new Set(variations.filter(([t, v, engine]) => t['ticket-system-status'] === 'Done' || isDoneStep(engine, stateOf(v))).map(([t]) => t.key));
   const open = variations.filter(([t, v]) => !complete.has(t.key) && !isHeld(t, v));
-  const needed = new Set(open.filter(([t, v, engine, waits]) => waits || isBlockedState(engine, stateOf(v)) || asked.has(t.key.toLowerCase())).map(([t]) => t.key));
+  // ASS-393: one only waiting for a restart to load its landed fix is the header's one notice (restartFixes), not needed here.
+  const needed = new Set(open.filter(([t, v, engine, waits]) => (!awaitsRestart(t) && (waits || isBlockedState(engine, stateOf(v)))) || asked.has(t.key.toLowerCase())).map(([t]) => t.key));
   const assumed = new Set(open.filter(([t]) => !needed.has(t.key) && assumes.has(t.key.toLowerCase())).map(([t]) => t.key));
   return { needed, assumed };
 }

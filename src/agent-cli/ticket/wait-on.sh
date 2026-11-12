@@ -79,6 +79,6 @@ home="$(key_project ticket:wait-on "$fix")"
 [[ -n "$home" ]] || { why "The fix ticket cannot be waited on" "$fix names no project, so $2 cannot wait on it."; exit 1; }
 waits="$(jq -nc --arg p "$home" --arg t "$fix" '{ project: $p, ticket: $t }')"
 inputs="$(work_input_digests ticket:wait-on "$1" "$2" "$3")"
-update_whole_ticket ticket:wait-on "$1" "$2" --arg name "$3" --argjson waits "$waits" --argjson inputs "$inputs" "$has"' | .variations |= map(if .name == $name then .["waits-on"] = $waits | .["wait-began"] = { at: $at, inputs: $inputs } else . end)'
+update_whole_ticket ticket:wait-on "$1" "$2" --arg name "$3" --argjson waits "$waits" --argjson inputs "$inputs" "$has"' | .variations |= map(if .name == $name then .["waits-on"] = $waits | .["wait-began"] = { at: $at, inputs: $inputs } | del(.["awaiting-restart"]) else . end)'   # ASS-393: a new wait awaits no restart yet
 blocked_log "$1" "$(tr '[:lower:]' '[:upper:]' <<< "$2")" "$3" "Wait on the Fix" "Waits for the fix ticket $fix (project $home) to land. Nothing else changed."
 jq -nc --arg t "$(tr '[:lower:]' '[:upper:]' <<< "$2")" --arg v "$3" --argjson w "$waits" '{ ticket: $t, variation: $v, "waits-on": $w }'

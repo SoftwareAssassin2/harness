@@ -389,3 +389,96 @@ test('ticket:wait-on <p> <t> <v> - removes the waits-on link, leaving the other 
   await f.agent('ticket:wait-on', 'p', 'ABC-3', 'A', '-');                                     // none to remove: still fine
   await fails(f.agent('ticket:wait-on', 'p', 'ABC-3', 'Z', '-'), /no ABC-3 variation Z/);
 });
+
+// ASS-393 AC2, AC4: a harness fix (its home harness.json's harness-project, q here) landed by a merge or a "<KEY>:"
+// commit is landed only once it is in the commit the running control started from (data/control-commit-<project>,
+// beside the projects folder): each of its commits on the default branch — "<KEY>:" subjects, the merge of its
+// change/<KEY> branch — an ancestor of it. Landed but not loaded waits (exit 1), the variation's Health and
+// awaiting-restart saying so; loaded, it lands, both cleared. A fix in another project is unchanged.
+function harnessFix() {
+  const f = waiting();
+  const tmp = mkdtempSync(join(tmpdir(), 'fix-loaded-'));
+  const origin = join(tmp, 'origin.git'), ws = join(tmp, 'workspace');
+  execFileSync('git', ['init', '-q', '--bare', '--initial-branch=main', origin]);
+  execFileSync('git', ['clone', '-q', origin, ws], { stdio: 'ignore' });
+  const git = (...args) => execFileSync('git', ['-C', ws, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+  const commit = (message, ...more) => { git('-c', 'user.email=t@example.com', '-c', 'user.name=T', 'commit', '-q', '--allow-empty', ...more, '-m', message); return git('rev-parse', 'HEAD'); };
+  const first = commit('first');
+  git('push', '-q', '-u', 'origin', 'main');
+  git('remote', 'set-head', 'origin', 'main');
+  const edit = (file, change) => writeFileSync(file, JSON.stringify(change(JSON.parse(readFileSync(file, 'utf8')))));
+  edit(join(f.dir, 'projects', 'q', 'project.json'), q => ({ ...q, 'local-environments': [{ name: 'local-pc', type: 'local-pc', folder: ws }] }));
+  const home = project => edit(join(f.dir, 'harness.json'), h => ({ ...h, 'harness-project': project }));
+  const running = hash => writeFileSync(join(f.dir, 'control-commit-p'), `${hash}\n`);
+  home('q');
+  return { ...f, git, commit, first, running, home };
+}
+
+test('ASS-393 AC2: a harness fix landed but not in the commit control started from waits for a restart (exit 1, Health says so); once loaded it lands, the wait cleared', async () => {
+  const f = harnessFix();
+  await f.agent('ticket:wait-on', 'p', 'ABC-3', 'A', 'Q-1');
+  const merged = [{ 'from-state': 'merge-pull-request', 'to-state': 'update-workspace' }];
+  f.fix({ 'ticket-system-status': 'Done', variations: [{ name: 'A', 'harness-status': { state: 'done' }, 'state-changes': merged }] });
+  const fix = f.commit('Q-1: the fix');
+  f.running(f.first);                                                                          // control started before the fix
+  const waits = await f.agent('ticket:fix-landed', 'p', 'ABC-3', 'A').then(() => assert.fail('landed before a restart'), e => e);
+  assert.equal(waits.code, 1);
+  assert.deepEqual(JSON.parse(waits.stdout), { 'waits-on': { project: 'q', ticket: 'Q-1' }, status: 'Done', landed: false, 'awaiting-restart': 'Q-1' });
+  assert.equal(f.variation('A')['awaiting-restart'], 'Q-1');
+  assert.equal(f.variation('A')['ai-feedback-short'], 'Fix Q-1 landed; waiting for a harness restart to load it');
+  assert.match(f.variation('A')['ai-feedback-long'], /Restart the harness/);
+  assert.equal(await exitOf(f.agent('ticket:fix-landed', 'p', 'ABC-3', 'A')), 1);           // still waiting, polled again
+  // Loaded: control restarted on the fix's commit, or one after it.
+  f.running(f.commit('later'));
+  assert.deepEqual(JSON.parse((await f.agent('ticket:fix-landed', 'p', 'ABC-3', 'A')).stdout),
+    { 'waits-on': { project: 'q', ticket: 'Q-1' }, status: 'Done', landed: true, 'ai-feedback-short': null, 'ai-feedback-long': null });
+  assert.equal('awaiting-restart' in f.variation('A'), false);
+  assert.equal(f.variation('A')['ai-feedback-short'], null);
+  f.running(fix);
+  assert.deepEqual(JSON.parse((await f.agent('ticket:fix-landed', 'p', 'ABC-3', 'A')).stdout), { 'waits-on': { project: 'q', ticket: 'Q-1' }, status: 'Done', landed: true });
+});
+
+test('ASS-393 AC2: a harness fix merged as its change/<KEY> branch, or committed by hand with no merge step, is loaded only once every commit of it is in control\'s', async () => {
+  const f = harnessFix();
+  await f.agent('ticket:wait-on', 'p', 'ABC-3', 'A', 'Q-1');
+  const landed = () => exitOf(f.agent('ticket:fix-landed', 'p', 'ABC-3', 'A'));
+  f.fix({ 'ticket-system-status': 'Done', variations: [{ name: 'A', 'harness-status': { state: 'done' }, 'state-changes': [{ 'from-state': 'merge-pull-request', 'to-state': 'done' }] }] });
+  // A merge of its branch, its own commits not keyed: the merge is the fix's commit. Another key that only starts the same is not.
+  f.git('checkout', '-q', '-b', 'change/Q-1');
+  f.commit('the work');
+  f.git('checkout', '-q', 'main');
+  const before = f.commit('Q-10: another ticket');
+  f.git('-c', 'user.email=t@example.com', '-c', 'user.name=T', 'merge', '-q', '--no-ff', '-m', 'Merge pull request #5 from owner/change/Q-1-1', 'change/Q-1');
+  const merge = f.git('rev-parse', 'HEAD');
+  f.running(before);
+  assert.equal(await landed(), 1);
+  f.running(merge);
+  assert.equal(await landed(), 0);
+  // A later "<KEY>:" follow-up commit not yet in control's: waits again.
+  f.commit('Q-1: a follow-up');
+  assert.equal(await landed(), 1);
+  // Committed by hand (no merge step, ASS-340): the same check.
+  f.fix({ 'ticket-system-status': 'Done', variations: [{ name: 'A', 'harness-status': { state: 'done' }, 'state-changes': [{ 'from-state': 'backlog', 'to-state': 'plan' }] }] });
+  assert.equal(await landed(), 1);
+  f.running(f.git('rev-parse', 'HEAD'));
+  assert.equal(await landed(), 0);
+});
+
+test('ASS-393 AC4: a fix in another project, or with no commit control recorded, lands as before; not Done still waits with no restart said', async () => {
+  const f = harnessFix();
+  await f.agent('ticket:wait-on', 'p', 'ABC-3', 'A', 'Q-1');
+  const landed = () => exitOf(f.agent('ticket:fix-landed', 'p', 'ABC-3', 'A'));
+  f.fix({ 'ticket-system-status': 'In Progress' });
+  f.commit('Q-1: the fix');
+  f.running(f.first);
+  assert.equal(await landed(), 1);
+  assert.equal('awaiting-restart' in f.variation('A'), false);                                   // not landed: no restart to wait for
+  f.fix({ 'ticket-system-status': 'Done', variations: [{ name: 'A', 'harness-status': { state: 'done' }, 'state-changes': [{ 'from-state': 'merge-pull-request', 'to-state': 'done' }] }] });
+  assert.equal(await landed(), 1);                                                             // the harness's own fix, not loaded
+  f.home('elsewhere');                                                                         // q is not the harness project
+  assert.equal(await landed(), 0);
+  assert.equal('awaiting-restart' in f.variation('A'), false);
+  f.home('q');
+  rmSync(join(f.dir, 'control-commit-p'));                                                     // no commit recorded: as before ASS-393
+  assert.equal(await landed(), 0);
+});
