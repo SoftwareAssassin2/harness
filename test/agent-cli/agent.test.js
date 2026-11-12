@@ -266,3 +266,18 @@ test('ASS-385 AC1: agent:dispatch fills {numbered-files} with the project\'s num
   set([{ kind: 'migration' }]);
   await fails(f.agent('agent:dispatch', 'Daredevil'), /numbered-files\[0\]: "glob" must be a non-empty string/);
 });
+
+// ASS-397 AC2, AC4: {acceptance-criteria-rule} is project.json's own rule for acceptance criteria, a paragraph of its
+// own; a project that sets none (every project but the harness) gets no paragraph, its blank line dropped too.
+test('ASS-397 AC2, AC4: agent:dispatch fills {acceptance-criteria-rule} from project.json, and leaves the paragraph out when unset', async () => {
+  const f = fixture();
+  writeFileSync(join(f.dir, 'prompts', 'generate-solution', 'prompt.txt'), 'Write criteria.\n\n{acceptance-criteria-rule}\n\nBe concise.\n');
+  await f.agent('agent:dispatch', 'Daredevil');
+  const unset = f.inbox('Daredevil').at(-1);
+  assert.match(unset, /Write criteria\.\n\nBe concise\./);
+  assert.doesNotMatch(unset, /acceptance-criteria-rule/);
+  const file = join(f.dir, 'projects', 'p', 'project.json');
+  writeFileSync(file, JSON.stringify({ ...JSON.parse(readFileSync(file, 'utf8')), 'acceptance-criteria-rule': 'Every criterion testable in the change\'s own branch and VM.' }));
+  await f.agent('agent:dispatch', 'Daredevil');
+  assert.match(f.inbox('Daredevil').at(-1), /Write criteria\.\n\nEvery criterion testable in the change's own branch and VM\.\n\nBe concise\./);
+});

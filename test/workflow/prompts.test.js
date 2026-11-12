@@ -866,3 +866,13 @@ test('ASS-385 AC2, AC5: the grouped prompts that rebase give the numbered-files 
   assert.doesNotMatch(text('check-on-merge-request-grouped'), /comments`|review comment/, 'Release\'s prompt still has no review comments (ASS-361)');
   for (const flat of ['generate-solution', 'check-on-merge-request']) assert.doesNotMatch(text(flat), /numbered-files|check-numbered-files/, flat);
 });
+
+// ASS-397 AC1, AC3: the prompts that write or revise acceptance criteria, and the plan review, carry the project's own
+// acceptance-criteria rule ({acceptance-criteria-rule}, project.json; the harness project's says testable before loading)
+// as a paragraph of its own; the flat prompts don't.
+test('ASS-397 AC1, AC3: the AC-writing prompts and review-plan-grouped carry {acceptance-criteria-rule} as a paragraph; the flat ones do not', () => {
+  const text = name => readFileSync(join(ROOT, 'prompts', name, 'prompt.txt'), 'utf8');
+  for (const name of ['enrich-ac-grouped', 'revise-acceptance-criteria', 'groom', 'split-ticket', 'create-ticket-grouped', 'review-plan-grouped'])
+    assert.match(text(name), /\n\n\{acceptance-criteria-rule\}\n\n/, name);
+  for (const flat of ['enrich-ac', 'review-plan']) assert.doesNotMatch(text(flat), /acceptance-criteria-rule/, flat);
+});

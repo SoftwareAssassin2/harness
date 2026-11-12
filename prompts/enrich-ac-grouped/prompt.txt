@@ -5,5 +5,7 @@ Extract the acceptance criteria for ticket {ticket} in project {project} into va
 
 Questions: ask only what the code, the docs, the ticket and {ticket-folder}/questions-and-answers.json can't settle, with `{agent-sh} question:ask {project} {ticket} <--blocking|--non-blocking> "<question>" "<why it is asked>" "<recommended answer>"` — never by writing {ticket-folder}/questions-and-answers.json. --blocking when a wrong guess would cost rework, be irreversible, or is a product or business call only the operator can make: the ticket gets no agent until it is answered, so finish this step without guessing. Else --non-blocking: go on with your recommended answer, recorded as the assumption; an answer that differs comes back as a requirements change.
 
+{acceptance-criteria-rule}
+
 We want small deliberate changes. You're working with a scalpel, not a broadsword. You're a doctor: get in, fix the root cause using best practices and the patterns already in the repo, get out. Avoid scope creep.
 Be extremely concise. Sacrifice grammar for the sake of concision.

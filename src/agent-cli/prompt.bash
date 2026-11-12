@@ -7,7 +7,7 @@
 #   assignment_of <command> <agent-name>                      # the record, as JSON; fails when there is none
 #   template <command> <record-json> <key> <fallback-folder>  # the template the record's engine names by <key>
 #   fill <text> <placeholder> <value>                         # <text> with every {<placeholder>} replaced, literally
-#   fill_ticket <text> <record-json>                          # {code-scope}, {merge-request-title}, {numbered-files}, {ticket}, {project}, {variation}, {ticket-folder}, {project-folder}, {harness-folder}, {project-code-folder}, {agent-sh} from the record
+#   fill_ticket <text> <record-json>                          # {code-scope}, {merge-request-title}, {numbered-files}, {acceptance-criteria-rule}, {ticket}, {project}, {variation}, {ticket-folder}, {project-folder}, {harness-folder}, {project-code-folder}, {agent-sh} from the record
 #   fill_commands <text> <agent-name>                         # {status-update-command} and {approve-command} for the agent
 #   approve_command <agent-name>                              # the command the agent approves with
 #   persona_of <prompt-folder>                                # the persona prompts/<folder>/prompt.json names; nothing when none
@@ -159,7 +159,7 @@ write_ticket_json() {
 }
 
 fill_ticket() {
-  local text="$1" record="$2" ticket project variation folder scope format rules
+  local text="$1" record="$2" ticket project variation folder scope format rules rule
   ticket="$(jq -r '.["work-item"] // ""' <<< "$record")"
   project="$(jq -r '.project // ""' <<< "$record")"
   variation="$(jq -r '.variation // ""' <<< "$record")"
@@ -177,6 +177,13 @@ fill_ticket() {
   if [[ "$text" == *"{numbered-files}"* ]]; then
     rules="$(numbered_rules fill_ticket "$prompt_projects_dir/$project/project.json")" || return 1
     text="$(fill "$text" numbered-files "$(numbered_rule_text "$rules")")"
+  fi
+  # The project's own rule for acceptance criteria (ASS-397, project.json's "acceptance-criteria-rule"), a paragraph
+  # of its own; unset, the paragraph is left out with its blank line, so other projects' prompts are unchanged.
+  if [[ "$text" == *"{acceptance-criteria-rule}"* ]]; then
+    rule="$(jq -r '.["acceptance-criteria-rule"] // "" | strings' "$prompt_projects_dir/$project/project.json" 2>/dev/null || true)"
+    [[ -n "$rule" ]] || text="${text//"{acceptance-criteria-rule}"$'\n\n'/}"
+    text="$(fill "$text" acceptance-criteria-rule "$rule")"
   fi
   text="$(fill "$text" ticket "$ticket")"
   text="$(fill "$text" project "$project")"

@@ -39,5 +39,7 @@ Mechanics:
 
 Finish with JSON: {"key": "<ticket key>", "no-ticket-reason": "<analysis-did-not-hold|create-failed>", "why": "<one line>"} — both "" when a key was created.
 
+{acceptance-criteria-rule}
+
 We want small deliberate changes. You're working with a scalpel, not a broadsword. You're a doctor: get in, fix the root cause using best practices and the patterns already in the repo, get out. Avoid scope creep.
 Be extremely concise. Sacrifice grammar for the sake of concision.

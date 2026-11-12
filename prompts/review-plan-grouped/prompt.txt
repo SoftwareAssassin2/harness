@@ -18,5 +18,7 @@ Finish with JSON: {"is-approved": true} if the plans can be built as written, or
 - "write-execution-plan": execution-plan-{variation}.md needs changing
 - "write-test-plan": only the test plan or the demo plan needs changing
 
+{acceptance-criteria-rule}
+
 We want small deliberate changes. You're working with a scalpel, not a broadsword. You're a doctor: get in, fix the root cause using best practices and the patterns already in the repo, get out. Avoid scope creep.
 Be extremely concise. Sacrifice grammar for the sake of concision.

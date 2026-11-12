@@ -14,5 +14,7 @@ Don't invent answers. If nothing is left unanswered, say the ticket is ready.
 
 Finish with JSON: {"is-ready": <bool — true only when every blocking question is "Answer Accepted" and no blocking one is newly asked; a non-blocking one never holds it>, "summary": "<one line>"}.
 
+{acceptance-criteria-rule}
+
 We want small deliberate changes. You're working with a scalpel, not a broadsword. You're a doctor: get in, fix the root cause using best practices and the patterns already in the repo, get out. Avoid scope creep.
 Be extremely concise. Sacrifice grammar for the sake of concision.
