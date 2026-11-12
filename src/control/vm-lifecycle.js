@@ -107,7 +107,11 @@
 // and reached — a start or recreation it made, or limactl list plus a probe
 // (ASS-169) — is not judged (steps.js, awaitsVm) until it is, for at most
 // VM_WAIT; then it is, as it stands — unless it waits for a slot, when it is
-// not judged until it holds one and its VM is up. A finished plan (ASS-362)
+// not judged until it holds one and its VM is up, or its start is still queued
+// or under way (ASS-387: VM jobs run one at a time per project, so a start can
+// wait minutes behind a vm:delete), when it is not judged until the VM is up,
+// or the variation goes to Blocked once it has waited vmUpCeilingMs (neverUp,
+// as dispatch's ceiling does). A finished plan (ASS-362)
 // needs no VM to move on to Build: its step is judged with its VM stopped,
 // and the move, once a seat is free, starts it. Nor, under the same wait, is an agent
 // dispatched into it (dispatch.js vmDown, ASS-159) — nor after it, until the
@@ -118,7 +122,7 @@
 import { execFile } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { statusOf, isHeld, isActive } from './engine.js';
+import { statusOf, isHeld, isActive, stepOf, isManual } from './engine.js';
 import { heldKinds, payWith } from './state.js';
 import { planFor } from './plan.js';
 import { holdOf, heldBy } from './dependencies.js';
@@ -126,7 +130,7 @@ import { backoffDelay, held } from './backoff.js';
 import { limaEnv, runsInVm } from './vm.js';
 import { diskHeld } from './disk.js';
 import { memoryShort, memoryHeldVm, liftMemoryHolds, unhold } from './host-memory.js';
-import { humanPause } from './moves.js';
+import { humanPause, moveTicket } from './moves.js';
 import { declaredCredentials } from './vm-credentials.js';
 
 const PHASE = 'vm';
@@ -180,12 +184,18 @@ const rateHealth = (id, key, limit) => ({
 
 // awaitsVm(ctx, state, project, variation, who) — whether the variation's
 // step waits this tick for its VM (see the module comment); its wait, and its
-// end at VM_WAIT, logged once each. memory.vmsUp: the names control has
+// end at VM_WAIT, logged once each. ASS-387: past VM_WAIT, a VM whose start is
+// still pending (startPending) is waited for on — said once — and, once the
+// wait reaches vmUpCeilingMs, NEVER_UP is returned (truthy: still not
+// judged), for the caller to send the variation to Blocked (neverUp).
+// memory.vmsUp: the names control has
 // reached — seen Running by limactl list and reached by a probe (ASS-169),
 // or that it started or recreated itself; memory.vmWaits: name → { since, over,
+// pending (ASS-387: its wait past VM_WAIT on a pending start logged),
 // dispatching (dispatch.js vmDown's own wait past VM_WAIT logged, ASS-348) },
 // dropped once the VM is up or should not run.
 export const VM_WAIT = 2 * 60_000;
+export const NEVER_UP = 'never-up';
 export function awaitsVm(ctx, state, project, variation, who) {
   const name = variation?.vm?.name;
   if (!name || (ctx.memory.vmsUp ??= new Set()).has(name) || vmUse(project.engines ?? state.engines, project.engineName, variation) !== 'running') return false;
@@ -199,8 +209,52 @@ export function awaitsVm(ctx, state, project, variation, who) {
   let w = waits.get(name);
   if (!w) { waits.set(name, w = { since: now, over: false }); ctx.log(PHASE, `${who}: waits for its VM ${name} to be running`); }
   if (now - w.since < VM_WAIT) return true;
+  if (startPending(ctx, state, project, name)) {   // ASS-387: its start queued or under way — waited for, up to the ceiling
+    const ceiling = vmUpCeilingMs(state);
+    if (now - w.since >= ceiling) return NEVER_UP;
+    if (!w.pending) { w.pending = true; ctx.log(PHASE, `${who}: its VM ${name} is not running after ${held(VM_WAIT)}, its start still queued or under way; waits on, up to ${held(ceiling)}`); }
+    return true;
+  }
   if (!w.over) { w.over = true; ctx.log(PHASE, `${who}: its VM ${name} is not running after ${held(VM_WAIT)}; judged as it stands`); }
   return false;
+}
+
+// startPending(ctx, state, project, name) — ASS-387: whether the VM's start
+// (wanted: awaitsVm's checks passed) is still queued behind the project's
+// other VM jobs or under way — or Running but not yet reached — rather than
+// failed and backed off (match's held, its failures counted) or held by the
+// disk hold: one of those is judged at VM_WAIT as it stands (ASS-133).
+const startPending = (ctx, state, project, name) => !diskHeld(state) && !ctx.memory.vms?.get(project.id)?.held.get(name)?.failures;
+
+// vmUpCeilingMs(state) — how long a VM may take to come up before its
+// variation goes to Blocked (dispatch.js vmDown, ASS-348; awaitsVm, ASS-387), in ms: harness.json's
+// vm-up-ceiling-seconds, else VM_UP_CEILING — far longer than any normal
+// start (62–150 s seen, more queued behind the project's other VM jobs). Read
+// through state.harness, which is the raw file, so the default applies with
+// the key absent.
+export const VM_UP_CEILING = 30 * 60_000;
+export const vmUpCeilingMs = state => (state.harness['vm-up-ceiling-seconds'] != null ? state.harness['vm-up-ceiling-seconds'] * 1000 : VM_UP_CEILING);
+
+// neverUp(ctx, phase, at, name, ceiling) — the variation (`at`, found's) whose VM
+// `name` did not come up within `ceiling` goes to Blocked — Blocked for Human
+// when at Blocked already, as blockFailing sends a failing step inside it —
+// when its engine has that step, it is a sprint ticket's and not worked by
+// hand; its health (ai-feedback, short and long, set after the move, which
+// clears it) naming the VM and that it never came up. Its wait is dropped, so
+// a step there that runs in the VM waits afresh. Otherwise it waits on.
+// ASS-387: moved here from dispatch.js, so the step path (steps.js) Blocks so too; logged under `phase`.
+export async function neverUp(ctx, phase, at, name, ceiling) {
+  const { project, ticket, variation, engine, backlog } = at;
+  const from = variation['harness-status']?.state, to = from === 'blocked' ? 'blocked-for-human' : 'blocked';
+  if (backlog || isManual(ticket) || from === 'blocked-for-human' || !stepOf(engine, to)) return;
+  const why = `its VM ${name} never came up`;
+  const short = `VM ${name} never came up: not running and reachable after ${held(ceiling)}`;
+  const long = `${short}. Control dispatches no agent into a VM until it has seen it running and reached it (ASS-348), nor judges a step that needs it running while its start is queued or under way (ASS-387), so no agent was sent and no step run against it; look at the VM's starts in the control log (vm:start failing, or still starting).`;
+  await ctx.attempt(phase, `${ticket.key} ${variation.name}`, async () => {
+    if (!await moveTicket(ctx, phase, project, ticket, variation, to, why)) return;
+    ctx.memory.vmWaits?.delete(name);
+    await ctx.cli(['ticket:set-ai-feedback', project.id, ticket.key, variation.name, short, long]);
+  });
 }
 
 // The project's inventory, data/projects/<p>/vms.json: name → its row.

@@ -14,7 +14,7 @@ import { ticketFacts, ticketValues, runValues, parseOutput, cameFrom } from './f
 import { firstStepId, levelChanges, contextOf, ticketPath, found, moveTicket, moveRun, endRun, isPaused, mayMove, gated, SKIPPED, NO_CHOICE, TIMER } from './moves.js';
 import { failed, waiting, held as heldFor, ticketKey, runKey, cleared, BLOCK_AFTER, FAILED_STARTS } from './backoff.js';
 import { runsInVm, vmOf } from './vm.js';
-import { awaitsVm } from './vm-lifecycle.js';
+import { awaitsVm, NEVER_UP, neverUp, vmUpCeilingMs } from './vm-lifecycle.js';
 import { awaitsDependencies } from './dependencies.js';
 import { overSpent, spendText, runningOn } from './spend.js';
 import { readSession } from '../agents/session.js';
@@ -269,7 +269,9 @@ async function runVariation(ctx, state, project, key, name) {
       ctx.log(PHASE, `${who}: switched off, skipped (→ ${switchedOff(step).to})`);
       continue;
     }
-    if (awaitsVm(ctx, state, project, variation, who)) return;   // its VM still starting (ASS-133)
+    const vmWait = awaitsVm(ctx, state, project, variation, who);
+    if (vmWait === NEVER_UP) await neverUp(ctx, PHASE, at, variation.vm.name, vmUpCeilingMs(state));   // ASS-387: its start pending past the ceiling: Blocked
+    if (vmWait) return;   // its VM still starting (ASS-133), or its start still queued (ASS-387)
     const facts = ticketFacts(ctx, project, ticket, variation, undefined, runsInVm(step) ? variation.vm?.name : undefined);
     const changes = levelChanges(variation);
     switch (step.action?.type) {
@@ -406,7 +408,8 @@ async function runTransient(ctx, state, id) {
       return;   // a ticket's or another run's sub-engine: its parent ends it
     }
     const context = contextOf(run, state.transient);
-    const { project, ticket, variation, backlog } = found(state, { project: run.project, 'work-item': context.workItem, variation: context.variation });
+    const place = found(state, { project: run.project, 'work-item': context.workItem, variation: context.variation });
+    const { project, ticket, variation, backlog } = place;
     // Its ticket held by what it depends on (ASS-195, ASS-355): the run stays at its step, nothing started, as the ticket's own step does.
     if (ticket && variation && !backlog && awaitsDependencies(ctx, state, project, ticket, variation, who)) return;
     // Switched off (ASS-192): passed at once, as a ticket's step is (runVariation).
@@ -416,7 +419,9 @@ async function runTransient(ctx, state, id) {
       ctx.log(PHASE, `${context.workItem ?? '-'} ${context.variation ?? '-'} ${run['state-engine']}/${step.id}: switched off, skipped (→ ${next.to})`);
       continue;
     }
-    if (awaitsVm(ctx, state, project, variation, who)) return;   // its ticket's VM still starting (ASS-133)
+    const vmWait = awaitsVm(ctx, state, project, variation, who);
+    if (vmWait === NEVER_UP) await neverUp(ctx, PHASE, place, variation.vm.name, vmUpCeilingMs(state));   // ASS-387
+    if (vmWait) return;   // its ticket's VM still starting (ASS-133), or its start still queued (ASS-387)
     const facts = { ...(ticket && variation ? ticketFacts(ctx, project, ticket, variation, undefined, runsInVm(step) ? variation.vm?.name : undefined) : {}), structuredOutput: run['structured-output'], agentNeedsWork: true };
     // Its steps' visits are the run's own (ASS-66): counted over its moves, none from an earlier run or its parent.
     const changes = run['state-changes'] ?? [];

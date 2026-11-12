@@ -21,7 +21,7 @@ import { found, contextOf, ticketPath, isPaused, levelChanges, moveTicket, moveR
 import { problemOf, ticketOf, blockHistory, questionsOf } from './facts.js';
 import { failed, waiting, held, ticketKey, runKey } from './backoff.js';
 import { runsInVm, vmOf, REPOS, TICKET_FOLDER } from './vm.js';
-import { awaitsVm, credentialKindOf } from './vm-lifecycle.js';
+import { awaitsVm, credentialKindOf, NEVER_UP, neverUp, vmUpCeilingMs } from './vm-lifecycle.js';
 import { awaitsDependencies } from './dependencies.js';
 import { repositoryName, nextRepository, visitOf } from './repositories.js';
 import { overSpent, runningOn } from './spend.js';
@@ -429,50 +429,26 @@ const takeWorkspace = (ctx, step, project, key, variation) =>
 // into a VM whose credentials vm:start has not written yet fails "Not logged
 // in" in seconds, and spends one of the step's tries). For VM_WAIT that is the
 // wait its steps are judged under (vm-lifecycle.js awaitsVm, ASS-133), logged
-// there; past it the steps are judged as they stand, but the agent still
+// there — longer while its start is still queued or under way, up to the
+// ceiling (ASS-387: awaitsVm's NEVER_UP, Blocked so here too); past it the steps are judged as they stand, but the agent still
 // waits, logged once more per wait; once the wait reaches vmUpCeilingMs, the
 // variation goes to Blocked instead (neverUp).
 async function vmDown(ctx, state, step, project, key, variation, at) {
   if (!runsInVm(step)) return false;
   const v = found(state, { project, 'work-item': key, variation }), who = `${key} ${variation} ${at}`;
-  if (awaitsVm(ctx, state, v.project, v.variation, who)) return true;
-  const name = v.variation?.vm?.name, w = ctx.memory.vmWaits?.get(name);
+  const waits = awaitsVm(ctx, state, v.project, v.variation, who), name = v.variation?.vm?.name;
+  if (waits === NEVER_UP) await neverUp(ctx, PHASE, v, name, vmUpCeilingMs(state));   // ASS-387: its start pending past the ceiling
+  if (waits) return true;
+  const w = ctx.memory.vmWaits?.get(name);
   if (!name || ctx.memory.vmsUp?.has(name) || !w?.over) return false;   // up, or not a VM its step runs (no wait)
   const ceiling = vmUpCeilingMs(state);
-  if (ctx.now().getTime() - w.since >= ceiling) await neverUp(ctx, v, name, ceiling);
+  if (ctx.now().getTime() - w.since >= ceiling) await neverUp(ctx, PHASE, v, name, ceiling);
   else if (!w.dispatching) { w.dispatching = true; ctx.log(PHASE, `${who}: waits for its VM ${name} to be up before an agent is dispatched into it`); }
   return true;
 }
 
-// vmUpCeilingMs(state) — how long a VM may take to come up before its
-// variation goes to Blocked (vmDown, ASS-348), in ms: harness.json's
-// vm-up-ceiling-seconds, else VM_UP_CEILING — far longer than any normal
-// start (62–150 s seen, more queued behind the project's other VM jobs). Read
-// through state.harness, which is the raw file, so the default applies with
-// the key absent.
-export const VM_UP_CEILING = 30 * 60_000;
-export const vmUpCeilingMs = state => (state.harness['vm-up-ceiling-seconds'] != null ? state.harness['vm-up-ceiling-seconds'] * 1000 : VM_UP_CEILING);
-
-// neverUp(ctx, at, name, ceiling) — the variation (`at`, found's) whose VM
-// `name` did not come up within `ceiling` goes to Blocked — Blocked for Human
-// when at Blocked already, as blockFailing sends a failing step inside it —
-// when its engine has that step, it is a sprint ticket's and not worked by
-// hand; its health (ai-feedback, short and long, set after the move, which
-// clears it) naming the VM and that it never came up. Its wait is dropped, so
-// a step there that runs in the VM waits afresh. Otherwise it waits on.
-async function neverUp(ctx, at, name, ceiling) {
-  const { project, ticket, variation, engine, backlog } = at;
-  const from = variation['harness-status']?.state, to = from === 'blocked' ? 'blocked-for-human' : 'blocked';
-  if (backlog || isManual(ticket) || from === 'blocked-for-human' || !stepOf(engine, to)) return;
-  const why = `its VM ${name} never came up`;
-  const short = `VM ${name} never came up: not running and reachable after ${held(ceiling)}`;
-  const long = `${short}. Control dispatches no agent into a VM until it has seen it running and reached it (ASS-348), so no agent was sent; look at the VM's starts in the control log (vm:start failing, or still starting).`;
-  await ctx.attempt(PHASE, `${ticket.key} ${variation.name}`, async () => {
-    if (!await moveTicket(ctx, PHASE, project, ticket, variation, to, why)) return;
-    ctx.memory.vmWaits?.delete(name);
-    await ctx.cli(['ticket:set-ai-feedback', project.id, ticket.key, variation.name, short, long]);
-  });
-}
+// vmUpCeilingMs, VM_UP_CEILING and neverUp live in vm-lifecycle.js (ASS-387: the step path Blocks so too).
+export { VM_UP_CEILING, vmUpCeilingMs } from './vm-lifecycle.js';
 
 // heldOnFailure(ctx, key, fn) — fn, a dispatch; when it throws (the workspace
 // would not take the branch, an agent would not start…), the item is held a

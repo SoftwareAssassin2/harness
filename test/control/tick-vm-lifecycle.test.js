@@ -223,6 +223,41 @@ test('ASS-133 AC1: the wait is bounded — a VM that does not come up in two min
   assert.equal(l.f.lines.filter(x => /its VM abc-3-a is not running after 2m; judged as it stands$/.test(x)).length, 1, l.f.lines.join('\n'));
 });
 
+// ASS-387: past VM_WAIT a step whose VM's start is still queued behind the
+// project's other VM jobs, or under way, is not judged as it stands: it waits
+// on until the VM is up, then is judged; or, past vmUpCeilingMs, the variation
+// goes to Blocked naming its VM, as dispatch's ceiling (ASS-348) does.
+test('ASS-387 AC1, AC2: a VM-dependent step whose VM start is queued (B, behind A\'s) or under way (A) past VM_WAIT is not judged — no script, no "judged as it stands" — and once the VMs are up the next tick runs its script in the VM, with no Blocked move', async () => {
+  const l = await reentering({ A: [TESTING, 'Stopped'], B: [TESTING, 'Stopped'] });
+  await l.tick();   // A's vm:start under way beside the tick, B's queued behind it in the project's job
+  l.later(VM_WAIT); await l.tick();
+  l.later(VM_WAIT); await l.tick();
+  assert.ok(l.calls.includes('vm:start p ABC-3 A') && !l.calls.includes('vm:start p ABC-3 B'), l.calls.join('\n'));
+  assert.ok(!l.calls.some(c => / in abc-3-[ab]$/.test(c)), l.calls.join('\n'));
+  assert.ok(!l.f.lines.some(x => x.includes('judged as it stands')), l.f.lines.join('\n'));
+  for (const name of ['abc-3-a', 'abc-3-b']) assert.ok(l.f.lines.some(x => x.endsWith(`: its VM ${name} is not running after 2m, its start still queued or under way; waits on, up to 30m`)), l.f.lines.join('\n'));
+  await l.settle();   // both started, B's after A's
+  await l.tick();
+  assert.ok(l.calls.some(c => c.endsWith(' in abc-3-a')) && l.calls.some(c => c.endsWith(' in abc-3-b')), l.calls.join('\n'));
+  for (const name of ['A', 'B']) assert.equal(l.f.variation(name)['harness-status'].state, 'build', l.f.lines.join('\n'));
+  assert.ok(!l.f.lines.some(x => / → blocked/.test(x)), l.f.lines.join('\n'));
+});
+
+test('ASS-387 AC3: a VM whose start is still under way at vmUpCeilingMs sends its variation to Blocked, naming its VM and that it never came up, with no script run against it', async () => {
+  const l = await reentering({ A: [TESTING, 'Stopped'] });
+  await l.tick();   // the start never finishes
+  l.later(VM_UP_CEILING - 1000); await l.tick();
+  assert.equal(l.f.variation('A')['harness-status'].state, 'build', l.f.lines.join('\n'));
+  l.later(1000); await l.tick();
+  const v = l.f.variation('A');
+  assert.equal(v['harness-status'].state, 'blocked', l.f.lines.join('\n'));
+  assert.equal(v['ai-feedback-short'], 'VM abc-3-a never came up: not running and reachable after 30m');
+  assert.ok(l.f.lines.some(x => /^steps ABC-3 A build → blocked .*\(its VM abc-3-a never came up\)$/.test(x)), l.f.lines.join('\n'));
+  assert.ok(!l.calls.some(c => c.endsWith(' in abc-3-a')), l.calls.join('\n'));
+  assert.ok(!l.f.lines.some(x => x.includes('judged as it stands')), l.f.lines.join('\n'));
+  await l.settle();
+});
+
 // ASS-225: a paused variation's sub-engine runs are held with it — the
 // pause is recorded on the variation, so runSteps asks isPaused with the
 // run's variation. A sibling variation, not paused, works on.
@@ -330,15 +365,16 @@ test('ASS-169 AC1-AC4: a VM Running but not yet reachable is probed in the match
 // Blocked, its ai-feedback naming the VM.
 const DISPATCH_WAIT = 'dispatch ABC-3 A generate-solution: waits for its VM abc-3-a to be up before an agent is dispatched into it';
 
-test('ASS-348 AC1, AC2, AC4: a VM still starting past VM_WAIT gets no agent — the step judged as it stands, the dispatch wait logged once — and the tick after it is up dispatches one', async () => {
+// ASS-387: a VM whose start is still under way past VM_WAIT keeps its step unjudged too, so the dispatch wait is not reached.
+test('ASS-348 AC1, AC2, AC4, ASS-387: a VM still starting past VM_WAIT gets no agent — the step not judged, its wait on logged once — and the tick after it is up dispatches one', async () => {
   const l = await dispatching({ A: [GENERATING, 'Stopped'] });
   try {
     await l.tick();   // vm:start under way beside the tick, not done
     l.later(VM_WAIT);
     await l.tick(); await l.tick(); await l.tick();
     assert.deepEqual(l.agents(), [], l.f.lines.join('\n'));
-    assert.equal(l.f.lines.filter(x => /its VM abc-3-a is not running after 2m; judged as it stands$/.test(x)).length, 1, l.f.lines.join('\n'));
-    assert.equal(l.f.lines.filter(x => x === DISPATCH_WAIT).length, 1, l.f.lines.join('\n'));
+    assert.ok(!l.f.lines.some(x => x.includes('judged as it stands')), l.f.lines.join('\n'));
+    assert.equal(l.f.lines.filter(x => x.endsWith(': its VM abc-3-a is not running after 2m, its start still queued or under way; waits on, up to 30m')).length, 1, l.f.lines.join('\n'));
     await l.settle();   // vm:start done: the VM is up
     assert.ok(l.f.ctx.memory.vmsUp.has('abc-3-a'));
     await l.tick();
