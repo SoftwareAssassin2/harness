@@ -939,6 +939,27 @@ Blocked for Human, saying what was found and what to do.
   Needed — cleared once the wait ends. When the limit resets, or a fallback
   becomes available, the VM is started again as its step says; no step is
   re-run and no visit spent.
+- **Out of memory (ASS-398, ASS-404).** Before control starts or creates a
+  VM (the lifecycle's `vm:start` / `vm:create`, or Setup's Create VM step) it
+  reads macOS's own memory signal (`src/control/host-memory.js`, at most every
+  10 seconds): the free percentage (`sysctl kern.memorystatus_level`) and the
+  pressure level (`kern.memorystatus_vm_pressure_level`: normal, warn,
+  critical). A new VM's need is what the project's running VMs really use —
+  the largest resident size of their Virtualization framework VM processes,
+  matched to their Lima instances — plus harness.json's
+  `memory-free-margin-gib` (2), at least `memory-need-floor-gib` (4) and at
+  most the VM's configured `memory:`; with none running, the floor.
+  (`memory-free-hold-gib`, when set, is the need instead.) The VM is held
+  while the pressure is warn or critical, or macOS's free memory is below the
+  need; under normal pressure with room nothing is held. A held VM's
+  variation waits as for a slot — its steps not judged, no failure counted —
+  and holds no planning or in-progress seat meanwhile (`plan.js`
+  `memoryHeld`); while the hold is on, the seat it freed goes only to a
+  variation whose VM is up. The hold is logged under `hold` with macOS's
+  figures, the need and how it was estimated, and the VM held, and recorded
+  in the project's `memory-hold.json` (the header's "Out of memory" flag).
+  It lifts by itself once there is room; the held variations take a seat
+  again in rank order, no step re-run and no visit spent.
 - **Released (ASS-325).** A step may instead say `released`: the variation's
   VM is deleted as soon as it gets there, so its disk goes back to the
   project's VM disk budget at once rather than when a new VM is short of

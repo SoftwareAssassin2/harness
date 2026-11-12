@@ -484,6 +484,23 @@ test('ASS-357 AC1: a variation its dependencies hold (AWAITING) holds no seat, a
   assert.deepEqual(seats['in-progress'], ['D-4 A', 'D-2 A']);
 });
 
+// ASS-404: a variation whose VM control holds for want of memory (its
+// project's memory-hold.json `held`) holds no seat either; its seat goes to the
+// next ticket, as control plans it.
+test('ASS-404 AC3: a variation whose VM is held for memory holds no seat, as control plans it; its seat goes to the next ticket', () => {
+  const tickets = [seatTicket('M-1', 1, [['A', 'build']]), seatTicket('M-2', 2, [['A', 'build']]), seatTicket('M-3', 3, [['A', 'build']])];
+  const project = memoryHold => ({
+    id: 'p', name: 'P', stateEngine: 'e', questions: [], backlog: [], outside: [], memoryHold,
+    limits: { project: { 'max-tickets-in-progress': 2 }, harness: {} },
+    sprint: { number: 10, start: '2026-09-18', end: '2026-10-01', features: tickets, bugs: [], spikes: [] },
+  });
+  const keys = ['M-1', 'M-2', 'M-3'];
+  const seatedOf = lines => keys.filter(k => strip(seatRow(lines, k)).slice(2, 2 + TEXT).includes(SEAT));
+  const hold = { since: '2026-10-01T16:00:00Z', vm: 'm-1-a', held: [{ vm: 'm-1-a', key: 'M-1', variation: 'A', state: 'build' }] };
+  assert.deepEqual(seatedOf(render(seatState([project(hold)]), wide)), ['M-2', 'M-3']);
+  assert.deepEqual(seatedOf(render(seatState([project(null)]), wide)), ['M-1', 'M-2']);
+});
+
 // ===== ASS-363: "↳ AWAITING MERGE" under a ticket held at a step with shows-merge-train =====
 // A variation whose status chain is at a step with shows-merge-train (grouped-build's Await Sequential Merge; here
 // `await`, top level, and `wait` in a sub-engine) gets an extra Ticket-cell line, after any AWAITING one and

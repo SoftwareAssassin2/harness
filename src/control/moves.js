@@ -220,13 +220,17 @@ export async function moveTicket(ctx, phase, project, ticket, variation, to, why
 // mayEnter, ASS-126); when not, said once per visit. Every move control makes
 // on its own asks first (steps.js, dispatch.js's pass-over) — all but an
 // agent's finished turn (finish.js), whose work is done and would only be
-// redone at the step it left.
+// redone at the step it left. While its project's memory hold is on (ASS-404,
+// host-memory.js) a variation whose VM is not up takes no seat a held
+// variation freed (mayEnter's memorySeats): its own VM would be held too.
 export function mayMove(ctx, phase, state, project, variation, who, to) {
-  if (mayEnter(state, project, variation, to)) return true;
+  const memorySeats = Boolean(project.memoryHold) && !(variation.vm?.name && ctx.memory.vmsUp?.has(variation.vm.name));
+  if (mayEnter(state, project, variation, to, { memorySeats })) return true;
   const key = `slot/${project.id}/${who}/${(variation['state-changes'] ?? []).length}/${to}`;
   if (!ctx.memory.warned.has(key)) {
     ctx.memory.warned.add(key);
-    ctx.log(phase, `${who}: waits for ${slotKind(stepOf(project.engine, to)) === 'planning' ? 'a planning' : 'an in-progress'} slot to move to ${to}`);
+    const memory = memorySeats && mayEnter(state, project, variation, to) ? ' (the one free is a seat a VM held for memory left: its VM would be held too)' : '';   // ASS-404
+    ctx.log(phase, `${who}: waits for ${slotKind(stepOf(project.engine, to)) === 'planning' ? 'a planning' : 'an in-progress'} slot to move to ${to}${memory}`);
   }
   return false;
 }

@@ -60,7 +60,8 @@ import { checkPushAccount } from './push-account.js';
 import { detectReverts } from './reverts.js';
 import { raiseDependencies } from './dependencies.js';
 import { checkDisk, diskHeld } from './disk.js';
-import { readAvailableMemory } from './host-memory.js';
+import { readHostMemory } from './host-memory.js';
+import { limaHome } from './vm.js';
 import { checkCredentials } from './credentials.js';
 import { sessionUsage } from '../agents/usage.js';
 import { monthCost } from '../agents/api-cost.js';
@@ -126,11 +127,12 @@ export function createContext({ root, env = process.env, command, log = () => {}
   // — the test fixtures' env, as ANTHROPIC_API_COST_DISABLED is — so a test's
   // control never reads a forge token or calls a forge. Tests replace it.
   ctx.pushAccount = env.PUSH_ACCOUNT_DISABLED === '1' ? null : args => pushAccount({ ...args, env });
-  // availableMemory() — the Mac's available memory in bytes (ASS-398, see
-  // host-memory.js: vm_stat); null with HOST_MEMORY_DISABLED=1 — the test
-  // fixtures' env, as DISK_SPACE_DISABLED is — so a test's control never holds
-  // a VM for the real Mac's memory. Tests replace it.
-  ctx.availableMemory = env.HOST_MEMORY_DISABLED === '1' ? null : readAvailableMemory;
+  // hostMemory() — the Mac's memory now (ASS-398; ASS-404, see host-memory.js:
+  // macOS's free percentage and pressure level, and each Lima VM's resident
+  // size); null with HOST_MEMORY_DISABLED=1 — the test fixtures' env, as
+  // DISK_SPACE_DISABLED is — so a test's control never holds a VM for the real
+  // Mac's memory. Tests replace it.
+  ctx.hostMemory = env.HOST_MEMORY_DISABLED === '1' ? null : () => readHostMemory(limaHome(env))();
   ctx.cli = (args, env) => runCli(ctx, args, env);
   ctx.script = (argv, vm, env) => runScript(ctx, argv, vm, env);
   ctx.succeeds = (argv, vm) => scriptSucceeds(ctx, argv, vm);

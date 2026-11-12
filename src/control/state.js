@@ -132,7 +132,8 @@ export const readEngines = dir => (!existsSync(dir) ? {} : Object.fromEntries(re
 // glabRequiresReauthentication (see requiresReauthentication), rateLimit (its rate-limit.json —
 // { <credential kind>: { since, type, resets-at }, … } (ASS-215) — or null, ASS-94), claudeUsage (its
 // claude-usage.json — { email, session: { percent, resets-at }, weekly: { percent, resets-at } | null, as-of } — or
-// null, ASS-47), credentialsHold (its credentials-hold.json — { since, problems } — or null, ASS-395) }, in folder order, contextWindows (the learned
+// null, ASS-47), credentialsHold (its credentials-hold.json — { since, problems } — or null, ASS-395), memoryHold (its
+// memory-hold.json — control's hold on its new VMs for want of memory, the variations held — or null, ASS-404) }, in folder order, contextWindows (the learned
 // context-windows.json — { <model>: tokens } — or {}, ASS-190) and diskSpace
 // (disk-space.json — { level, free-bytes, … }, ASS-288 — or null; one caught
 // half-written reads as null, the next tick reading it again).
@@ -156,6 +157,9 @@ export function loadState(paths) {
       const claudeUsage = existsSync(join(dir, 'claude-usage.json')) ? readJson(join(dir, 'claude-usage.json')) : null;
       // ASS-395: its credentials hold (project:check-credentials' credentials-hold.json — { since, problems }), or null.
       const credentialsHold = existsSync(join(dir, 'credentials-hold.json')) ? readJson(join(dir, 'credentials-hold.json')) : null;
+      // ASS-404: its memory hold (host-memory.js' memory-hold.json — { since, …, held: [{ key, variation, … }] }: plan.js frees the held variations' seats), or null; one caught half-written reads as null.
+      let memoryHold = null;
+      try { memoryHold = existsSync(join(dir, 'memory-hold.json')) ? readJson(join(dir, 'memory-hold.json')) : null; } catch { /* half-written: the next load reads it */ }
       // The engines it runs on: its own folder's over engines/'s (ASS-276).
       const seen = { ...engines, ...readEngines(join(dir, 'engines')) };
       // Its switched-off-steps (ASS-209): each valid entry's step switched off in its own engines; a bad one left on, its errors kept.
@@ -164,7 +168,7 @@ export function loadState(paths) {
       const own = switchOff(seen, switchedOff.filter(e => !switchedOffStepErrors(e, seen).length));
       const refinementName = refinementOf(own[engineName]);
       return { id, json, engineName, engines: own, switchedOffErrors, engine: own[engineName], refinementName, refinement: own[refinementName], sprintFile, sprint, tickets, backlog, asking: openBlocking(dir, [...tickets, ...backlog]), outside: loadOutside(dir),
-        gcloudRequiresReauthentication: requiresReauthentication(dir, 'gcloud'), glabRequiresReauthentication: requiresReauthentication(dir, 'glab'), rateLimit, claudeUsage, credentialsHold };
+        gcloudRequiresReauthentication: requiresReauthentication(dir, 'gcloud'), glabRequiresReauthentication: requiresReauthentication(dir, 'glab'), rateLimit, claudeUsage, credentialsHold, memoryHold };
     });
   return {
     harness: readJson(paths.harness),

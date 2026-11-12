@@ -72,7 +72,11 @@
 // credential refreshes going on. Nor, while the Mac is short of memory
 // (ASS-398, host-memory.js), is one recreated or started: its variation waits
 // as for a slot (awaitsVm), no failure counted, said once per VM; the hold is
-// read again every tick and lifts by itself.
+// read again every tick and lifts by itself. ASS-404: short means macOS
+// reports warn or critical pressure, or less free than a VM of the project
+// really uses (its running VMs' resident size, plus a margin, floored and
+// capped); the held variation holds no seat while it waits (plan.js), and
+// takes one again once its VM can start.
 //
 // Nor does a VM run while its project's Claude kind is rate limited with no
 // API fallback for its variation's next agent (ASS-400: idle VMs held the
@@ -121,7 +125,7 @@ import { holdOf, heldBy } from './dependencies.js';
 import { backoffDelay, held } from './backoff.js';
 import { limaEnv, runsInVm } from './vm.js';
 import { diskHeld } from './disk.js';
-import { memoryShort, memoryHeldVm, liftMemoryHolds } from './host-memory.js';
+import { memoryShort, memoryHeldVm, liftMemoryHolds, unhold } from './host-memory.js';
 import { humanPause } from './moves.js';
 import { declaredCredentials } from './vm-credentials.js';
 
@@ -266,7 +270,8 @@ const statuses = ctx => new Promise((resolve, reject) => execFile('limactl', ['l
 // running, its job (match); memory.vms: id → { job, held: name → { failures, until } }.
 export async function superviseVms(ctx, state) {
   const jobs = (ctx.memory.vms ??= new Map());
-  await liftMemoryHolds(ctx, state);   // ASS-398: a memory hold lifts by itself once there is enough
+  // ASS-398: a memory hold lifts by itself once there is room; ASS-404: the state loaded again when its record went or its held variations changed, so the seats (plan.js) follow at once.
+  if (await liftMemoryHolds(ctx, state)) state = ctx.load();
   const projects = state.projects.map(project => [project, vmsOf(ctx, state, project)]).filter(([, vms]) => vms.size);
   if (!projects.length) return;
   let status;
@@ -279,7 +284,7 @@ export async function superviseVms(ctx, state) {
   for (const [project, vms] of projects) {
     const r = jobs.get(project.id) ?? { job: null, held: new Map() };
     jobs.set(project.id, r);
-    r.job ??= match(ctx, project.id, vms, r, status, diskHeld(state), stampEvery, name => memoryShort(ctx, state, project, name)).catch(error => ctx.log('error', `${PHASE} ${project.id}: ${error.message}`)).finally(() => { r.job = null; });
+    r.job ??= match(ctx, project.id, vms, r, status, diskHeld(state), stampEvery, (name, vm) => memoryShort(ctx, state, project, name, vm.ticket && vm.variation ? { key: vm.ticket, variation: vm.variation, state: vm.state } : null)).catch(error => ctx.log('error', `${PHASE} ${project.id}: ${error.message}`)).finally(() => { r.job = null; });
   }
 }
 
@@ -328,7 +333,7 @@ async function stampsOf(ctx, id, every) {
 async function rateLimitHealth(ctx, id, name, vm, s) {
   if (!vm.ticket || !vm.variation || vm.state == null) return;
   if (vm.rateLimited) {
-    ctx.memory.memoryHolds?.get(id)?.vms.delete(name);
+    unhold(ctx, id, name, vm.ticket, vm.variation);   // ASS-404: its variation's seat no longer freed for memory
     if (vm.busy) return;
     const h = rateHealth(id, vm.ticket, vm.rateLimited);
     if (vm.health === h.long) return;
@@ -359,6 +364,7 @@ async function match(ctx, id, vms, r, status, diskHold = false, stampEvery = CRE
     await rateLimitHealth(ctx, id, name, vm, s);   // ASS-400
     const holding = `vm-stop/${name}`;   // ASS-349: a stop held for an agent at work in it, logged once per hold
     if (vm.run || !vm.busy || s !== 'Running') ctx.memory.warned.delete(holding);
+    if (vm.run && s === 'Running') unhold(ctx, id, name, vm.ticket, vm.variation);   // ASS-404: running after all (started by hand): not held
     if (vm.run && s === 'Running' && !up.has(name)) {
       try { await probe(ctx, name); isUp(ctx, name); } catch { /* not yet reachable; probed again next job */ }
     }
@@ -407,12 +413,12 @@ async function match(ctx, id, vms, r, status, diskHold = false, stampEvery = CRE
     const h = r.held.get(name) ?? { failures: 0, until: 0 };
     if (now < h.until) continue;
     // ASS-398: the Mac short of memory (host-memory.js): not started or recreated, no failure counted; its variation waits as for a slot.
-    if ((args[0] === 'vm:create' || (args[0] === 'vm:start' && !refreshing)) && await memoryShortFor(name)) {
+    if ((args[0] === 'vm:create' || (args[0] === 'vm:start' && !refreshing)) && await memoryShortFor(name, vm)) {
       if (!ctx.memory.warned.has(`memory/${name}`)) { ctx.memory.warned.add(`memory/${name}`); ctx.log(PHASE, `${id} ${name}: not ${args[0] === 'vm:create' ? 'recreated' : 'started'}: out of memory; waits as for a slot`); }
       continue;
     }
     ctx.memory.warned.delete(`memory/${name}`);
-    ctx.memory.memoryHolds?.get(id)?.vms.delete(name);
+    unhold(ctx, id, name, vm.ticket, vm.variation);   // ASS-404: and its variation, which takes a seat again
     let doing = first ?? args;
     try {
       if (!vm.run || refreshing) up.delete(name);   // a stopping or refreshing VM is not up until it is reached again

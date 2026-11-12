@@ -155,7 +155,7 @@ test('ASS-400 AC3: once the limit resets, or a fallback is there, the stopped VM
 test('ASS-400 AC4: a VM stopped for the rate limit is dropped from the memory hold\'s VMs and never started for it', async () => {
   const l = lifecycle({ A: [BUILDING, 'Stopped'] });
   l.kinds({ 'abc-3-a': 'claude' });
-  l.f.ctx.availableMemory = async () => 0;
+  l.f.ctx.hostMemory = async () => ({ freePercent: 0, pressure: 'critical', totalBytes: 64 * 2 ** 30, vms: new Map() });   // ASS-404
   l.f.ctx.memory.memoryHolds = new Map([['p', { since: 0, need: 1, available: 0, first: 'abc-3-a', vms: new Set(['abc-3-a']) }]]);
   assert.deepEqual((await l.pass()).vm, []);
   assert.deepEqual([...l.f.ctx.memory.memoryHolds.get('p').vms], []);
