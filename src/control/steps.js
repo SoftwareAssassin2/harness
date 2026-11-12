@@ -4,7 +4,7 @@
 // its dependencies hold (dependencies.js awaitsDependencies, ASS-355), and
 // every run under it, is left where it is: no move, script, sub-engine run or
 // VM wait, at any step but a done or a person's one.
-import { stepOf, engineSteps, nextState, pairedStatus, isManual, isDoneStep, isActive, answersGap, clearedByFix, FIX_LANDED, ownBranchFix, OWN_BRANCH_FIX, resumeAt, whyNotResume, statusIn, mergesAwaited } from './engine.js';
+import { stepOf, engineSteps, nextState, pairedStatus, isManual, isDoneStep, isActive, answersGap, ownBranchFix, awaitsDependency, clearCause, resumeAt, resumeSubAt, whyNotResume, statusIn, mergesAwaited } from './engine.js';
 import { enginesFor } from './state.js';
 import { rankSprint, rankBacklog } from './rank.js';
 import { planFor, slotKind } from './plan.js';
@@ -252,10 +252,11 @@ async function runVariation(ctx, state, project, key, name) {
     // An exit's start-sub-engine-at goes with its own target, not one max-visits redirects to.
     // A move into a step whose slot the variation neither holds nor can take waits (ASS-126; plan.js mayEnter).
     // A fast-tracked ticket's move that waits so is remembered, for its pre-emption (fast-track.js, ASS-83).
-    const move = async (next, cause) => {
+    // ASS-390: `startAt`, when given, the step the target's sub-engine starts at instead (a cleared block's resume-sub-at).
+    const move = async (next, cause, startAt) => {
       if (next?.to == null) return false;
       if (!backlog && !mayMove(ctx, PHASE, state, project, variation, who, next.to)) { waitsForSeat(ctx.memory, project, ticket, variation, slotKind(stepOf(engine, next.to))); return false; }
-      return moveTicket(ctx, PHASE, project, ticket, variation, next.to, next.reason === 'max-visits' ? 'max-visits' : undefined, next.reason === 'exit' ? next.exit['start-sub-engine-at'] : undefined, cause);
+      return moveTicket(ctx, PHASE, project, ticket, variation, next.to, next.reason === 'max-visits' ? 'max-visits' : undefined, startAt ?? (next.reason === 'exit' ? next.exit['start-sub-engine-at'] : undefined), cause);
     };
     // Held by what it depends on (ASS-195, ASS-355): held at this step, whatever it is but a done or a person's one —
     // nothing moved, started or judged, not even its VM's wait (stopped while it is held), so it goes on here once released.
@@ -343,12 +344,16 @@ async function runVariation(ctx, state, project, key, name) {
         }
         // A block cleared by a landed fix (ASS-309) records the fix-landed cause, so the visit window
         // restarts — as does the cause the exit itself names (ASS-315: merge-gate-red, on release's rebuild exit).
-        // ASS-384: one sent back to fix its own branch records own-branch-fix, restarting the window the same way.
-        if (!await move(next, clearedByFix(facts) ? FIX_LANDED : ownBranchFix(facts) ? OWN_BRANCH_FIX : next.exit?.cause)) return;   // gated: the run stays until the human opens the gate, then goes as orphaned (runTransient)
-        // Where a landed fix resumes it (ASS-343): the step its run's resume-at names, when engine.js whyNotResume allows it.
-        const resume = resumeAt(facts), cleared = ownBranchFix(facts) ? 'the failure is in its own branch (own-branch fix)' : 'the fix landed';
+        // ASS-384: one sent back to fix its own branch records own-branch-fix, restarting the window the same way;
+        // ASS-390: one sent to wait for its dependency merge request, dependency-wait (engine.js clearCause).
+        // Where a landed fix resumes it (ASS-343): the step its run's resume-at names, when engine.js whyNotResume allows it —
+        // and, taken, the step its group starts at when the run names one of that group's sub-engine (ASS-390: resume-sub-at, Await Sequential Merge).
+        const resume = resumeAt(facts), cleared = ownBranchFix(facts) ? 'the failure is in its own branch (own-branch fix)' : awaitsDependency(facts) ? 'it only waits for its dependency merge request' : 'the fix landed';
+        const sub = resume !== undefined && resume === next.to ? resumeSubAt(facts) : undefined;
+        const startAt = sub !== undefined && stepOf(enginesFor(state, project.id)[stepOf(engine, next.to)?.action?.engine], sub) ? sub : undefined;
+        if (!await move(next, clearCause(facts) ?? next.exit?.cause, startAt)) return;   // gated: the run stays until the human opens the gate, then goes as orphaned (runTransient)
         if (resume !== undefined) ctx.log(PHASE, resume === next.to
-          ? `${who}: ${cleared}; resumes at ${resume}: ${facts.structuredOutput['resume-why'] ?? 'no reason given'}`
+          ? `${who}: ${cleared}; resumes at ${resume}${startAt ? ` at ${startAt}` : sub ? ` (its ${sub} not a step there)` : ''}: ${facts.structuredOutput['resume-why'] ?? 'no reason given'}`
           : `${who}: ${cleared}; resume-at ${resume} not taken (${whyNotResume(engine, next.to, resume) ?? 'its return could not be told'}), resumes at ${next.to}`);
         // Why it went there, when the run says (ai-feedback-short/-long in its output; ASS-75: Create VM's
         // out-of-disk reason, for Blocked for Human): the variation's health, set after the move, which clears it.

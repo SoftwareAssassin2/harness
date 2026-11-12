@@ -76,6 +76,63 @@ began="$(jq -c '.["wait-began"] | objects' <<< "$variation")"
 [[ -n "$waits" ]] || {
   jq -nc --arg l "$key $3 waits on no fix ticket, so it cannot wait for one to land." '{ "ai-feedback-short": "The fix ticket cannot be waited on", "ai-feedback-long": $l }'
   echo "ticket:fix-landed: $key $3 waits on no ticket" >&2; exit 4; }
+
+# ASS-390 AC6: a wait on Blocked's own fix merge request (ticket:wait-on
+# --merge-request: waits-on { merge-request, key, repository, branch }) is read
+# from its forge (merge-requests.bash mr_view), not a ticket. Merged: landed,
+# exit 0, printing { waits-on, status, landed, fix-merge-request,
+# ai-feedback-short: null, ai-feedback-long: null } — the nulls clear the
+# waiting feedback from the run — and recorded Merged in the variation's
+# fix-merge-requests. Closed unmerged: exit 3 with ai-feedback saying so, for
+# Blocked for Human (a question for the operator, not a retry: the fix was
+# Blocked's own). Open: exit 1, still waiting (no failure counted), the
+# variation's Health (ai-feedback-short and -long, written only when it
+# changes) naming it, its url, and what it needs — approval (GitLab's
+# approvals_left, GitHub's review decision), out of draft, a failed pipeline,
+# open threads, a rebase. A forge that cannot be read is still waiting (1).
+# Each end is logged in the change log (work.bash blocked_log, AC3).
+if [[ "$(jq -r 'has("merge-request")' <<< "$waits")" == true ]]; then
+  source "$here/../merge-requests.bash"
+  command=ticket:fix-landed project="$1" name="$3" url="$(jq -r '.["merge-request"]' <<< "$waits")"
+  MRS="$(jq -c '[{ repository, branch, key }]' <<< "$waits")" URLS="$(jq -c '[.repository]' <<< "$waits")"
+  mr="$(jq -r '.key // "the fix merge request"' <<< "$waits")" where="$(path_of "$(jq -r .repository <<< "$waits")")"
+  view="$(mr_view "$command" 0 2>/dev/null)" || { echo "$command: $mr in $where could not be read from its forge; still waiting" >&2; exit 1; }
+  state="$(jq -r .state <<< "$view")"
+  record() {
+    update_whole_ticket "$command" "$project" "$key" --arg name "$name" --arg u "$url" --arg s "$1" '
+      .variations |= map(if .name != $name or .["is-deleted"] then . else .["fix-merge-requests"] |= map(if .url == $u then .status = $s else . end) end)' 2>/dev/null || true
+  }
+  case "$state" in
+    Merged)
+      record Merged
+      blocked_log "$project" "$key" "$name" "Await the Fix Merge Request" "The fix merge request $mr ($url) merged: $key resumes."
+      jq -nc --argjson w "$waits" --arg u "$url" '{ "waits-on": $w, status: "Merged", landed: true, "fix-merge-request": $u, "ai-feedback-short": null, "ai-feedback-long": null }'
+      exit 0 ;;
+    Closed)
+      record Closed
+      blocked_log "$project" "$key" "$name" "Await the Fix Merge Request" "The fix merge request $mr ($url) was closed without merging: handed to the operator."
+      jq -nc --argjson w "$waits" --arg u "$url" --arg mr "$mr" --arg where "$where" --arg key "$key" '{ "waits-on": $w, status: "Closed", landed: false, "fix-merge-request": $u,
+        "ai-feedback-short": "Fix MR \($mr) in \($where) was closed unmerged",
+        "ai-feedback-long": "Blocked'"'"'s Repair Project opened the fix merge request \($mr) (\($u)) to unblock \($key), and it was closed without merging. Reopen and merge it, or fix the block another way, then resolve; or have AI try again." }'
+      echo "$command: $mr was closed unmerged" >&2
+      exit 3 ;;
+  esac
+  approvals="$(mr_approvals_left "$command" 0 "$view")"
+  needs="$(jq -r --arg a "$approvals" '[ (if $a == "unknown" then "a review approval" elif ($a | tonumber? // 0) > 0 then "\($a) approval\(if $a == "1" then "" else "s" end)" else empty end),
+    (if .draft then "taking out of draft" else empty end),
+    (.reasons[]? | { "build-failed": "its failed pipeline fixed", "open-threads": "its open threads resolved", "needs-rebase": "a rebase" }[.] // empty) ]
+    | if length == 0 then "merging (approval, if its project asks for one)" else join(", ") end' <<< "$view")"
+  short="Waits on fix MR $mr in $where: needs approval"
+  long="Blocked's Repair Project opened the fix merge request $mr ($url) to unblock $key, which waits for it to merge. It needs a person's approval to merge (now: $needs): review and approve it, then merge it; closed unmerged, $key comes to you."
+  was="$(variation_field '.["ai-feedback-long"] // ""' "$command" "$project" "$key" "$name" | jq -r .)"
+  if [[ "$was" != "$long" ]]; then
+    update_whole_ticket "$command" "$project" "$key" --arg name "$name" --arg s "$short" --arg l "$long" '
+      .variations |= map(if .name != $name or .["is-deleted"] then . else .["ai-feedback-short"] = $s | .["ai-feedback-long"] = $l end)'
+    echo "$command: $key $name: $long" >&2
+  fi
+  jq -nc --argjson w "$waits" --arg u "$url" '{ "waits-on": $w, status: "Open", landed: false, "fix-merge-request": $u }'
+  exit 1
+fi
 home="$(jq -r .project <<< "$waits")" fix="$(jq -r .ticket <<< "$waits")"
 files=("$(sprint_file ticket:fix-landed "$home")")
 backlog="$(dirname "$(dirname "$(dirname "${files[0]}")")")/backlog.json"
@@ -91,6 +148,6 @@ landed=false
 [[ "$status" == Done && "$landed" == false ]] && committed "$home" "$fix" && landed=true
 [[ "$status" == Done && "$landed" == false && -n "$began" ]] && edited "$1" "$key" "$3" "$began" && landed=true
 jq -nc --argjson w "$waits" --arg s "$status" --argjson l "$landed" '{ "waits-on": $w, status: $s, landed: $l }'
-[[ "$landed" == true ]] && exit 0
-[[ "$status" == Done ]] && { echo "ticket:fix-landed: $fix is Done without its fix landed" >&2; exit 3; }
+[[ "$landed" == true ]] && { blocked_log "$1" "$key" "$3" "Await the Fix" "The fix ticket $fix landed (status $status): $key resumes."; exit 0; }
+[[ "$status" == Done ]] && { blocked_log "$1" "$key" "$3" "Await the Fix" "The fix ticket $fix is Done without its fix landed: a failed fix attempt; Blocked goes round again."; echo "ticket:fix-landed: $fix is Done without its fix landed" >&2; exit 3; }
 exit 1

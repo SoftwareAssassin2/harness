@@ -85,3 +85,15 @@ work_input_digests() {
   done < <(work_inputs "$4")
   printf '%s\n' "$digests"
 }
+
+# blocked_log <project> <ticket-key> <variation> <step> <text> — ASS-390 AC3:
+# an entry in the variation's change log (change-log-<variation>.md) from one
+# of grouped-blocked's own script steps — what it found, what it changed
+# (files, commands, merge requests) and why — through work:append, as its
+# agents write theirs: a "### <UTC time> Blocked, <step>" heading, then
+# <text>. Best-effort: a ticket with no work folder, or a write that fails,
+# logs nothing and never fails the command.
+blocked_log() {
+  printf '### %s Blocked, %s\n%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$4" "$5" \
+    | "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/work/append.sh" "$1" "$2" "$3" change-log.md >/dev/null 2>&1 || true
+}

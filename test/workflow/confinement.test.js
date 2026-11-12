@@ -22,8 +22,10 @@ const hostPrompts = Object.entries(engines).flatMap(([engine, e]) => e.steps.fil
 test('every host prompt step without a worktree is confined but the fix ticket\'s Apply Fix, which changes the repo its ticket names, and grouped Blocked\'s host repair, which repairs the ticket\'s own environment; the VM repair runs in the VM', () => {
   const record = { 'working-in-dev-container': false };
   const unconfined = hostPrompts.filter(({ step }) => worksOnCode(step, { name: 'A' }, record)).map(({ engine, step }) => `${engine}/${step.id}`);
-  assert.deepEqual(unconfined.toSorted(), ['grouped-blocked/repair-environment-on-host', 'self-healing-fix/apply-fix']);
+  // ASS-390: Repair Project's host step too — it clones the failing repository into a temp folder and pushes its fix branch from there.
+  assert.deepEqual(unconfined.toSorted(), ['grouped-blocked/repair-environment-on-host', 'grouped-blocked/repair-project-on-host', 'self-healing-fix/apply-fix']);
   assert.ok(runsInVm(engines['grouped-blocked'].steps.find(s => s.id === 'repair-environment')));
+  assert.ok(runsInVm(engines['grouped-blocked'].steps.find(s => s.id === 'repair-project')));
   assert.ok(hostPrompts.length > 20);
   assert.equal(worksOnCode(hostPrompts[0].step, { build: { 'worktree-folder': '/w' } }, record), true);   // in a worktree: the ticket's code
   assert.equal(worksOnCode(hostPrompts[0].step, {}, { 'working-in-dev-container': true }), true);        // the workspace, through the dev container

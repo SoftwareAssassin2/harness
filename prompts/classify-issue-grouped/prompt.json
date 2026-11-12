@@ -1,5 +1,5 @@
 {
-    "description": "Prompt for classifying a block as a harness, project or environment issue, with its reasoning, for the grouped engines' Blocked (ASS-107; ASS-163: a project issue is checked against the latest master before any bug is raised): where its fix is made",
+    "description": "Prompt for classifying a block as a harness, project or environment issue, with its reasoning, for the grouped engines' Blocked (ASS-107; ASS-163: a project issue is checked against the latest master before any bug is raised): where its fix is made; ASS-390: or a dependency — the block only waits for one of the ticket's own dependency merge requests to merge, sent back to Build's Await Sequential Merge — each outcome an exit of grouped-blocked's Classify; it logs what it found in the change log, and cites only what it read",
     "supported-command-line-interfaces": [
         "claude"
     ],
@@ -33,9 +33,10 @@
                 "enum": [
                     "harness",
                     "project",
-                    "environment"
+                    "environment",
+                    "dependency"
                 ],
-                "description": "Where the fix is made: harness (a fix ticket in the harness project's backlog), project (the cause is in the project's own code: checked against the latest master next, a bug raised in the project's own ticket system only when it fails there; the harness's backlog on the harness project), environment (where the work runs: repaired in place, else by the operator)"
+                "description": "Where the fix is made: harness (a fix ticket in the harness project's backlog), project (the cause is in the project's own code: checked against the latest master next, a bug raised in the project's own ticket system only when it fails there; the harness's backlog on the harness project), environment (where the work runs: repaired in place, else by the operator); dependency (ASS-390: no fault — it only waits for one of the ticket's own merge requests, one another depends on in another repository, to merge: back to Build's Await Sequential Merge)"
             },
             "reasoning": {
                 "type": "string",
@@ -48,6 +49,10 @@
             "human-action": {
                 "type": "string",
                 "description": "Environment only: what the operator must do should it not be repaired in place; left out otherwise"
+            },
+            "dependency-merge-request": {
+                "type": "string",
+                "description": "Dependency only (ASS-390): the merge request the block waits for — its planned id, key or url, from ticket:merge-request-plan; left out otherwise"
             }
         },
         "required": [

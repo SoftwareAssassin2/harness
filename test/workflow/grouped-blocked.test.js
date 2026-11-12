@@ -15,13 +15,14 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readdirSync, readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
-import { stepOf, nextState } from '../../src/control/engine.js';
+import { stepOf, nextState, resumeSubAt, clearCause } from '../../src/control/engine.js';
 import { firstStepId } from '../../src/control/moves.js';
-import { problemOf, runValues } from '../../src/control/facts.js';
+import { problemOf, runValues, blockHistory } from '../../src/control/facts.js';
 import { validateStateEngine } from '../../src/workflow/validate.js';
 import { inOrder, engineDir, engineNames, EXAMPLE_ENGINES } from '../support/engine-walk.js';
 
 const ROOT = join(import.meta.dirname, '..', '..');
+const FIX_MR = 'https://gitlab.com/example/api/-/merge_requests/41';
 const engines = Object.fromEntries(engineNames().filter(d => existsSync(join(engineDir(d), 'state-engine.json')))
   .map(d => [d, JSON.parse(readFileSync(join(engineDir(d), 'state-engine.json'), 'utf8'))]));
 const BLOCKED = ['grouped-blocked'];
@@ -70,9 +71,16 @@ const defaults = {
   // ASS-384: not shown to be the ticket's own branch — the paths after check-on-master as before.
   'own-branch-or-obstacle': { exitCode: 3, scriptOutput: { 'own-branch-fix': false, 'own-branch-why': 'Classify did not put the cause in the ticket\'s own branch' } },
   'own-branch-or-human': { exitCode: 3, scriptOutput: { 'own-branch-fix': false, 'own-branch-why': 'Classify did not put the cause in the ticket\'s own branch' } },
+  // ASS-390: the blocked step still fails on re-check (Check First), so Troubleshoot goes on as before.
+  'check-first': { exitCode: 3, scriptOutput: { rechecked: true, recheck: { at: 'build/automated-testing', command: './agent.sh automated-tests:verify-success p X-1 A', exit: 1, output: 'F' } } },
+  // ASS-390 AC2/AC6: Repair Project's fix merge request opened, waited on and merged.
+  'repair-project': { structuredOutput: { fixed: true, 'fix-merge-request': FIX_MR, evidence: ['pnpm test → ok'], 'ai-feedback-short': `Opened ${FIX_MR}`, 'ai-feedback-long': 'L' } },
+  'repair-project-on-host': { structuredOutput: { fixed: true, 'fix-merge-request': FIX_MR, evidence: [], 'ai-feedback-short': `Opened ${FIX_MR}`, 'ai-feedback-long': 'L' } },
+  'wait-on-fix-merge-request': { exitCode: 0, scriptOutput: { ticket: 'X-1', variation: 'A', 'waits-on': { 'merge-request': FIX_MR } } },
+  'await-fix-merge-request': { exitCode: 0, scriptOutput: { status: 'Merged', landed: true, 'fix-merge-request': FIX_MR, 'ai-feedback-short': null, 'ai-feedback-long': null } },
 };
 const issue = value => ({ classify: { structuredOutput: { issue: value, reasoning: 'R' } } });
-const steps = run => run.trail.filter(id => !['find-where'].includes(id));
+const steps = run => run.trail.filter(id => !['find-where', 'check-first'].includes(id));
 
 // Where the ticket goes once its Blocked run ends there: its return-to-state (build), or Blocked for Human.
 const parent = (top, run) => {
@@ -98,7 +106,7 @@ test('AC1: Troubleshoot, then Classify — its structured output the issue (harn
     assert.equal(stepOf(engines[name], 'classify').action.prompt, 'classify-issue-grouped', 'its own copy (ASS-163): the current engines keep classify-issue as it was');
   }
   const schema = JSON.parse(readFileSync(join(ROOT, 'prompts', 'classify-issue-grouped', 'prompt.json'), 'utf8')).output;
-  assert.deepEqual(schema.properties.issue.enum, ['harness', 'project', 'environment']);
+  assert.deepEqual(schema.properties.issue.enum, ['harness', 'project', 'environment', 'dependency'], 'ASS-390: dependency');
   assert.deepEqual(schema.required, ['issue', 'reasoning']);
   // The troubleshooter finds the cause; where the fix goes is Classify's alone.
   for (const p of ['troubleshoot-block-grouped', 'troubleshoot-block-on-host-grouped']) assert.equal(JSON.parse(readFileSync(join(ROOT, 'prompts', p, 'prompt.json'), 'utf8')).output.properties['cause-in'], undefined, p);
@@ -369,7 +377,8 @@ test('AC7: when no fix ticket can be raised or waited on, the ticket never resum
 // Blocked stopped the VM and find-where started it again, troubleshoot dispatched into a stopping VM.
 test('ASS-75, ASS-240 AC2: the grouped Blocked runs its VM where it works in it — from its first step (count-attempts), troubleshooting, classifying and repairing', () => {
   const vm = engines['grouped-blocked'].steps.filter(s => s.vm).map(s => [s.id, s.vm]);
-  assert.deepEqual(vm, [['count-attempts', 'running'], ['find-where', 'running'], ['troubleshoot', 'running'], ['classify', 'running'], ['check-on-master', 'running'], ['own-branch-or-obstacle', 'running'], ['own-branch-or-human', 'running'], ['plan-obstacle-fix', 'running'], ['add-repository', 'running'], ['repair-environment', 'running']]);
+  assert.deepEqual(vm, [['count-attempts', 'running'], ['check-first', 'running'], ['find-where', 'running'], ['troubleshoot', 'running'], ['classify', 'running'], ['check-on-master', 'running'], ['own-branch-or-obstacle', 'running'], ['own-branch-or-human', 'running'], ['plan-obstacle-fix', 'running'],
+    ['find-where-to-repair-project', 'running'], ['repair-project', 'running'], ['add-repository', 'running'], ['repair-environment', 'running']]);
 });
 
 test('learning (operator, 2026-10-24): every Blocked run is kept on the ticket (append-output-to: blocks), and troubleshooting and classifying are given those earlier blocks ({problem}: facts.js blockHistory) to take into account', () => {
@@ -429,20 +438,22 @@ test('ASS-163 AC2: present on the latest master — a bug raised in the project\
   assert.deepEqual(home.trail.slice(-7), ['check-on-master', 'create-fix-ticket', 'fast-track-fix', 'wait-on', 'await-fix', 'resume-step', 'done']);
 });
 
-test('ASS-163 AC3: absent on the latest master — nothing raised in the project; the ticket\'s plan grows by the local obstacle\'s fix (ticket:plan-obstacle-fix), Blocked\'s repair makes it (a missing repository added, the environment repaired, else the operator\'s step through Blocked for Human) and the ticket resumes its own work', () => {
+test('ASS-163 AC3, ASS-390 AC2: absent on the latest master — nothing raised in the project; the ticket\'s plan records the obstacle (ticket:plan-obstacle-fix), Repair Project fixes it in a separate fix merge request the ticket waits on (a missing repository still added first; not shown to work, the operator\'s step through Blocked for Human) and the ticket resumes its own work', () => {
   const plan = stepOf(engines['grouped-blocked'], 'plan-obstacle-fix');
   assert.deepEqual([plan.action.type, plan.action.command, plan['record-script-output']], ['script', './agent.sh ticket:plan-obstacle-fix {project} {work-item} {variation} {run}', true]);
   const repaired = walk('grouped-blocked', project(NOT_ON_MASTER));
-  assert.deepEqual(repaired.trail.slice(-7), ['classify', 'check-on-master', 'own-branch-or-obstacle', 'plan-obstacle-fix', 'add-repository', 'repair-environment', 'done']);
+  assert.deepEqual(repaired.trail.slice(-9), ['classify', 'check-on-master', 'own-branch-or-obstacle', 'plan-obstacle-fix', 'find-where-to-repair-project', 'repair-project', 'wait-on-fix-merge-request', 'await-fix-merge-request', 'done']);
+  assert.ok(!repaired.trail.includes('repair-environment'), 'ASS-390: Repair Environment no longer on this path');
   resumes('grouped-blocked', repaired);
-  const added = walk('grouped-blocked', project(NOT_ON_MASTER, { 'add-repository': { exitCode: 0 } }));
+  const added = walk('grouped-blocked', project(NOT_ON_MASTER, { 'plan-obstacle-fix': { exitCode: 0, scriptOutput: { 'plan-revised': 'execution-plan-A.md', 'obstacle-repair': 'add-repository' } }, 'add-repository': { exitCode: 0 } }));
   assert.deepEqual(added.trail.slice(-3), ['plan-obstacle-fix', 'add-repository', 'done']);
-  const operator = walk('grouped-blocked', project(NOT_ON_MASTER, { 'repair-environment': { structuredOutput: { remediated: false, evidence: [], 'ai-feedback-short': 'Re-login to the registry', 'ai-feedback-long': 'L' } } }));
-  toHuman('grouped-blocked', operator, /Re-login/);
+  const operator = walk('grouped-blocked', project(NOT_ON_MASTER, { 'repair-project': { structuredOutput: { fixed: false, evidence: [], 'ai-feedback-short': 'Could not show the fix works', 'ai-feedback-long': 'L' } } }));
+  assert.deepEqual(operator.trail.slice(-2), ['repair-project', 'blocked-for-human']);
+  toHuman('grouped-blocked', operator, /Could not show the fix works/);
   for (const run of [repaired, added, operator]) assert.ok(!run.trail.includes('create-fix-ticket'), 'no project bug');
-  // Repair is told it is a local obstacle, not to raise the project's fix ticket.
+  // Repair is told it is not a project bug, and that its fix goes in a separate merge request.
   const text = problem(repaired.output);
-  assert.match(text, /^Not on the latest master: https:\/\/gitlab\.com\/example\/identity master: job test:keycloak success .* — our environment or access, not the project's code: no project bug; fix the obstacle here$/m);
+  assert.match(text, /^Not on the latest master: https:\/\/gitlab\.com\/example\/identity master: job test:keycloak success .* — no project bug; fix the obstacle here, in a separate fix merge request \(Repair Project\), never the ticket's own branch$/m);
   assert.doesNotMatch(text, /^Raise the fix ticket in/m);
 });
 
@@ -519,13 +530,13 @@ test('ASS-384 AC3/AC4: a failure on the latest master still raises a project bug
   }
   const notShown = { exitCode: 3, scriptOutput: { 'own-branch-fix': false, 'own-branch-why': 'Troubleshoot named no failing repository, file and job or assertion' } };
   const obstacle = walk('grouped-blocked', { ...ownBranch(NOT_ON_MASTER), 'own-branch-or-obstacle': notShown });
-  assert.deepEqual(obstacle.trail.slice(-5), ['own-branch-or-obstacle', 'plan-obstacle-fix', 'add-repository', 'repair-environment', 'done']);
+  assert.deepEqual(obstacle.trail.slice(-7), ['own-branch-or-obstacle', 'plan-obstacle-fix', 'find-where-to-repair-project', 'repair-project', 'wait-on-fix-merge-request', 'await-fix-merge-request', 'done']);
   const human = walk('grouped-blocked', { ...ownBranch(UNKNOWN), 'own-branch-or-human': notShown });
   assert.deepEqual(human.trail.slice(-2), ['own-branch-or-human', 'blocked-for-human']);
   toHuman('grouped-blocked', human, /^Not proven on master/);
   // A command that fails is no own-branch fix either.
   assert.deepEqual(walk('grouped-blocked', { ...ownBranch(UNKNOWN), 'own-branch-or-human': { exitCode: 1 } }).trail.slice(-1), ['blocked-for-human']);
-  assert.deepEqual(walk('grouped-blocked', { ...ownBranch(NOT_ON_MASTER), 'own-branch-or-obstacle': { exitCode: 1 } }).trail.slice(-5, -3), ['own-branch-or-obstacle', 'plan-obstacle-fix']);
+  assert.deepEqual(walk('grouped-blocked', { ...ownBranch(NOT_ON_MASTER), 'own-branch-or-obstacle': { exitCode: 1 } }).trail.slice(-7, -5), ['own-branch-or-obstacle', 'plan-obstacle-fix']);
 });
 
 test('ASS-384 AC2: own-branch fixes count toward the fix-attempt budget — at 3, count-attempts sends the ticket to Blocked for Human saying the own-branch fix was tried', () => {
@@ -547,4 +558,178 @@ test('ASS-384: Troubleshoot names the failing file, Classify says own-branch; th
   assert.match(read('classify-issue-grouped', 'prompt.txt'), /own-branch: true/);
   assert.doesNotMatch(read('classify-issue', 'prompt.txt'), /own-branch/);
   assert.doesNotMatch(read('troubleshoot-block', 'prompt.txt'), /failing-file/);
+});
+
+// ASS-390 — Blocked fixes whatever blocks a ticket in its scope, adds Repair
+// Project, checks first, and logs everything.
+const BLOCKED_PROMPTS = ['troubleshoot-block-grouped', 'troubleshoot-block-on-host-grouped', 'classify-issue-grouped', 'repair-environment-grouped', 'repair-environment-on-host-grouped', 'repair-project-grouped', 'repair-project-on-host-grouped'];
+const promptText = p => readFileSync(join(ROOT, 'prompts', p, 'prompt.txt'), 'utf8');
+const promptJson = p => JSON.parse(readFileSync(join(ROOT, 'prompts', p, 'prompt.json'), 'utf8'));
+
+test('ASS-390: every prompt grouped-blocked runs is one of its own, listed here — so the prompt assertions below cover them all', () => {
+  const used = engines['grouped-blocked'].steps.filter(s => s.action.type === 'prompt').map(s => s.action.prompt);
+  assert.deepEqual([...new Set(used)].toSorted(), BLOCKED_PROMPTS.toSorted());
+});
+
+test('ASS-390 AC4: Check First re-runs the blocked step\'s failing check before Troubleshoot dispatches an agent — passing now, the run is done (needs-fix false, nothing to fix) and the ticket resumes; still failing, or nothing to re-run, Troubleshoot goes on', () => {
+  const step = stepOf(engines['grouped-blocked'], 'check-first');
+  assert.deepEqual([step.action.type, step.action.command, step['record-script-output'], step.vm, step['run-location']],
+    ['script', './agent.sh ticket:recheck-block {project} {work-item} {variation}', true, 'running', undefined], 'on the host, its VM kept running for a check that runs there');
+  const passed = walk('grouped-blocked', { 'check-first': { exitCode: 0, scriptOutput: { 'needs-fix': false, rechecked: true, 'recheck-passed': true, summary: 'Passed on re-check; nothing to fix', recheck: { at: 'build/automated-testing', command: 'c', exit: 0 } } } });
+  assert.deepEqual(passed.trail, ['count-attempts', 'check-first', 'done'], 'no agent dispatched');
+  assert.equal(passed.output.summary, 'Passed on re-check; nothing to fix');
+  resumes('grouped-blocked', passed);
+  assert.match(blockHistory({ blocks: [{ ...passed.output, 'ended-at': 'done' }] }), /Ended: passed on re-check, nothing to fix, resumed — blocked again\./, 'the next stay learns it');
+  for (const code of [3, 1]) assert.deepEqual(walk('grouped-blocked', { 'check-first': { exitCode: code } }).trail.slice(0, 4), ['count-attempts', 'check-first', 'find-where', 'troubleshoot'], `exit ${code}`);
+  // At 3 fix attempts it never re-checks: the operator first.
+  assert.deepEqual(walk('grouped-blocked', { 'count-attempts': { exitCode: 3, scriptOutput: { 'ai-feedback-short': '3 fix attempts failed' } } }).trail, ['count-attempts', 'blocked-for-human']);
+});
+
+test('ASS-390 AC2: a project issue not on the latest master and not the ticket\'s own branch goes to Repair Project — in the VM, or on the host before it is set up — not to Repair Environment; fixed, it waits on the fix merge request; not shown to work, Blocked for Human with what it tried', () => {
+  const grouped = engines['grouped-blocked'];
+  const vm = stepOf(grouped, 'repair-project'), host = stepOf(grouped, 'repair-project-on-host');
+  assert.deepEqual([vm.action.prompt, vm['run-location'], vm.vm, vm.action['run-in-dev-container']], ['repair-project-grouped', 'vm', 'running', false]);
+  assert.deepEqual([host.action.prompt, host['run-location'], host.action['works-on-code'], host.action['run-in-dev-container']], ['repair-project-on-host-grouped', undefined, true, false]);
+  for (const check of [NOT_ON_MASTER]) {
+    const inVm = walk('grouped-blocked', project(check));
+    assert.deepEqual(inVm.trail.slice(-6), ['plan-obstacle-fix', 'find-where-to-repair-project', 'repair-project', 'wait-on-fix-merge-request', 'await-fix-merge-request', 'done']);
+    const onHost = walk('grouped-blocked', project(check, { 'find-where-to-repair-project': { scriptSucceeds: () => false } }));
+    assert.deepEqual(onHost.trail.slice(-5), ['find-where-to-repair-project', 'repair-project-on-host', 'wait-on-fix-merge-request', 'await-fix-merge-request', 'done']);
+    for (const id of ['repair-project', 'repair-project-on-host']) {
+      const notShown = walk('grouped-blocked', project(check, { 'find-where-to-repair-project': { scriptSucceeds: () => id === 'repair-project' }, [id]: { structuredOutput: { fixed: false, evidence: ['pnpm test → still 1 failing'], 'ai-feedback-short': 'Tried a fix; the seed still fails', 'ai-feedback-long': 'Tried …' } } }));
+      assert.deepEqual(notShown.trail.slice(-2), [id, 'blocked-for-human'], id);
+      toHuman('grouped-blocked', notShown, /Tried a fix/);
+    }
+    assert.ok(!walk('grouped-blocked', project(check)).trail.some(id => id.startsWith('repair-environment')), 'Repair Environment is not on this path');
+  }
+  // Only a project issue reaches it: never a harness or environment issue, never one on master, never the ticket's own branch.
+  for (const run of [walk('grouped-blocked', issue('harness')), walk('grouped-blocked', issue('environment')), walk('grouped-blocked', project(ON_MASTER)), walk('grouped-blocked', ownBranch(NOT_ON_MASTER))]) {
+    assert.ok(!run.trail.includes('repair-project') && !run.trail.includes('repair-project-on-host'), run.trail.join(' '));
+  }
+  const into = grouped.steps.flatMap(s => (s['exit-events'] ?? []).filter(e => e['move-to-state'] === 'find-where-to-repair-project').map(() => s.id));
+  assert.deepEqual(into, ['plan-obstacle-fix'], 'only after the obstacle is recorded');
+  // The fix merge request is opened through the harness's merge-request command, from the VM through the forwarder.
+  const allowed = JSON.parse(readFileSync(join(ROOT, 'src', 'control', 'forwarder-allowlist.json'), 'utf8'));
+  assert.deepEqual(allowed['merge-request:create-fix'], { project: 0, ticket: 1, variation: 2 });
+});
+
+test('ASS-390 AC6: after Repair Project opens a fix merge request Blocked waits on it as on a fix ticket — ticket:wait-on --merge-request, then ticket:fix-landed on a timer, polling no failure; merged, the ticket resumes (its counts restarted as a landed fix\'s); closed unmerged, Blocked for Human', () => {
+  const grouped = engines['grouped-blocked'];
+  const wait = stepOf(grouped, 'wait-on-fix-merge-request'), poll = stepOf(grouped, 'await-fix-merge-request');
+  assert.deepEqual([wait.action.command, wait['record-script-output']], ['./agent.sh ticket:wait-on {project} {work-item} {variation} --merge-request {fix-merge-request}', true]);
+  assert.deepEqual([poll.action.command, poll.action.mode, poll.action['timer-minutes'], poll.action['waiting-exit-code'], poll['record-script-output']], ['./agent.sh ticket:fix-landed {project} {work-item} {variation}', 'timer', 5, 1, true]);
+  assert.equal(nextState(poll, grouped, { exitCode: 1, scriptOutput: { landed: false } }, []), null, 'open: waits, no exit, no failure');
+  assert.deepEqual([0, 3, 4].map(code => nextState(poll, grouped, { exitCode: code }, []).to), ['done', 'blocked-for-human', 'blocked-for-human']);
+  // {fix-merge-request} is the url Repair Project named; - when none (wait-on refuses it).
+  const values = out => runValues({ id: 'r', project: 'p', 'structured-output': out }, { workItem: 'X-1', variation: 'A' })['fix-merge-request'];
+  assert.deepEqual([values({ 'fix-merge-request': FIX_MR }), values({})], [FIX_MR, '-']);
+  const merged = walk('grouped-blocked', project(NOT_ON_MASTER));
+  assert.equal(merged.output.landed, true);
+  assert.equal(merged.output['ai-feedback-short'], null, 'the waiting Health cleared');
+  for (const top of TOPS['grouped-blocked']) {
+    const facts = { subEngineDone: true, subEngineState: merged.end, structuredOutput: merged.output };
+    assert.equal(clearCause(facts)?.cause, 'fix-landed', top);
+    const often = [...Array.from({ length: 5 }, () => ({ 'from-state': 'plan', 'to-state': 'build' })), { 'from-state': 'build', 'to-state': 'blocked' }];
+    assert.equal(nextState(stepOf(engines[top], 'blocked'), engines[top], facts, often).to, 'build', `${top}: resumed, not redirected by Build's count`);
+  }
+  assert.match(blockHistory({ blocks: [{ ...merged.output, 'ended-at': 'done' }] }), /its fix merge request https:\/\/gitlab\.com\/example\/api\/-\/merge_requests\/41 merged/);
+  const closed = walk('grouped-blocked', project(NOT_ON_MASTER, { 'await-fix-merge-request': { exitCode: 3, scriptOutput: { status: 'Closed', landed: false, 'ai-feedback-short': 'Fix MR !41 in example/api was closed unmerged', 'ai-feedback-long': 'L' } } }));
+  assert.deepEqual(closed.trail.slice(-2), ['await-fix-merge-request', 'blocked-for-human']);
+  toHuman('grouped-blocked', closed, /closed unmerged/);
+  const none = walk('grouped-blocked', project(NOT_ON_MASTER, { 'wait-on-fix-merge-request': { exitCode: 1, scriptOutput: { 'ai-feedback-short': 'No fix merge request to wait on' } } }));
+  toHuman('grouped-blocked', none, /No fix merge request/);
+});
+
+test('ASS-390 AC5: Classify may say the block only waits for one of the ticket\'s own dependency merge requests — ticket:dependency-wait shows it and the run is done with Build as its resume-at and Await Sequential Merge as where Build starts, the visit counts restarted; not shown, Blocked for Human', () => {
+  const grouped = engines['grouped-blocked'];
+  const dep = stepOf(grouped, 'dependency-wait');
+  assert.deepEqual([dep.action.command, dep['record-script-output'], dep.vm, dep['run-location']], ['./agent.sh ticket:dependency-wait {project} {work-item} {variation} {run}', true, undefined, undefined]);
+  const SHOWN = { exitCode: 0, scriptOutput: { 'awaits-dependency': true, dependency: { id: 1, key: '!12', url: 'u' }, 'resume-at': 'build', 'resume-sub-at': 'await-dependencies', 'resume-source': 'declared', 'resume-why': 'W', 'resume-ignored': [], 'ai-feedback-short': null, 'ai-feedback-long': null } };
+  const run = walk('grouped-blocked', { classify: { structuredOutput: { issue: 'dependency', reasoning: 'R', 'dependency-merge-request': '!12' } }, 'dependency-wait': SHOWN });
+  assert.deepEqual(steps(run), ['count-attempts', 'troubleshoot', 'classify', 'dependency-wait', 'done']);
+  for (const top of TOPS['grouped-blocked']) {
+    const facts = { subEngineDone: true, subEngineState: run.end, structuredOutput: run.output };
+    const changes = [{ 'from-state': 'build', 'to-state': 'test' }, { 'from-state': 'test', 'to-state': 'blocked' }];
+    assert.equal(nextState(stepOf(engines[top], 'blocked'), engines[top], facts, changes).to, 'build', `${top}: back to Build, upstream of the blocked Test`);
+    assert.equal(resumeSubAt(facts), 'await-dependencies');
+    assert.ok(stepOf(engines[stepOf(engines[top], 'build').action.engine], 'await-dependencies'), `${top}: Build runs Await Sequential Merge`);
+    assert.equal(clearCause(facts)?.cause, 'dependency-wait');
+    const often = [...Array.from({ length: 5 }, () => ({ 'from-state': 'plan', 'to-state': 'build' })), { 'from-state': 'build', 'to-state': 'blocked' }];
+    assert.equal(nextState(stepOf(engines[top], 'blocked'), engines[top], facts, often).to, 'build', `${top}: not redirected by Build's count`);
+  }
+  assert.equal(resumeSubAt({ subEngineState: 'done', structuredOutput: { 'resume-sub-at': 'await-dependencies' } }), undefined, 'no resume-sub-at without a cleared resume');
+  assert.ok(!run.trail.includes('create-fix-ticket'), 'nothing raised');
+  assert.match(blockHistory({ blocks: [{ ...run.output, 'ended-at': 'done' }] }), /only waiting for its dependency merge request \(!12\): sent to Await Sequential Merge/);
+  const notShown = walk('grouped-blocked', { classify: { structuredOutput: { issue: 'dependency', reasoning: 'R' } }, 'dependency-wait': { exitCode: 3, scriptOutput: { 'awaits-dependency': false, 'ai-feedback-short': 'Not shown to wait only for a dependency merge request' } } });
+  assert.deepEqual(notShown.trail.slice(-2), ['dependency-wait', 'blocked-for-human']);
+  toHuman('grouped-blocked', notShown, /Not shown to wait only/);
+  assert.equal(problemOf({ id: 'r', project: 'example', parent: {}, 'structured-output': { summary: 'S', issue: 'dependency', reasoning: 'R' } }, [], { harness: { 'harness-project': 'harness' } }).includes('Raise the fix ticket in'), false, 'no fix ticket for a dependency');
+});
+
+test('ASS-390: Classify\'s outcomes are its enum, each with one exit of its own on its issue; an outcome with no exit is Blocked for Human, never a stuck run', () => {
+  const grouped = engines['grouped-blocked'], classify = stepOf(grouped, 'classify');
+  const outcomes = promptJson('classify-issue-grouped').output.properties.issue.enum;
+  const routed = classify['exit-events'].map(e => e.condition.all?.find(c => c['structured-output'])?.['structured-output'].issue).filter(Boolean);
+  assert.deepEqual(routed.toSorted(), outcomes.toSorted(), 'one exit per outcome');
+  assert.deepEqual(classify['exit-events'].at(-1), { condition: { 'turn-complete': true }, 'move-to-state': 'blocked-for-human' }, 'the catch-all last');
+  assert.deepEqual(walk('grouped-blocked', issue('something-new')).trail.slice(-2), ['classify', 'blocked-for-human']);
+  for (const value of outcomes) assert.match(promptText('classify-issue-grouped'), new RegExp(`- "${value}": `), `${value}: the prompt says when`);
+});
+
+test('ASS-390 AC6: a fix merge request\'s wait, a recheck pass and a dependency wait count toward the fix-attempt budget (ticket:fix-attempts reads them)', () => {
+  const sh = readFileSync(join(ROOT, 'src', 'agent-cli', 'ticket', 'fix-attempts.sh'), 'utf8');
+  assert.match(sh, /IN\("await-fix", "await-fix-merge-request"\)/);
+  assert.match(sh, /\$b\["recheck-passed"\] == true/);
+  assert.match(sh, /\$b\["awaits-dependency"\] == true/);
+});
+
+test('ASS-390 AC1: Repair Environment fixes whatever in the ticket\'s VM (or its own host worktree) blocks the blocked step, the old list kept as known-fix examples; never a credential, uncommitted work saved aside first, nothing on the Mac or the shared checkout; done only when the failing thing re-runs and passes', () => {
+  for (const p of ['repair-environment-grouped', 'repair-environment-on-host-grouped']) {
+    const t = promptText(p);
+    assert.match(t, /Fix whatever in (this VM|its own worktree) blocks the blocked step/, p);
+    assert.match(t, /dependencies, containers, (checkouts|the worktree's checkout), caches, generated files, recorded test commands, stale branches/, p);
+    assert.match(t, /Known fixes, examples only, not the only things allowed/, p);
+    for (const known of [/reinstall dependencies where the step runs them/, /remove a stopped or stale compose stack/, /re-run a failed setup step/, /save an uncommitted edit aside \(git stash, or a copy in a temp folder: mktemp -d\), then clean it/]) assert.match(t, known, `${p}: ${known}`);
+    assert.match(t, /record it again through `\{agent-sh\} automated-tests:record \{project\} \{ticket\} \{variation\}`/, p);
+    assert.match(t, /reset to the base it should be on/, p);
+    assert.match(t, /Never: [^\n]*change a credential, token or secret; discard work you have not saved aside first/, p);
+    assert.match(t, p.includes('on-host') ? /Never the project's shared checkout/ : /Never anything on the Mac, nor the project's shared checkout/, p);
+    assert.match(t, /Repaired only when the failing thing now passes/, p);
+  }
+});
+
+test('ASS-390 AC2: Repair Project\'s prompts — a separate small merge request on change/<KEY>-fix-<n>, never the ticket\'s own branches, opened through merge-request:create-fix with what it unblocks and why, shown to work first, never a credential, the Mac or the shared checkout', () => {
+  for (const p of ['repair-project-grouped', 'repair-project-on-host-grouped']) {
+    const t = promptText(p), out = promptJson(p).output;
+    assert.match(t, /change\/\{ticket\}-fix-<n>/, p);
+    assert.match(t, /Never commit, rebase or push the ticket's own branches/, p);
+    assert.match(t, /`\{agent-sh\} merge-request:create-fix \{project\} \{ticket\} \{variation\} <repository-url> <branch> "<title>"`, the description on stdin: what blocked \{ticket\}, why, and what the fix changes/, p);
+    assert.match(t, /Fixed only when the failing thing now passes\. Not shown: push nothing, open nothing\./, p);
+    assert.match(t, /Never: change a credential, token or secret/, p);
+    assert.match(t, /nor the project's shared checkout|Never the project's shared checkout/, p);
+    assert.doesNotMatch(t, /\b(glab|gh|curl)\b/, `${p}: the forge through the harness's command only`);
+    assert.deepEqual([out.properties.fixed.type, out.properties['fix-merge-request'].type, out.required], ['boolean', 'string', ['fixed', 'evidence', 'ai-feedback-short', 'ai-feedback-long']], p);
+  }
+  assert.match(promptText('repair-project-grouped'), /Never anything on the Mac, nor the project's shared checkout/);
+  assert.match(promptText('repair-project-on-host-grouped'), /only a fresh clone of the failing repository in a temp folder of your own/);
+});
+
+test('ASS-390 AC3: every Blocked prompt has its agent append to the change log, through work:append, what it found, what it changed (files, commands, merge requests) and why', () => {
+  for (const p of BLOCKED_PROMPTS) {
+    const t = promptText(p);
+    assert.ok(t.includes('{ticket-folder}/change-log-{variation}.md (through `{agent-sh} work:append {project} {ticket} {variation} change-log.md`, the entry on stdin)'), p);
+    assert.match(t, /change-log\.md`, the entry on stdin\) what you (found|checked and found)/, p);
+    assert.match(t, /(and why|why)/, p);
+    if (!p.startsWith('classify')) assert.match(t, /what you (ran or )?changed \((files, commands|files, commands, containers)/, p);
+  }
+  // Its own script steps log too (work.bash blocked_log).
+  for (const sh of ['ticket/recheck-block.sh', 'ticket/dependency-wait.sh', 'merge-request/create-fix.sh', 'ticket/wait-on.sh', 'ticket/fix-landed.sh', 'ticket/plan-obstacle-fix.sh']) {
+    assert.match(readFileSync(join(ROOT, 'src', 'agent-cli', sh), 'utf8'), /blocked_log "/, sh);
+  }
+});
+
+test('ASS-390 AC7: every Blocked prompt says to quote or cite only files and output actually read in this run, never attributing a rule to a file not opened; the flat engines\' prompts unchanged', () => {
+  const rule = 'Quote or cite only files and output you have actually read in this run; never attribute a rule to a file you haven\'t opened.';
+  for (const p of BLOCKED_PROMPTS) assert.ok(promptText(p).includes(rule), p);
+  for (const p of ['troubleshoot-block', 'classify-issue', 'unblock']) assert.ok(!promptText(p).includes(rule), `${p}: the flat engines' prompt as it was`);
 });

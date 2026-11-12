@@ -16,8 +16,17 @@ set -euo pipefail
 # repository, else repairing the environment in the ticket's VM, else the
 # operator's exact step (Blocked for Human); then the plan's own work carries
 # on. No ticket scope is added. Prints { plan-revised, obstacle-fix }.
+# ASS-390 AC2: grouped-blocked now runs it only for a project issue (Classify's
+# issue project, not the ticket's own branch), whose fix Repair Project makes
+# next: the step added says so — the product code in the way fixed in a
+# separate small merge request (change/<KEY>-fix-<n>) the ticket waits on,
+# never its own branch — instead of the repair; any other run's, as before;
+# a missing repository named still first. Which of the three Blocked's repair
+# is, it prints as obstacle-repair (add-repository, repair-project or
+# repair-environment), for grouped-blocked's exits to route on.
 # Fails (1), writing nothing, on a bad variation or an unknown run.
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../vm.bash"
+source "$here_vm/work.bash"
 assignments="${ASSIGNMENTS_FILE:-$here_vm/../../data/assignments.json}"
 
 command=ticket:plan-obstacle-fix
@@ -27,17 +36,20 @@ variation_exists "$command" "$project" "$key" "$variation"
 found="$(jq -c --arg id "$id" 'first(.["transient-state-engines"] // [] | .[] | select(.id == $id) | .["structured-output"] // {})' "$assignments")"
 [[ -n "$found" ]] || { echo "$command: no run $id" >&2; exit 1; }
 
-step="$(jq -r --arg p "$project" 'if (.["missing-repository"] // "-") != "-" then "add \(.["missing-repository"]) to project \($p) and download it into the ticket'"'"'s VM"
+repair="$(jq -r 'if (.["missing-repository"] // "-") != "-" then "add-repository" elif .issue == "project" then "repair-project" else "repair-environment" end' <<< "$found")"
+step="$(jq -r --arg p "$project" --arg k "$key" 'if (.["missing-repository"] // "-") != "-" then "add \(.["missing-repository"]) to project \($p) and download it into the ticket'"'"'s VM"
+  elif .issue == "project" then "Blocked'"'"'s Repair Project fixes the product code in the way in a separate small merge request (change/\($k)-fix-<n>) that this ticket waits on, never in this ticket'"'"'s own branch; else the operator'"'"'s exact step through Blocked for Human"
   else "repair the environment in the ticket'"'"'s VM (its checkouts, dependencies, the project'"'"'s containers), else the operator'"'"'s exact step through Blocked for Human" end' <<< "$found")"
 name="execution-plan-$variation.md"
 plan="$(ticket_folder "$command" "$project" "$key")/$name"
 section="$(jq -r --arg at "$(date -u +%Y-%m-%d)" --arg v "$variation" --arg p "$project" --arg step "$step" '
   "## Obstacle fix (\($at), Blocked, variation \($v))\n",
   "Blocked: \(.summary // "not said"). Cause: \(.["root-cause"] // "not said").",
-  "Not on the latest master: \(.["master-evidence"] // "not checked") — our environment or access, not \($p)'"'"'s code: no project bug raised, no ticket scope added.",
+  "Not on the latest master: \(.["master-evidence"] // "not checked") — \(if .issue == "project" then "not a bug on \($p)'"'"'s master" else "our environment or access, not \($p)'"'"'s code" end): no project bug raised, no ticket scope added.",
   "Step added: \($step); then carry on with this plan'"'"'s own work."' <<< "$found")"
 # One locked append (json-file.bash append_line, ASS-179), a blank line first after what is there.
 text="$section"
 [[ ! -s "$plan" ]] || text=$'\n'"$section"
 append_line "$plan" "$text"
-jq -nc --arg s "$step" --arg name "$name" '{ "plan-revised": $name, "obstacle-fix": $s }'
+blocked_log "$project" "$key" "$variation" "Plan the Obstacle Fix" "Not on the latest master: no project bug raised. Added to $name: $step."
+jq -nc --arg s "$step" --arg name "$name" --arg r "$repair" '{ "plan-revised": $name, "obstacle-fix": $s, "obstacle-repair": $r }'

@@ -600,6 +600,96 @@ with check-on-master's feedback after no evidence. A failure on the latest
 master still raises the project bug, and an environment or harness issue
 never reaches the check.
 
+Blocked checks first (ASS-390 AC4). After counting its attempts and before
+any agent is dispatched, Check First (`check-first`, `ticket:recheck-block`,
+on the host, the VM kept running) re-runs the check the ticket failed: the
+step it was at when it entered Blocked, read from its state changes as
+`cameFrom` reads them (through Blocked for Human and back too; beneath a
+group, the step that left for the group's done step), when that step is a
+script step — Automated Testing's being the recorded automated tests — whose
+command needs no value of a run and changes nothing outside the ticket (never
+a merge, a restart, a VM made, a merge request opened or marked). Passing now,
+the run ends at done with `needs-fix: false`, `recheck-passed: true` and "Passed
+on re-check; nothing to fix" in the change log, and the ticket resumes as it
+does when Troubleshoot finds nothing wrong; still failing, or nothing to
+re-run, Troubleshoot goes on as before. Passes on re-check that block again
+are counted by ticket:fix-attempts (`passed-on-recheck`), so a check that
+only passes when re-checked reaches the operator after three.
+
+Repair Environment fixes whatever blocks the ticket within its scope (ASS-390
+AC1): in the ticket's VM (or, before it is set up, its own host worktree) —
+dependencies, containers, checkouts, caches, generated files, recorded test
+commands (recorded again through automated-tests:record), stale branches
+(reset to the base they should be on, never discarding the ticket's own
+commits). The old list (reinstall dependencies, remove a stale compose stack,
+re-run a setup step, save an edit aside) stays in its prompts as known-fix
+examples, not as all it may do. Its limits stay: no credential, token or
+secret changed; uncommitted work saved aside before anything is discarded;
+nothing on the Mac or in the project's shared checkout; no product code (that
+is Repair Project's); repaired only when the failing thing re-runs and passes.
+
+Repair Project fixes product code in a fix merge request of its own (ASS-390
+AC2, AC6). A project issue that is not on the latest master and not the
+ticket's own branch (ASS-384) no longer goes to Repair Environment: after Plan
+the Obstacle Fix records it in the plan (its `obstacle-repair` says which
+repair follows; a missing repository named is still added first), Repair
+Project (`repair-project` in the VM, `repair-project-on-host` in a fresh clone
+in a temporary folder before the VM is set up) fixes the product code in the
+ticket's way in a separate small merge request, on its own branch
+`change/<KEY>-fix-<n>` from the repository's default branch, shows it works
+by re-running the failing check, pushes it and opens it through
+`merge-request:create-fix` (allowed through the forwarder), which titles it in
+the project's format with "(fix <n>, unblocks <KEY>)", describes what blocked
+the ticket and why, takes it out of draft and records it in the variation's
+`fix-merge-requests`. It never pushes the ticket's own branches, changes a
+credential, or touches the Mac or the shared checkout; a fix it cannot show
+to work opens nothing and goes to Blocked for Human with what it tried. The
+ticket then waits on it as on a fix ticket: Wait on the Fix Merge Request
+(`ticket:wait-on --merge-request {fix-merge-request}`) records it as the
+variation's `waits-on`, and Await the Fix Merge Request
+(`ticket:fix-landed`, on a 5-minute timer, exit 1 its waiting exit: no
+failure counted) reads it from its forge — open, the ticket's Health names it
+and says it needs approval (and what else: out of draft, a failed pipeline,
+open threads, a rebase); merged, the run is done with `landed: true`, the
+ticket resumes and its visit counts restart (`fix-landed`); closed unmerged,
+Blocked for Human asks the operator. Each such wait is a fix attempt for
+ticket:fix-attempts.
+
+Blocked sends a ticket that only waits for its own dependency merge request
+back to Build (ASS-390 AC5). Classify's `dependency` outcome says the block
+is no fault: one of the ticket's merge requests depends on one in another
+repository that has not merged, and needs what it publishes only after the
+merge (a pin to an image, say). Wait for the Dependency Merge Request
+(`dependency-wait`, `ticket:dependency-wait`, on the host) shows it from the
+variation's merge requests (read from their forges, as recorded when they
+cannot be) — Classify's `dependency-merge-request`, when named, among them —
+and ends the run at done with `awaits-dependency: true`, `resume-at` Build
+(lifted and checked by fix-resume-step.js as a declared step) and
+`resume-sub-at: await-dependencies`. Control takes that `resume-at` as it does
+a landed fix's (engine.js `awaitsDependency`), enters Build at Await
+Sequential Merge (`resumeSubAt`, steps.js: only a step of that group's
+sub-engine, else its first step), and restarts the visit counts (cause
+`dependency-wait`); its log says `it only waits for its dependency merge
+request; resumes at build at await-dependencies`. Not shown is Blocked for
+Human. Such returns in a row count as fix attempts (`dependency-waits`).
+
+Classify's outcomes are easy to extend (ASS-390). Each is a value of
+classify-issue-grouped's `issue` enum, said in its prompt, with one exit of
+its own on `structured-output: { issue }` in grouped-blocked's Classify;
+the last exit, `turn-complete` alone, sends an outcome with no exit of its
+own to Blocked for Human rather than leaving the run stuck. A new outcome is
+an enum value, its line in the prompt, its exit, and the steps it routes to.
+
+Blocked logs everything and cites only what it read (ASS-390 AC3, AC7).
+Every prompt grouped-blocked runs (Troubleshoot, Classify, both Repairs, on
+the VM and the host) has its agent append to `change-log-<variation>.md`
+through `work:append` what it found, what it changed (files, commands, merge
+requests) and why, and says to quote or cite only files and output it has
+actually read in that run, never attributing a rule to a file it has not
+opened. Its own script steps log too (`work.bash` `blocked_log`): Check
+First, Plan the Obstacle Fix, the fix merge request opened, each wait
+recorded and how it ended, and the dependency route.
+
 Requirements Changed (ASS-79) is a top-level detour like Blocked, in these
 engines and `harness-development-v2`: `requirements-changed` runs
 `grouped-requirements-changed`. The operator's Take new (`ticket:take-new`,

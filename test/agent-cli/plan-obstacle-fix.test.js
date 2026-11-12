@@ -42,10 +42,22 @@ test('AC3: the obstacle-fix is appended to the ticket\'s execution plan — what
   assert.match(added, /Keycloak container cold start exceeds the test timeout/);
   assert.match(added, /Not on the latest master: https:\/\/gitlab\.com\/example\/identity master: job test:keycloak success/);
   assert.match(added, /no project bug raised, no ticket scope added/);
-  assert.match(added, /Step added: repair the environment/);
+  // ASS-390 AC2: a project issue's fix is Repair Project's, in a separate merge request the ticket waits on.
+  assert.match(added, /not a bug on p's master: no project bug raised/);
+  assert.match(added, /Step added: Blocked's Repair Project fixes the product code in the way in a separate small merge request \(change\/ABC-3-fix-<n>\) that this ticket waits on, never in this ticket's own branch/);
   assert.match(added, /then carry on with this plan's own work/);
   assert.equal(out['plan-revised'], 'execution-plan-A.md');
-  assert.match(out['obstacle-fix'], /^repair the environment/);
+  assert.equal(out['obstacle-repair'], 'repair-project');
+  assert.match(out['obstacle-fix'], /^Blocked's Repair Project/);
+  assert.match(readFileSync(join(f.folder, 'change-log-A.md'), 'utf8'), /^### .* Blocked, Plan the Obstacle Fix\nNot on the latest master: no project bug raised\. Added to execution-plan-A\.md: Blocked's Repair Project/m, 'AC3: logged');
+});
+
+test('ASS-390: a run not classified a project issue keeps the environment repair, as before', async () => {
+  const f = blocked({ ...FOUND, issue: undefined });
+  mkdirSync(f.folder, { recursive: true });
+  const out = JSON.parse((await f.revise(RUN)).stdout);
+  assert.match(f.read(), /our environment or access, not p's code: no project bug raised[\s\S]*Step added: repair the environment/);
+  assert.deepEqual([out['obstacle-repair'], out['obstacle-fix'].startsWith('repair the environment')], ['repair-environment', true]);
 });
 
 test('AC3: a missing repository is the step named; a ticket with no plan yet gets one holding just the step, for its planning to take in', async () => {
@@ -53,6 +65,7 @@ test('AC3: a missing repository is the step named; a ticket with no plan yet get
   assert.ok(!existsSync(f.plan));
   await f.revise(RUN);
   assert.match(f.read(), /^## Obstacle fix .*\n[\s\S]*Step added: add https:\/\/gitlab\.com\/g\/legal-search to project p and download it/);
+  assert.equal(JSON.parse((await f.revise(RUN)).stdout)['obstacle-repair'], 'add-repository', 'ASS-390: still added first');
 });
 
 test('an unknown run, or a bad variation, fails (exit 1) and writes no plan', async () => {

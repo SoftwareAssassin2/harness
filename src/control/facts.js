@@ -21,7 +21,9 @@ export const ticketValues = (project, ticket, variation) => ({ ticket: ticket.ke
 // empty key (ASS-316), - when none; {merge-request-ids} the merge requests
 // the run works on (ASS-365: grouped-merge's set, its output's
 // merge-request-ids, which grouped-build's Merge the Awaited hands it through
-// pass-output) comma-separated, - (every one) when none; {project}; {run} its id.
+// pass-output) comma-separated, - (every one) when none; {fix-merge-request}
+// the fix merge request grouped-blocked's Repair Project opened (ASS-390, its
+// url), - when none; {project}; {run} its id.
 export function runValues(run, context) {
   const output = run['structured-output'] ?? {};
   const ids = Array.isArray(output['merge-request-ids']) ? output['merge-request-ids'].filter(Number.isInteger) : [];
@@ -29,7 +31,7 @@ export function runValues(run, context) {
     ticket: output.key || context.workItem, 'work-item': context.workItem, variation: context.variation, summary: output.summary, 'ticket-url': output.url ?? '-', project: run.project,
     'pause-tickets': (output['pause-tickets'] ?? []).join(',') || '-', 'human-action': output['human-action'] || '-', 'missing-repository': output['missing-repository'] || '-',
     'failing-repository': output['failing-repository'] || '-', 'failing-job': output['failing-job'] || '-', 'no-ticket-reason': output['no-ticket-reason'] || '-', 'no-ticket-why': output.why || '-',
-    'merge-request-ids': ids.join(',') || '-', run: run.id,
+    'merge-request-ids': ids.join(',') || '-', 'fix-merge-request': output['fix-merge-request'] || '-', run: run.id,
   };
 }
 
@@ -66,13 +68,14 @@ const blocks = value => (Array.isArray(value) ? value.join(', ') : (value ? 'spr
 // human). On the harness project the two are one place (AC3). As { project,
 // where }; undefined with no issue, or no harness project named.
 export function fixTicketIn(issue, project, harness) {
-  if (!issue) return undefined;
+  if (!issue || issue === 'dependency') return undefined;   // ASS-390: a dependency is waited on at Build's Await Sequential Merge, never ticketed
   if (issue === 'project' && !isHarnessProject(harness, project)) return { project, where: 'its own ticket system' };
   const home = harnessProject(harness);
   return home ? { project: home, where: 'the harness project\'s backlog' } : undefined;
 }
 
-const ISSUE = { harness: 'a harness issue', project: 'a project issue', environment: 'an environment issue' };
+// ASS-390: a dependency — the block only waits for one of the ticket's own dependency merge requests to merge.
+const ISSUE = { harness: 'a harness issue', project: 'a project issue', environment: 'an environment issue', dependency: 'a wait for a dependency merge request' };
 
 // What grouped-blocked's Check on the Latest Master answered (ASS-163,
 // project:check-on-master's on-master), for the prompts after it: present
@@ -80,7 +83,8 @@ const ISSUE = { harness: 'a harness issue', project: 'a project issue', environm
 // nothing — so no "Raise the fix ticket in" either.
 const ON_MASTER = {
   present: e => `On the latest master: present — ${e}`,
-  absent: e => `Not on the latest master: ${e} — our environment or access, not the project's code: no project bug; fix the obstacle here`,
+  // ASS-390: the obstacle's fix is Repair Project's, in a separate fix merge request, never the ticket's own branch.
+  absent: e => `Not on the latest master: ${e} — no project bug; fix the obstacle here, in a separate fix merge request (Repair Project), never the ticket's own branch`,
   unknown: e => `Not proven on the latest master: ${e} — no project bug raised`,
 };
 
@@ -177,7 +181,11 @@ export function ticketFacts(ctx, project, ticket, variation, since, vm) {
 // never blocked, or only by an engine that keeps none (the current ones).
 const ENDED = {
   // ASS-384: a run that sent the ticket back to fix its own branch (ticket:own-branch-fix).
-  done: b => `${b['needs-fix'] === false ? 'nothing wrong found' : b['own-branch-fix'] === true ? `the failure was in its own branch (${b['failing-file'] ?? '?'}): sent back to fix it there, at ${b['resume-at'] ?? 'the step it blocked at'}` : b.remediated ? `repaired in place (${b['ai-feedback-short'] ?? 'no note'})` : b.key ? `fix ticket ${b.key} landed` : 'left Blocked'}, resumed — blocked again`,
+  // ASS-390: one whose check passed on re-check, whose fix merge request merged, or sent to wait for its dependency.
+  done: b => `${b['recheck-passed'] === true ? 'passed on re-check, nothing to fix' : b['needs-fix'] === false ? 'nothing wrong found'
+    : b['awaits-dependency'] === true ? `only waiting for its dependency merge request (${b.dependency?.key ?? b.dependency?.url ?? '?'}): sent to Await Sequential Merge`
+    : b['fix-merge-request'] && b.landed === true ? `its fix merge request ${b['fix-merge-request']} merged`
+    : b['own-branch-fix'] === true ? `the failure was in its own branch (${b['failing-file'] ?? '?'}): sent back to fix it there, at ${b['resume-at'] ?? 'the step it blocked at'}` : b.remediated ? `repaired in place (${b['ai-feedback-short'] ?? 'no note'})` : b.key ? `fix ticket ${b.key} landed` : 'left Blocked'}, resumed — blocked again`,
   retry: b => `fix ticket ${b.key ?? '?'} closed unmerged`,
   'blocked-for-human': b => `handed to the operator (${b['ai-feedback-short'] ?? 'no note'})`,
 };

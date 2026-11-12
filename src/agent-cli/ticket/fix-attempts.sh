@@ -23,6 +23,14 @@ set -euo pipefail
 # the operator's resolution starts the count again). They add to this stay's
 # fix tickets, and are printed as own-branch-fixes when any; at 3 the
 # feedback says how often the own-branch fix was tried.
+# ASS-390: a wait on Blocked's own fix merge request (its await-fix-merge-
+# request) is a fix attempt as a fix ticket's await-fix is; and the runs
+# that ended the stay passing on re-check (Check First: recheck-passed
+# true) or sent to wait for a dependency merge request
+# (awaits-dependency true) count back as own-branch fixes do — each printed
+# when any (passed-on-recheck, dependency-waits) and named at 3 — so a check
+# that passes only on re-check, or a dependency wait that keeps blocking,
+# reaches the operator instead of going round for ever.
 here="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
 source "$here/../sprint.bash"
 
@@ -34,17 +42,27 @@ count="$(jq -r --arg key "$2" --arg name "$3" '
   | if $v == null then error("ticket:fix-attempts: no \($key) variation \($name)") else . end
   | ($v["state-changes"] // []) as $c
   | ([range(0; $c | length) | select($c[.]["to-state"] == "blocked" and $c[.]["from-state"] != "blocked" and ($c[.]["sub-state-change"] == null))] | last // -1) as $entered
-  | ([$c[$entered + 1:][] | .["sub-state-change"] // empty | select(.["to-state"] == "await-fix")] | length) as $raised
+  | ([$c[$entered + 1:][] | .["sub-state-change"] // empty | select(.["to-state"] | IN("await-fix", "await-fix-merge-request"))] | length) as $raised
   | ($v.blocks // [] | if type == "array" then map(objects) else [] end
-     | reduce reverse[] as $b ({ n: 0, stop: false };
+     | reduce reverse[] as $b ({ own: 0, rechecked: 0, waited: 0, stop: false };
          if .stop or $b["ended-at"] == "retry" then .
-         elif $b["ended-at"] == "done" and $b["own-branch-fix"] == true then .n += 1
-         else .stop = true end) | .n) as $own
-  | "\($raised + $own) \($own)"' \
+         elif $b["ended-at"] == "done" and $b["own-branch-fix"] == true then .own += 1
+         elif $b["ended-at"] == "done" and $b["recheck-passed"] == true then .rechecked += 1
+         elif $b["ended-at"] == "done" and $b["awaits-dependency"] == true then .waited += 1
+         else .stop = true end)) as $r
+  | "\($raised + $r.own + $r.rechecked + $r.waited) \($r.own) \($r.rechecked) \($r.waited)"' \
   "$(sprint_file ticket:fix-attempts "$1")" 2>&1)" || { echo "${count#jq: error (at *): }" >&2; exit 1; }
-read -r count own <<< "$count"
-if (( count < 3 )); then jq -nc --argjson n "$count" --argjson own "$own" '{ "fix-attempts": $n } + (if $own > 0 then { "own-branch-fixes": $own } else {} end)'; exit 0; fi
-jq -nc --argjson n "$count" --argjson own "$own" --arg v "$3" '($n - $own) as $raised | { "fix-attempts": $n } + (if $own > 0 then { "own-branch-fixes": $own } else {} end) + { "ai-feedback-short": "\($n) fix attempts failed",
-  "ai-feedback-long": (if $own == 0 then "\($n) fix tickets raised in this stay in Blocked did not clear the block. Read them and change-log-\($v).md, fix the cause, then resolve, or have AI try again."
-    else "The own-branch fix was tried \($own) time\(if $own == 1 then "" else "s" end) (Blocked found the failure in the ticket'"'"'s own branch and sent it back to Generate Solution with its finding, the Own-branch fix sections of execution-plan-\($v).md)\(if $raised > 0 then ", and \($raised) fix ticket\(if $raised == 1 then "" else "s" end) raised in this stay" else "" end), and the block came back. Read them and change-log-\($v).md, fix the cause, then resolve, or have AI try again." end) }'
+read -r count own rechecked waited <<< "$count"
+# The counts beyond this stay's fix tickets, each printed only when any.
+extra='(if $own > 0 then { "own-branch-fixes": $own } else {} end) + (if $rechecked > 0 then { "passed-on-recheck": $rechecked } else {} end) + (if $waited > 0 then { "dependency-waits": $waited } else {} end)'
+if (( count < 3 )); then jq -nc --argjson n "$count" --argjson own "$own" --argjson rechecked "$rechecked" --argjson waited "$waited" '{ "fix-attempts": $n } + '"$extra"; exit 0; fi
+jq -nc --argjson n "$count" --argjson own "$own" --argjson rechecked "$rechecked" --argjson waited "$waited" --arg v "$3" '($n - $own - $rechecked - $waited) as $raised
+  | def times($k): "\($k) time\(if $k == 1 then "" else "s" end)";
+  { "fix-attempts": $n } + '"$extra"' + { "ai-feedback-short": "\($n) fix attempts failed",
+  "ai-feedback-long": (if $own == 0 and $rechecked == 0 and $waited == 0 then "\($n) fix tickets raised in this stay in Blocked did not clear the block. Read them and change-log-\($v).md, fix the cause, then resolve, or have AI try again."
+    else ([ (if $own > 0 then "The own-branch fix was tried \(times($own)) (Blocked found the failure in the ticket'"'"'s own branch and sent it back to Generate Solution with its finding, the Own-branch fix sections of execution-plan-\($v).md)" else empty end),
+            (if $rechecked > 0 then "the blocked step passed on re-check \(times($rechecked)) and failed again (Check First, ASS-390)" else empty end),
+            (if $waited > 0 then "it was sent to wait for its dependency merge request \(times($waited)) (ASS-390)" else empty end),
+            (if $raised > 0 then "\($raised) fix ticket\(if $raised == 1 then "" else "s" end) raised in this stay" else empty end) ]
+          | join(", and ") | (.[0:1] | ascii_upcase) + .[1:]) + ", and the block came back. Read them and change-log-\($v).md, fix the cause, then resolve, or have AI try again." end) }'
 exit 3

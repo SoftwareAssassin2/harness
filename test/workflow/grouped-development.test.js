@@ -99,7 +99,7 @@ test('AC1: every step of the current engines is mirrored in its group — action
 // The steps that review code or need awareness of the code or product run in the VM (ASS-68 Q2); every other runs on the host.
 const VM = ['enrich-ac', 'root-cause-analysis', 'review-root-cause-analysis', 'write-execution-plan', 'write-execution-plan-stronger', 'write-test-plan','enrich-automated-test-data', 'review-plan',
   'generate-automated-tests', 'generate-solution', 'automated-testing', 'ci-checks', 'code-review', 'security-review', 'test', 'take-screenshots', 'write-steps-to-test',
-  'update-documentation', 'update-merge-request-details', 'add-screenshots-to-merge-request', 'explain-the-change', 'risk-assessment', 'token-expense-check', 'address-merge-request-feedback', 'troubleshoot', 'repair-environment',
+  'update-documentation', 'update-merge-request-details', 'add-screenshots-to-merge-request', 'explain-the-change', 'risk-assessment', 'token-expense-check', 'address-merge-request-feedback', 'troubleshoot', 'repair-environment', 'repair-project',
   'revise-acceptance-criteria', 'judge'];
 
 test('AC2: in the grouped engines and the sub-engines beneath them the code-aware steps run in the VM; human, none and harness- or forge-driving steps, and every state-engine step, on the host', () => {
@@ -251,7 +251,8 @@ test('ASS-75: the VM runs from Setup through Review and in Self Healing, and sto
   }
   const beneath = Object.keys(engines).filter(n => n.startsWith('grouped-')).flatMap(n => engines[n].steps.filter(s => s.vm).map(s => `${n}/${s.id}=${s.vm}`));
   // ASS-365: grouped-merge's agents run in the VM wherever it runs — Build's, or a project Release's where the VM is not otherwise needed.
-  assert.deepEqual(beneath.sort(), ['grouped-blocked/add-repository=running', 'grouped-blocked/check-on-master=running', 'grouped-blocked/classify=running', 'grouped-blocked/count-attempts=running', 'grouped-blocked/find-where=running', 'grouped-blocked/own-branch-or-human=running', 'grouped-blocked/own-branch-or-obstacle=running', 'grouped-blocked/plan-obstacle-fix=running', 'grouped-blocked/repair-environment=running', 'grouped-blocked/troubleshoot=running',
+  // ASS-390: Check First, and Repair Project's own find-where and VM step.
+  assert.deepEqual(beneath.sort(), ['grouped-blocked/add-repository=running', 'grouped-blocked/check-first=running', 'grouped-blocked/check-on-master=running', 'grouped-blocked/classify=running', 'grouped-blocked/count-attempts=running', 'grouped-blocked/find-where-to-repair-project=running', 'grouped-blocked/find-where=running', 'grouped-blocked/own-branch-or-human=running', 'grouped-blocked/own-branch-or-obstacle=running', 'grouped-blocked/plan-obstacle-fix=running', 'grouped-blocked/repair-environment=running', 'grouped-blocked/repair-project=running', 'grouped-blocked/troubleshoot=running',
     'grouped-merge/address-merge-request-feedback=running', 'grouped-merge/code-review=running', 'grouped-merge/security-review=running', 'grouped-release-example/address-merge-request-feedback=running']);
 });
 

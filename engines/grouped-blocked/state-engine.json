@@ -16,7 +16,7 @@
                     "condition": {
                         "exit-code": 0
                     },
-                    "move-to-state": "find-where"
+                    "move-to-state": "check-first"
                 },
                 {
                     "condition": {
@@ -30,13 +30,41 @@
                             "exit-code": 0
                         }
                     },
+                    "move-to-state": "check-first"
+                }
+            ]
+        },
+        {
+            "id": "check-first",
+            "sequence": 2,
+            "name": "Check First",
+            "description": "ASS-390 AC4: before any agent is dispatched, the blocked step's failing check is re-run as it ran (ticket:recheck-block, on the host, the VM kept running for it): the step the ticket blocked at, found from its state changes, when it is a script step — Automated Testing's the recorded automated tests — and none that changes anything outside the ticket (a merge, a restart, a VM made). Passing now (exit 0), the run is done, needs-fix false, \"Passed on re-check; nothing to fix\" in the change log, and the ticket resumes; still failing, not a script step, or not run (exit 3, or the command failing) goes on to Troubleshoot. Passes in a row that block again are counted as fix attempts (ticket:fix-attempts), so a check that only passes on re-check reaches the operator",
+            "vm": "running",
+            "record-script-output": true,
+            "action": {
+                "type": "script",
+                "command": "./agent.sh ticket:recheck-block {project} {work-item} {variation}"
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "exit-code": 0
+                    },
+                    "move-to-state": "done"
+                },
+                {
+                    "condition": {
+                        "not": {
+                            "exit-code": 0
+                        }
+                    },
                     "move-to-state": "find-where"
                 }
             ]
         },
         {
             "id": "find-where",
-            "sequence": 2,
+            "sequence": 3,
             "name": "Find Where to Troubleshoot",
             "description": "In the variation's VM once it is set up; on the host before (its Setup is what failed)",
             "vm": "running",
@@ -62,7 +90,7 @@
         },
         {
             "id": "troubleshoot",
-            "sequence": 3,
+            "sequence": 4,
             "name": "Troubleshoot",
             "description": "Find why the ticket is blocked, learning from its earlier blocks (the runs kept in its blocks)",
             "vm": "running",
@@ -99,7 +127,7 @@
         },
         {
             "id": "troubleshoot-on-host",
-            "sequence": 4,
+            "sequence": 5,
             "name": "Troubleshoot on the Host",
             "description": "Find why the ticket is blocked, learning from its earlier blocks (the runs kept in its blocks)",
             "action": {
@@ -134,9 +162,9 @@
         },
         {
             "id": "classify",
-            "sequence": 5,
+            "sequence": 6,
             "name": "Classify",
-            "description": "A harness issue (a fix ticket in the harness project's backlog), a project issue (its cause in the project's own code: checked against the latest master before anything is raised, ASS-163) or an environment issue (repaired in place: a repository the project lacks, that Troubleshoot named, is one), with its reasoning",
+            "description": "A harness issue (a fix ticket in the harness project's backlog), a project issue (its cause in the project's own code: checked against the latest master before anything is raised, ASS-163) or an environment issue (repaired in place: a repository the project lacks, that Troubleshoot named, is one), with its reasoning. ASS-390: or a dependency (the block only waits for one of the ticket's own merge requests in another repository to merge: Await Sequential Merge's to wait on, AC5). Each outcome is one exit on its issue (classify-issue-grouped's enum); an outcome with no exit of its own is Blocked for Human, never a stuck run",
             "vm": "running",
             "action": {
                 "type": "prompt",
@@ -189,12 +217,33 @@
                         ]
                     },
                     "move-to-state": "add-repository"
+                },
+                {
+                    "condition": {
+                        "all": [
+                            {
+                                "turn-complete": true
+                            },
+                            {
+                                "structured-output": {
+                                    "issue": "dependency"
+                                }
+                            }
+                        ]
+                    },
+                    "move-to-state": "dependency-wait"
+                },
+                {
+                    "condition": {
+                        "turn-complete": true
+                    },
+                    "move-to-state": "blocked-for-human"
                 }
             ]
         },
         {
             "id": "check-on-master",
-            "sequence": 6,
+            "sequence": 7,
             "name": "Check on the Latest Master",
             "description": "The operator's decision box (ASS-163): is the failure a problem on the latest master? The project's master CI for the job Troubleshoot named, asked read-only on the host (project:check-on-master: glab, gh). Failed there (exit 0): a blocking bug in the project's ticket system, with that evidence, waited on. Passed (exit 3): not master's — nothing raised; a failure in the ticket's own branch goes back to Generate Solution (ASS-384, own-branch-or-obstacle), else our environment or access: the plan grows by the obstacle's fix. No master evidence (exit 4: no such job, forge unreachable, nothing named) is not proven: no bug; a failure shown to be in the ticket's own branch goes back to Generate Solution (own-branch-or-human), else Blocked for Human asking the operator; Have AI Try Again repeats the check. On the harness project (exit 2) not checked: raised as before",
             "vm": "running",
@@ -240,9 +289,9 @@
         },
         {
             "id": "own-branch-or-obstacle",
-            "sequence": 7,
+            "sequence": 8,
             "name": "Check for an Own-Branch Fix",
-            "description": "ASS-384: master passed the job, so the failure is not the project's master's. When Classify put it in the ticket's own branch and the failing file Troubleshoot named is one the variation's branch adds or changes (ticket:own-branch-fix, its VM's checkout read, VM kept running), the finding goes into execution-plan-<variation>.md and the run is done with its resume-at — Generate Solution's group, the ticket fixing its own defect (control: ownBranchFix, the visit counts restarted; counted by ticket:fix-attempts). Else (exit 3, or the command failing) the obstacle fix, as before",
+            "description": "ASS-384: master passed the job, so the failure is not the project's master's. When Classify put it in the ticket's own branch and the failing file Troubleshoot named is one the variation's branch adds or changes (ticket:own-branch-fix, its VM's checkout read, VM kept running), the finding goes into execution-plan-<variation>.md and the run is done with its resume-at — Generate Solution's group, the ticket fixing its own defect (control: ownBranchFix, the visit counts restarted; counted by ticket:fix-attempts). Else (exit 3, or the command failing) the obstacle fix, made by Repair Project in a separate fix merge request (ASS-390)",
             "vm": "running",
             "record-script-output": true,
             "action": {
@@ -268,7 +317,7 @@
         },
         {
             "id": "own-branch-or-human",
-            "sequence": 8,
+            "sequence": 9,
             "name": "Check for an Own-Branch Fix Before the Operator",
             "description": "ASS-384: master could not show the failure (not proven). The same check as Check for an Own-Branch Fix: the ticket's own branch shown, the finding into its plan and back to Generate Solution's group; else (exit 3, or the command failing) Blocked for Human with check-on-master's feedback, as before",
             "vm": "running",
@@ -296,9 +345,9 @@
         },
         {
             "id": "plan-obstacle-fix",
-            "sequence": 9,
+            "sequence": 10,
             "name": "Plan the Obstacle Fix",
-            "description": "Not on the latest master (ASS-163 AC3): nothing raised in the project; the ticket's plan grows by fixing what stands in the way (ticket:plan-obstacle-fix appends it to execution-plan.md, no scope added), then Repair Environment's steps make that fix — a missing repository added, the environment repaired, else the operator's exact step through Blocked for Human — and the ticket resumes its own work",
+            "description": "Not on the latest master (ASS-163 AC3): nothing raised in the project; the ticket's plan records the obstacle (ticket:plan-obstacle-fix appends it to execution-plan.md, no scope added). ASS-390 AC2: then (a missing repository named still added first, its obstacle-repair add-repository) Repair Project fixes the product code in its way in a separate small merge request (change/<KEY>-fix-<n>), never the ticket's own branch, and the ticket waits on it — replacing Repair Environment's steps on this path; a fix it cannot show to work is Blocked for Human",
             "vm": "running",
             "record-script-output": true,
             "action": {
@@ -308,9 +357,211 @@
             "exit-events": [
                 {
                     "condition": {
-                        "exit-code": 0
+                        "all": [
+                            {
+                                "exit-code": 0
+                            },
+                            {
+                                "structured-output": {
+                                    "obstacle-repair": "add-repository"
+                                }
+                            }
+                        ]
                     },
                     "move-to-state": "add-repository"
+                },
+                {
+                    "condition": {
+                        "exit-code": 0
+                    },
+                    "move-to-state": "find-where-to-repair-project"
+                },
+                {
+                    "condition": {
+                        "not": {
+                            "exit-code": 0
+                        }
+                    },
+                    "move-to-state": "blocked-for-human"
+                }
+            ]
+        },
+        {
+            "id": "find-where-to-repair-project",
+            "sequence": 11,
+            "name": "Find Where to Repair the Project",
+            "description": "ASS-390: in the variation's VM once it is set up; on the host, in a clone of its own, before",
+            "vm": "running",
+            "action": {
+                "type": "none"
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "script-succeeds": "./agent.sh vm:setup-complete {project} {ticket} {variation}"
+                    },
+                    "move-to-state": "repair-project"
+                },
+                {
+                    "condition": {
+                        "not": {
+                            "script-succeeds": "./agent.sh vm:setup-complete {project} {ticket} {variation}"
+                        }
+                    },
+                    "move-to-state": "repair-project-on-host"
+                }
+            ]
+        },
+        {
+            "id": "repair-project",
+            "sequence": 12,
+            "name": "Repair the Project",
+            "description": "ASS-390 AC2: a project issue not on the latest master and not the ticket's own branch (ASS-384), in the variation's VM: the product code in the ticket's way fixed in a separate small merge request on its own branch, change/<KEY>-fix-<n> from the repository's default branch, shown to work there, pushed and opened through merge-request:create-fix (its title and description naming the ticket it unblocks and why) — never the ticket's own branches, a credential, the Mac or the shared checkout. Opened (fixed), the ticket waits on it; not shown to work, Blocked for Human with what was tried",
+            "vm": "running",
+            "action": {
+                "type": "prompt",
+                "prompt": "repair-project-grouped",
+                "agent-count": 1,
+                "run-in-dev-container": false
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "all": [
+                            {
+                                "turn-complete": true
+                            },
+                            {
+                                "structured-output": {
+                                    "fixed": true
+                                }
+                            }
+                        ]
+                    },
+                    "move-to-state": "wait-on-fix-merge-request"
+                },
+                {
+                    "condition": {
+                        "turn-complete": true
+                    },
+                    "move-to-state": "blocked-for-human"
+                }
+            ],
+            "run-location": "vm"
+        },
+        {
+            "id": "repair-project-on-host",
+            "sequence": 13,
+            "name": "Repair the Project on the Host",
+            "description": "ASS-390 AC2: the variation has no VM yet — the same fix in a clone of its own in a temporary folder, never the Mac's shared checkout or the ticket's own worktree's branch; else Blocked for Human with what was tried",
+            "action": {
+                "type": "prompt",
+                "prompt": "repair-project-on-host-grouped",
+                "agent-count": 1,
+                "run-in-dev-container": false,
+                "works-on-code": true
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "all": [
+                            {
+                                "turn-complete": true
+                            },
+                            {
+                                "structured-output": {
+                                    "fixed": true
+                                }
+                            }
+                        ]
+                    },
+                    "move-to-state": "wait-on-fix-merge-request"
+                },
+                {
+                    "condition": {
+                        "turn-complete": true
+                    },
+                    "move-to-state": "blocked-for-human"
+                }
+            ]
+        },
+        {
+            "id": "wait-on-fix-merge-request",
+            "sequence": 14,
+            "name": "Wait on the Fix Merge Request",
+            "description": "ASS-390 AC6: record the fix merge request Repair Project opened (its fix-merge-request, one merge-request:create-fix recorded for the variation) as what the ticket waits on, as a fix ticket is (ticket:wait-on --merge-request); none named, or one not opened so, is Blocked for Human",
+            "record-script-output": true,
+            "action": {
+                "type": "script",
+                "command": "./agent.sh ticket:wait-on {project} {work-item} {variation} --merge-request {fix-merge-request}"
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "exit-code": 0
+                    },
+                    "move-to-state": "await-fix-merge-request"
+                },
+                {
+                    "condition": {
+                        "not": {
+                            "exit-code": 0
+                        }
+                    },
+                    "move-to-state": "blocked-for-human"
+                }
+            ]
+        },
+        {
+            "id": "await-fix-merge-request",
+            "sequence": 15,
+            "name": "Await the Fix Merge Request",
+            "description": "ASS-390 AC6: wait until the fix merge request is merged, polling while it is open (exit 1, its waiting-exit-code: no failure counted), the ticket's Health naming it and saying it needs approval (ticket:fix-landed); merged, the run is done and the ticket resumes, its visit counts restarted as for a landed fix; closed unmerged (exit 3), or nothing to wait on (exit 4), is a question for the operator: Blocked for Human",
+            "record-script-output": true,
+            "action": {
+                "type": "script",
+                "command": "./agent.sh ticket:fix-landed {project} {work-item} {variation}",
+                "mode": "timer",
+                "timer-minutes": 5,
+                "waiting-exit-code": 1
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "exit-code": 0
+                    },
+                    "move-to-state": "done"
+                },
+                {
+                    "condition": {
+                        "exit-code": 3
+                    },
+                    "move-to-state": "blocked-for-human"
+                },
+                {
+                    "condition": {
+                        "exit-code": 4
+                    },
+                    "move-to-state": "blocked-for-human"
+                }
+            ]
+        },
+        {
+            "id": "dependency-wait",
+            "sequence": 16,
+            "name": "Wait for the Dependency Merge Request",
+            "description": "ASS-390 AC5: Classify said the block only waits for one of the ticket's own dependency merge requests (one another of its merge requests depends on, in another repository) to merge — an image or package published only after it merges. Shown so from the variation's merge requests (ticket:dependency-wait, on the host), the run is done with Build as its resume-at and Await Sequential Merge (ASS-335/365) as the step Build starts at (resume-sub-at), its visit counts restarted; not shown, or no such step to resume at, Blocked for Human saying why",
+            "record-script-output": true,
+            "action": {
+                "type": "script",
+                "command": "./agent.sh ticket:dependency-wait {project} {work-item} {variation} {run}"
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "exit-code": 0
+                    },
+                    "move-to-state": "done"
                 },
                 {
                     "condition": {
@@ -324,7 +575,7 @@
         },
         {
             "id": "add-repository",
-            "sequence": 10,
+            "sequence": 17,
             "name": "Add the Missing Repository",
             "description": "Repair Environment's first step (ASS-121), on the host: a repository the project lacks that Troubleshoot named (missing-repository) is added to project.json once the harness can access it (glab, gh: read-only) and downloaded into the VM, and the ticket retries; one it cannot access is not added: Blocked for Human, naming it and why. One another project lists is refused, nothing changed (exit 4, ASS-160): Blocked for Human, saying the ticket needs that project's access (it belongs there, or must be done on the Mac). None named, or one already listed (exit 2): nothing added, the environment repaired in place as for any other cause",
             "vm": "running",
@@ -380,9 +631,9 @@
         },
         {
             "id": "repair-environment",
-            "sequence": 11,
+            "sequence": 18,
             "name": "Repair the Environment",
-            "description": "In the variation's VM and the project's containers there, never a credential: repaired and re-checked, the ticket resumes; else Blocked for Human with what was found and what to do (ASS-97)",
+            "description": "In the variation's VM and the project's containers there (ASS-390 AC1: whatever there blocks the blocked step — dependencies, containers, checkouts, caches, generated files, recorded test commands, stale branches — never a credential, uncommitted work saved aside first): repaired and the failing thing re-run to pass, the ticket resumes; else Blocked for Human with what was found and what to do (ASS-97)",
             "vm": "running",
             "action": {
                 "type": "prompt",
@@ -417,7 +668,7 @@
         },
         {
             "id": "repair-environment-on-host",
-            "sequence": 12,
+            "sequence": 19,
             "name": "Repair the Environment on the Host",
             "description": "The variation has no VM yet: only its own worktree, never the Mac's shared checkout or a credential; else Blocked for Human with what was found and what to do (ASS-97)",
             "action": {
@@ -453,7 +704,7 @@
         },
         {
             "id": "create-fix-ticket",
-            "sequence": 13,
+            "sequence": 20,
             "name": "Create the Fix Ticket",
             "description": "Where Classify said: the harness project's backlog, or the ticket's own project's ticket system (facts.js fixTicketIn). An empty key (ASS-316) skips fast-track-fix: there is no ticket to fast-track, and no reason to run it on the blocked ticket's own key",
             "action": {
@@ -464,8 +715,14 @@
                 {
                     "condition": {
                         "all": [
-                            { "is-done": true },
-                            { "structured-output": { "key": "" } }
+                            {
+                                "is-done": true
+                            },
+                            {
+                                "structured-output": {
+                                    "key": ""
+                                }
+                            }
                         ]
                     },
                     "move-to-state": "wait-on"
@@ -480,7 +737,7 @@
         },
         {
             "id": "fast-track-fix",
-            "sequence": 14,
+            "sequence": 21,
             "name": "Fast-Track the Fix",
             "description": "ASS-306: a harness off-board fix ticket is marked fast-track and joined to the sprint at committed, so it is built at once instead of waiting in the backlog for grooming (agent.sh ticket:fast-track, host-side). Best-effort: a project issue in its own ticket system, one already in the sprint, or none raised is left alone, and a failed join leaves the ticket off-board at Backlog with its mark — whatever happens, the fix is waited on as before",
             "action": {
@@ -506,7 +763,7 @@
         },
         {
             "id": "wait-on",
-            "sequence": 15,
+            "sequence": 22,
             "name": "Wait on the Fix",
             "description": "Record the fix ticket the blocked ticket waits on; none raised, or one no project claims, is Blocked for Human (AC7), its ai-feedback naming why (ASS-316: no-ticket-reason/no-ticket-why from create-fix-ticket's output, - when none)",
             "record-script-output": true,
@@ -533,7 +790,7 @@
         },
         {
             "id": "await-fix",
-            "sequence": 16,
+            "sequence": 23,
             "name": "Await the Fix",
             "description": "Wait until the fix ticket is Done and merged (or Done with a <KEY>: commit on its project's default branch, ASS-340, or Done after re-recording the blocked variation's own inputs since the wait began, ASS-342), polling while it is not (exit 1, its waiting-exit-code: no failure, ASS-253); one closed unmerged is a failed attempt: Blocked again, afresh; nothing to wait on is Blocked for Human (AC7)",
             "record-script-output": true,
@@ -567,7 +824,7 @@
         },
         {
             "id": "resume-step",
-            "sequence": 17,
+            "sequence": 24,
             "name": "Find Where to Resume",
             "description": "The fix landed: the step the ticket resumes at (ASS-343), recorded as the run's resume-at — the fix ticket's declared resume-at, else the earliest step its commits or the ticket's changed work files map to, else the step it blocked at. The parent's return takes it when it is a work step at or before the blocked one (engine.js whyNotResume), else returns to the blocked step as before; whatever the command's exit, the run is done",
             "record-script-output": true,
@@ -594,9 +851,9 @@
         },
         {
             "id": "done",
-            "sequence": 18,
+            "sequence": 25,
             "name": "Done",
-            "description": "Fixed, repaired, nothing wrong any more, or sent back to fix its own branch (ASS-384): the parent follows return-to-state, or the run's resume-at where engine.js allows it",
+            "description": "Fixed, repaired, nothing wrong any more, or sent back to fix its own branch (ASS-384), passed on re-check, its fix merge request merged, or sent to wait for its dependency merge request (ASS-390): the parent follows return-to-state, or the run's resume-at where engine.js allows it",
             "is-done": true,
             "action": {
                 "type": "none"
@@ -604,7 +861,7 @@
         },
         {
             "id": "retry",
-            "sequence": 19,
+            "sequence": 26,
             "name": "Retry",
             "description": "The fix ticket was closed unmerged, a failed attempt: the parent goes round Blocked again, its attempts counted afresh",
             "is-done": true,
@@ -614,7 +871,7 @@
         },
         {
             "id": "blocked-for-human",
-            "sequence": 20,
+            "sequence": 27,
             "name": "Blocked for Human",
             "description": "No fix could be raised, waited on or made, or 3 fix attempts failed: the parent goes to Blocked for Human, the run's ai-feedback saying why",
             "is-done": true,

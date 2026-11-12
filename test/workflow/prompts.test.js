@@ -417,6 +417,7 @@ test('ASS-181 AC3: every report a prompt writes goes through work:write or work:
     'check-if-ticket-will-spend-tokens': ['write', 'token-expense-check'], 'check-if-ticket-will-spend-tokens-grouped': ['write', 'token-expense-check'],
     test: ['write', 'test-results'], 'test-grouped': ['write', 'test-results'], 'write-steps-to-test': ['write', 'steps-to-test'], 'write-steps-to-test-grouped': ['write', 'steps-to-test'], 'review-work': ['write', 'review-work'],
     ...Object.fromEntries(['apply-fix', 'generate-solution', 'generate-solution-grouped', 'generate-automated-tests-grouped', 'repair-environment-grouped', 'repair-environment-on-host-grouped',
+      'repair-project-grouped', 'repair-project-on-host-grouped', 'classify-issue-grouped',   // ASS-390 AC3: every Blocked prompt logs
       'troubleshoot-block', 'troubleshoot-block-grouped', 'troubleshoot-block-on-host-grouped', 'unblock', 'update-documentation', 'update-documentation-grouped', 'shut-down'].map(p => [p, ['append', 'change-log']])),
   };
   for (const [p, [command, name]] of Object.entries(writes)) {

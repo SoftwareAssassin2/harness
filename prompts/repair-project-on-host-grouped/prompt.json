@@ -1,0 +1,68 @@
+{
+    "description": "Prompt for repairing the product code that blocks a ticket (ASS-390 AC2), on the host, before the ticket variation's VM is set up, in a clone of its own in a temporary folder (the grouped engines' Blocked, Repair Project): a project issue not on the latest master and not the ticket's own branch, fixed in a separate small merge request on change/<KEY>-fix-<n>, shown to work, pushed and opened through merge-request:create-fix — never the ticket's own branches, a credential, the Mac or the shared checkout; the ticket then waits on it. Not shown to work: nothing opened, what was tried for the operator. Logs what it found and changed in the change log (AC3); cites only what it read (AC7)",
+    "supported-command-line-interfaces": [
+        "claude"
+    ],
+    "supported-models": [
+        "claude-opus-5-5",
+        "claude-opus-5",
+        "claude-sonnet-5",
+        "claude-opus-4-8",
+        "claude-opus-4-7"
+    ],
+    "persona": "developer",
+    "input-arguments": [
+        {
+            "name": "project",
+            "description": "Project folder name under data/projects/",
+            "example": "my-project",
+            "required": true
+        },
+        {
+            "name": "ticket",
+            "description": "Ticket number",
+            "example": "ABC-1234",
+            "required": true
+        },
+        {
+            "name": "problem",
+            "description": "The checked analysis of the block: summary, root cause, failing check, evidence, its classification and the latest master's evidence",
+            "example": "Seed script fails on a column master renamed",
+            "required": true
+        }
+    ],
+    "output": {
+        "type": "object",
+        "properties": {
+            "fixed": {
+                "type": "boolean",
+                "description": "true when the fix was shown to work and its merge request opened through merge-request:create-fix"
+            },
+            "fix-merge-request": {
+                "type": "string",
+                "description": "Fixed only: the fix merge request's url, as merge-request:create-fix printed it; left out otherwise"
+            },
+            "evidence": {
+                "type": "array",
+                "items": {
+                    "type": "string"
+                },
+                "description": "The commands run and what each showed"
+            },
+            "ai-feedback-short": {
+                "type": "string",
+                "description": "Fixed: the merge request and what it fixes; else what the operator must do — one line, shown on the dashboard"
+            },
+            "ai-feedback-long": {
+                "type": "string",
+                "description": "What was found, what was tried or done, and what must be done"
+            }
+        },
+        "required": [
+            "fixed",
+            "evidence",
+            "ai-feedback-short",
+            "ai-feedback-long"
+        ]
+    }
+}

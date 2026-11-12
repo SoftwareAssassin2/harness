@@ -20,8 +20,9 @@ const LEAVES = new Set([
 const CHECKED_LEAVES = ['exit-code', 'script-succeeds', 'file-updated'];
 // The placeholders control fills in a script command: the ticket, its
 // project and variation, and what a transient run's structured output
-// carries (see the self-healing engine; merge-request-ids, ASS-365: grouped-merge's set).
-const PLACEHOLDERS = new Set(['ticket', 'work-item', 'project', 'variation', 'summary', 'ticket-url', 'pause-tickets', 'human-action', 'missing-repository', 'failing-repository', 'failing-job', 'no-ticket-reason', 'no-ticket-why', 'merge-request-ids', 'run']);
+// carries (see the self-healing engine; merge-request-ids, ASS-365: grouped-merge's set;
+// fix-merge-request, ASS-390: grouped-blocked's Repair Project's).
+const PLACEHOLDERS = new Set(['ticket', 'work-item', 'project', 'variation', 'summary', 'ticket-url', 'pause-tickets', 'human-action', 'missing-repository', 'failing-repository', 'failing-job', 'no-ticket-reason', 'no-ticket-why', 'merge-request-ids', 'fix-merge-request', 'run']);
 
 // Where each list's run starts: its lowest-sequence step (moves.js firstStepId), which may not be switched off.
 const firstsOf = engine => new Set(Object.entries(engine).filter(([key]) => /(^|-)(steps|trigger)$/.test(key)).map(([, list]) => list.toSorted((a, b) => a.sequence - b.sequence)[0]?.id));

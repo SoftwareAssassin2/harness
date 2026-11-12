@@ -25,12 +25,39 @@ set -euo pipefail
 # demo-plan-<variation>.json) } — for ticket:fix-landed to tell a fix made by
 # re-recording one of them after the wait began; {} when the ticket has no
 # work folder. Each wait records it afresh; - removes it with waits-on.
+# ASS-390 AC6: `--merge-request <url>` instead of a fix key — Blocked's
+# Repair Project's fix merge request ({fix-merge-request}), which must be one
+# merge-request:create-fix recorded in the variation's fix-merge-requests —
+# writes waits-on { merge-request: <url>, key, repository, branch } and
+# wait-began as above, for ticket:fix-landed to read from its forge. None
+# named (-) or one not recorded so is refused (exit 1), printing why as {
+# ai-feedback-short, ai-feedback-long }. The change log says what it waits on
+# (work.bash blocked_log, AC3), for a fix ticket too.
 here="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
 source "$here/../sprint.bash"
 source "$here/../ticket-system.bash"
 source "$here/../work.bash"
 
-[[ $# -eq 4 || $# -eq 6 ]] || { echo "usage: ticket:wait-on <project> <ticket-key> <variation> <fix-ticket-key|-> [<no-ticket-reason> <no-ticket-why>]" >&2; exit 1; }
+if [[ $# -eq 5 && "$4" == --merge-request ]]; then
+  why() { jq -nc --arg s "$1" --arg l "$2" '{ "ai-feedback-short": $s, "ai-feedback-long": $l }'; echo "ticket:wait-on: $2" >&2; }
+  url="${5%/}" key="$(tr '[:lower:]' '[:upper:]' <<< "$2")"
+  [[ "$url" != - && -n "$url" ]] || { why "No fix merge request to wait on" "Repair Project said it fixed $key's block but named no fix merge request, so there is nothing to wait on."; exit 1; }
+  found="$(jq -c --arg key "$key" --arg name "$3" --arg u "$url" '
+    first((.features, .bugs, .spikes) // [] | .[] | select(.key | ascii_downcase == ($key | ascii_downcase))) // {} | .variations // []
+    | map(select(.name == $name and (.["is-deleted"] | not))) | first // {} | first(.["fix-merge-requests"] // [] | .[] | select((.url // "" | rtrimstr("/")) == $u)) // empty' \
+    "$(sprint_file ticket:wait-on "$1")")"
+  [[ -n "$found" ]] || { why "The fix merge request cannot be waited on" "$url is not a fix merge request opened for $key $3 (merge-request:create-fix), so it is not waited on."; exit 1; }
+  waits="$(jq -c '{ "merge-request": .url, key, repository, branch }' <<< "$found")"
+  inputs="$(work_input_digests ticket:wait-on "$1" "$2" "$3")"
+  update_whole_ticket ticket:wait-on "$1" "$2" --arg name "$3" --argjson waits "$waits" --argjson inputs "$inputs" '
+    if any(.variations // [] | .[]; .name == $name and (.["is-deleted"] | not)) then . else error("\($command): no \($key) variation \($name)") end
+    | .variations |= map(if .name == $name then .["waits-on"] = $waits | .["wait-began"] = { at: $at, inputs: $inputs } else . end)'
+  blocked_log "$1" "$key" "$3" "Wait on the Fix Merge Request" "Waits for the fix merge request $(jq -r .key <<< "$found") ($url) to merge, polled every few minutes; it needs a person's review and approval. Nothing else changed."
+  jq -nc --arg t "$key" --arg v "$3" --argjson w "$waits" '{ ticket: $t, variation: $v, "waits-on": $w }'
+  exit 0
+fi
+
+[[ $# -eq 4 || $# -eq 6 ]] || { echo "usage: ticket:wait-on <project> <ticket-key> <variation> <fix-ticket-key|-|--merge-request <url>> [<no-ticket-reason> <no-ticket-why>]" >&2; exit 1; }
 fix="$(tr '[:lower:]' '[:upper:]' <<< "$4")"
 reason="${5:--}"
 no_ticket_why="${6:--}"
@@ -53,4 +80,5 @@ home="$(key_project ticket:wait-on "$fix")"
 waits="$(jq -nc --arg p "$home" --arg t "$fix" '{ project: $p, ticket: $t }')"
 inputs="$(work_input_digests ticket:wait-on "$1" "$2" "$3")"
 update_whole_ticket ticket:wait-on "$1" "$2" --arg name "$3" --argjson waits "$waits" --argjson inputs "$inputs" "$has"' | .variations |= map(if .name == $name then .["waits-on"] = $waits | .["wait-began"] = { at: $at, inputs: $inputs } else . end)'
+blocked_log "$1" "$(tr '[:lower:]' '[:upper:]' <<< "$2")" "$3" "Wait on the Fix" "Waits for the fix ticket $fix (project $home) to land. Nothing else changed."
 jq -nc --arg t "$(tr '[:lower:]' '[:upper:]' <<< "$2")" --arg v "$3" --argjson w "$waits" '{ ticket: $t, variation: $v, "waits-on": $w }'

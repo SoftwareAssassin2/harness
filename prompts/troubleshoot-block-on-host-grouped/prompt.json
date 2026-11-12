@@ -1,5 +1,5 @@
 {
-    "description": "Prompt for troubleshooting a blocked ticket on the host, before its VM is set up (the grouped engines): the root cause, learning from its earlier blocks, for the Classify step after it to route (ASS-107)",
+    "description": "Prompt for troubleshooting a blocked ticket on the host, before its VM is set up (the grouped engines): the root cause, learning from its earlier blocks, for the Classify step after it to route (ASS-107); ASS-390: names a block that only waits for one of the ticket's own dependency merge requests, logs what it found (AC3), cites only what it read (AC7)",
     "supported-command-line-interfaces": [
         "claude"
     ],

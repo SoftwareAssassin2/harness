@@ -1,14 +1,23 @@
-Ticket {ticket} in project {project} is blocked by its environment. Repair it in place if you may, check the blocked step would now pass, and say what you did. If you may not, repair nothing: say what the operator must do.
+Ticket {ticket} in project {project} is blocked by its environment. Fix whatever in this VM blocks the blocked step, check that step would now pass, and say what you did. If the fix needs something you may not do, fix nothing: say what the operator must do.
 
 {where}
 
 {problem}
 
-1. Where you may work: only this VM — its checkouts and the project's containers in it. Never anything on the Mac.
-2. What you may do: reinstall dependencies where the step runs them; remove a stopped or stale compose stack of the project's; re-run a failed setup step; save an uncommitted edit aside (git stash, or a copy in a temp folder: mktemp -d), then clean it.
-3. Never: edit harness or product code; change a credential, token or secret; discard work you have not saved aside. A repair that needs any of these is not yours: the operator's.
-4. Re-run what failed. Repaired only when it now passes.
-5. Write what you found and did to {ticket-folder}/change-log-{variation}.md (through `{agent-sh} work:append {project} {ticket} {variation} change-log.md`, the entry on stdin).
+1. Where you may work: only this VM — its checkouts in /repos/, its caches and generated files, and the project's containers in it. Never anything on the Mac, nor the project's shared checkout.
+2. What you may fix: whatever here stands in the blocked step's way — dependencies, containers, checkouts, caches, generated files, recorded test commands, stale branches. Known fixes, examples only, not the only things allowed:
+   - reinstall dependencies where the step runs them;
+   - remove a stopped or stale compose stack of the project's, or a container left over;
+   - re-run a failed setup step;
+   - clear a stale cache or regenerate a generated file the step reads;
+   - a recorded test command that no longer runs as recorded: record it again through `{agent-sh} automated-tests:record {project} {ticket} {variation}`, never by editing its file;
+   - a stale branch — a checkout on an old or wrong branch, behind its base — reset to the base it should be on (origin's), never discarding the ticket's own commits;
+   - save an uncommitted edit aside (git stash, or a copy in a temp folder: mktemp -d), then clean it.
+3. Never: edit harness or product code (a product-code fix is Repair Project's, in a merge request of its own); change a credential, token or secret; discard work you have not saved aside first; push to any branch. A repair that needs any of these is not yours: the operator's.
+4. Re-run what failed. Repaired only when the failing thing now passes.
+5. Write to {ticket-folder}/change-log-{variation}.md (through `{agent-sh} work:append {project} {ticket} {variation} change-log.md`, the entry on stdin) what you found, what you changed (files, commands, containers, branches; where you saved work aside) and why, and what the re-run showed.
+
+Quote or cite only files and output you have actually read in this run; never attribute a rule to a file you haven't opened.
 
 Finish with JSON: {"remediated": <bool: repaired and re-checked>, "evidence": ["<command you ran and what it showed>"], "ai-feedback-short": "<repaired: what you did; else what the operator must do — one line>", "ai-feedback-long": "<what was found, and what was done or must be done>"}.
 

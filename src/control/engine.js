@@ -131,9 +131,18 @@ export function resolveTarget(exit, step, engine, stateChanges = [], facts = {})
 // asks to resume at (ASS-343): its run's structured-output resume-at
 // (grouped-blocked's resume-step, ticket:fix-resume-step) — or one sent back
 // to fix its own branch (ownBranchFix, ASS-384: ticket:own-branch-fix's
-// resume-at, Generate Solution's group); undefined for any other move, or
-// when it names none.
-export const resumeAt = facts => ((clearedByFix(facts) || ownBranchFix(facts)) && facts.structuredOutput['resume-at'] != null ? facts.structuredOutput['resume-at'] : undefined);
+// resume-at, Generate Solution's group) — or one sent to wait for its
+// dependency merge request (awaitsDependency, ASS-390: ticket:dependency-wait's
+// resume-at, Build's group); undefined for any other move, or when it names none.
+export const resumeAt = facts => ((clearedByFix(facts) || ownBranchFix(facts) || awaitsDependency(facts)) && facts.structuredOutput['resume-at'] != null ? facts.structuredOutput['resume-at'] : undefined);
+
+// resumeSubAt(facts) — the step within resume-at's group the group's run
+// starts at, when the run names one (ASS-390: ticket:dependency-wait's
+// resume-sub-at, Build's await-dependencies — Await Sequential Merge — so the
+// ticket waits there before its tests, not from Refresh); undefined when
+// resumeAt is, or it names none. steps.js takes it only with resume-at, and
+// only when it is a step of that group's sub-engine.
+export const resumeSubAt = facts => (resumeAt(facts) !== undefined && typeof facts.structuredOutput['resume-sub-at'] === 'string' && facts.structuredOutput['resume-sub-at'] !== '' ? facts.structuredOutput['resume-sub-at'] : undefined);
 
 // whyNotResume(engine, back, wanted) — why a ticket whose fix landed may not
 // resume at `wanted` instead of `back`, the step it blocked at, which the
@@ -201,6 +210,21 @@ export const OWN_BRANCH_FIX = { cause: 'own-branch-fix' };
 // is done and its recorded output says own-branch-fix (ticket:own-branch-fix).
 export const ownBranchFix = facts => facts?.subEngineState === 'done' && facts?.structuredOutput?.['own-branch-fix'] === true;
 
+// DEPENDENCY_WAIT — the cause of a move that clears a block by sending the
+// ticket to wait for one of its own dependency merge requests to merge
+// (ASS-390 AC5: grouped-blocked's dependency-wait, ticket:dependency-wait —
+// Classify found the block only waits for it). Recorded on the clearing change
+// as FIX_LANDED and OWN_BRANCH_FIX are, and for the same reason: the visit
+// counts the ticket was blocked with would send it straight back to Blocked.
+// ticket:fix-attempts counts these returns too, bounding the loop.
+export const DEPENDENCY_WAIT = { cause: 'dependency-wait' };
+// awaitsDependency(facts) — the current move is such a return: the sub-engine
+// run is done and its recorded output says awaits-dependency.
+export const awaitsDependency = facts => facts?.subEngineState === 'done' && facts?.structuredOutput?.['awaits-dependency'] === true;
+// clearCause(facts) — the cause a move clearing a block records, of those that
+// restart the visit window (FIX_LANDED, OWN_BRANCH_FIX, DEPENDENCY_WAIT); undefined for any other move.
+export const clearCause = facts => (clearedByFix(facts) ? FIX_LANDED : ownBranchFix(facts) ? OWN_BRANCH_FIX : awaitsDependency(facts) ? DEPENDENCY_WAIT : undefined);
+
 // MERGE_GATE_RED — the cause of the move an exit makes when the merge gate went red
 // (ASS-315: v2-release's merge-pull-request failing npm test on the rebased branch, or no clean
 // rebase, ends its run at rebuild, and release's exit for it sends the ticket back to Build).
@@ -223,7 +247,7 @@ export const MERGE_GATE_RED = { cause: 'merge-gate-red' };
 // red is no restart for the step it left (release), so that step's own visits
 // keep accumulating across reds and its max-visits still bounds the gate.
 export function sinceResolution(engine, stateChanges = [], targetStep) {
-  const at = stateChanges.findLastIndex(c => isResolution(engine, c['from-state'], c['to-state']) || isDoneStep(engine, c['from-state']) || restartsVisits(engine, c['from-state']) || c.cause === FIX_LANDED.cause || c.cause === OWN_BRANCH_FIX.cause
+  const at = stateChanges.findLastIndex(c => isResolution(engine, c['from-state'], c['to-state']) || isDoneStep(engine, c['from-state']) || restartsVisits(engine, c['from-state']) || c.cause === FIX_LANDED.cause || c.cause === OWN_BRANCH_FIX.cause || c.cause === DEPENDENCY_WAIT.cause
     || (c.cause === MERGE_GATE_RED.cause && c['from-state'] !== targetStep));
   return at < 0 ? stateChanges : stateChanges.slice(at);
 }
@@ -237,7 +261,8 @@ export function sinceResolution(engine, stateChanges = [], targetStep) {
 // count since the last resolution of Blocked for Human (sinceResolution, over
 // the step being counted), and from none on the move that is itself one, itself
 // a block cleared by a landed fix (clearedByFix, ASS-309) or sent back to fix its
-// own branch (ownBranchFix, ASS-384), itself a merge-gate
+// own branch (ownBranchFix, ASS-384) or to wait for its dependency merge
+// request (awaitsDependency, ASS-390), or itself a merge-gate
 // red's return (ASS-315: else the first red is redirected by the counts it is
 // meant to restart), or itself a move out of a step with restarts-visit-count
 // (ASS-399: grouped-plan's Awaiting the Plan Answer, whose return to Write
@@ -247,7 +272,7 @@ export function nextState(step, engine, facts, stateChanges = []) {
   if (!exit) return null;
   let to = resolveTarget(exit, step, engine, stateChanges, facts);
   if (to == null) return { to: null, exit, reason: 'unresolved' };
-  const counted = isResolution(engine, step.id, to) || restartsVisits(engine, step.id) || clearedByFix(facts) || ownBranchFix(facts) || exit.cause === MERGE_GATE_RED.cause ? [] : sinceResolution(engine, stateChanges, to);
+  const counted = isResolution(engine, step.id, to) || restartsVisits(engine, step.id) || clearCause(facts) || exit.cause === MERGE_GATE_RED.cause ? [] : sinceResolution(engine, stateChanges, to);
   let reason = 'exit';
   for (const seen = new Set(); !seen.has(to); reason = 'max-visits') {
     seen.add(to);

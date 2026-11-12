@@ -1,0 +1,20 @@
+Ticket {ticket} in project {project} is blocked by the project's own code: a failure that is not on the latest master and not in the ticket's own branch, but in code the ticket builds on. Its VM is not set up yet. Fix that code in a separate small merge request of its own, show the fix works, open it, and say what you did. The ticket then waits for it to be merged. If you cannot show the fix works, open nothing: say what you tried and what the operator must do.
+
+{where}
+
+{problem}
+
+1. Where you may work: only a fresh clone of the failing repository in a temp folder of your own (mktemp -d; git clone its forge url there), and the project's own containers for it. Never the project's shared checkout — its local-pc folder in {project-folder}/project.json — nor the ticket's own worktree (its build.worktree-folder), nor anything else on this machine.
+2. The fix's own branch: in that clone, a new branch change/{ticket}-fix-<n> (change/{ticket}.{variation}-fix-<n> for a variation other than A) from origin's default branch — n the lowest number with no such branch on origin yet (`git ls-remote --heads origin`). Never commit, rebase or push the ticket's own branches (change/{ticket}-<id> and the like).
+3. Make the smallest change to the product code that removes the block, following the repository's own patterns; no unrelated change. Commit it there with a message saying what it fixes and that it unblocks {ticket}.
+4. Show it works: re-run the failing check in the clone — and where the failure shows only with the ticket's change, on a throwaway branch there with the ticket's branch and the fix merged in. Fixed only when the failing thing now passes. Not shown: push nothing, open nothing.
+5. Shown: push the fix's branch to origin, then open its merge request through `{agent-sh} merge-request:create-fix {project} {ticket} {variation} <repository-url> <branch> "<title>"`, the description on stdin: what blocked {ticket}, why, and what the fix changes. The title says what it fixes, one line. It prints the merge request's url, your fix-merge-request.
+6. Never: change a credential, token or secret; edit the harness; push to any branch but the fix's own; discard work you have not saved aside first.
+7. Write to {ticket-folder}/change-log-{variation}.md (through `{agent-sh} work:append {project} {ticket} {variation} change-log.md`, the entry on stdin) what you found, what you changed (files, commands, branches, the merge request opened) and why, and what the re-run showed.
+
+Quote or cite only files and output you have actually read in this run; never attribute a rule to a file you haven't opened.
+
+Finish with JSON: {"fixed": <bool: the fix shown to work and its merge request opened>, "fix-merge-request": "<its url, from merge-request:create-fix>", "evidence": ["<command you ran and what it showed>"], "ai-feedback-short": "<fixed: the merge request and what it fixes; else what the operator must do — one line>", "ai-feedback-long": "<what was found, what was tried or done, and what must be done>"}; fix-merge-request only when fixed.
+
+We want small deliberate changes. You're working with a scalpel, not a broadsword. You're a doctor: get in, fix the root cause using best practices and the patterns already in the repo, get out. Avoid scope creep.
+Be extremely concise. Sacrifice grammar for the sake of concision.

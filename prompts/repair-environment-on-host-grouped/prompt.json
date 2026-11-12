@@ -1,5 +1,5 @@
 {
-    "description": "Prompt for repairing a blocked ticket's environment in place on the host, before its VM is set up (the grouped engines, ASS-97): only the ticket's own worktree and the project's containers, never the shared checkout or a credential; else what the operator must do",
+    "description": "Prompt for repairing a blocked ticket's environment in place on the host, before its VM is set up (the grouped engines, ASS-97): only the ticket's own worktree and the project's containers, never the shared checkout or a credential; else what the operator must do; ASS-390 AC1: whatever there blocks the blocked step — dependencies, containers, checkouts, caches, generated files, recorded test commands, stale branches — its known fixes examples only, uncommitted work saved aside first, done only when the failing thing re-runs and passes; logs what it found and changed (AC3), cites only what it read (AC7)",
     "supported-command-line-interfaces": [
         "claude"
     ],
