@@ -699,6 +699,44 @@ opened. Its own script steps log too (`work.bash` `blocked_log`): Check
 First, Plan the Obstacle Fix, the fix merge request opened, each wait
 recorded and how it ended, and the dependency route.
 
+A ticket blocked by a Claude rate limit uses the API key fallback at once or
+waits for the reset (ASS-391). Classify's `rate-limit` outcome says the block
+was Claude's usage or rate limits (HTTP 429, "usage limit reached", an agent
+that died at 0 tokens on a limit), not the ticket. Await Rate Limit
+(`await-rate-limit`, `ticket:await-rate-limit`, on the host, a 5-minute
+timer whose waiting exit is 2: no failure counted) reads the limits control
+recorded (`rate-limit.json`, `project:set-rate-limit`, a kind holding while
+its `resets-at` is ahead). The subscription (`claude`) limited and the API
+key fallback available — the project's `.claude-api`, no API cap holding it
+(`api-cap-hold`), the API key (`anthropic`) not limited too, as dispatch.js
+`paymentFor` decides — the run is done at once with `api-fallback: true`: the
+ticket resumes where it was blocked and control's next dispatch pays by the
+key. Otherwise (no `.claude-api`, a cap holding it, the key limited too, or
+the limited runs on the API key already) it waits until the reset, then is
+done with `rate-limit-reset: true` and the ticket resumes. While it waits its
+Health reads "Waiting for the rate limit to reset at <time> (no API
+fallback)", the long feedback saying why there is none — written, logged and
+said once, then only when it changes (the wait kept as the variation's
+`rate-limit-wait`). The ticket sits at Blocked, which is no blocked state: it
+is not Operator Needed and notifies nothing (ASS-383). Nothing recorded as
+holding, the run is done at once with `rate-limit-held: false`; such resumes
+in a row are fix attempts for ticket:fix-attempts (`rate-limit-unheld`), so a
+misread rate limit reaches the operator after three. A fallback or a reset
+is no attempt.
+
+A block caused by a missing or failing credential waits on the project's
+credentials hold (ASS-395 AC5). Classify's `credentials` outcome (a keychain
+item, a token, a login) goes to Check the Credentials (`check-credentials`,
+`project:check-credentials`: a fresh check, recording the hold), then Read
+the Credentials Hold (`credentials-status`, `project:credentials-status
+--fail-when-held`). Held (exit 3): the run is done and the ticket returns to
+its step — the hold stops the project's new dispatch, and the project already
+shows once in Operator Needed ("Project blocked by credentials"). Not held,
+the check cannot see this credential: Explain the Unseen Credential
+(`credentials-unseen`, `ticket:credentials-unseen`) writes Classify's
+reasoning and its `human-action` as the ai-feedback, logs it, and the ticket
+goes to Blocked for Human.
+
 Requirements Changed (ASS-79) is a top-level detour like Blocked, in these
 engines and `harness-development-v2`: `requirements-changed` runs
 `grouped-requirements-changed`. The operator's Take new (`ticket:take-new`,

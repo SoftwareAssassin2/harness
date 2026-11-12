@@ -106,7 +106,8 @@ test('AC1: Troubleshoot, then Classify — its structured output the issue (harn
     assert.equal(stepOf(engines[name], 'classify').action.prompt, 'classify-issue-grouped', 'its own copy (ASS-163): the current engines keep classify-issue as it was');
   }
   const schema = JSON.parse(readFileSync(join(ROOT, 'prompts', 'classify-issue-grouped', 'prompt.json'), 'utf8')).output;
-  assert.deepEqual(schema.properties.issue.enum, ['harness', 'project', 'environment', 'dependency'], 'ASS-390: dependency');
+  assert.deepEqual(schema.properties.issue.enum.slice(0, 4), ['harness', 'project', 'environment', 'dependency'], 'ASS-390: dependency');
+  for (const added of ['rate-limit', 'credentials']) assert.ok(schema.properties.issue.enum.includes(added), `ASS-391, ASS-395: ${added}`);
   assert.deepEqual(schema.required, ['issue', 'reasoning']);
   // The troubleshooter finds the cause; where the fix goes is Classify's alone.
   for (const p of ['troubleshoot-block-grouped', 'troubleshoot-block-on-host-grouped']) assert.equal(JSON.parse(readFileSync(join(ROOT, 'prompts', p, 'prompt.json'), 'utf8')).output.properties['cause-in'], undefined, p);
@@ -732,4 +733,41 @@ test('ASS-390 AC7: every Blocked prompt says to quote or cite only files and out
   const rule = 'Quote or cite only files and output you have actually read in this run; never attribute a rule to a file you haven\'t opened.';
   for (const p of BLOCKED_PROMPTS) assert.ok(promptText(p).includes(rule), p);
   for (const p of ['troubleshoot-block', 'classify-issue', 'unblock']) assert.ok(!promptText(p).includes(rule), `${p}: the flat engines' prompt as it was`);
+});
+
+test('ASS-391 AC1/AC2: Classify\'s rate-limit goes to Await Rate Limit — on the host, a timer whose waiting exit is no failure; on the API key fallback or after the reset the run is done and the ticket resumes where it was blocked, never Blocked for Human', () => {
+  const grouped = engines['grouped-blocked'], wait = stepOf(grouped, 'await-rate-limit');
+  assert.deepEqual([wait.action.command, wait.action.mode, wait.action['timer-minutes'], wait.action['waiting-exit-code'], wait['record-script-output'], wait.vm], ['./agent.sh ticket:await-rate-limit {project} {work-item} {variation}', 'timer', 5, 2, true, undefined]);
+  assert.equal(nextState(wait, grouped, { exitCode: 2, scriptOutput: { 'api-fallback': false } }, []), null, 'waiting: no exit, no failure');
+  assert.equal(nextState(wait, grouped, { exitCode: 1 }, []), null, 'a failure matches no exit: tried again');
+  const fallback = walk('grouped-blocked', { ...issue('rate-limit'), 'await-rate-limit': { exitCode: 0, scriptOutput: { 'rate-limit': { kind: 'claude', type: 'five_hour', 'resets-at': '2026-11-12T14:00:00Z' }, 'api-fallback': true, 'ai-feedback-short': null, 'ai-feedback-long': null } } });
+  assert.deepEqual(steps(fallback), ['count-attempts', 'troubleshoot', 'classify', 'await-rate-limit', 'done']);
+  resumes('grouped-blocked', fallback);
+  assert.match(blockHistory({ blocks: [{ ...fallback.output, 'ended-at': 'done' }] }), /rate limited \(claude\): resumed on the API key fallback/);
+  const reset = walk('grouped-blocked', { ...issue('rate-limit'), 'await-rate-limit': { exitCode: 0, scriptOutput: { 'rate-limit-reset': true, 'rate-limit': { kind: 'claude', 'resets-at': '2026-11-12T14:00:00Z' }, 'ai-feedback-short': null, 'ai-feedback-long': null } } });
+  resumes('grouped-blocked', reset);
+  assert.equal(reset.output['ai-feedback-short'], null, 'the waiting Health cleared');
+  assert.match(blockHistory({ blocks: [{ ...reset.output, 'ended-at': 'done' }] }), /waited for the reset at 2026-11-12T14:00:00Z/);
+  assert.ok(!fallback.trail.includes('create-fix-ticket') && !reset.trail.includes('blocked-for-human'), 'nothing raised, never the operator');
+  assert.equal(problemOf({ id: 'r', project: 'example', parent: {}, 'structured-output': { summary: 'S', issue: 'rate-limit', reasoning: 'R' } }, [], { harness: { 'harness-project': 'harness' } }).includes('Raise the fix ticket in'), false, 'no fix ticket for a rate limit');
+  assert.match(promptText('classify-issue-grouped'), /- "rate-limit": .*HTTP 429, "usage limit reached".*an agent that died at 0 tokens on a limit/);
+});
+
+test('ASS-395 AC5: Classify\'s credentials runs a fresh credentials check, then reads the hold — held, the run is done and the ticket returns to its step (the hold stops new dispatch); not held, Blocked for Human with Classify\'s reason', () => {
+  const grouped = engines['grouped-blocked'];
+  const check = stepOf(grouped, 'check-credentials'), status = stepOf(grouped, 'credentials-status'), unseen = stepOf(grouped, 'credentials-unseen');
+  assert.deepEqual([check.action.command, status.action.command, unseen.action.command], ['./agent.sh project:check-credentials {project}', './agent.sh project:credentials-status {project} --fail-when-held', './agent.sh ticket:credentials-unseen {project} {work-item} {variation} {run}']);
+  assert.deepEqual([0, 1].map(code => nextState(check, grouped, { exitCode: code }, []).to), ['credentials-status', 'credentials-status'], 'whatever the check exits, the hold is read');
+  const PROBLEMS = [{ credential: 'the glab login (gitlab.example.com)', problem: 'not authenticated', fix: 'glab auth login --hostname gitlab.example.com' }];
+  const held = walk('grouped-blocked', { ...issue('credentials'), 'credentials-status': { exitCode: 3, scriptOutput: { held: true, since: '2026-11-12T09:00:00Z', problems: PROBLEMS } } });
+  assert.deepEqual(steps(held), ['count-attempts', 'troubleshoot', 'classify', 'check-credentials', 'credentials-status', 'done']);
+  resumes('grouped-blocked', held);
+  assert.match(blockHistory({ blocks: [{ ...held.output, 'ended-at': 'done' }] }), /its project held by its credentials \(the glab login \(gitlab\.example\.com\)\)/);
+  const unheld = walk('grouped-blocked', { classify: { structuredOutput: { issue: 'credentials', reasoning: 'R', 'human-action': 'H' } }, 'credentials-status': { exitCode: 0, scriptOutput: { held: false, since: null, problems: [] } },
+    'credentials-unseen': { exitCode: 0, scriptOutput: { 'credentials-held': false, 'ai-feedback-short': 'A credential blocks it that the credentials check cannot see', 'ai-feedback-long': 'Blocked classified X-1\'s block as a missing or failing credential: R. …' } } });
+  assert.deepEqual(unheld.trail.slice(-4), ['check-credentials', 'credentials-status', 'credentials-unseen', 'blocked-for-human']);
+  toHuman('grouped-blocked', unheld, /credentials check cannot see/);
+  assert.equal(nextState(unseen, grouped, { exitCode: 1 }, []).to, 'blocked-for-human', 'a failure there still reaches the operator');
+  assert.match(promptText('classify-issue-grouped'), /- "credentials": a missing or failing credential — a keychain item, a token, a login/);
+  assert.equal(promptJson('classify-issue-grouped').output.properties.issue.enum.includes('credentials'), true);
 });

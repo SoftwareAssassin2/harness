@@ -11,7 +11,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { initialState } from '../../src/tui/app.js';
 import { openRequested } from '../../src/tui/app.js';
-import { loadProjects } from '../../src/tui/load.js';
+import { loadProjects, loadWorkflows } from '../../src/tui/load.js';
+import { operatorNeeded } from '../../src/tui/screens/shared.js';
 import { neededTickets, entered, readSeen } from '../../src/notify/detect.js';
 import { describe, fallback, promptOf, askClaude, MODEL } from '../../src/notify/describe.js';
 import { operatorNeededNotifier, notification, openCommand, GHOSTTY, loginEnvs, SPEND_ID } from '../../src/notify/notifier.js';
@@ -287,4 +288,23 @@ test('ASS-383 AC4: terminal-notifier exiting non-zero (no permission) is logged 
   assert.equal(logs.filter(t => /terminal-notifier failed/.test(t)).length, 1);
   assert.doesNotMatch(readFileSync(log, 'utf8'), /com\.apple\.Terminal/);
   assert.ok(lines(log).filter(l => l.name === 'osascript').every(l => !l.argv.includes('-execute')));   // the fallback has no click action
+});
+
+test('ASS-391 AC3: a ticket waiting at Blocked\'s Await Rate Limit — its Health "Waiting for the rate limit to reset at …" — is not Operator Needed and notifies nothing; at Blocked for Human it would', async () => {
+  const workflows = loadWorkflows(join(ROOT, 'engines'));
+  const top = 'harness-development-grouped';
+  const waiting = { key: 'A-1', title: 'Rate limited', variations: [{ name: 'A',
+    'harness-status': { state: 'blocked', 'state-engine': top, 'sub-status': { state: 'await-rate-limit', 'state-engine': 'grouped-blocked' } },
+    'ai-feedback-short': 'Waiting for the rate limit to reset at 2026-11-12 14:00 UTC (no API fallback)', 'ai-feedback-long': 'A-1 was blocked by a Claude rate limit …',
+    'state-changes': [{ 'state-engine': top, 'from-state': 'build', 'to-state': 'blocked', timestamp: '2026-11-12T09:00:00Z' },
+      { 'state-engine': top, 'from-state': 'blocked', 'to-state': 'blocked', timestamp: '2026-11-12T09:05:00Z', 'sub-state-change': { 'state-engine': 'grouped-blocked', 'from-state': 'classify', 'to-state': 'await-rate-limit' } }] }] };
+  const handed = { key: 'A-2', title: 'Stuck', variations: [{ name: 'A', 'harness-status': { state: 'blocked-for-human', 'state-engine': top }, 'ai-feedback-short': 'Needs you' }] };
+  const stateWith = features => initialState({ projects: [{ ...project('p', features), stateEngine: top }], workflows });
+  assert.deepEqual([...operatorNeeded(stateWith([waiting, handed]))], ['A-2'], 'only Blocked for Human needs the operator');
+  assert.deepEqual(neededTickets(stateWith([waiting])), { p: [] });
+  const h = harness(), n = h.make();
+  n.check(stateWith([{ ...waiting, variations: [{ ...waiting.variations[0], 'harness-status': { state: 'build', 'state-engine': top }, 'ai-feedback-short': null }] }]));
+  assert.deepEqual(n.check(stateWith([waiting])), [], 'entering the wait notifies nothing');
+  await n.sent();
+  assert.equal(h.notified().length, 0);
 });

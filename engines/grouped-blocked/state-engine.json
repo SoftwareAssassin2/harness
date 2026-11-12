@@ -164,7 +164,7 @@
             "id": "classify",
             "sequence": 6,
             "name": "Classify",
-            "description": "A harness issue (a fix ticket in the harness project's backlog), a project issue (its cause in the project's own code: checked against the latest master before anything is raised, ASS-163) or an environment issue (repaired in place: a repository the project lacks, that Troubleshoot named, is one), with its reasoning. ASS-390: or a dependency (the block only waits for one of the ticket's own merge requests in another repository to merge: Await Sequential Merge's to wait on, AC5). Each outcome is one exit on its issue (classify-issue-grouped's enum); an outcome with no exit of its own is Blocked for Human, never a stuck run",
+            "description": "A harness issue (a fix ticket in the harness project's backlog), a project issue (its cause in the project's own code: checked against the latest master before anything is raised, ASS-163) or an environment issue (repaired in place: a repository the project lacks, that Troubleshoot named, is one), with its reasoning. ASS-390: or a dependency (the block only waits for one of the ticket's own merge requests in another repository to merge: Await Sequential Merge's to wait on, AC5). Each outcome is one exit on its issue (classify-issue-grouped's enum); an outcome with no exit of its own is Blocked for Human, never a stuck run. ASS-391: or a Claude usage or rate limit (rate-limit: Await Rate Limit, on the API key fallback at once or waiting for the reset); ASS-395 AC5: or a missing or failing credential (credentials: a fresh credentials check, the project's hold waited on, else Blocked for Human)",
             "vm": "running",
             "action": {
                 "type": "prompt",
@@ -232,6 +232,36 @@
                         ]
                     },
                     "move-to-state": "dependency-wait"
+                },
+                {
+                    "condition": {
+                        "all": [
+                            {
+                                "turn-complete": true
+                            },
+                            {
+                                "structured-output": {
+                                    "issue": "rate-limit"
+                                }
+                            }
+                        ]
+                    },
+                    "move-to-state": "await-rate-limit"
+                },
+                {
+                    "condition": {
+                        "all": [
+                            {
+                                "turn-complete": true
+                            },
+                            {
+                                "structured-output": {
+                                    "issue": "credentials"
+                                }
+                            }
+                        ]
+                    },
+                    "move-to-state": "check-credentials"
                 },
                 {
                     "condition": {
@@ -850,10 +880,112 @@
             ]
         },
         {
-            "id": "done",
+            "id": "await-rate-limit",
             "sequence": 25,
+            "name": "Await Rate Limit",
+            "description": "ASS-391: Classify said a Claude usage or rate limit blocked the ticket (HTTP 429, usage limit reached, an agent that died at 0 tokens on a limit), not the ticket. On the host, ticket:await-rate-limit reads the project's recorded limits (rate-limit.json, project:set-rate-limit). The subscription limited and the API key fallback available (the project's .claude-api, no API cap holding it, the API key not limited too): done at once (api-fallback), the ticket resumes where it was blocked and control's next dispatch pays by the API key. Otherwise it waits (exit 2, its waiting-exit-code: polled every 5 minutes, no failure counted) until the recorded reset, its Health \"Waiting for the rate limit to reset at <time> (no API fallback)\" — the ticket at Blocked, not Operator Needed — then done, the ticket resuming. Nothing recorded as holding: done at once (rate-limit-held false), counted by ticket:fix-attempts. A failure (1) matches no exit: tried again",
+            "record-script-output": true,
+            "action": {
+                "type": "script",
+                "command": "./agent.sh ticket:await-rate-limit {project} {work-item} {variation}",
+                "mode": "timer",
+                "timer-minutes": 5,
+                "waiting-exit-code": 2
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "exit-code": 0
+                    },
+                    "move-to-state": "done"
+                }
+            ]
+        },
+        {
+            "id": "check-credentials",
+            "sequence": 26,
+            "name": "Check the Credentials",
+            "description": "ASS-395 AC5: Classify said a missing or failing credential (a keychain item, a token, a login) blocks the ticket. A fresh project:check-credentials, on the host, records the project's credentials hold when it finds one; whatever its exit, Read the Credentials Hold follows",
+            "action": {
+                "type": "script",
+                "command": "./agent.sh project:check-credentials {project}"
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "exit-code": 0
+                    },
+                    "move-to-state": "credentials-status"
+                },
+                {
+                    "condition": {
+                        "not": {
+                            "exit-code": 0
+                        }
+                    },
+                    "move-to-state": "credentials-status"
+                }
+            ]
+        },
+        {
+            "id": "credentials-status",
+            "sequence": 27,
+            "name": "Read the Credentials Hold",
+            "description": "ASS-395 AC5: held (project:credentials-status --fail-when-held, exit 3): the run is done and the ticket returns to its step; the hold stops the project's new dispatch until its credentials are fixed, and the project shows once in Operator Needed. Not held: the check cannot see this credential, so Explain the Unseen Credential hands the ticket to the operator",
+            "record-script-output": true,
+            "action": {
+                "type": "script",
+                "command": "./agent.sh project:credentials-status {project} --fail-when-held"
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "exit-code": 3
+                    },
+                    "move-to-state": "done"
+                },
+                {
+                    "condition": {
+                        "not": {
+                            "exit-code": 3
+                        }
+                    },
+                    "move-to-state": "credentials-unseen"
+                }
+            ]
+        },
+        {
+            "id": "credentials-unseen",
+            "sequence": 28,
+            "name": "Explain the Unseen Credential",
+            "description": "ASS-395 AC5: the project not held, the credentials check cannot see the credential Classify named: ticket:credentials-unseen writes Classify's reasoning (and human-action) as the ai-feedback and logs it, for Blocked for Human",
+            "record-script-output": true,
+            "action": {
+                "type": "script",
+                "command": "./agent.sh ticket:credentials-unseen {project} {work-item} {variation} {run}"
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "exit-code": 0
+                    },
+                    "move-to-state": "blocked-for-human"
+                },
+                {
+                    "condition": {
+                        "not": {
+                            "exit-code": 0
+                        }
+                    },
+                    "move-to-state": "blocked-for-human"
+                }
+            ]
+        },
+        {
+            "id": "done",
+            "sequence": 29,
             "name": "Done",
-            "description": "Fixed, repaired, nothing wrong any more, or sent back to fix its own branch (ASS-384), passed on re-check, its fix merge request merged, or sent to wait for its dependency merge request (ASS-390): the parent follows return-to-state, or the run's resume-at where engine.js allows it",
+            "description": "Fixed, repaired, nothing wrong any more, or sent back to fix its own branch (ASS-384), passed on re-check, its fix merge request merged, or sent to wait for its dependency merge request (ASS-390): the parent follows return-to-state, or the run's resume-at where engine.js allows it, on the API key fallback or after its rate limit reset (ASS-391), or held by its project's credentials (ASS-395)",
             "is-done": true,
             "action": {
                 "type": "none"
@@ -861,7 +993,7 @@
         },
         {
             "id": "retry",
-            "sequence": 26,
+            "sequence": 30,
             "name": "Retry",
             "description": "The fix ticket was closed unmerged, a failed attempt: the parent goes round Blocked again, its attempts counted afresh",
             "is-done": true,
@@ -871,7 +1003,7 @@
         },
         {
             "id": "blocked-for-human",
-            "sequence": 27,
+            "sequence": 31,
             "name": "Blocked for Human",
             "description": "No fix could be raised, waited on or made, or 3 fix attempts failed: the parent goes to Blocked for Human, the run's ai-feedback saying why",
             "is-done": true,

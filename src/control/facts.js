@@ -69,13 +69,14 @@ const blocks = value => (Array.isArray(value) ? value.join(', ') : (value ? 'spr
 // where }; undefined with no issue, or no harness project named.
 export function fixTicketIn(issue, project, harness) {
   if (!issue || issue === 'dependency') return undefined;   // ASS-390: a dependency is waited on at Build's Await Sequential Merge, never ticketed
+  if (issue === 'rate-limit' || issue === 'credentials') return undefined;   // ASS-391, ASS-395: a rate limit is waited out, a credential held or the operator's, never ticketed
   if (issue === 'project' && !isHarnessProject(harness, project)) return { project, where: 'its own ticket system' };
   const home = harnessProject(harness);
   return home ? { project: home, where: 'the harness project\'s backlog' } : undefined;
 }
 
 // ASS-390: a dependency — the block only waits for one of the ticket's own dependency merge requests to merge.
-const ISSUE = { harness: 'a harness issue', project: 'a project issue', environment: 'an environment issue', dependency: 'a wait for a dependency merge request' };
+const ISSUE = { harness: 'a harness issue', project: 'a project issue', environment: 'an environment issue', dependency: 'a wait for a dependency merge request', 'rate-limit': 'a Claude rate limit (ASS-391)', credentials: 'a missing or failing credential (ASS-395)' };
 
 // What grouped-blocked's Check on the Latest Master answered (ASS-163,
 // project:check-on-master's on-master), for the prompts after it: present
@@ -184,6 +185,11 @@ const ENDED = {
   // ASS-390: one whose check passed on re-check, whose fix merge request merged, or sent to wait for its dependency.
   done: b => `${b['recheck-passed'] === true ? 'passed on re-check, nothing to fix' : b['needs-fix'] === false ? 'nothing wrong found'
     : b['awaits-dependency'] === true ? `only waiting for its dependency merge request (${b.dependency?.key ?? b.dependency?.url ?? '?'}): sent to Await Sequential Merge`
+    // ASS-391: a rate limit, resumed on the API key fallback, after its reset, or with none recorded; ASS-395: its project held by its credentials.
+    : b['api-fallback'] === true ? `rate limited (${b['rate-limit']?.kind ?? '?'}): resumed on the API key fallback`
+    : b['rate-limit-reset'] === true ? `rate limited (${b['rate-limit']?.kind ?? '?'}): waited for the reset at ${b['rate-limit']?.['resets-at'] ?? '?'}`
+    : b['rate-limit-held'] === false ? 'classified as rate limited, but no rate limit was recorded'
+    : b.held === true && Array.isArray(b.problems) ? `its project held by its credentials (${b.problems.map(p => p?.credential).filter(Boolean).join(', ') || '?'})`
     : b['fix-merge-request'] && b.landed === true ? `its fix merge request ${b['fix-merge-request']} merged`
     : b['own-branch-fix'] === true ? `the failure was in its own branch (${b['failing-file'] ?? '?'}): sent back to fix it there, at ${b['resume-at'] ?? 'the step it blocked at'}` : b.remediated ? `repaired in place (${b['ai-feedback-short'] ?? 'no note'})` : b.key ? `fix ticket ${b.key} landed` : 'left Blocked'}, resumed — blocked again`,
   retry: b => `fix ticket ${b.key ?? '?'} closed unmerged`,
