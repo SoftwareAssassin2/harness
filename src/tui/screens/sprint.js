@@ -11,6 +11,7 @@ import { NONE, feedback, agentLines, liveAssignments, ticketMarks, sprintMark, m
 import { openTicket } from './ticket.js';
 import { isHeld } from '../../control/engine.js';
 import { slotKind } from '../../control/plan.js';
+import { enginesOf } from '../status.js';
 
 const TABLE_HEADERS = ['Ticket', 'Priority', 'Status', 'Points', 'Build', 'Dev', 'Testing', 'MR', 'Total Token Spend', 'Assignee', 'Health', 'Agents'];
 // The Ticket column is the most important one (ASS-207): it keeps at least the
@@ -41,10 +42,30 @@ const ticketFloor = (rows, tickets) => Math.max(0, ...rows.map((row, i) => {
 // can scroll, whichever is the higher row, and that row selected. No Done
 // row, no not-done row (the Done-first sort puts the last Done row last) or
 // every row fitting: the top.
-function gridAt(state, { rows, bodyHeight }, tickets, done) {
-  const last = tickets.findLastIndex(t => t.step?.sequence === done);
+// ASS-402: when the project's engines (its own and every sub-engine its steps
+// run, as far down as they go) have an is-qa step, the last row at a QA step
+// (isQa, any level of its chain) takes the last Done row's place; no such row:
+// the last Done row, as before; a past day opens as before. Read by the flag, never a step's id or name.
+function gridAt(state, { rows, bodyHeight }, tickets, done, steps = []) {
+  const qa = !state.day && hasQaStep(state, steps) ? tickets.findLastIndex(isQa) : -1;
+  const last = qa >= 0 ? qa : tickets.findLastIndex(t => t.step?.sequence === done);
   const open = last < 0 || last >= rows.length - 1 ? 0 : Math.min(last, lastStart(rows, bodyHeight));
   return [state.selected ?? open, state.scroll ?? open];
+}
+
+// ASS-402: whether the project's engine (its `steps`, as sprintTickets
+// resolves it), or any sub-engine reached through a state-engine action, as
+// far down as they go, has a step with is-qa.
+function hasQaStep(state, steps) {
+  const engines = enginesOf(state.workflows);
+  const seen = new Set();
+  const has = listed => listed.some(s => s?.['is-qa'] === true) || listed.some(s => s?.action?.type === 'state-engine' && visit(s.action.engine));
+  const visit = name => {
+    if (typeof name !== 'string' || seen.has(name) || !engines[name]) return false;
+    seen.add(name);
+    return has(Object.values(engines[name]).filter(Array.isArray).flat());
+  };
+  return has(steps);
 }
 
 // The dashboard's ticket grid: its rows and the lines its body may take
@@ -67,7 +88,7 @@ function layout(state, { columns = 0, rows = Infinity, now = 0 }) {
   const cells = ticketRows(tickets, liveAssignments(state), steps, state.projects[state.project]?.collaborations, ticketMarks(state, tickets), seatHolders(state));
   const fit = { columns, stretch: 0, min: ticketFloor(cells, tickets), shrink: SHRINK };
   const ticketGrid = { rows: tableLayout(TABLE_HEADERS, cells, fit).cells, bodyHeight: free - 4 };
-  const [selected, scroll] = gridAt(state, ticketGrid, tickets, done);
+  const [selected, scroll] = gridAt(state, ticketGrid, tickets, done, steps);
   // The same rows and fit as ticketGrid's: boxTable lays them out alike.
   const table = boxTable(TABLE_HEADERS, cells.length ? cells : [['No tickets in this sprint']], {
     ...fit, height: ticketGrid.bodyHeight + 4, scroll, dashed: true, separators: boundaries(tickets),

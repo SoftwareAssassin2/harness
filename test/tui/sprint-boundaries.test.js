@@ -161,3 +161,32 @@ test('ASS-401 AC3: no purple line without QA rows or with QA rows last; green ke
   assert.deepEqual(qaLines(qaStateOf([ticket('A-1', 'done'), ticket('A-2', 'check')])).above, { 'A-1': 'top', 'A-2': 'green-qa' });
   assert.deepEqual(qaLines(qaStateOf([ticket('A-2', 'check'), ticket('A-4', 'build')])).above, { 'A-2': 'top', 'A-4': 'purple' });
 });
+
+// ASS-402: the grid opens with the last QA row at the top of the view when the project's engines have an is-qa step.
+const many = (n, from, state) => Array.from({ length: n }, (_, i) => ticket(`A-${from + i}`, state));
+const qaRows = [...many(30, 1, 'done'), ...many(3, 31, 'check'), ...many(30, 34, 'build')];
+const topRow = state => Object.keys(qaLines(state).above)[0];
+
+test('ASS-402 AC1: with a QA step, the grid opens on the last QA row; scrolled by hand, it stays put', () => {
+  assert.equal(topRow(qaStateOf(qaRows)), 'A-33');
+  assert.equal(topRow({ ...qaStateOf(qaRows), selected: 0, scroll: 0 }), 'A-1');
+});
+
+test('ASS-402 AC1: a QA step in a sub-engine the project\'s engine runs counts, and a row at it at any level', () => {
+  const outer = [...steps, { id: 'verify', name: 'Verify', sequence: 8, action: { type: 'state-engine', engine: 'q' } }];
+  const inner = [{ id: 'look', name: 'Look', sequence: 1, 'is-qa': true }, { id: 'end', name: 'End', sequence: 2, 'is-done': true }];
+  const sub = (key) => ({ key, title: 'Sub', variations: [{ name: 'A', 'harness-status': { state: 'verify', 'state-engine': 'e', 'sub-status': { state: 'look', 'state-engine': 'q' } } }] });
+  const rows = [...many(30, 1, 'done'), sub('A-31'), sub('A-32'), ...many(30, 34, 'build')];
+  const s = initialState({ projects: [{ id: 'p', name: 'P', stateEngine: 'e', sprint: sprintOf(rows) }], workflows: [{ name: 'e', steps: outer }, { name: 'q', steps: inner }], assignments: [] });
+  assert.equal(topRow(s), 'A-32');
+});
+
+test('ASS-402 AC2: a QA step but no QA row, or no QA step, opens at the last Done row as before', () => {
+  assert.equal(topRow(qaStateOf([...many(30, 1, 'done'), ...many(30, 34, 'build')])), 'A-30');
+  assert.equal(topRow(stateOf([...many(30, 1, 'done'), ...many(30, 34, 'build')])), 'A-30');
+});
+
+test('ASS-402 AC3: a past day opens at its last Done row', () => {
+  const s = initialState({ projects: [{ id: 'p', name: 'P', stateEngine: 'e', sprint: sprintOf(qaRows), days: { '2026-09-30': sprintOf(qaRows) } }], workflows: [{ name: 'e', steps: qaSteps }], assignments: [] });
+  assert.equal(topRow({ ...s, day: '2026-09-30' }), 'A-30');
+});
