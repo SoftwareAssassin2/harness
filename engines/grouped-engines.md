@@ -22,6 +22,13 @@ rollback.
 | QA (a project's own) | `grouped-qa` | QA Testing |
 | Done | (plain step) | |
 
+`grouped-qa`'s QA Testing step, and a project's own top-level QA step, set
+`"is-qa": true` (ASS-401; any step may, true or false). The sprint grid draws
+a solid purple line, "in progress ↓ · ↑ in QA", under the last row whose
+variation's status chain is, at any level, at such a step, when other rows
+follow; the green Done line over QA rows reads "in QA ↓ · ↑ done". Nothing
+finds QA by a step's id or name.
+
 Check Merge Request Details (ASS-219; grouped/v2 only, `merge-request:check-details`,
 on the host, every minute) checks each Open merge request's title against the
 project's format — project.json's `"merge-request-title"`: `"key-summary"`

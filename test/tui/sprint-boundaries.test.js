@@ -126,3 +126,38 @@ test('AC4: a past day draws the lines from its own rows', () => {
   assert.deepEqual(above, { 'A-10': 'top', 'A-20': 'green', 'A-30': 'blue' }, out.join('\n'));
   assert.deepEqual(lines(stateOf(live)).above, { 'A-4': 'top', 'A-8': 'dashed' });
 });
+
+// ASS-401: a solid purple line, "in progress ↓ · ↑ in QA", under the last row whose status chain is at an is-qa
+// step (any level), when other rows follow; the green line over QA rows reads "in QA ↓ · ↑ done".
+const PURPLE = /^├\x1b\[35m─+ in progress ↓ · ↑ in QA ─+\x1b\[0m[┤█]$/;
+const GREEN_QA = /^├\x1b\[32m─+ in QA ↓ · ↑ done ─+\x1b\[0m[┤█]$/;
+const qaSteps = [...steps, { id: 'check', name: 'Check', sequence: 8, 'is-qa': true, action: { type: 'none' } }];
+const qaStateOf = features => initialState({ projects: [{ id: 'p', name: 'P', stateEngine: 'e', sprint: sprintOf(features) }], workflows: [{ name: 'e', steps: qaSteps }], assignments: [] });
+function qaLines(state) {
+  const out = render(state, wide);
+  const above = {};
+  out.forEach((l, i) => {
+    const key = strip(l).match(/ (A-\d+): /)?.[1];
+    if (!key || key in above) return;
+    const prev = out[i - 1];
+    above[key] = PURPLE.test(prev) ? 'purple' : GREEN_QA.test(prev) ? 'green-qa' : GREEN.test(prev) ? 'green' : BLUE.test(prev) ? 'blue' : DASHED.test(prev) ? 'dashed' : /^├─+┴/.test(prev) ? 'top' : prev;
+  });
+  return { above, out };
+}
+
+test('ASS-401 AC2, AC3: purple under the last QA row, centred; the green line over QA rows reads "in QA ↓ · ↑ done"', () => {
+  const rows = [ticket('A-1', 'done'), ticket('A-2', 'check'), ticket('A-3', 'check'), ticket('A-4', 'build'), ticket('A-6', 'refine')];
+  const { above, out } = qaLines(qaStateOf(rows));
+  assert.deepEqual(above, { 'A-1': 'top', 'A-2': 'green-qa', 'A-3': 'dashed', 'A-4': 'purple', 'A-6': 'blue' }, out.join('\n'));
+  const purple = out.find(l => PURPLE.test(l));
+  assert.equal(visible(purple), wide.columns);
+  const [left, right] = strip(purple).slice(1, -1).split(' in progress ↓ · ↑ in QA ');
+  assert.ok(Math.abs(left.length - right.length) <= 1, strip(purple));
+  assert.equal(out.filter(l => PURPLE.test(l)).length, 1);
+});
+
+test('ASS-401 AC3: no purple line without QA rows or with QA rows last; green keeps its label with no QA row below it', () => {
+  assert.deepEqual(qaLines(qaStateOf([ticket('A-1', 'done'), ticket('A-4', 'build'), ticket('A-6', 'refine')])).above, { 'A-1': 'top', 'A-4': 'green', 'A-6': 'blue' });
+  assert.deepEqual(qaLines(qaStateOf([ticket('A-1', 'done'), ticket('A-2', 'check')])).above, { 'A-1': 'top', 'A-2': 'green-qa' });
+  assert.deepEqual(qaLines(qaStateOf([ticket('A-2', 'check'), ticket('A-4', 'build')])).above, { 'A-2': 'top', 'A-4': 'purple' });
+});

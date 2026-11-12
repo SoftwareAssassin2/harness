@@ -4,6 +4,7 @@
             "id": "qa-testing",
             "sequence": 1,
             "name": "QA Testing",
+            "is-qa": true,
             "description": "Testing by QA: waits while the ticket system says In Testing (or nothing yet); Done ends the group at done, any other status QA sets (On Hold, sent back) at blocked",
             "max-visits": 3,
             "on-max-visits": "blocked",

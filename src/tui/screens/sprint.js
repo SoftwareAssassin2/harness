@@ -84,12 +84,20 @@ function layout(state, { columns = 0, rows = Infinity, now = 0 }) {
 // Every other line between rows stays dashed.
 const DONE_LINE = { color: '32', text: 'in progress ↓ · ↑ done' };
 const POOL_LINE = { color: '34', text: 'planning ↓ · ↑ in progress' };
+// ASS-401: solid purple under the last row whose variation's status chain is, at any level, at a step
+// with is-qa (never the step's id or name), when other rows follow; the green line over QA rows then
+// reads "in QA ↓ · ↑ done".
+const QA_LINE = { color: '35', text: 'in progress ↓ · ↑ in QA' };
+const DONE_OVER_QA = { ...DONE_LINE, text: 'in QA ↓ · ↑ done' };
+const isQa = t => (t.status?.chain ?? [{ step: t.step }]).some(l => l.step?.['is-qa'] === true);
 function boundaries(tickets) {
   const kinds = tickets.map(t => slotKind(t.step, t.status));
   const doneEnd = tickets.findLastIndex(t => t.step?.['is-done'] === true) + 1;
+  const qaEnd = tickets.findLastIndex(isQa) + 1;
   const progress = kinds.lastIndexOf('progress');
   const planning = progress < 0 ? -1 : kinds.indexOf('planning', progress);
-  return i => (i === doneEnd ? DONE_LINE : i === planning ? POOL_LINE : null);
+  const done = doneEnd < tickets.length && isQa(tickets[doneEnd]) ? DONE_OVER_QA : DONE_LINE;
+  return i => (i === doneEnd ? done : i === qaEnd && qaEnd > 0 ? QA_LINE : i === planning ? POOL_LINE : null);
 }
 
 const PAUSED = '\x1b[34mPAUSED\x1b[0m';   // blue, before a paused variation's key (ASS-259)

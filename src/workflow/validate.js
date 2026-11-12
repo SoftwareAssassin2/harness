@@ -113,6 +113,9 @@ export function validateStateEngine(engine, root, name, own) {
     // "↳ AWAITING MERGE" Ticket-cell line (sprint.js mergeTrains) — the flag says so, never the step's id or name.
     // Any step may have it; it must be true or false.
     if (s['shows-merge-train'] !== undefined && typeof s['shows-merge-train'] !== 'boolean') errors.push(`${at} shows-merge-train "${s['shows-merge-train']}" is not true or false`);
+    // is-qa (ASS-401): a variation whose status chain is at the step is in QA — the sprint grid's purple
+    // "in progress ↓ · ↑ in QA" line (sprint.js boundaries) goes under its rows. Any step; true or false.
+    if (s['is-qa'] !== undefined && typeof s['is-qa'] !== 'boolean') errors.push(`${at} is-qa "${s['is-qa']}" is not true or false`);
     // merges-awaited (ASS-365): while a variation's status chain is at the step, control has Build's Await Sequential
     // Merge merge the merge requests it waits on (engine.js mergesAwaited) — the flag says so, never the step's id or name.
     // It must be true or false. Set on a state-engine step whose sub-engine can end at blocked-for-human (grouped-build,

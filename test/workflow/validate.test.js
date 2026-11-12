@@ -403,6 +403,13 @@ test('ASS-363 AC2: shows-merge-train is a boolean, on any step', () => {
   assertError(two({ 'shows-merge-train': 1 }), /step "b" shows-merge-train "1" is not true or false/);
 });
 
+test('ASS-401 AC1: is-qa is a boolean, on any step', () => {
+  const two = b => engine([step('a', 1, { 'exit-events': [{ condition: { always: true }, 'move-to-state': 'b' }], ...b }), step('b', 2, { 'is-done': true, ...b })]);
+  assert.deepEqual(errorsFor(two({ 'is-qa': true })), []);
+  assert.deepEqual(errorsFor(two({ 'is-qa': false })), []);
+  assertError(two({ 'is-qa': 'yes' }), /step "a" is-qa "yes" is not true or false/);
+});
+
 // ASS-315: an exit may say why the move it makes was made ("cause": merge-gate-red on
 // harness-development-v2's release rebuild exit, which restarts the visit window — engine.js
 // sinceResolution, steps.js). It is recorded as given, so it must be a string: a non-string would
