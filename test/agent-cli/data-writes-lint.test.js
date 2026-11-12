@@ -103,6 +103,7 @@ const ALLOWED = {
     '"$tmp/next"': 'a temp folder of its own (mktemp -d)',
     '"$out"': 'retried\'s <stdout-file>, always one in its temp folder of its own (mktemp -d)',
   },
+  'src/agent-cli/vm/refresh-repositories.sh': { '"$tmp/out"': 'a temp folder of its own (mktemp -d): each attempt\'s output (ASS-396)' },
   'src/agent-cli/project/check-on-master.sh': { '"$why"': 'a temp file of its own' },
   'src/agent-cli/ticket/announce-ready.sh': { '"$note"': 'a mktemp file' },
   'src/agent-cli/ticket/join-sprint.sh': { '"$fetched"': 'a mktemp file' },

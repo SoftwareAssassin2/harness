@@ -664,6 +664,19 @@ test('ASS-261 AC2: the grouped Risk Assessment writes **Risk: Low**, **Risk: Med
 // ASS-385: Check Numbered Files, on the host, between the refresh before testing and Automated Testing — so after
 // every Generate Solution and Address Merge Request Feedback push: a collision back to Generate Solution, a check that
 // could not run to Blocked, each loop capped.
+// ASS-396: both Refresh steps are timer steps, 2 their waiting exit, 1 and 3 to Blocked, their output recorded.
+test('ASS-396 AC1, AC2: grouped-build\'s Refresh steps wait out a hiccup on a 5-minute timer (exit 2), block on 1 and 3, and record the give-up\'s feedback', () => {
+  const build = engines['grouped-build'];
+  for (const [id, next] of [['refresh-repositories', 'generate-automated-tests'], ['refresh-before-testing', 'check-numbered-files']]) {
+    const step = stepOf(build, id);
+    assert.deepEqual([step.action, step['record-script-output']],
+      [{ type: 'script', command: './agent.sh vm:refresh-repositories {project} {ticket} {variation}', mode: 'timer', 'timer-minutes': 5, 'waiting-exit-code': 2 }, true], id);
+    assert.deepEqual([0, 1, 3].map(exitCode => nextState(step, build, { exitCode }).to), [next, 'blocked', 'blocked'], id);
+    assert.deepEqual([2, 4].map(exitCode => nextState(step, build, { exitCode })), [null, null], id);
+  }
+  assert.deepEqual(validateStateEngine(build, ROOT, 'grouped-build', EXAMPLE_ENGINES), []);
+});
+
 test('ASS-385 AC3: grouped-build checks numbered files on the host before every Automated Testing; exit 1 back to Generate Solution, 3 to Blocked, its visits capped', () => {
   const build = engines['grouped-build'], step = stepOf(build, 'check-numbered-files');
   // ASS-386: a timer step, 2 its waiting exit, its output recorded (the give-up's feedback, for the Build step's move to Blocked).

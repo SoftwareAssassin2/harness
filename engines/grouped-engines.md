@@ -325,6 +325,24 @@ by CI Checks below (ASS-321).
 Only a VM not running fails it: Blocked. Test's Rebuild enters Build at
 Generate Solution, past the first refresh; the second still runs.
 
+A passing hiccup at either Refresh step is no block (ASS-396). A VM the
+command cannot reach (`limactl shell` failing: ssh's 255, the in-VM
+`agent.sh`'s 125 "host forwarder unreachable", any other) and a fetch that
+fails as a network does (a timeout, a connection reset or refused, a host not
+resolved, an early EOF, a 5xx from the forge) get 3 attempts, 5s then 15s
+apart, each for the repositories still to do. Still failing, the step — a
+timer step (5 min, `waiting-exit-code` 2, as Check Numbered Files) — waits:
+exit 2, polled again with no visit or failure counted, the variation's
+feedback saying "Refresh Repositories: can't reach <the VM/the forge>,
+retrying (attempt n, since <time>)" (kept as `refresh-wait`, written when it
+changes, cleared once a run gets through). 30 minutes after the ticket entered
+the step (its sub-state-change into it in the variation's `state-changes`) it
+gives up: exit 3 to Blocked, its output (`record-script-output`) the
+`ai-feedback-short`/`-long` naming each failing call and its last error. Any
+other fetch failure (no such repository) is left as is, as before, and no
+running VM (exit 1) blocks at once. Run elsewhere (by hand) it exits
+3 at once. Any other exit (4, an unexpected failure) matches none: tried again.
+
 Generate Automated Tests (grouped/v2 Build, `generate-automated-tests-grouped`)
 records an entry only once its `run` command, not just its `list`, runs in
 the VM (ASS-337). A CI-only test — one whose `run` cannot execute in the VM:

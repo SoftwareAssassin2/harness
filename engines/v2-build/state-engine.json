@@ -4,10 +4,14 @@
             "id": "refresh-repositories",
             "sequence": 1,
             "name": "Refresh the Reference Repositories",
-            "description": "Bring the repositories the ticket does not change up to their default branch, so the work is built against current upstream",
+            "description": "Bring the repositories the ticket does not change up to their default branch, so the work is built against current upstream. A VM it cannot reach (exit 125, 255, any) or a fetch failing as a network does (a timeout, a reset, a 5xx) is tried 3 times in the command; still failing, the step waits (exit 2, its waiting-exit-code: polled every 5 minutes, no visit or failure counted, the variation's feedback saying what it can't reach) for up to 30 minutes since it was entered, then ends Build at Blocked (exit 3, its feedback naming the failing call and its last error); no running VM (exit 1) blocks at once. Any other exit matches none: tried again (ASS-396)",
+            "record-script-output": true,
             "action": {
                 "type": "script",
-                "command": "./agent.sh vm:refresh-repositories {project} {ticket} {variation}"
+                "command": "./agent.sh vm:refresh-repositories {project} {ticket} {variation}",
+                "mode": "timer",
+                "timer-minutes": 5,
+                "waiting-exit-code": 2
             },
             "exit-events": [
                 {
@@ -18,9 +22,13 @@
                 },
                 {
                     "condition": {
-                        "not": {
-                            "exit-code": 0
-                        }
+                        "exit-code": 1
+                    },
+                    "move-to-state": "blocked"
+                },
+                {
+                    "condition": {
+                        "exit-code": 3
                     },
                     "move-to-state": "blocked"
                 }
@@ -98,10 +106,14 @@
             "id": "refresh-before-testing",
             "sequence": 4,
             "name": "Refresh the Reference Repositories Before Testing",
-            "description": "Bring the repositories the ticket does not change up to their default branch again, so the tests run against current upstream",
+            "description": "Bring the repositories the ticket does not change up to their default branch again, so the tests run against current upstream. A VM it cannot reach (exit 125, 255, any) or a fetch failing as a network does (a timeout, a reset, a 5xx) is tried 3 times in the command; still failing, the step waits (exit 2, its waiting-exit-code: polled every 5 minutes, no visit or failure counted, the variation's feedback saying what it can't reach) for up to 30 minutes since it was entered, then ends Build at Blocked (exit 3, its feedback naming the failing call and its last error); no running VM (exit 1) blocks at once. Any other exit matches none: tried again (ASS-396)",
+            "record-script-output": true,
             "action": {
                 "type": "script",
-                "command": "./agent.sh vm:refresh-repositories {project} {ticket} {variation}"
+                "command": "./agent.sh vm:refresh-repositories {project} {ticket} {variation}",
+                "mode": "timer",
+                "timer-minutes": 5,
+                "waiting-exit-code": 2
             },
             "exit-events": [
                 {
@@ -112,9 +124,13 @@
                 },
                 {
                     "condition": {
-                        "not": {
-                            "exit-code": 0
-                        }
+                        "exit-code": 1
+                    },
+                    "move-to-state": "blocked"
+                },
+                {
+                    "condition": {
+                        "exit-code": 3
                     },
                     "move-to-state": "blocked"
                 }

@@ -572,9 +572,11 @@ test('ASS-218 AC1: Build starts by refreshing the VM\'s reference repositories, 
   sameShared(engine, groupedBuild);
   for (const [id, next] of [['refresh-repositories', 'generate-automated-tests'], ['refresh-before-testing', 'automated-testing']]) {
     const step = stepOf(engine, id);
-    assert.deepEqual([step.action, step['run-location']], [{ type: 'script', command: REFRESH }, undefined], id);
+    // ASS-396: a timer step, 2 its waiting exit (no match), 1 and 3 to Blocked.
+    assert.deepEqual([step.action, step['run-location']], [{ type: 'script', command: REFRESH, mode: 'timer', 'timer-minutes': 5, 'waiting-exit-code': 2 }, undefined], id);
     assert.deepEqual(nextState(step, engine, { exitCode: 0 }).to, next, id);
-    assert.deepEqual(nextState(step, engine, { exitCode: 1 }).to, 'blocked', id);
+    assert.deepEqual([1, 3].map(exitCode => nextState(step, engine, { exitCode }).to), ['blocked', 'blocked'], id);
+    assert.equal(nextState(step, engine, { exitCode: 2 }), null, id);
   }
   assert.equal(firstStepId(engine), 'refresh-repositories');
   assert.equal(nextState(stepOf(engine, 'generate-solution'), engine, { turnComplete: true }).to, 'refresh-before-testing');
