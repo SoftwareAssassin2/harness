@@ -45,6 +45,19 @@ const groupedBuild = (() => {
   }
   return g;
 })();
+// v2-plan is grouped-plan as it was before ASS-399 gave the grouped one alone its stronger re-plan
+// and question: without Record the Plan Objections, Record the Objections for a Stronger Plan,
+// Write Execution Plan on a Stronger Model, Ask the Operator About the Plan and Awaiting the Plan
+// Answer; Review Plan's rejection straight to its revise-from again; Write Test Plan, Enrich
+// Automated Test Data and Review Plan at 3 visits again.
+const STRONGER_REPLAN = ['record-plan-objections', 'record-objections-for-stronger-plan', 'write-execution-plan-stronger', 'ask-operator-about-plan', 'awaiting-plan-answer'];
+const groupedPlan = (() => {
+  const g = structuredClone(engines['grouped-plan']);
+  g.steps = g.steps.filter(s => !STRONGER_REPLAN.includes(s.id)).map(s => (['write-test-plan', 'enrich-automated-test-data', 'review-plan'].includes(s.id) ? { ...s, 'max-visits': 3 } : s));
+  const review = g.steps.find(s => s.id === 'review-plan');
+  review['exit-events'][1] = { condition: review['exit-events'][1].condition, 'move-to-state-from-structured-output': 'revise-from', 'move-to-state': 'write-execution-plan' };
+  return g;
+})();
 const TOP = 'harness-development-v2';
 const GROUPS = ['setup', 'plan', 'build', 'test', 'document', 'review', 'release'];
 const EXCEPTIONS = ['blocked-for-human', 'blocked', 'self-healing', 'requirements-changed'];   // requirements-changed: ASS-79's detour
@@ -88,7 +101,7 @@ test('AC1: harness-development-v2 is the exception states, Backlog, Committed, t
     assert.deepEqual(action, { type: 'state-engine', engine: `v2-${group}` }, group);
     // Filled, it is the engine harness-development-grouped's group step runs (Release's grouped-release-harness).
     // Build's is grouped-build as it was before ASS-249's CI Checks (groupedBuild).
-    if (FILLED.includes(group)) { const grouped = stepOf(engines['harness-development-grouped'], group).action.engine; sameShared(asGrouped(beforeQueue(engines[action.engine])), grouped === 'grouped-build' ? groupedBuild : engines[grouped], { message: group, as: withoutReRun, asReference: toHumanReview }); continue; }
+    if (FILLED.includes(group)) { const grouped = stepOf(engines['harness-development-grouped'], group).action.engine; sameShared(asGrouped(beforeQueue(engines[action.engine])), grouped === 'grouped-build' ? groupedBuild : grouped === 'grouped-plan' ? groupedPlan : engines[grouped], { message: group, as: withoutReRun, asReference: toHumanReview }); continue; }
     const stub = engines[action.engine], through = stepOf(stub, 'pass-through');
     hasInOrder(ids(action.engine), [...(ADDED[group] ?? []), 'pass-through', 'done', 'blocked', ...(ENDS[group] ?? [])], group);
     assert.deepEqual(stub.steps.map(s => s.sequence), stub.steps.map((_, i) => i + 1), group);
@@ -253,7 +266,7 @@ test('ASS-111 AC4: the whole Setup group, no gates, ends at the right done step 
 const PLANNING = [`${TOP}/plan`, 'v2-plan/enrich-ac'];
 
 test('ASS-112 AC1 (pair 1): v2-plan\'s first steps are grouped-plan\'s Extract Acceptance Criteria and Root Cause Analysis — prompts, max-visits 3 then Blocked, run in the VM, planning flag and exits — Root Cause Analysis\'s finished analysis going to Review Root Cause Analysis since pair 2 (so the step is grouped-plan\'s exactly); the Plan group step needs no new exit (its own is grouped\'s); validate.js accepts them', () => {
-  const engine = engines['v2-plan'], reference = id => stepOf(engines['grouped-plan'], id);
+  const engine = engines['v2-plan'], reference = id => stepOf(groupedPlan, id);
   assert.equal(firstStepId(engine), 'enrich-ac');
   same(stepOf(engine, 'enrich-ac'), reference('enrich-ac'));
   same(stepOf(engine, 'root-cause-analysis'), reference('root-cause-analysis'));
@@ -293,7 +306,7 @@ test('ASS-112 AC2 (pair 1): Root Cause Analysis — root-cause-analysis.md writt
 const thrice = (to, from) => from.map(f => ({ 'from-state': f, 'to-state': to }));
 
 test('ASS-112 AC1 (pair 2): v2-plan\'s next steps are grouped-plan\'s Review Root Cause Analysis and Write Execution Plan, field for field — prompts, max-visits 3 then Blocked, run in the VM, planning flag and exits — Write Execution Plan\'s written plan going to Write Test Plan since pair 3 (so the step is grouped-plan\'s exactly); validate.js accepts them', () => {
-  const engine = engines['v2-plan'], reference = id => stepOf(engines['grouped-plan'], id);
+  const engine = engines['v2-plan'], reference = id => stepOf(groupedPlan, id);
   same(stepOf(engine, 'review-root-cause-analysis'), reference('review-root-cause-analysis'));
   same(stepOf(engine, 'write-execution-plan'), reference('write-execution-plan'));
   // ASS-228: Review Root Cause Analysis runs its grouped copy, which reads the operator's Human Review notes.
@@ -331,7 +344,7 @@ test('ASS-112 AC2 (pair 2): Write Execution Plan — execution-plan.md written t
 });
 
 test('ASS-112 AC1 (pair 3): v2-plan\'s next steps are grouped-plan\'s Write Test Plan and Enrich Automated Test Data, field for field — prompts, max-visits 3 then Blocked, run in the VM, planning flag and exits — Enrich Automated Test Data\'s finished turn going to Review Plan since step 7 (so the step is grouped-plan\'s exactly); validate.js accepts them', () => {
-  const engine = engines['v2-plan'], reference = id => stepOf(engines['grouped-plan'], id);
+  const engine = engines['v2-plan'], reference = id => stepOf(groupedPlan, id);
   same(stepOf(engine, 'write-test-plan'), reference('write-test-plan'));
   same(stepOf(engine, 'enrich-automated-test-data'), reference('enrich-automated-test-data'));
   assert.deepEqual(stepOf(engine, 'enrich-automated-test-data')['exit-events'].map(e => e['move-to-state']), ['review-plan']);
@@ -366,11 +379,11 @@ test('ASS-112 AC2 (pair 3): Enrich Automated Test Data — its turn done goes on
 
 test('ASS-112 AC1 (step 7): Review Plan is grouped-plan\'s — the review-plan-grouped prompt (ASS-231), max-visits 3 then Blocked, run in the VM, planning flag and exits — and, Plan\'s last step, Pass Through is gone: v2-plan is grouped-plan exactly, which validate.js accepts', () => {
   const engine = engines['v2-plan'], step = stepOf(engine, 'review-plan');
-  same(step, stepOf(engines['grouped-plan'], 'review-plan'));
+  same(step, stepOf(groupedPlan, 'review-plan'));
   assert.deepEqual([step.action.type, step.action.prompt, step['max-visits'], step['on-max-visits'], step['run-location'], step['is-planning-stage']], ['prompt', 'review-plan-grouped', 3, 'blocked', 'vm', true]);   // ASS-231: its own copy
   assert.ok(existsSync(join(ROOT, 'prompts', 'review-plan-grouped', 'prompt.txt')));
   hasInOrder(ids('v2-plan'), [...PLAN, 'done', 'blocked']);
-  sameShared(engine, engines['grouped-plan']);
+  sameShared(engine, groupedPlan);
   assert.deepEqual(validateStateEngine(engine, ROOT, 'v2-plan', EXAMPLE_ENGINES), []);
   assert.deepEqual(validateStateEngine(engines[TOP], ROOT, TOP, EXAMPLE_ENGINES), []);
 });

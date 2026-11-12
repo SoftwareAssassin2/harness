@@ -29,11 +29,18 @@ test('AC1: the grouped review-plan prompt outputs revise-from on rejection — o
   for (const name of GROUPED) assert.equal(stepOf(engine(name), 'review-plan').action.prompt, 'review-plan-grouped', name);
 });
 
+// routed(e, facts) — where Review Plan's verdict sends the plan: through grouped-plan's Record the Plan
+// Objections (ASS-399), which goes on by the run's output — the review's revise-from — on exit 0.
+function routed(e, facts) {
+  const to = nextState(stepOf(e, 'review-plan'), e, facts).to;
+  return to !== 'record-plan-objections' ? to : nextState(stepOf(e, to), e, { exitCode: 0, structuredOutput: facts.structuredOutput }).to;
+}
+
 test('AC2: grouped-plan and v2-plan route a rejection to its revise-from; a missing or unknown one falls back to Write Execution Plan', () => {
   for (const name of GROUPED) {
     const e = engine(name), step = stepOf(e, 'review-plan');
-    for (const id of REVISE_FROM) assert.equal(nextState(step, e, rejected(id)).to, id, `${name} ${id}`);
-    for (const bad of [undefined, null, 'test-plan']) assert.equal(nextState(step, e, rejected(bad)).to, 'write-execution-plan', `${name} ${bad}`);
+    for (const id of REVISE_FROM) assert.equal(routed(e, rejected(id)), id, `${name} ${id}`);
+    for (const bad of [undefined, null, 'test-plan']) assert.equal(routed(e, rejected(bad)), 'write-execution-plan', `${name} ${bad}`);
     assert.equal(nextState(step, e, { turnComplete: true, structuredOutput: { 'is-approved': true } }).to, 'done');
     assert.deepEqual(validateStateEngine(e, ROOT, name, EXAMPLE_ENGINES), [], name);
   }
@@ -51,11 +58,17 @@ test('AC3: the flat review-plan prompt and the flat engines\' Review Plan are un
 });
 
 // walk(name, reviews) — the plan engine's run from its first step, every fact passing; Review Plan's verdict the next of `reviews`.
+// A script step (grouped-plan's Record the Plan Objections, ASS-399) exits 0 and reads the run's output, every prompt's merged, as control's does.
+// Its trail leaves out the record step, which only passes the plan on.
 function walk(name, reviews) {
   const e = engine(name), trail = [], changes = [];
+  let output = {};
   for (let at = firstStepId(e), i = 0; !stepOf(e, at)['is-done'] && i < 50; i++) {
-    trail.push(at);
-    const facts = { turnComplete: true, fileUpdated: () => true, variation: { 'acceptance-criteria': [{}] }, structuredOutput: at === 'review-plan' ? reviews.shift() : { 'is-approved': true } };
+    const script = stepOf(e, at).action.type === 'script';
+    if (!script) trail.push(at);
+    const own = at === 'review-plan' ? reviews.shift() : { 'is-approved': true };
+    if (!script) output = { ...output, ...own };
+    const facts = { turnComplete: true, exitCode: 0, fileUpdated: () => true, variation: { 'acceptance-criteria': [{}] }, structuredOutput: script ? output : own };
     const next = nextState(stepOf(e, at), e, facts, changes);
     changes.push({ 'from-state': at, 'to-state': next.to });
     at = next.to;

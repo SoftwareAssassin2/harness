@@ -237,15 +237,17 @@ export function sinceResolution(engine, stateChanges = [], targetStep) {
 // count since the last resolution of Blocked for Human (sinceResolution, over
 // the step being counted), and from none on the move that is itself one, itself
 // a block cleared by a landed fix (clearedByFix, ASS-309) or sent back to fix its
-// own branch (ownBranchFix, ASS-384), or itself a merge-gate
+// own branch (ownBranchFix, ASS-384), itself a merge-gate
 // red's return (ASS-315: else the first red is redirected by the counts it is
-// meant to restart); the return walk reads it all.
+// meant to restart), or itself a move out of a step with restarts-visit-count
+// (ASS-399: grouped-plan's Awaiting the Plan Answer, whose return to Write
+// Execution Plan the old counts would send to Blocked); the return walk reads it all.
 export function nextState(step, engine, facts, stateChanges = []) {
   const exit = firstExit(step, facts);
   if (!exit) return null;
   let to = resolveTarget(exit, step, engine, stateChanges, facts);
   if (to == null) return { to: null, exit, reason: 'unresolved' };
-  const counted = isResolution(engine, step.id, to) || clearedByFix(facts) || ownBranchFix(facts) || exit.cause === MERGE_GATE_RED.cause ? [] : sinceResolution(engine, stateChanges, to);
+  const counted = isResolution(engine, step.id, to) || restartsVisits(engine, step.id) || clearedByFix(facts) || ownBranchFix(facts) || exit.cause === MERGE_GATE_RED.cause ? [] : sinceResolution(engine, stateChanges, to);
   let reason = 'exit';
   for (const seen = new Set(); !seen.has(to); reason = 'max-visits') {
     seen.add(to);

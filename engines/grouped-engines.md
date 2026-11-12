@@ -284,6 +284,34 @@ Renovate or a follow-up ticket. A hand-pinned placeholder digest
 never arms it and the release bounces until the ticket blocks. The flat
 `write-execution-plan` prompt is unchanged.
 
+A plan Review Plan keeps rejecting gets one stronger re-plan, then a question
+to the operator, not Blocked (ASS-399; `grouped-plan` only — `v2-plan` and the
+flat engines are unchanged). Each rejection first goes to Record the Plan
+Objections (`plan:record-objections`, on the host), which adds that review to
+`plan-objections-<variation>.md` in the ticket's folder ("## Review <n>,
+rejected <time>", the review beneath; the harness's own file, which
+`work:write` refuses) and sends the plan on to the step the review named
+(`revise-from`). Its max-visits (2) make the third rejection — the one that
+would have ended Plan at its max visits — go to Record the Objections for a
+Stronger Plan instead, which records it the same way and goes to Write
+Execution Plan on a Stronger Model: the same `write-execution-plan-grouped`
+prompt, its action `"model": "stronger"`, so control dispatches it with
+`assignments:create --model <model>` — harness.json's `stronger-model`, else
+the first (strongest) model in its Claude models list (`dispatch.js`
+`modelFor`; every other step keeps the round robin). The prompt reads
+`plan-objections-<variation>.md` whenever it exists, the earlier re-plans too:
+every objection so far, summed up once each under the plan's "## Objections"
+with how the draft resolves it. Write Test Plan, Enrich Automated Test Data
+and Review Plan allow 4 visits (the flat engines 3), so that pass runs through
+them. Approved, Plan ends at done as usual. Rejected (both record steps now at
+their max), it goes to Ask the Operator About the Plan
+(`plan:ask-about-objections`): the review is recorded, then a blocking
+`question:ask` on the ticket lists the open objections (that last review) and
+asks how to proceed. The ticket gets no agent while it is open; Awaiting the
+Plan Answer, a human step with `restarts-visit-count`, rests until no blocking
+question is open, then sends the plan back to Write Execution Plan with every
+step's visits counted afresh — the answer in `questions-and-answers.json`.
+
 The Refresh steps (ASS-218; grouped/v2 Build only, `vm:refresh-repositories`,
 on the host) open Build and come before every Automated Testing. Each of
 the VM's repositories that none of the variation's merge requests is in is

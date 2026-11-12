@@ -361,6 +361,19 @@ test('sinceResolution: the changes from the last move out of a step with restart
   assert.deepEqual(sinceResolution(engine, [...run, returned]), [...run, returned]);   // without the flag: no restart
 });
 
+// ASS-399: the move out of such a step is itself counted afresh — its target at its max-visits by the old counts is entered, not redirected.
+test('nextState: the move out of a step with restarts-visit-count counts its target\'s visits from none (ASS-399)', () => {
+  const steps = [
+    { id: 'work', sequence: 1, 'max-visits': 1, 'on-max-visits': 'blocked', action: { type: 'prompt' }, 'exit-events': [{ condition: { 'turn-complete': true }, 'move-to-state': 'wait' }] },
+    { id: 'wait', sequence: 2, action: { type: 'human' }, 'exit-events': [{ condition: { always: true }, 'move-to-state': 'work' }] },
+    { id: 'blocked', sequence: 3, 'is-done': true, action: { type: 'none' } },
+  ];
+  const visited = [change('start', 'work'), change('work', 'wait')];
+  assert.equal(nextState(steps[1], { steps }, {}, visited).to, 'blocked');   // no restart: work is at its max
+  const restarting = { steps: steps.map(s => (s.id === 'wait' ? { ...s, 'restarts-visit-count': true } : s)) };
+  assert.deepEqual(nextState(restarting.steps[1], restarting, {}, visited), { to: 'work', exit: restarting.steps[1]['exit-events'][0], reason: 'exit' });
+});
+
 // ASS-309 AC2: a block cleared by a landed fix (grouped-blocked's await-fix, whose
 // ticket:fix-landed output says landed) restarts the step-visit window, as a human's
 // resolution of Blocked for Human does — else the counts it was blocked with send it

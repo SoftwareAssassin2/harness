@@ -23,6 +23,7 @@ The plan holds no spikes, investigations or research steps: every step in it is 
 
 If {ticket-folder}/requirements-change-{variation}.md exists, the ticket's requirements changed: read it and revise for the change.
 If {ticket-folder}/operator-review-{variation}.md exists, it holds the operator's notes from rejecting earlier passes at Human Review: read it and address each note in this step's work.
+If {ticket-folder}/plan-objections-{variation}.md exists, it holds every review that rejected an earlier draft of this plan, oldest first: sum up every objection in it, once each, under a "## Objections" section of the plan, each with how this draft resolves it, or why it no longer applies. Resolve them all, not just the latest review's. If the operator answered a question about them in {ticket-folder}/questions-and-answers.json, follow the answer.
 
 Revise, don't restart: if {ticket-folder}/execution-plan-{variation}.md exists already, revise it in place. Keep what still holds; change only what the reviews, the test results or your research require. Never start it from scratch. Write it every run, even when nothing needs changing: the step goes on only once the file is written. End it with a "## What changed" section, a dated entry each run: each change since the last version, and why, or, if nothing needed changing, what you re-checked it against: "<date>: re-checked against <what you checked>; no change".
 

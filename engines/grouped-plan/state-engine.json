@@ -135,8 +135,114 @@
             "run-location": "vm"
         },
         {
-            "id": "write-execution-plan",
+            "id": "record-plan-objections",
             "sequence": 4,
+            "name": "Record the Plan Objections",
+            "description": "Review Plan rejected the plan: its review is added to plan-objections-<variation>.md, every objection so far, and the plan goes back to the step the review named (revise-from). The third rejection, the one that would end Plan at its max visits, goes to Record the Objections for a Stronger Plan instead (ASS-399)",
+            "is-planning-stage": true,
+            "max-visits": 2,
+            "on-max-visits": "record-objections-for-stronger-plan",
+            "action": {
+                "type": "script",
+                "command": "./agent.sh plan:record-objections {project} {ticket} {variation}"
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "exit-code": 0
+                    },
+                    "move-to-state-from-structured-output": "revise-from",
+                    "move-to-state": "write-execution-plan"
+                },
+                {
+                    "condition": {
+                        "not": {
+                            "exit-code": 0
+                        }
+                    },
+                    "move-to-state": "blocked"
+                }
+            ]
+        },
+        {
+            "id": "record-objections-for-stronger-plan",
+            "sequence": 5,
+            "name": "Record the Objections for a Stronger Plan",
+            "description": "The plan was rejected until Plan's visits ran out: its review is added to plan-objections-<variation>.md, and Write Execution Plan runs once more on the stronger model, every objection so far its input. Rejected again, the operator is asked (ASS-399)",
+            "is-planning-stage": true,
+            "max-visits": 1,
+            "on-max-visits": "ask-operator-about-plan",
+            "action": {
+                "type": "script",
+                "command": "./agent.sh plan:record-objections {project} {ticket} {variation}"
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "exit-code": 0
+                    },
+                    "move-to-state": "write-execution-plan-stronger"
+                },
+                {
+                    "condition": {
+                        "not": {
+                            "exit-code": 0
+                        }
+                    },
+                    "move-to-state": "blocked"
+                }
+            ]
+        },
+        {
+            "id": "ask-operator-about-plan",
+            "sequence": 6,
+            "name": "Ask the Operator About the Plan",
+            "description": "The stronger re-plan was rejected too: its review is added to plan-objections-<variation>.md and the operator gets a blocking question listing the open objections and asking how to proceed, instead of the ticket going to Blocked (ASS-399)",
+            "is-planning-stage": true,
+            "action": {
+                "type": "script",
+                "command": "./agent.sh plan:ask-about-objections {project} {ticket} {variation}"
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "exit-code": 0
+                    },
+                    "move-to-state": "awaiting-plan-answer"
+                },
+                {
+                    "condition": {
+                        "not": {
+                            "exit-code": 0
+                        }
+                    },
+                    "move-to-state": "blocked"
+                }
+            ]
+        },
+        {
+            "id": "awaiting-plan-answer",
+            "sequence": 7,
+            "name": "Awaiting the Plan Answer",
+            "description": "Rests while a blocking question on the ticket is open; once the operator has answered, Write Execution Plan runs again with the answer, every step's visits counted afresh (ASS-399)",
+            "is-planning-stage": true,
+            "restarts-visit-count": true,
+            "action": {
+                "type": "human",
+                "instructions": "Answer the ticket's question about its rejected plan on its screen: which objections to resolve and how, or which to drop."
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "open-questions": false
+                    },
+                    "move-to-state": "write-execution-plan"
+                }
+            ]
+        },
+        {
+            "id": "write-execution-plan",
+            "sequence": 8,
             "name": "Write Execution Plan",
             "description": "Planning the work to be done",
             "is-planning-stage": true,
@@ -187,12 +293,65 @@
             "run-location": "vm"
         },
         {
+            "id": "write-execution-plan-stronger",
+            "sequence": 9,
+            "name": "Write Execution Plan on a Stronger Model",
+            "description": "Planning the work once more on the stronger model (harness.json's stronger-model, else its first, strongest, Claude model), every reviewer objection so far its input (ASS-399)",
+            "is-planning-stage": true,
+            "max-visits": 2,
+            "on-max-visits": "blocked",
+            "action": {
+                "type": "prompt",
+                "prompt": "write-execution-plan-grouped",
+                "agent-count": 1,
+                "run-in-dev-container": false,
+                "model": "stronger"
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "all": [
+                            {
+                                "turn-complete": true
+                            },
+                            {
+                                "file-updated": {
+                                    "file": "execution-plan.md",
+                                    "since": "turn-start"
+                                }
+                            }
+                        ]
+                    },
+                    "move-to-state": "write-test-plan"
+                },
+                {
+                    "condition": {
+                        "all": [
+                            {
+                                "turn-complete": true
+                            },
+                            {
+                                "not": {
+                                    "file-updated": {
+                                        "file": "execution-plan.md",
+                                        "since": "turn-start"
+                                    }
+                                }
+                            }
+                        ]
+                    },
+                    "move-to-state": "write-execution-plan-stronger"
+                }
+            ],
+            "run-location": "vm"
+        },
+        {
             "id": "write-test-plan",
-            "sequence": 5,
+            "sequence": 10,
             "name": "Write Test Plan",
             "description": "Planning the test strategy",
             "is-planning-stage": true,
-            "max-visits": 3,
+            "max-visits": 4,
             "on-max-visits": "blocked",
             "action": {
                 "type": "prompt",
@@ -240,11 +399,11 @@
         },
         {
             "id": "enrich-automated-test-data",
-            "sequence": 6,
+            "sequence": 11,
             "name": "Enrich Automated Test Data",
             "description": "Enriching the automated test data",
             "is-planning-stage": true,
-            "max-visits": 3,
+            "max-visits": 4,
             "on-max-visits": "blocked",
             "action": {
                 "type": "prompt",
@@ -268,11 +427,11 @@
         },
         {
             "id": "review-plan",
-            "sequence": 7,
+            "sequence": 12,
             "name": "Review Plan",
             "description": "Reviewing the build and test plans",
             "is-planning-stage": true,
-            "max-visits": 3,
+            "max-visits": 4,
             "on-max-visits": "blocked",
             "action": {
                 "type": "prompt",
@@ -309,8 +468,7 @@
                             }
                         ]
                     },
-                    "move-to-state-from-structured-output": "revise-from",
-                    "move-to-state": "write-execution-plan"
+                    "move-to-state": "record-plan-objections"
                 }
             ],
             "run-location": "vm"
@@ -323,7 +481,7 @@
             "action": {
                 "type": "none"
             },
-            "sequence": 8
+            "sequence": 13
         },
         {
             "id": "blocked",
@@ -333,7 +491,7 @@
             "action": {
                 "type": "none"
             },
-            "sequence": 9
+            "sequence": 14
         }
     ]
 }

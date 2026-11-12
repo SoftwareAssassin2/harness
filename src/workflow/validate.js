@@ -213,6 +213,12 @@ function checkAction(s, at, root, errors, own) {
     if (a.type !== 'script' || a.mode !== 'timer') errors.push(`${at} waiting-exit-code needs a timer script action`);
     else if (!Number.isInteger(a['waiting-exit-code']) || a['waiting-exit-code'] === 0) errors.push(`${at} waiting-exit-code must be a non-zero exit code`);
   }
+  // model (ASS-399): the model a prompt step's agents run on — "stronger", harness.json's stronger-model,
+  // else its first Claude model (dispatch.js modelFor); missing, assignments:create's round robin.
+  if ('model' in a) {
+    if (a.type !== 'prompt') errors.push(`${at} model needs a prompt action`);
+    else if (a.model !== 'stronger') errors.push(`${at} model "${a.model}" is not "stronger"`);
+  }
   if (a.type === 'script') checkCommand(a.command, at, root, errors);
   if (a.type === 'state-engine') {
     if (typeof a.engine !== 'string') errors.push(`${at} state-engine action has no engine`);

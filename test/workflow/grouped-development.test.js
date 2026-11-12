@@ -71,7 +71,8 @@ test('AC1: every step of the current engines is mirrored in its group — action
       // ASS-255: Await the Restart's waiting-exit-code is the grouped engine's own; the flat one's stays as it was.
       const waits = old.id === 'await-restart' ? { 'waiting-exit-code': s.action['waiting-exit-code'] } : {};
       assert.deepEqual(s.action, ['local-testing', 'steps-to-test'].includes(old.id) ? { ...action, engine: s.action.engine } : { ...action, ...waits }, old.id);
-      assert.equal(s['max-visits'], old['max-visits'], old.id);
+      // ASS-399: grouped-plan's Write Test Plan, Enrich Automated Test Data and Review Plan take one more visit, the stronger re-plan's pass.
+      assert.equal(s['max-visits'], ['write-test-plan', 'enrich-automated-test-data', 'review-plan'].includes(old.id) ? old['max-visits'] + 1 : old['max-visits'], old.id);
       // ASS-118 AC4: Risk Assessment always goes on, its shortcut past the gate gone; ASS-314: on to the Token Expense Check, grouped-review's Human Review removed.
       if (old.id === 'risk-assessment') assert.deepEqual(s['exit-events'].map(e => [e.condition, e['move-to-state']]), [[{ 'turn-complete': true }, 'token-expense-check']]);
       // ASS-151: a human step's fast-tracked exit is the grouped engines' own; ASS-162: so is Automated Testing's exit 4 (the tests list missing) back to Generate Automated Tests; ASS-224: so is Team Code Review's merged one, ASS-351: and its approval-wait-expired one; ASS-282: so is QA Testing's to blocked on a status QA parks the ticket at.
@@ -96,7 +97,7 @@ test('AC1: every step of the current engines is mirrored in its group — action
 });
 
 // The steps that review code or need awareness of the code or product run in the VM (ASS-68 Q2); every other runs on the host.
-const VM = ['enrich-ac', 'root-cause-analysis', 'review-root-cause-analysis', 'write-execution-plan', 'write-test-plan', 'enrich-automated-test-data', 'review-plan',
+const VM = ['enrich-ac', 'root-cause-analysis', 'review-root-cause-analysis', 'write-execution-plan', 'write-execution-plan-stronger', 'write-test-plan','enrich-automated-test-data', 'review-plan',
   'generate-automated-tests', 'generate-solution', 'automated-testing', 'ci-checks', 'code-review', 'security-review', 'test', 'take-screenshots', 'write-steps-to-test',
   'update-documentation', 'update-merge-request-details', 'add-screenshots-to-merge-request', 'explain-the-change', 'risk-assessment', 'token-expense-check', 'address-merge-request-feedback', 'troubleshoot', 'repair-environment',
   'revise-acceptance-criteria', 'judge'];

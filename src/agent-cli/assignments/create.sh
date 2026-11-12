@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Description: Create an assignment's agent records — assignments:create <project> <state-engine> <state> <prompt> <agent-count> <run-in-dev-container> <work-item|-> <variation|-> <transient-state-engine-id|-> [<problem>|-].
+# Description: Create an assignment's agent records — assignments:create [--model <model>] <project> <state-engine> <state> <prompt> <agent-count> <run-in-dev-container> <work-item|-> <variation|-> <transient-state-engine-id|-> [<problem>|-].
 set -euo pipefail
 
 # <agent-count> records in assignments.json (in data/) sharing one new
@@ -14,7 +14,10 @@ set -euo pipefail
 # one in the last-model-used file in data/ (plain text, just the
 # model; missing, the first model), which becomes the last model handed out —
 # skipping those the prompt's prompt.json supported-models does not name, unless
-# it names none of them or has none, when all take their turn. A record is status
+# it names none of them or has none, when all take their turn — or, given
+# --model <model> first (ASS-399: a step whose action asks for the stronger
+# model, which control resolves, dispatch.js modelFor), every record that
+# model, the round robin and last-model-used left as they were. A record is status
 # Starting with no process, start-time and last-heartbeat now (UTC),
 # working-in-dev-container as given, the state-engine and prompt named, and its
 # context: work-item and variation (- for null), the transient-state-engine id,
@@ -42,7 +45,12 @@ names_file="${AGENT_NAMES_FILE:-$here/../../../data/agent-names.json}"
 used_file="${AGENT_NAMES_LAST_USED_FILE:-$here/../../../data/agent-names-last-used.json}"
 prompts="${PROMPTS_DIR:-$here/../../../prompts}"
 
-usage() { echo "usage: assignments:create <project> <state-engine> <state> <prompt> <agent-count> <run-in-dev-container true|false> <work-item|-> <variation|-> <transient-state-engine-id|-> [<problem>|-]" >&2; exit 1; }
+usage() { echo "usage: assignments:create [--model <model>] <project> <state-engine> <state> <prompt> <agent-count> <run-in-dev-container true|false> <work-item|-> <variation|-> <transient-state-engine-id|-> [<problem>|-]" >&2; exit 1; }
+model=""
+if [[ "${1:-}" == --model ]]; then
+  [[ -n "${2:-}" ]] || usage
+  model="$2"; shift 2
+fi
 [[ $# -eq 9 || $# -eq 10 ]] || usage
 project="$1" engine="$2" state="$3" prompt="$4" count="$5" container="$6" work="$7" variation="$8" transient="$9" problem="${10:--}"
 [[ "$container" == true || "$container" == false ]] || usage
@@ -72,6 +80,7 @@ models="$(jq -c --argjson n "$count" --arg last "$(cat "$last_model_file" 2>/dev
   | [range(1; ($m | length) + 1) | $m[($i + .) % ($m | length)]] as $turns
   | ([$turns[] | select(IN($supported[]))] | if length == 0 then $turns else . end) as $c
   | [range(0; $n) | $c[. % ($c | length)]]' "$harness")"
+[[ -z "$model" ]] || models="$(jq -nc --argjson n "$count" --arg m "$model" '[range(0; $n) | $m]')"
 records="$(jq -nc --argjson names "$names" --argjson models "$models" --arg id "$id" --arg project "$project" --arg engine "$engine" \
   --arg state "$state" --arg prompt "$prompt" --argjson count "$count" --argjson container "$container" \
   --arg work "$work" --arg variation "$variation" --arg transient "$transient" --arg problem "$problem" --arg at "$at" '
@@ -116,7 +125,7 @@ if [[ "$work" != - && "$variation" != - ]]; then
 fi
 
 # Written beside and renamed over, so a reader never sees half of it.
-jq -j '.[-1]' <<< "$models" > "$last_model_file.$$" && mv -f "$last_model_file.$$" "$last_model_file"
+[[ -n "$model" ]] || { jq -j '.[-1]' <<< "$models" > "$last_model_file.$$" && mv -f "$last_model_file.$$" "$last_model_file"; }
 ( set -o noclobber; echo '{}' > "$used_file" ) 2>/dev/null || true   # made if missing, never over one there
 update_json "$used_file" --argjson names "$names" --arg at "$at" '. + ($names | map({ key: ., value: $at }) | from_entries)'
 jq . <<< "$records"

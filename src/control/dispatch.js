@@ -385,8 +385,25 @@ async function startFor(ctx, state, project, record, vm, repository, step, payme
   ctx.log(PHASE, `${name} (${record.model}) on ${record['work-item'] ?? record['state-engine']}${record.variation ? ` ${record.variation}` : ''} ${record.state}, pid ${live.agent.pid}, in ${folder}${container ? ` (${container}:${containerFolder})` : ''}${vm ? ` (VM ${vm})` : ''}${repository ? ` for ${repository}` : ''}${payment ? ` on the ${payment === 'api' ? 'API key' : 'subscription'}` : ''}`);
 }
 
-// assignments:create with the arguments, the records it printed.
-const create = async (ctx, args) => JSON.parse(await ctx.cli(['assignments:create', ...args]));
+// assignments:create with the arguments, the records it printed — every
+// agent on the step's model when it names one (modelFor, ASS-399), else
+// assignments:create's round robin.
+const create = async (ctx, args, step, harness) => {
+  const model = modelFor(step, harness);
+  return JSON.parse(await ctx.cli(['assignments:create', ...(model ? ['--model', model] : []), ...args]));
+};
+
+// modelFor(step, harness) — the model a prompt step's agents run on when its
+// action names one (ASS-399): "stronger" is harness.json's stronger-model,
+// else its first Claude model (the list runs strongest first) — grouped-plan's
+// Write Execution Plan on a Stronger Model, its last re-plan before the
+// operator is asked. Undefined when the action names none (or harness.json
+// has no Claude model): the round robin picks.
+export function modelFor(step, harness = {}) {
+  if (step?.action?.model !== 'stronger') return undefined;
+  const claude = (harness['agentic-command-line-interfaces'] ?? []).find(c => c.name === 'claude')?.models ?? [];
+  return harness['stronger-model'] || claude[0];
+}
 
 // The workspace — the project's local-pc checkout, the one place the
 // application runs, which the dev container mounts — goes to one assignment
@@ -597,7 +614,7 @@ export async function dispatch(ctx, state) {
       if (where?.skip) return skip(ctx, step, engineSteps(enginesFor(state, run.project), run['state-engine']), run['state-changes'] ?? [], `run ${run.id.slice(0, 8)} ${run.state}`, to => moveRun(ctx, PHASE, run, to));
       const vm = vmFor(state, project, step, context.workItem, context.variation);
       await takeWorkspace(ctx, step, project, context.workItem, context.variation);
-      const records = await create(ctx, [run.project, run['state-engine'], run.state, step.action.prompt, String(count), String(inContainer(step, project)), ticket ?? '-', (ticket === context.workItem && !elsewhere ? context.variation : undefined) ?? '-', run.id, problemOf(run, state.transient, { harness: state.harness, project: ticketProjectOf(state, run.id) ?? run.project, history: blockHistory(found(state, { project: run.project, 'work-item': context.workItem, variation: context.variation }).variation) })]);
+      const records = await create(ctx, [run.project, run['state-engine'], run.state, step.action.prompt, String(count), String(inContainer(step, project)), ticket ?? '-', (ticket === context.workItem && !elsewhere ? context.variation : undefined) ?? '-', run.id, problemOf(run, state.transient, { harness: state.harness, project: ticketProjectOf(state, run.id) ?? run.project, history: blockHistory(found(state, { project: run.project, 'work-item': context.workItem, variation: context.variation }).variation) })], step, state.harness);
       for (const record of records) await startFor(ctx, state, project, record, vm, where?.repository, step, pays.payment);
     }));
     state = ctx.load();
@@ -623,7 +640,7 @@ export async function dispatch(ctx, state) {
       if (!pays) continue;
       await ctx.attempt(PHASE, `${t.key} ${v.name}`, heldOnFailure(ctx, key, async () => {
         await takeWorkspace(ctx, step, project, t.key, v.name);
-        const records = await create(ctx, [project.id, variation['harness-status']['state-engine'] ?? project.refinementName, step.id, step.action.prompt, String(count), String(inContainer(step, project)), t.key, v.name, '-']);
+        const records = await create(ctx, [project.id, variation['harness-status']['state-engine'] ?? project.refinementName, step.id, step.action.prompt, String(count), String(inContainer(step, project)), t.key, v.name, '-'], step, state.harness);
         for (const record of records) await startFor(ctx, state, project, record, null, undefined, step, pays.payment);
       }));
       state = ctx.load();
@@ -653,7 +670,7 @@ export async function dispatch(ctx, state) {
         if (where?.skip) return skip(ctx, step, project.engine, levelChanges(variation), who, to => mayMove(ctx, PHASE, state, project, variation, who, to) && moveTicket(ctx, PHASE, project, ticket, variation, to));
         const vm = vmFor(state, project, step, item.key, item.variation);
         await takeWorkspace(ctx, step, project, item.key, item.variation);
-        const records = await create(ctx, [project.id, project.engineName, item.state, step.action.prompt, String(item.agentCount), String(inContainer(step, project)), item.key, item.variation, '-']);
+        const records = await create(ctx, [project.id, project.engineName, item.state, step.action.prompt, String(item.agentCount), String(inContainer(step, project)), item.key, item.variation, '-'], step, state.harness);
         for (const record of records) await startFor(ctx, state, project, record, vm, where?.repository, step, pays.payment);
       }));
       state = ctx.load();
