@@ -17,7 +17,7 @@ set -euo pipefail
 # project.json keeps name, execution-state-engine, dev-container, uses-points,
 # merge-request-area-of-interest, work-sources, worktree-setup, every max-*
 # and check-for-expired-*, dev-container-env, story-point-scale,
-# raised-bug-priority, merge-request-title, numbered-files (ASS-385) and vm-full-checks as they are, and
+# raised-bug-priority, merge-request-title, numbered-files (ASS-385), advisory-review-bots (ASS-389) and vm-full-checks as they are, and
 #   repositories        each with url, description and work-space.branch only
 #   local-environments  each with name and type; local-pc's folder is {project-root}
 #   registry            without storage-path (install rebuilds it)
@@ -156,7 +156,7 @@ done
 # 2. project.json's setup fields.
 jq '
   def only($keys): with_entries(select(.key as $k | $keys | index($k)));
-  with_entries(select(.key | test("^(name|execution-state-engine|dev-container|uses-points|merge-request-area-of-interest|work-sources|repositories|local-environments|worktree-setup|dev-container-env|registry|hindsight|golden-image|story-point-scale|raised-bug-priority|merge-request-title|numbered-files|vm-full-checks)$|^max-|^check-for-expired-")))
+  with_entries(select(.key | test("^(name|execution-state-engine|dev-container|uses-points|merge-request-area-of-interest|work-sources|repositories|local-environments|worktree-setup|dev-container-env|registry|hindsight|golden-image|story-point-scale|raised-bug-priority|merge-request-title|numbered-files|advisory-review-bots|vm-full-checks)$|^max-|^check-for-expired-")))
   | if has("repositories") then .repositories |= map(only(["url", "description"])
       + (if .["work-space"].branch? != null then {"work-space": {branch: .["work-space"].branch}} else {} end)) else . end
   | if has("local-environments") then .["local-environments"] |= map(only(["name", "type"])

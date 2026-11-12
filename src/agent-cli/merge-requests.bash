@@ -359,10 +359,36 @@ mr_harness_accounts() {
   jq -nc --arg a "$push" --arg b "$host" '[$a, $b] | map(select(. != "") | ascii_downcase) | unique'
 }
 
+# ADVISORY_BOTS_DEFAULT — the advisory review bots every project leaves out
+# (ASS-389), whether or not project.json lists more: GitLab Duo Code Review's
+# account, GitLab's own AI reviewer. Their notes advise; answering them only
+# moves the head and has the bot comment again.
+ADVISORY_BOTS_DEFAULT='["GitLabDuo"]'
+
+# advisory_bots <command> <project.json> — the advisory review bots whose
+# notes are never review comments (ASS-389), a JSON array of usernames or
+# simple patterns (* any run of characters, ? one), matched whole and in any
+# case: ADVISORY_BOTS_DEFAULT plus project.json's "advisory-review-bots", e.g.
+# "advisory-review-bots": ["review-helper", "notes-bot-*"]. Fails, naming the
+# problem, when that is not a list of non-empty strings; a missing
+# project.json has the default alone.
+advisory_bots() {
+  local command="$1" json="$2" problem
+  [[ -f "$json" ]] || { echo "$ADVISORY_BOTS_DEFAULT"; return 0; }
+  problem="$(jq -r 'if has("advisory-review-bots") | not then empty
+    elif (.["advisory-review-bots"] | type) != "array" then "\"advisory-review-bots\" must be a list of usernames or patterns"
+    else first(.["advisory-review-bots"] | to_entries[] | select((.value | type) != "string" or .value == "")
+      | "advisory-review-bots[\(.key)] must be a non-empty string") // empty end' "$json" 2>/dev/null)" \
+    || { echo "$command: $json is not valid JSON" >&2; return 1; }
+  [[ -z "$problem" ]] || { echo "$command: $json: $problem" >&2; return 1; }
+  jq -c --argjson d "$ADVISORY_BOTS_DEFAULT" '$d + (.["advisory-review-bots"] // []) | unique' "$json"
+}
+
 # REVIEW_COMMENTS — jq over { notes: [{ id, author, body, created, resolvable,
-# system, bot }], commits: [<time>], accounts: [<login>] } (ASS-361): the plain
-# review comments still to be acted on — each note neither a system note, a
-# bot's, a resolvable thread's (open-threads counts those) nor the harness's
+# system, bot }], commits: [<time>], accounts: [<login>], advisory: [<pattern>] }
+# (ASS-361): the plain review comments still to be acted on — each note neither
+# a system note, a bot's, an advisory review bot's (advisory, advisory_bots,
+# ASS-389), a resolvable thread's (open-threads counts those) nor the harness's
 # own (accounts), posted after the merge request's latest commit and after the
 # harness's last note there, so a new commit or a reply by the harness answers
 # it. Each { id, author, body, created }, oldest first.
@@ -370,7 +396,9 @@ REVIEW_COMMENTS="$MR_TIME"'
   def at: if . == null then 0 else epoch end;
   ([.commits[] | at] | max // 0) as $commit
   | .accounts as $ours
-  | [.notes[] | select((.system | not) and (.bot | not))] as $notes
+  | ((.advisory // []) | map(gsub("(?<c>[.+()|^$\\[\\]{}\\\\])"; "\\\(.c)") | gsub("\\*"; ".*") | gsub("\\?"; ".") | "^(\(.))$")) as $advisory
+  | [.notes[] | select((.system | not) and (.bot | not))
+      | select((.author // "") as $a | any($advisory[]; . as $re | $a | test($re; "i")) | not)] as $notes
   | ([$notes[] | select((.author // "" | ascii_downcase) | IN($ours[])) | .created | at] | max // 0) as $answered
   | [$notes[] | select((.resolvable | not) and ((.author // "" | ascii_downcase) | IN($ours[]) | not))
       | select((.created | at) as $t | $t > $commit and $t > $answered) | { id, author, body, created }]
@@ -385,9 +413,12 @@ REVIEW_COMMENTS="$MR_TIME"'
 # GitHub: its issue comments and the bodies of its reviews that commented or
 # requested changes (gh pr view --json comments,reviews,commits; an app or
 # [bot] left out), each id the comment's or the review's node id. Best effort:
-# [] when the forge will not say, so asking never fails the caller.
+# [] when the forge will not say, so asking never fails the caller; but an
+# invalid project.json "advisory-review-bots" fails it (ASS-389), naming it.
 mr_review_comments() {
-  local command="$1" url iid planned accounts out commits
+  local command="$1" url iid planned accounts out commits advisory
+  # ASS-389: a malformed "advisory-review-bots" fails the caller, naming it.
+  advisory="$(advisory_bots "$command" "$projects/$3/project.json")" || { echo '[]'; return 1; }
   IFS=$'\t' read -r url iid planned < <(mr_at "$2")
   accounts="$(mr_harness_accounts "$command" "$url" "$3")"
   if on_github "$url"; then
@@ -403,7 +434,7 @@ mr_review_comments() {
         bot: ((.author.bot == true) or ((.author.username // "") | test("^(project|group)_[0-9]+_bot"))) }],
       commits: [$commits[]? | .committed_date // .created_at] }' <<< "$out" 2>/dev/null)" || { echo '[]'; return 0; }
   fi
-  jq -c --argjson accounts "$accounts" '. + { accounts: $accounts } | '"$REVIEW_COMMENTS" <<< "$out" 2>/dev/null || echo '[]'
+  jq -c --argjson accounts "$accounts" --argjson advisory "$advisory" '. + { accounts: $accounts, advisory: $advisory } | '"$REVIEW_COMMENTS" <<< "$out" 2>/dev/null || echo '[]'
 }
 
 # is_comment_id <url> <id> — a plain comment's id as merge-request:view's

@@ -132,6 +132,15 @@ linking it (neither forge replies to one in place without making it a
 thread). The feedback says it in plain words: "it has a review comment from
 sam".
 
+Advisory review bots that post as ordinary accounts are left out too
+(ASS-389), so answering them never livelocks the merge loop: GitLab Duo Code
+Review's account (`GitLabDuo`, `ADVISORY_BOTS_DEFAULT` in
+src/agent-cli/merge-requests.bash) always, plus project.json's
+`"advisory-review-bots": ["review-helper", "notes-bot-*"]`, usernames or
+simple patterns (`*` any run of characters, `?` one) matched whole in any
+case. A value that is not a list of non-empty strings fails
+`merge-request:view` and the checks that read review comments, naming it.
+
 Every dependency waited on is the variation's own merge request, and before
 ASS-361 nothing in Build acted on its review: Release's Address Merge Request
 Feedback comes after the very tests that wait. So while a dependency needs

@@ -885,6 +885,30 @@ test('ASS-361 AC2: merge-request:view lists the review comments still to act on 
     { id: 'PRR_1', author: 'lee', body: 'And rebase, please', created: T(12) }]);
 });
 
+// ASS-389: advisory review bots — project.json's "advisory-review-bots"
+// (usernames or simple patterns) and GitLab's own AI reviewer by default — are
+// never review comments; a person's note still is; an invalid list is refused.
+test('ASS-389 AC1-AC4: notes by a listed advisory bot (a name or a pattern, any case) or by GitLab\'s AI reviewer are not review comments; a person\'s still is; an invalid "advisory-review-bots" is refused', async () => {
+  const f = await planned([{ id: 1, repository: APP }]);
+  f.record({ 1: { status: 'Open', key: '!7', base: 'master' } });
+  view(f, 'app', 7, { description: 'D', source_branch: 'change/ABC-5-1' });
+  f.forge.route('glab', /^api projects\/g%2Fapp\/merge_requests\/7\/discussions\?per_page=100 --hostname gitlab.com$/, { out: [] });
+  const notes = [note(1, 'review-helper', 11), note(2, 'Notes-Bot-7', 11), note(3, 'GitLabDuo', 11), note(4, 'sam', 12), note(5, 'review-helper2', 12)];
+  noted(f, 'app', 7, notes);
+  const project = join(f.dir, 'p', 'project.json');
+  const comments = async () => JSON.parse((await f.agent('merge-request:view', 'p', 'ABC-5', 'A', '1')).stdout).comments.map(c => c.author);
+  // Unset: the default leaves out GitLab's AI reviewer alone.
+  assert.deepEqual(await comments(), ['review-helper', 'Notes-Bot-7', 'sam', 'review-helper2']);
+  writeFileSync(project, JSON.stringify({ repositories: [{ url: APP }], 'advisory-review-bots': ['Review-Helper', 'notes-bot-*'] }));
+  assert.deepEqual(await comments(), ['sam', 'review-helper2']);
+  for (const bad of ['review-helper', [''], [3]]) {
+    writeFileSync(project, JSON.stringify({ repositories: [{ url: APP }], 'advisory-review-bots': bad }));
+    const r = await f.agent('merge-request:view', 'p', 'ABC-5', 'A', '1').then(x => ({ code: 0, ...x }), e => e);
+    assert.notEqual(r.code, 0, JSON.stringify(bad));
+    assert.match(r.stderr, /advisory-review-bots/);
+  }
+});
+
 test('ASS-361 AC4: merge-request:reply answers a plain review comment by its id from comments — a new comment naming its author and linking it, never a thread — once it is found on that merge request; another\'s is refused', async () => {
   const f = await planned([{ id: 1, repository: APP }]);
   f.record({ 1: { status: 'Open', key: '!7', url: `${APP}/-/merge_requests/7`, base: 'master' } });
