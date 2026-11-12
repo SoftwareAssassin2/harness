@@ -309,7 +309,8 @@ async function runVariation(ctx, state, project, key, name) {
         Object.assign(facts, exited);
         const next = nextState(step, engine, facts, changes);
         await scriptExited(ctx, who, held, facts.exitCode, next?.to == null || next.to === stateId, values, step);
-        if (!await move(next, timer ? TIMER : undefined)) return;
+        // ASS-388: a script exit's own cause (no-op-round: a feedback round that changed nothing) is recorded on its move.
+        if (!await move(next, timer ? TIMER : next?.exit?.cause)) return;
         break;
       }
       case 'state-engine': {
@@ -456,7 +457,8 @@ async function runTransient(ctx, state, id) {
         const recorded = step['record-script-output'] === true && facts.scriptOutput && typeof facts.scriptOutput === 'object' && !Array.isArray(facts.scriptOutput) ? facts.scriptOutput : undefined;
         const next = nextState(step, engine, facts, changes);
         await scriptExited(ctx, who, held, facts.exitCode, !next || next.to === run.state, variation && values, step);   // to null: the run ends
-        if (!await settle(next, recorded, timer ? TIMER : undefined)) return;
+        // ASS-388: a script exit's own cause (no-op-round) is recorded on the run's move, as on a ticket's.
+        if (!await settle(next, recorded, timer ? TIMER : next?.exit?.cause)) return;
         break;
       }
       case 'state-engine': {

@@ -19,3 +19,6 @@ if on_github "$url"; then
 else
   lab "$command" "$url" "/merge_requests/$iid/discussions/$thread" -X PUT -f resolved=true >/dev/null
 fi
+# ASS-388: resolved, the merge request's row says so (feedback-acted, cleared by merge-request:check), so
+# merge-request:feedback-round counts the round as one that did something. Not written, the thread stays resolved.
+set_merge_request "$command" "$1" "$key" "$3" "$i" '{ "feedback-acted": true }' || echo "$command: could not record the resolve on $(mr_name "$i")" >&2

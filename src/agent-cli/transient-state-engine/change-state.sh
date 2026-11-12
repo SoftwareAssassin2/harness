@@ -57,11 +57,14 @@ if [[ -n "$ticket_path" ]]; then
   fi
 fi
 
+# ASS-388: a MOVE_CAUSE in the environment (control's, moves.js causeEnv) is merged into the run's change
+# too, as ticket:change-sub-state merges it into the variation's: the run's steps' visits are counted over
+# its own changes, and a cause such as no-op-round must be there to be read (engine.js).
 update_json "$file" --arg id "$id" --arg from "$from" --arg to "$to" --argjson done "$(jq '.["is-done"] == true' <<< "$step")" \
-  --argjson set_output "$set_output" --argjson output "$output" --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '
+  --argjson set_output "$set_output" --argjson output "$output" --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --argjson cause "${MOVE_CAUSE:-"{}"}" '
   .["transient-state-engines"] |= map(if .id == $id then
       if .state != $from then error("transient-state-engine:change-state: \($id) is not at \($from)") else . end
       | .state = $to | .["last-heartbeat"] = $at | .["is-done"] = $done
-      | .["state-changes"] = (.["state-changes"] // []) + [{ "from-state": $from, "to-state": $to, timestamp: $at }]
+      | .["state-changes"] = (.["state-changes"] // []) + [{ "from-state": $from, "to-state": $to, timestamp: $at } + $cause]
       | if $set_output then .["structured-output"] = $output else . end
     else . end)'

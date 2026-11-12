@@ -188,37 +188,61 @@ enc() { jq -rn --arg s "$1" '$s | @uri'; }
 # lab <command> <url> <endpoint> [glab api options…] — GitLab's API for the project at <url>.
 lab() { local command="$1" url="$2" endpoint="$3"; shift 3; glab_run "$command" api "projects/$(enc "$(path_of "$url")")$endpoint" --hostname "$(host_of "$url")" "$@"; }
 
-GITLAB_VIEW='{ state: ({ opened: "Open", merged: "Merged" }[.state] // "Closed"), base: .target_branch, title, draft: (.draft == true),
+# ASS-388: a canceled head pipeline is build-failed only while it is the current head's. One for a commit the
+# merge request's head (its sha) has moved past was superseded — a force-push, a rebase or a new commit cancels
+# the pipeline running for the old head — and is no failure of the merge request as it is. A failed one always
+# is. head: the head commit's sha (null when the forge gives none); pipeline: its head pipeline, with its status
+# and commit. Either sha missing, a canceled one counts as the head's, as before.
+GITLAB_VIEW='((.head_pipeline // .pipeline) // null) as $p
+  | { state: ({ opened: "Open", merged: "Merged" }[.state] // "Closed"), base: .target_branch, title, draft: (.draft == true),
   reasons: [ (if (.blocking_discussions_resolved == false) or .detailed_merge_status == "discussions_not_resolved" then "open-threads" else empty end),
-             (if ((.head_pipeline // .pipeline // {}).status // "") | IN("failed", "canceled") then "build-failed" else empty end),
+             (if ($p.status // "") == "failed" or (($p.status // "") == "canceled" and ($p.sha == null or .sha == null or $p.sha == .sha)) then "build-failed" else empty end),
              (if .has_conflicts == true or (.detailed_merge_status | IN("need_rebase", "conflict")) then "needs-rebase" else empty end) ],
-  "auto-merge": (.merge_when_pipeline_succeeds == true), "merged-at": .merged_at,
-  pipeline: ((.head_pipeline // .pipeline) as $p | if $p then { id: $p.id, "created-at": $p.created_at } else null end) }'
-GITHUB_VIEW='def failed: (.conclusion // .state // "") | IN("FAILURE", "ERROR", "CANCELLED", "TIMED_OUT");
+  "auto-merge": (.merge_when_pipeline_succeeds == true), "merged-at": .merged_at, head: .sha,
+  pipeline: (if $p then { id: $p.id, "created-at": $p.created_at, status: $p.status, sha: $p.sha } else null end) }'
+# ASS-388: on GitHub the rollup is the head commit's own, so a head moved on is a new rollup already; a
+# CANCELLED check there is superseded, no failure, when the same check (its name or context) started again
+# later on that commit and was not cancelled.
+GITHUB_VIEW='def check_name: .name // .context // "";
+  def outcome: .conclusion // .state // "";
+  (.statusCheckRollup // []) as $all
+  | def superseded: outcome == "CANCELLED" and (check_name as $l | (.startedAt // "") as $at
+      | any($all[]; check_name == $l and (.startedAt // "") > $at and outcome != "CANCELLED"));
+  def failed: (outcome | IN("FAILURE", "ERROR", "CANCELLED", "TIMED_OUT")) and (superseded | not);
   { state: ({ OPEN: "Open", MERGED: "Merged" }[.state] // "Closed"), base: .baseRefName, title, draft: (.isDraft == true),
   reasons: [ (if .reviewDecision == "CHANGES_REQUESTED" then "open-threads" else empty end),
              (if any(.statusCheckRollup // [] | .[]; failed) then "build-failed" else empty end),
              (if .mergeable == "CONFLICTING" or (.mergeStateStatus | IN("BEHIND", "DIRTY")) then "needs-rebase" else empty end) ],
-  "auto-merge": (.autoMergeRequest != null), "merged-at": .mergedAt, "review-required": (.reviewDecision == "REVIEW_REQUIRED"),
+  "auto-merge": (.autoMergeRequest != null), "merged-at": .mergedAt, "review-required": (.reviewDecision == "REVIEW_REQUIRED"), head: .headRefOid,
   pipeline: ([.statusCheckRollup // [] | .[] | select(failed)] | if . == [] then null
     else { "created-at": (map(.startedAt // empty) | max), runs: ([.[] | .detailsUrl // "" | capture("/actions/runs/(?<r>[0-9]+)").r | tonumber] | unique),
            jobs: ([.[] | .name // .context // empty] | unique) } end) }'
 
-# mr_view — { state: Open|Merged|Closed, base, title, draft, reasons, auto-merge, merged-at, pipeline }, reasons as
-# merge-request:check names them; merged-at the forge's time it merged (null until then); pipeline its head pipeline
-# { id, created-at } on GitLab, on GitHub its failed checks { created-at: the latest started, runs: their workflow
-# run ids, jobs: their names } (null when none failed); on GitHub also review-required (its review decision
-# REVIEW_REQUIRED: an approval is still needed).
+# mr_view — { state: Open|Merged|Closed, base, title, draft, reasons, auto-merge, merged-at, head, pipeline }, reasons
+# as merge-request:check names them; merged-at the forge's time it merged (null until then); head its head commit's
+# sha (ASS-388; null when the forge gives none); pipeline its head pipeline { id, created-at, status, sha } on GitLab,
+# on GitHub its failed checks { created-at: the latest started, runs: their workflow run ids, jobs: their names }
+# (null when none failed); on GitHub also review-required (its review decision REVIEW_REQUIRED: an approval is
+# still needed).
+# ASS-388: on GitLab a canceled head pipeline for the current head is superseded too when a newer pipeline (a
+# higher id) exists for that head among the merge request's pipelines (GET …/merge_requests/<iid>/pipelines,
+# asked only then): it is no build-failed. One the forge will not list stays build-failed, as before.
 mr_view() {
-  local command="$1" url iid planned out
+  local command="$1" url iid planned out view pipelines
   IFS=$'\t' read -r url iid planned < <(mr_at "$2")
   if on_github "$url"; then
-    out="$(gh_run "$command" pr view "$iid" --repo "$(path_of "$url")" --json state,mergeable,mergeStateStatus,reviewDecision,autoMergeRequest,statusCheckRollup,baseRefName,title,isDraft,mergedAt)" || return 1
+    out="$(gh_run "$command" pr view "$iid" --repo "$(path_of "$url")" --json state,mergeable,mergeStateStatus,reviewDecision,autoMergeRequest,statusCheckRollup,baseRefName,title,isDraft,mergedAt,headRefOid)" || return 1
     jq -ce "$GITHUB_VIEW" <<< "$out" || { echo "$command: no view of #$iid from GitHub" >&2; return 1; }
   else
     if [[ "$planned" == true ]]; then out="$(lab "$command" "$url" "/merge_requests/$iid")" || return 1
     else out="$(glab_run "$command" mr view "$iid" --repo "$(path_of "$url")" -F json)" || return 1; fi
-    jq -ce "$GITLAB_VIEW" <<< "$out" || { echo "$command: no view of !$iid from GitLab" >&2; return 1; }
+    view="$(jq -ce "$GITLAB_VIEW" <<< "$out")" || { echo "$command: no view of !$iid from GitLab" >&2; return 1; }
+    if jq -e '.pipeline.status == "canceled" and .pipeline.id != null and any(.reasons[]; . == "build-failed")' <<< "$view" >/dev/null; then
+      pipelines="$(lab "$command" "$url" "/merge_requests/$iid/pipelines" 2>/dev/null | jq -c 'if type == "array" then . else [] end' 2>/dev/null)" || pipelines='[]'
+      view="$(jq -c --argjson pipelines "${pipelines:-[]}" '(.head // .pipeline.sha) as $head | .pipeline.id as $id
+        | if any($pipelines[]; (.id // 0) > $id and ($head == null or .sha == $head)) then .reasons -= ["build-failed"] else . end' <<< "$view")"
+    fi
+    echo "$view"
   fi
 }
 

@@ -181,7 +181,7 @@ test('AC1: example goes on from Review to its own Release — out of draft, team
     'grouped-release-example/team-code-review': [{ scriptOutput: { 'needs-attention': true } }, MERGED],
     'grouped-qa/qa-testing': { ticketSystemStatus: 'Done' } });
   assert.deepEqual(tops(trail), ['committed', 'setup', 'plan', 'build', 'test', 'document', 'review', 'release', 'qa', 'done']);
-  assert.deepEqual(trail.filter(p => p.startsWith('grouped-release-example/')).map(p => p.split('/')[1]), ['take-out-of-draft-mode', 'team-code-review', 'address-merge-request-feedback', 'team-code-review', 'done']);
+  assert.deepEqual(trail.filter(p => p.startsWith('grouped-release-example/')).map(p => p.split('/')[1]), ['take-out-of-draft-mode', 'team-code-review', 'address-merge-request-feedback', 'check-feedback-round', 'team-code-review', 'done']);   // ASS-388
 });
 
 // ASS-314: Human Review's half of this is v2-review's own now (test/workflow/v2-development.test.js, ASS-116 AC2 pair 2): grouped-review has no such gate to reject at.

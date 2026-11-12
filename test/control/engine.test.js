@@ -804,6 +804,46 @@ test('evaluateCondition (ASS-248): open-questions counts the blocking ones alone
   assert.equal(evaluateCondition({ 'all-questions-accepted': false }, flagged(['Answer Accepted', true], ['Answered'])), true);
 });
 
+// ASS-388: an Address Merge Request Feedback round that changed nothing returns to the check with cause
+// no-op-round, and the round — the check's move into it, on to the round's check, and back — is no visit.
+test('ASS-388 AC2: withoutNoOpRounds drops each no-op round, back to and including the last move out of the step it returns to; a round that changed something, and a sub-state-change, are kept', () => {
+  assert.equal(control.NO_OP_ROUND.cause, 'no-op-round');
+  const enter = [change('take-out-of-draft-mode', 'check')];
+  const noOp = () => [change('check', 'address-merge-request-feedback'), change('address-merge-request-feedback', 'check-feedback-round'), change('check-feedback-round', 'check', { cause: 'no-op-round' })];
+  const real = [change('check', 'address-merge-request-feedback'), change('address-merge-request-feedback', 'check-feedback-round'), change('check-feedback-round', 'check-review')];
+  assert.deepEqual(control.withoutNoOpRounds([...enter, ...noOp(), ...noOp(), ...noOp()]), enter);
+  assert.deepEqual(control.withoutNoOpRounds([...enter, ...noOp(), ...real]), [...enter, ...real]);
+  const sub = change('release', 'release', { cause: 'no-op-round', 'sub-state-change': { 'from-state': 'check-feedback-round', 'to-state': 'check' } });
+  assert.deepEqual(control.withoutNoOpRounds([change('build', 'release'), sub]), [change('build', 'release'), sub]);
+  assert.deepEqual(control.withoutNoOpRounds([change('x', 'check', { cause: 'no-op-round' })]), [], 'no move out of the step before it: the no-op change alone');
+  assert.deepEqual(control.withoutNoOpRounds(), []);
+});
+
+test('ASS-388 AC2/AC3: nextState counts no visit for a no-op round — the check sends the merge request on to Address Merge Request Feedback after any number of them — while rounds that changed something still spend its max-visits', () => {
+  const engine = JSON.parse(readFileSync(join(engineDir('grouped-merge'), 'state-engine.json'), 'utf8'));
+  const check = stepOf(engine, 'check'), round = stepOf(engine, 'check-feedback-round');
+  const needs = { exitCode: 0, scriptOutput: { 'needs-attention': true, reasons: ['build-failed'], 'auto-merge': false, merged: false } };
+  const noOp = () => [change('check', 'address-merge-request-feedback'), change('address-merge-request-feedback', 'check-feedback-round'), change('check-feedback-round', 'check', { cause: 'no-op-round' })];
+  const real = () => [change('check', 'address-merge-request-feedback'), change('address-merge-request-feedback', 'check-feedback-round'), change('check-feedback-round', 'check-review'),
+    change('check-review', 'take-out-of-draft-mode'), change('take-out-of-draft-mode', 'check')];
+  const start = [change('check-review', 'take-out-of-draft-mode'), change('take-out-of-draft-mode', 'check')];
+  // Ten no-op rounds: still sent to Address Merge Request Feedback, and the round's own return is never redirected.
+  const many = [...start, ...Array.from({ length: 10 }, noOp).flat()];
+  assert.equal(nextState(check, engine, needs, many).to, 'address-merge-request-feedback');
+  assert.equal(visitsInto(control.withoutNoOpRounds(many), 'check'), 1);
+  const unchanged = { exitCode: 0, scriptOutput: { changed: false } };
+  assert.deepEqual(nextState(round, engine, unchanged, [...many, ...noOp().slice(0, 2)]), { to: 'check', exit: round['exit-events'][0], reason: 'exit' });
+  // Without the cause (as before): the third round already reaches Address Merge Request Feedback's max-visits.
+  const uncaused = [...start, ...Array.from({ length: 3 }, () => noOp().map(c => ({ ...c, cause: undefined }))).flat()];
+  assert.deepEqual(nextState(check, engine, needs, uncaused), { to: 'blocked', exit: check['exit-events'][0], reason: 'max-visits' });
+  // Rounds that changed something count as before: three of them, and the fourth is Blocked — no-op rounds between them change nothing.
+  const three = [...start, ...real(), ...noOp(), ...real(), ...noOp(), ...noOp(), ...real()];
+  assert.deepEqual(nextState(check, engine, needs, three), { to: 'blocked', exit: check['exit-events'][0], reason: 'max-visits' });
+  // A changed round, or a failure of the command, goes back to the gate, counted.
+  assert.equal(nextState(round, engine, { exitCode: 0, scriptOutput: { changed: true } }, []).to, 'check-review');
+  assert.equal(nextState(round, engine, { exitCode: 1 }, []).to, 'check-review');
+});
+
 test('blocksTicket and isOpenQuestion (ASS-248): open is anything but Answered, Answer Accepted or Assumed; it blocks unless flagged blocking: false', () => {
   assert.deepEqual(['Asked', 'Answer Rejected', 'Answered', 'Answer Accepted', 'Assumed', 'Unanswered'].map(status => isOpenQuestion({ status })), [true, true, false, false, false, true]);
   assert.deepEqual([{ status: 'Asked' }, { status: 'Asked', blocking: true }, { status: 'Asked', blocking: false }, { status: 'Answered', blocking: true }].map(blocksTicket), [true, true, false, false]);

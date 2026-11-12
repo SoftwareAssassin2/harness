@@ -25,7 +25,10 @@ body="$(cat)"
 load_merge_requests "$command" "$1" "$key" "$3"
 i="$(mr_by_id "$command" "$key" "$3" "$4")"
 IFS=$'\t' read -r url iid _ < <(mr_at "$i")
-if is_comment_id "$url" "$thread"; then mr_comment_reply "$command" "$i" "$thread" "$body"; exit 0; fi
+# ASS-388: once answered, the merge request's row says so (feedback-acted, cleared by merge-request:check),
+# so merge-request:feedback-round counts the round as one that did something. Not written, the reply stands.
+acted() { set_merge_request "$command" "$1" "$key" "$3" "$i" '{ "feedback-acted": true }' || echo "$command: could not record the reply on $(mr_name "$i")" >&2; }
+if is_comment_id "$url" "$thread"; then mr_comment_reply "$command" "$i" "$thread" "$body"; acted "$@"; exit 0; fi
 mr_thread "$command" "$i" "$thread"
 
 if on_github "$url"; then
@@ -33,3 +36,4 @@ if on_github "$url"; then
 else
   lab "$command" "$url" "/merge_requests/$iid/discussions/$thread/notes" -X POST -f "body=$body" >/dev/null
 fi
+acted "$@"

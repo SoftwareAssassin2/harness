@@ -239,7 +239,8 @@ it names none, so a project's Release could run it over the whole variation).
 | Mark Reviewed (max 5) | `merge-request:reviewed-at-head … --only … --mark` | 0 back to the gate |
 | Take out of Draft Mode (max 5) | `code:take-out-of-draft-mode … --only` | 0 to the check; else tried again |
 | Check the Merge Requests (`check`, timer 5 min, max 10, record-script-output) | `merge-request:check … --only` | needs-attention to Address Merge Request Feedback; merged to `done`; approval-wait-expired to `blocked-for-human`; auto-merge false to Ensure Auto-Merge; only waiting polls, no visit spent |
-| Address Merge Request Feedback (max 3, in the VM) | `check-on-merge-request-build-grouped` | back to the gate |
+| Address Merge Request Feedback (max 3, in the VM) | `check-on-merge-request-build-grouped` | to Check the Feedback Round |
+| Check the Feedback Round (`check-feedback-round`, max 5; ASS-388) | `merge-request:feedback-round … --only` | changed false back to the check, cause `no-op-round`, no visit counted; else back to the gate |
 | Ensure Auto-Merge (max 3) | `merge-request:ensure-auto-merge … --only` | 0 to the check; else `blocked` |
 
 Each looping step's max-visits ends the run at `blocked`. Its prompt steps
@@ -259,8 +260,9 @@ are Release's own, and in Build the ticket is In Progress.
   and the gate is asked again: a commit pushed during the review is not the
   one reviewed, so it is reviewed again. The only way out of draft is the
   gate's exit 0, the only way to Ensure Auto-Merge the check after it, and
-  Address Merge Request Feedback, whose agent pushes, goes back to the gate,
-  so its new commit is reviewed before anything is set to auto-merge.
+  Address Merge Request Feedback, whose agent pushes, goes back to the gate
+  (through Check the Feedback Round, ASS-388: a round that changed nothing
+  goes back to the check instead, its head reviewed already), so its new commit is reviewed before anything is set to auto-merge.
   Merged or Closed ones need no review. A project whose Release runs the
   loop and wants no second review switches off the loop's Code Review and
   Security Review (`switched-off-steps`), and the heads are marked as they
@@ -1230,6 +1232,47 @@ listed in the check's output as `"build-pending": [{ id, key, why:
 "dependency-unmerged" | "re-run" }]`, present only when there is one. Once
 every one not Closed is Merged, Team Code Review ends Release (ASS-224) and
 QA sets the ticket system to In Testing.
+
+A superseded canceled pipeline is no `build-failed` (ASS-388). A force-push,
+a rebase or a new commit cancels the pipeline running for the old head, so a
+merge request whose head is fine could read `build-failed` from it and be
+sent to Address Merge Request Feedback with nothing to do. On GitLab a
+canceled head pipeline is `build-failed` only while it is the current head's
+(its `sha` is the merge request's `sha`; either missing, it counts as the
+head's) and no newer pipeline (a higher id) for that head is among the merge
+request's pipelines (`GET …/merge_requests/<iid>/pipelines`, asked only for a
+canceled one; a list the forge refuses changes nothing). On GitHub a
+`CANCELLED` check is not a failure when the same check (name or context)
+started later on the head commit and was not cancelled. A `failed` pipeline,
+and a canceled one for the current head with nothing newer, are
+`build-failed` as before. `mr_view` now also gives `head` (the head
+commit's sha) and the pipeline's `status` and `sha`.
+
+A feedback round that changed nothing spends no visit (ASS-388). The check
+records on each Open merge request's row the head commit it saw
+(`checked-head`) and clears `feedback-acted`, which `merge-request:reply` and
+`merge-request:resolve` set. After Address Merge Request Feedback, Check the
+Feedback Round runs `merge-request:feedback-round` (`--only` as the loop's
+other commands): each Open one's head is read from its forge, and it prints
+`{ "changed": <bool>, "merge-requests": [{ id, key, head, "checked-head",
+acted }] }`, changed false only when there is an Open one and every head is
+its `checked-head` with nothing replied to or resolved. Its exit on changed
+false goes back to the check with `"cause": "no-op-round"` in the engine JSON;
+control records an exit's cause on a script step's move, and on a run's own
+`state-changes` too (`transient-state-engine:change-state` takes
+`MOVE_CAUSE`), and counts visits over the history with each no-op round taken
+out (`engine.js` `withoutNoOpRounds`: the no-op move and every change back to
+and including the last move out of the step it returns to), the no-op move
+itself never redirected by max-visits. So the round's visits to Address Merge
+Request Feedback, Check the Feedback Round and the check all go uncounted, and
+the group goes on polling. Any other exit (something changed, or the command
+failed) goes on as before and counts. A real failed pipeline, open thread or
+review comment still sends the merge request to Address Merge Request
+Feedback; a round there that again changes nothing is again uncounted, so the
+check sends it once per poll at most. A project's own Release adds the same
+step after its Address Merge Request Feedback (without `--only`, both exits
+back to Team Code Review, the first with the cause), as
+`test/fixtures/engines/grouped-release-example` does.
 
 The current engines' commands are the same ones: a merge request recorded
 from a worktree (no `repository`) is on the workspace's origin, read with

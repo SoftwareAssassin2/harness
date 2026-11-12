@@ -235,6 +235,33 @@ export const clearCause = facts => (clearedByFix(facts) ? FIX_LANDED : ownBranch
 // Blocked at Build's exit because the reds left Test at its cap (ASS-311).
 export const MERGE_GATE_RED = { cause: 'merge-gate-red' };
 
+// NO_OP_ROUND — the cause of the move that ends a round which changed nothing
+// (ASS-388): an Address Merge Request Feedback round that pushed no commit to
+// any merge request it was sent for and replied to or resolved nothing
+// (merge-request:feedback-round), its check step's exit naming the cause in
+// the engine JSON (grouped-merge's check-feedback-round; a project Release's
+// own), the move going back to the step the round left (the check). The
+// round is no visit: withoutNoOpRounds drops it from the history visits are
+// counted over, and the move itself is never redirected by max-visits.
+export const NO_OP_ROUND = { cause: 'no-op-round' };
+
+// withoutNoOpRounds(stateChanges) — the changes with each no-op round taken
+// out (ASS-388): a change with cause no-op-round returns to the step the round
+// started from, so it and every change back to and including the last one out
+// of that step (the check's move into Address Merge Request Feedback) are
+// dropped, as if the round had not been. A sub-state-change (a ticket's record
+// of a move inside a group's run) is no visit anyway and is left; with no move
+// out of that step before it, the no-op change alone is dropped.
+export function withoutNoOpRounds(stateChanges = []) {
+  const kept = [];
+  for (const c of stateChanges) {
+    if (c.cause !== NO_OP_ROUND.cause || c['sub-state-change']) { kept.push(c); continue; }
+    const start = kept.findLastIndex(k => k['from-state'] === c['to-state'] && !k['sub-state-change']);
+    if (start >= 0) kept.length = start;
+  }
+  return kept;
+}
+
 // sinceResolution(engine, stateChanges, targetStep) — the changes from the last
 // resolution of Blocked for Human, the last move out of a done step (a
 // ticket reopened from Done, ASS-130), the last move out of a human step
@@ -264,7 +291,9 @@ export function sinceResolution(engine, stateChanges = [], targetStep) {
 // own branch (ownBranchFix, ASS-384) or to wait for its dependency merge
 // request (awaitsDependency, ASS-390), or itself a merge-gate
 // red's return (ASS-315: else the first red is redirected by the counts it is
-// meant to restart), or itself a move out of a step with restarts-visit-count
+// meant to restart), or itself a no-op round's return (ASS-388: NO_OP_ROUND;
+// and a no-op round anywhere in the history is no visit, withoutNoOpRounds),
+// or itself a move out of a step with restarts-visit-count
 // (ASS-399: grouped-plan's Awaiting the Plan Answer, whose return to Write
 // Execution Plan the old counts would send to Blocked); the return walk reads it all.
 export function nextState(step, engine, facts, stateChanges = []) {
@@ -272,7 +301,9 @@ export function nextState(step, engine, facts, stateChanges = []) {
   if (!exit) return null;
   let to = resolveTarget(exit, step, engine, stateChanges, facts);
   if (to == null) return { to: null, exit, reason: 'unresolved' };
-  const counted = isResolution(engine, step.id, to) || restartsVisits(engine, step.id) || clearCause(facts) || exit.cause === MERGE_GATE_RED.cause ? [] : sinceResolution(engine, stateChanges, to);
+  // ASS-388: a no-op round's return is no visit, so never redirected; every other count skips the no-op rounds.
+  const counted = isResolution(engine, step.id, to) || restartsVisits(engine, step.id) || clearCause(facts) || exit.cause === MERGE_GATE_RED.cause || exit.cause === NO_OP_ROUND.cause
+    ? [] : withoutNoOpRounds(sinceResolution(engine, stateChanges, to));
   let reason = 'exit';
   for (const seen = new Set(); !seen.has(to); reason = 'max-visits') {
     seen.add(to);

@@ -287,14 +287,58 @@
                     "condition": {
                         "turn-complete": true
                     },
-                    "move-to-state": "check-review"
+                    "move-to-state": "check-feedback-round"
                 }
             ],
             "run-location": "vm"
         },
         {
-            "id": "ensure-auto-merge",
+            "id": "check-feedback-round",
             "sequence": 8,
+            "name": "Check the Feedback Round",
+            "description": "Whether Address Merge Request Feedback changed anything: a commit pushed to a merge request it was sent for (its head is not the one the check saw), or a thread or comment replied to or resolved. A round that changed nothing goes back to the check with cause no-op-round, and control counts no visit for it, so a merge request that only waits on its pipeline or approvals is not sent to Blocked by do-nothing rounds; one that changed something, or a failure here, goes on as before (ASS-388)",
+            "max-visits": 5,
+            "on-max-visits": "blocked",
+            "action": {
+                "type": "script",
+                "command": "./agent.sh merge-request:feedback-round {project} {ticket} {variation} --only {merge-request-ids}"
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "all": [
+                            {
+                                "exit-code": 0
+                            },
+                            {
+                                "script-output": {
+                                    "changed": false
+                                }
+                            }
+                        ]
+                    },
+                    "move-to-state": "check",
+                    "cause": "no-op-round"
+                },
+                {
+                    "condition": {
+                        "exit-code": 0
+                    },
+                    "move-to-state": "check-review"
+                },
+                {
+                    "condition": {
+                        "not": {
+                            "exit-code": 0
+                        }
+                    },
+                    "move-to-state": "check-review"
+                }
+            ]
+        },
+        {
+            "id": "ensure-auto-merge",
+            "sequence": 9,
             "name": "Ensure Auto-Merge",
             "description": "Setting the set's merge requests to auto-merge, in depends-on order, once every flag is cleared",
             "max-visits": 3,
@@ -328,7 +372,7 @@
             "action": {
                 "type": "none"
             },
-            "sequence": 9
+            "sequence": 10
         },
         {
             "id": "blocked",
@@ -338,7 +382,7 @@
             "action": {
                 "type": "none"
             },
-            "sequence": 10
+            "sequence": 11
         },
         {
             "id": "blocked-for-human",
@@ -348,7 +392,7 @@
             "action": {
                 "type": "none"
             },
-            "sequence": 11
+            "sequence": 12
         },
         {
             "id": "rebuild",
@@ -358,7 +402,7 @@
             "action": {
                 "type": "none"
             },
-            "sequence": 12
+            "sequence": 13
         }
     ]
 }

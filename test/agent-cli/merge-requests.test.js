@@ -1084,7 +1084,7 @@ test('ASS-346 AC4: on GitHub, once the dependency merged, the failed workflow ru
   prView(f, 12, { statusCheckRollup: [check('FAILURE', '2026-11-10T09:58:00Z', 77), check('FAILURE', '2026-11-10T10:00:00Z', 78), check('FAILURE', '2026-11-10T09:59:00Z', 77), check('SUCCESS', '2026-11-10T10:00:00Z', 79)] });
   // MR 1 not merged: held back, as on GitLab.
   assert.deepEqual((await checked(f))['build-pending'], [{ id: 2, key: '#12', why: 'dependency-unmerged' }]);
-  assert.ok(f.forge.log('gh').some(l => /^pr view 12 --repo o\/h --json .*,mergedAt$/.test(l)), f.forge.log('gh').join('\n'));
+  assert.ok(f.forge.log('gh').some(l => /^pr view 12 --repo o\/h --json .*,mergedAt,headRefOid$/.test(l)), f.forge.log('gh').join('\n'));
   view(f, 'lib', 7, { state: 'merged', merged_at: MERGED_AT });
   f.forge.route('gh', /^run rerun \d+ --failed --repo o\/h$/);
   assert.deepEqual(await checked(f), { 'needs-attention': false, reasons: [], 'auto-merge': false, merged: false, 'build-pending': [{ id: 2, key: '#12', why: 're-run' }] });
@@ -1394,4 +1394,91 @@ test('ASS-365 AC3: merge-request:reviewed-at-head exits 2 for a merge request of
   g.forge.route('gh', /^pr view 12 --repo o\/h --json headRefOid$/, { out: { headRefOid: 'd'.repeat(40) } });
   const hub = await ran(g, 'merge-request:reviewed-at-head', 'p', 'ABC-5', 'A', '--only', '1');
   assert.deepEqual([hub.code, JSON.parse(hub.out).unreviewed[0].head], [2, 'd'.repeat(40)]);
+});
+
+// ASS-388: a canceled pipeline superseded — the head moved past its commit, or a newer pipeline on the head —
+// is no build-failed; one for the current head with nothing newer still is. Then merge-request:feedback-round
+// tells an Address Merge Request Feedback round that pushed, replied to and resolved nothing.
+const HEAD = 'a'.repeat(40), OLD = 'b'.repeat(40), NEW = 'c'.repeat(40);
+const pipelines = (f, iid, out, response = {}) => f.forge.route('glab', new RegExp(`^api projects/g%2Fapp/merge_requests/${iid}/pipelines --hostname gitlab.com$`), { out, ...response });
+async function single(v) {
+  const f = await planned([{ id: 1, repository: APP }]);
+  f.record({ 1: { status: 'Open', key: '!7', base: 'master' } });
+  view(f, 'app', 7, v);
+  return f;
+}
+
+test('ASS-388 AC1: on GitLab a canceled head pipeline is not build-failed once the head moved past its commit, or a newer pipeline exists for the head; one for the current head with nothing newer, and any failed one, still is', async () => {
+  // Canceled for an older commit (a force-push): superseded, no pipeline list asked.
+  const moved = await single({ sha: HEAD, head_pipeline: { id: 60, status: 'canceled', sha: OLD } });
+  assert.deepEqual(await checked(moved), { 'needs-attention': false, reasons: [], 'auto-merge': false, merged: false });
+  assert.ok(!moved.forge.log('glab').some(l => /\/pipelines /.test(l)));
+  // Canceled for the head, a newer pipeline on the head (running): superseded.
+  const newer = await single({ sha: HEAD, head_pipeline: { id: 60, status: 'canceled', sha: HEAD } });
+  pipelines(newer, 7, [{ id: 61, sha: HEAD, status: 'running' }, { id: 60, sha: HEAD, status: 'canceled' }, { id: 59, sha: OLD, status: 'canceled' }]);
+  assert.deepEqual((await checked(newer)).reasons, []);
+  // Canceled for the head, nothing newer for it (an older one, another commit's newer): build-failed.
+  const alone = await single({ sha: HEAD, head_pipeline: { id: 60, status: 'canceled', sha: HEAD } });
+  pipelines(alone, 7, [{ id: 62, sha: NEW, status: 'success' }, { id: 60, sha: HEAD, status: 'canceled' }, { id: 59, sha: HEAD, status: 'failed' }]);
+  assert.deepEqual(await checked(alone), { 'needs-attention': true, reasons: ['build-failed'], 'auto-merge': false, merged: false });
+  // The forge refuses the list: as before, build-failed.
+  const refused = await single({ sha: HEAD, head_pipeline: { id: 60, status: 'canceled', sha: HEAD } });
+  pipelines(refused, 7, { message: '403 Forbidden' }, { exit: 1 });
+  assert.deepEqual((await checked(refused)).reasons, ['build-failed']);
+  // A failed one is build-failed whatever its commit.
+  const failed = await single({ sha: HEAD, head_pipeline: { id: 60, status: 'failed', sha: OLD } });
+  assert.deepEqual((await checked(failed)).reasons, ['build-failed']);
+});
+
+test('ASS-388 AC1: on GitHub a CANCELLED check is not build-failed when the same check started again later on the head and was not cancelled; cancelled alone, or failed, it is', async () => {
+  const f = await planned([{ id: 1, repository: HUB }]);
+  f.record({ 1: { status: 'Open', key: '#12', base: 'main' } });
+  const run = (name, conclusion, startedAt, status = 'COMPLETED') => ({ __typename: 'CheckRun', name, status, conclusion, startedAt, detailsUrl: 'https://github.com/o/h/actions/runs/7/job/71' });
+  prView(f, 12, { isDraft: false, headRefOid: HEAD, statusCheckRollup: [run('test', 'CANCELLED', '2026-11-10T10:00:00Z'), run('test', '', '2026-11-10T10:05:00Z', 'IN_PROGRESS')] });
+  assert.deepEqual((await checked(f)).reasons, []);
+  prView(f, 12, { isDraft: false, headRefOid: HEAD, statusCheckRollup: [run('test', 'CANCELLED', '2026-11-10T10:00:00Z'), run('lint', 'SUCCESS', '2026-11-10T10:05:00Z')] });
+  assert.deepEqual((await checked(f)).reasons, ['build-failed']);
+  prView(f, 12, { isDraft: false, headRefOid: HEAD, statusCheckRollup: [run('test', 'CANCELLED', '2026-11-10T10:00:00Z'), run('test', 'FAILURE', '2026-11-10T10:05:00Z')] });
+  assert.deepEqual((await checked(f)).reasons, ['build-failed']);
+});
+
+test('ASS-388 AC2/AC3: the check records each Open MR\'s head as checked-head; merge-request:feedback-round says changed false only when every head is unchanged and nothing was replied to or resolved, and true after a push, a reply or a resolve', async () => {
+  const f = await planned([{ id: 1, repository: APP }, { id: 2, repository: APP }]);
+  f.record({ 1: { status: 'Open', key: '!7', base: 'master' }, 2: { status: 'Open', key: '!8', base: 'master' } });
+  view(f, 'app', 7, { sha: HEAD, head_pipeline: { id: 60, status: 'canceled', sha: OLD } });
+  view(f, 'app', 8, { sha: OLD });
+  const round = async (...only) => { const r = await ran(f, 'merge-request:feedback-round', 'p', 'ABC-5', 'A', ...only); assert.equal(r.code, 0, r.err); return JSON.parse(r.out); };
+  // Before any check: no head recorded, so it counts as a change.
+  assert.equal((await round()).changed, true);
+  await checked(f);
+  assert.deepEqual(f.mrs().map(m => m['checked-head']), [HEAD, OLD]);
+  // A round that did nothing.
+  assert.deepEqual(await round(), { changed: false, 'merge-requests': [
+    { id: 1, key: '!7', head: HEAD, 'checked-head': HEAD, acted: false }, { id: 2, key: '!8', head: OLD, 'checked-head': OLD, acted: false }] });
+  // A push to one of them: changed — and with --only, the set's alone.
+  view(f, 'app', 8, { sha: NEW });
+  assert.equal((await round()).changed, true);
+  assert.equal((await round('--only', '1')).changed, false);
+  assert.equal((await round('--only', '2')).changed, true);
+  // The next check records the new head: unchanged again.
+  await checked(f);
+  assert.equal((await round()).changed, false);
+  // A reply, then a resolve, each count as a change until the next check.
+  f.forge.route('glab', /^api projects\/g%2Fapp\/merge_requests\/7\/discussions\/d1\/notes --hostname gitlab.com -X POST /, { out: { id: 3 } });
+  f.forge.route('glab', /^api projects\/g%2Fapp\/merge_requests\/7\/discussions\/d1 --hostname gitlab.com -X PUT -f resolved=true$/, { out: { id: 'd1' } });
+  await piped(f, 'Not ours to change\n', 'merge-request:reply', 'p', 'ABC-5', 'A', '1', 'd1', '-');
+  assert.equal((await round()).changed, true);
+  await checked(f);
+  assert.equal(f.mrs()[0]['feedback-acted'], null, 'cleared by the check');
+  assert.equal((await round()).changed, false);
+  await f.agent('merge-request:resolve', 'p', 'ABC-5', 'A', '1', 'd1');
+  assert.equal((await round()).changed, true);
+  // A forge failure is exit 1 (the engine reads it as a change), an id not planned too.
+  await checked(f);
+  view(f, 'app', 7, {}, { exit: 1 });
+  assert.equal((await ran(f, 'merge-request:feedback-round', 'p', 'ABC-5', 'A')).code, 1);
+  assert.equal((await ran(f, 'merge-request:feedback-round', 'p', 'ABC-5', 'A', '--only', '9')).code, 1);
+  // Nothing Open (merged meanwhile): a change, never a no-op.
+  f.record({ 1: { status: 'Merged' }, 2: { status: 'Merged' } });
+  assert.deepEqual(await round(), { changed: true, 'merge-requests': [] });
 });

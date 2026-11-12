@@ -21,7 +21,7 @@ const WAITS = { 'needs-attention': false, reasons: [], 'auto-merge': true, merge
 test('ASS-365 AC1: grouped-merge is Release\'s loop — out of draft, check, address feedback, auto-merge, check again — over the set (--only {merge-request-ids}), generic: agent.sh commands and the grouped prompts, no project named; every looping step capped, then Blocked', () => {
   assert.deepEqual(validateStateEngine(merge, ROOT, 'grouped-merge', EXAMPLE_ENGINES), []);
   const scripts = merge.steps.filter(s => s.action.type === 'script');
-  assert.deepEqual(scripts.map(s => s.action.command.split(' ')[1]), ['merge-request:reviewed-at-head', 'merge-request:reviewed-at-head', 'code:take-out-of-draft-mode', 'merge-request:check', 'merge-request:ensure-auto-merge']);
+  assert.deepEqual(scripts.map(s => s.action.command.split(' ')[1]), ['merge-request:reviewed-at-head', 'merge-request:reviewed-at-head', 'code:take-out-of-draft-mode', 'merge-request:check', 'merge-request:feedback-round', 'merge-request:ensure-auto-merge']);
   for (const s of scripts) assert.match(s.action.command, /^\.\/agent\.sh \S+ \{project\} \{ticket\} \{variation\} --only \{merge-request-ids\}( --mark)?$/, s.id);
   assert.deepEqual(merge.steps.filter(s => s.action.type === 'prompt').map(s => [s.id, s.action.prompt]),
     [['code-review', 'code-review-grouped'], ['security-review', 'security-review-grouped'], ['address-merge-request-feedback', 'check-on-merge-request-build-grouped']]);
@@ -42,8 +42,9 @@ test('ASS-365 AC1: grouped-merge is Release\'s loop — out of draft, check, add
 test('ASS-365 AC3: nothing leaves draft or is set to auto-merge before Code Review and Security Review pass at the head commit — the only way out of draft is through the gate, the only way to auto-merge through the check after it — and Address Merge Request Feedback\'s new commit goes back through the gate', () => {
   assert.deepEqual(into(merge, 'take-out-of-draft-mode'), ['check-review']);
   assert.deepEqual(into(merge, 'ensure-auto-merge'), ['check']);
-  assert.deepEqual(into(merge, 'check').toSorted(), ['ensure-auto-merge', 'take-out-of-draft-mode']);
-  assert.deepEqual(stepOf(merge, 'address-merge-request-feedback')['exit-events'].map(e => e['move-to-state']), ['check-review']);
+  assert.deepEqual(into(merge, 'check').toSorted(), ['check-feedback-round', 'ensure-auto-merge', 'take-out-of-draft-mode']);   // ASS-388: a no-op round's return
+  assert.deepEqual(stepOf(merge, 'address-merge-request-feedback')['exit-events'].map(e => e['move-to-state']), ['check-feedback-round']);
+  assert.deepEqual(stepOf(merge, 'check-feedback-round')['exit-events'].map(e => e['move-to-state']), ['check', 'check-review', 'check-review']);
   assert.equal(merge.steps.toSorted((a, b) => a.sequence - b.sequence)[0].id, 'check-review', 'the run starts at the gate');
   const gate = stepOf(merge, 'check-review');
   assert.equal(nextState(gate, merge, { exitCode: 0 }, []).to, 'take-out-of-draft-mode');
@@ -56,7 +57,7 @@ test('ASS-365 AC3: nothing leaves draft or is set to auto-merge before Code Revi
   } });
   assert.equal(end, 'done');
   const steps = trail.map(p => p.split('/')[1]);
-  assert.deepEqual(steps, ['check-review', 'code-review', 'security-review', 'mark-reviewed', 'check-review', 'take-out-of-draft-mode', 'check', 'address-merge-request-feedback',
+  assert.deepEqual(steps, ['check-review', 'code-review', 'security-review', 'mark-reviewed', 'check-review', 'take-out-of-draft-mode', 'check', 'address-merge-request-feedback', 'check-feedback-round',
     'check-review', 'code-review', 'security-review', 'mark-reviewed', 'check-review', 'take-out-of-draft-mode', 'check', 'ensure-auto-merge', 'check', 'done']);
   assert.ok(inOrder(steps, ['address-merge-request-feedback', 'code-review', 'security-review', 'mark-reviewed', 'ensure-auto-merge']));
   // A review that rejects ends the run at rebuild, back to Generate Solution in grouped-build.
@@ -84,6 +85,40 @@ test('ASS-365 AC2/AC6: grouped-build enters Merge the Awaited only from Await Se
   // With it, the awaited one merges, then the tests: Merge the Awaited comes before Automated Testing and every later group.
   const { trail } = walk(engines, 'example-development-grouped', { from: 'build', answers: { 'grouped-build/await-dependencies': [{ exitCode: 5 }, { exitCode: 0 }], 'grouped-merge/check': { scriptOutput: { ...WAITS, merged: true } } }, stop: ['test'] });
   assert.ok(inOrder(trail, ['grouped-build/await-dependencies', 'grouped-build/merge-awaited', 'grouped-merge/take-out-of-draft-mode', 'grouped-merge/check', 'grouped-merge/done', 'grouped-build/await-dependencies', 'grouped-build/automated-testing']), trail.join(' '));
+});
+
+// ASS-388: a round of Address Merge Request Feedback that changed nothing goes back to the check with cause
+// no-op-round, which control records on the move and counts no visit for — in the merge loop and in a project's
+// own Release (the example's, as a project's would read: no --only, both exits back to Team Code Review).
+test('ASS-388 AC2/AC4: grouped-merge and a project Release check the round after Address Merge Request Feedback; three (or ten) no-op rounds on a clean merge request leave the check polling, never Blocked, while three that changed something still end at Blocked', () => {
+  const release = engines['grouped-release-example'];
+  for (const [engine, back, on, command] of [[merge, 'check', 'check-review', './agent.sh merge-request:feedback-round {project} {ticket} {variation} --only {merge-request-ids}'],
+    [release, 'team-code-review', 'team-code-review', './agent.sh merge-request:feedback-round {project} {ticket} {variation}']]) {
+    assert.deepEqual(validateStateEngine(engine, ROOT, undefined, EXAMPLE_ENGINES), []);
+    const round = stepOf(engine, 'check-feedback-round');
+    assert.deepEqual(stepOf(engine, 'address-merge-request-feedback')['exit-events'].map(e => e['move-to-state']), ['check-feedback-round']);
+    assert.equal(round.action.command, command);
+    assert.deepEqual(round['exit-events'].map(e => [e['move-to-state'], e.cause]), [[back, 'no-op-round'], [on, undefined], [on, undefined]]);
+    // Driven as control drives it: each move recorded with its exit's cause, as steps.js and change-state record it.
+    const check = stepOf(engine, back), needs = { exitCode: 0, ticketSystemStatus: 'In Review', scriptOutput: { 'needs-attention': true, reasons: ['build-failed'], 'auto-merge': false, merged: false } };
+    const drive = (rounds, changed) => {
+      const changes = [{ 'from-state': 'take-out-of-draft-mode', 'to-state': back }];
+      const go = (step, facts) => { const next = nextState(step, engine, facts, changes); changes.push({ 'from-state': step.id, 'to-state': next.to, ...(next.exit.cause ? { cause: next.exit.cause } : {}) }); return next.to; };
+      for (let i = 0; i < rounds; i++) {
+        if (go(check, needs) !== 'address-merge-request-feedback') return changes.at(-1)['to-state'];
+        go(stepOf(engine, 'address-merge-request-feedback'), { turnComplete: true });
+        const to = go(round, { exitCode: 0, scriptOutput: { changed } });
+        // A changed round in the merge loop passes the gate and out of draft again, back to the check.
+        if (to === 'check-review') changes.push({ 'from-state': 'check-review', 'to-state': 'take-out-of-draft-mode' }, { 'from-state': 'take-out-of-draft-mode', 'to-state': 'check' });
+      }
+      return nextState(check, engine, needs, changes).to;
+    };
+    assert.equal(drive(3, false), 'address-merge-request-feedback', `${back}: after three no-op rounds the check still sends it on, no visit spent`);
+    assert.equal(drive(10, false), 'address-merge-request-feedback', `${back}: after ten too`);
+    // Polling the clean merge request after them: the check's own exits, as ever (only waiting: no move).
+    assert.equal(nextState(check, engine, { exitCode: 0, ticketSystemStatus: 'In Review', scriptOutput: WAITS }, []), null);
+    assert.equal(drive(3, true), 'blocked', `${back}: three rounds that changed something spend Address Merge Request Feedback's max-visits`);
+  }
 });
 
 test('ASS-365 AC2: merges-awaited is read anywhere in the status chain, never a step id or name; no engine in this repository sets it', () => {

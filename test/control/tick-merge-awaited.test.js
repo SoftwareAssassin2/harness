@@ -122,6 +122,38 @@ test('ASS-365 AC1: an approval wait past its bound ends grouped-merge at Blocked
   assert.equal(f.variation()['ai-feedback-short'], 'Waited over 3 days for approval: MR 1 (!7)');
 });
 
+// ASS-388 AC2: Address Merge Request Feedback rounds that change nothing — the check sending a clean merge request
+// on (a stale needs-attention), the agent pushing nothing — come back to the check through Check the Feedback
+// Round with cause no-op-round, recorded on the run's own changes, and spend no visit: past three such rounds
+// (its max-visits) the loop goes on polling, never Blocked, and merges once the check says so.
+test('ASS-388 AC2: three and more no-op feedback rounds on a clean merge request leave the merge loop polling the check, never Blocked; each return recorded with cause no-op-round on the run', async () => {
+  let checks = 0;
+  const f = fixture(true, [
+    [/merge-request:await-dependencies/, () => (checks < 5 ? { exitCode: 5, stdout: { ...WAITING, 'merge-request-ids': [1] } } : { exitCode: 0, stdout: { waiting: [] } })],
+    [/merge-request:reviewed-at-head/, { exitCode: 0 }],
+    [/merge-request:feedback-round/, { exitCode: 0, stdout: { changed: false, 'merge-requests': [{ id: 1, key: '!7', head: 'a', 'checked-head': 'a', acted: false }] } }],
+    [/merge-request:check/, () => (++checks <= 4 ? { exitCode: 0, stdout: { 'needs-attention': true, reasons: ['build-failed'], 'auto-merge': true, merged: false } }
+      : { exitCode: 0, stdout: { 'needs-attention': false, reasons: [], 'auto-merge': true, merged: true } })],
+  ]);
+  const rounds = () => (runOf(f, 'grouped-merge')?.['state-changes'] ?? []).filter(c => c.cause === 'no-op-round').length;
+  // Each round's agent is the fixture's fake one, a process of its own: given time between ticks to end its turn.
+  const slow = async done => {
+    for (let i = 0; i < 400 && !done(); i++) { await tick(f.ctx); f.now += 6 * 60e3; if (f.ctx.agents.size) await new Promise(r => setTimeout(r, 50)); }
+    assert.ok(done(), `${f.lines.join('\n')}\n${f.calls.map(c => c.line).join('\n')}`);
+  };
+  try {
+    let entered = [];
+    await slow(() => { const run = runOf(f, 'grouped-merge'); if (run) entered = run['state-changes']; return rounds() >= 4; });
+    assert.ok(entered.filter(c => c['to-state'] === 'address-merge-request-feedback').length >= 4, 'four rounds, past its max-visits of 3');
+    assert.ok(entered.filter(c => c.cause === 'no-op-round').every(c => c['from-state'] === 'check-feedback-round' && c['to-state'] === 'check'));
+    assert.ok(f.calls.some(c => /merge-request:feedback-round p ABC-3 A --only 1$/.test(c.line)), f.calls.map(c => c.line).join('\n'));
+    await slow(() => f.variation()['harness-status'].state === 'done');
+    assert.ok(!f.lines.some(l => /max-visits|→ blocked/.test(l)), f.lines.join('\n'));
+  } finally {
+    f.ctx.stopAgents();
+  }
+});
+
 test('ASS-365 AC6: without merges-awaited in the status chain, Await Sequential Merge is told nothing — its command runs with no env of its own — and waits as before', async () => {
   const f = fixture(false, [[/merge-request:await-dependencies/, { exitCode: 2, stdout: WAITING }]]);
   for (let i = 0; i < 3; i++) { await tick(f.ctx); f.now += 6 * 60e3; }

@@ -13,7 +13,8 @@ set -euo pipefail
 #
 # reasons, in this order: "open-threads" (blocking discussions unresolved;
 # on GitHub, changes requested), "build-failed" (its head pipeline failed or
-# was canceled; a failed check), "needs-rebase" (conflicts, or the forge says
+# was canceled; a failed check — ASS-388: a canceled one superseded, its head
+# moved past it or a newer pipeline on the head, is not; mr_view), "needs-rebase" (conflicts, or the forge says
 # it needs a rebase or is behind its base). auto-merge: Ensure Auto-Merge has
 # nothing to set now — every one created and not Closed is Merged, set to
 # merge when its checks pass, or Open and waiting on a created depends-on
@@ -98,6 +99,17 @@ merge_request_options "$command" "$USAGE" "${@:4}"
 # The set's ids checked against the plan as recorded, before the forge is read or anything retargeted (ASS-365).
 if [[ "$LOOP" == true ]]; then MRS="$(variation_field '.["merge-request"] // []' "$command" "$project" "$key" "$variation")"; only_checked "$command" "$key" "$variation"; fi
 refresh_merge_requests "$command" "$project" "$key" "$variation"
+
+# ASS-388: each Open one of the set gets the head commit this check saw as its checked-head, and its
+# feedback-acted (merge-request:reply and :resolve set it) cleared — written only when either changes. The
+# check is what sends a merge request to Address Merge Request Feedback, so these are the round's start:
+# merge-request:feedback-round tells a round that pushed, replied to and resolved nothing by them.
+while IFS=$'\t' read -r i fields; do
+  set_merge_request "$command" "$project" "$key" "$variation" "$i" "$fields"
+done < <(jq -r --argjson views "$VIEWS" --argjson only "$ONLY" "$MR_ONLY"'
+  range(length) as $i | .[$i] as $m | $views[$i] as $v
+  | select($m.status == "Open" and ($m | in_set($only)) and $v != null and $v.head != null and ($m["checked-head"] != $v.head or $m["feedback-acted"] != null))
+  | [$i, ({ "checked-head": $v.head, "feedback-acted": null } | tojson)] | @tsv' <<< "$MRS")
 
 # The set's plain review comments not yet answered, by index ({ "<i>": <count> }): asked only with --only (ASS-365).
 comments='{}'

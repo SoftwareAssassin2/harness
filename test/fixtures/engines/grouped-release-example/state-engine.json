@@ -141,14 +141,58 @@
                     "condition": {
                         "turn-complete": true
                     },
-                    "move-to-state": "team-code-review"
+                    "move-to-state": "check-feedback-round"
                 }
             ],
             "run-location": "vm"
         },
         {
-            "id": "ensure-auto-merge",
+            "id": "check-feedback-round",
             "sequence": 4,
+            "name": "Check the Feedback Round",
+            "description": "Whether Address Merge Request Feedback changed anything: a commit pushed to a merge request it was sent for (its head is not the one the check saw), or a thread or comment replied to or resolved. A round that changed nothing goes back to the check with cause no-op-round, and control counts no visit for it, so a merge request that only waits on its pipeline or approvals is not sent to Blocked by do-nothing rounds; one that changed something, or a failure here, goes on as before (ASS-388)",
+            "max-visits": 5,
+            "on-max-visits": "blocked",
+            "action": {
+                "type": "script",
+                "command": "./agent.sh merge-request:feedback-round {project} {ticket} {variation}"
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "all": [
+                            {
+                                "exit-code": 0
+                            },
+                            {
+                                "script-output": {
+                                    "changed": false
+                                }
+                            }
+                        ]
+                    },
+                    "move-to-state": "team-code-review",
+                    "cause": "no-op-round"
+                },
+                {
+                    "condition": {
+                        "exit-code": 0
+                    },
+                    "move-to-state": "team-code-review"
+                },
+                {
+                    "condition": {
+                        "not": {
+                            "exit-code": 0
+                        }
+                    },
+                    "move-to-state": "team-code-review"
+                }
+            ]
+        },
+        {
+            "id": "ensure-auto-merge",
+            "sequence": 5,
             "name": "Ensure Auto-Merge",
             "description": "Setting the merge request to auto-merge once every flag is cleared",
             "max-visits": 3,
@@ -182,7 +226,7 @@
             "action": {
                 "type": "none"
             },
-            "sequence": 5
+            "sequence": 6
         },
         {
             "id": "blocked",
@@ -192,7 +236,7 @@
             "action": {
                 "type": "none"
             },
-            "sequence": 6
+            "sequence": 7
         },
         {
             "id": "rebuild",
@@ -202,7 +246,7 @@
             "action": {
                 "type": "none"
             },
-            "sequence": 7
+            "sequence": 8
         },
         {
             "id": "blocked-for-human",
@@ -212,7 +256,7 @@
             "action": {
                 "type": "none"
             },
-            "sequence": 8
+            "sequence": 9
         }
     ]
 }
