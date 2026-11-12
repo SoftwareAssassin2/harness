@@ -9,7 +9,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { randomBytes } from 'node:crypto';
 import { execFileSync, spawn } from 'node:child_process';
-import { writeFileSync, readFileSync, existsSync, utimesSync, appendFileSync, rmSync, statSync, mkdirSync } from 'node:fs';
+import { writeFileSync, readFileSync, existsSync, utimesSync, appendFileSync, rmSync, statSync, mkdirSync, openSync, writeSync, fsyncSync, closeSync } from 'node:fs';
 import { join } from 'node:path';
 import { lima, edit } from './vm-fixture.js';
 
@@ -53,7 +53,8 @@ test('vm:inventory p reconciles vms.json with limactl list and the sprint, and l
   }));
   const inventory = await d.inventory();
   assert.deepEqual(inventory, {
-    project: 'p', 'limit-bytes': 1e9, 'use-bytes': 7 * KB, 'golden-bytes': 4 * KB, 'golden-built-at': null, 'golden-build': null,
+    project: 'p', 'limit-bytes': 1e9, 'use-bytes': 11 * KB, 'golden-bytes': 4 * KB, 'shared-bytes': 0, 'golden-built-at': null, 'golden-build': null,   // ASS-403: use-bytes has the golden images in it
+    generations: [{ generation: null, 'golden-built-at': null, 'old-generation': false, 'shared-bytes': 0, vms: ['abc-1-a', 'abc-3-a', 'abc-3-c', 'abc-3-d'] }],
     vms: [
       { name: 'abc-1-a', ticket: 'ABC-1', variation: 'A', state: 'Stopped', 'disk-bytes': 3 * KB, 'last-accessed': '2026-10-01T00:00:00Z', deletable: true, 'golden-built-at': null, 'old-generation': false },
       { name: 'abc-3-c', ticket: 'ABC-3', variation: 'C', state: 'Stopped', 'disk-bytes': 2 * KB, 'last-accessed': '2026-10-10T00:00:00Z', deletable: false, 'golden-built-at': null, 'old-generation': false },
@@ -238,30 +239,111 @@ const cloneOf = (d, file, vm, status = 'Stopped') => { d.v.instance(vm, status);
 const allocated = file => statSync(file).blocks * 512;
 const entries = list => JSON.stringify(Object.fromEntries(list.map(([name, ticket, accessed]) => [name, { ticket, variation: 'A', state: 'Stopped', 'disk-bytes': 0, 'last-accessed': accessed ?? '2026-10-01T00:00:00Z' }])));
 
-test('ASS-287 AC2: vm:inventory charges a VM cloned from an older golden generation (or none recorded) its allocated bytes — the deleted image\'s blocks it pins, shared with other clones or not — and one of the current generation its private bytes; golden images are counted apart', async () => {
+// ASS-403: a project's VM disk is what its VMs and golden images occupy on the volume, each block counted once
+// (shared-size.c: the disk files' physical extents). Until it, a VM of an older generation was charged all it had
+// allocated, so every clone paid again for the deleted image's blocks they all share — 805 GB charged where ~240 were
+// used, on a project whose golden image had just been rebuilt. overwrite(file) gives a clone a page of its own over
+// its first one (16 KiB: 4 blocks, a page of the Mac's, which APFS copies on write whole), the blocks it replaced
+// still its siblings'.
+const overwrite = file => { const fd = openSync(file, 'r+'); writeSync(fd, randomBytes(4 * KB), 0, 4 * KB, 0); fsyncSync(fd); closeSync(fd); };
+
+test('ASS-403 AC1, AC2: vm:inventory charges each VM its private bytes whatever its generation, an older generation\'s blocks its clones share once (its shared-bytes) and the golden images apart; use-bytes, their sum, is what they occupy on the volume', async () => {
   const d = disk();
   label(d, 'golden-p', T2);
   const old = join(d.v.dir, 'old-golden-disk');                                     // golden-p as built at T1, since deleted
   writeFileSync(old, randomBytes(8 * KB));
-  cloneOf(d, old, 'abc-1-a'); label(d, 'abc-1-a', T1);
+  for (const vm of ['abc-1-a', 'abc-1-b', 'abc-1-c']) { cloneOf(d, old, vm); label(d, vm, T1); }
   appendFileSync(join(d.v.instances, 'abc-1-a', 'disk'), randomBytes(KB));         // one block its own
-  cloneOf(d, old, 'abc-1-b'); label(d, 'abc-1-b', T1);
+  overwrite(join(d.v.instances, 'abc-1-b', 'disk'));                               // four of its own, the four it replaced still abc-1-a's and abc-1-c's
   rmSync(old);
-  d.vm('abc-1-c', 2);                                                               // cloned before VMs recorded their image
+  d.vm('abc-1-d', 2);                                                               // cloned before VMs recorded their image
   cloneOf(d, join(d.v.instances, 'golden-p', 'disk'), 'abc-2-a'); label(d, 'abc-2-a', T2);
   appendFileSync(join(d.v.instances, 'abc-2-a', 'disk'), randomBytes(KB));
   d.vm('golden-p-build', 2);                                                        // a failed build, left for inspection
-  writeFileSync(d.at('projects', 'p', 'vms.json'), entries([['abc-1-a', 'ABC-1'], ['abc-1-b', 'ABC-1', '2026-10-02T00:00:00Z'], ['abc-1-c', 'ABC-1', '2026-10-03T00:00:00Z'], ['abc-2-a', 'ABC-2', '2026-10-04T00:00:00Z']]));
+  writeFileSync(d.at('projects', 'p', 'vms.json'), entries([['abc-1-a', 'ABC-1'], ['abc-1-b', 'ABC-1', '2026-10-02T00:00:00Z'], ['abc-1-c', 'ABC-1', '2026-10-03T00:00:00Z'], ['abc-1-d', 'ABC-1', '2026-10-04T00:00:00Z'], ['abc-2-a', 'ABC-2', '2026-10-05T00:00:00Z']]));
   const inventory = await d.inventory();
   const vm = Object.fromEntries(inventory.vms.map(v => [v.name, v]));
-  assert.equal(allocated(join(d.v.instances, 'abc-1-a', 'disk')), 9 * KB);
-  assert.deepEqual(['abc-1-a', 'abc-1-b', 'abc-1-c', 'abc-2-a'].map(n => [vm[n]['disk-bytes'], vm[n]['golden-built-at'], vm[n]['old-generation']]), [
-    [9 * KB, T1, true],
-    [8 * KB, T1, true],                                                              // its private size is 0 — every block shared with abc-1-a — yet it pins them
+  assert.deepEqual(['abc-1-a', 'abc-1-b', 'abc-1-c', 'abc-1-d', 'abc-2-a'].map(n => [vm[n]['disk-bytes'], vm[n]['golden-built-at'], vm[n]['old-generation']]), [
+    [1 * KB, T1, true],
+    [4 * KB, T1, true],
+    [0, T1, true],                                                                   // every block shared with a sibling
     [2 * KB, null, true],
     [1 * KB, T2, false],                                                             // the rest it shares with golden-p, counted once, as golden-p's
   ]);
-  assert.deepEqual([inventory['use-bytes'], inventory['golden-bytes'], inventory['golden-built-at']], [20 * KB, 6 * KB, T2]);
+  assert.deepEqual(inventory.generations, [
+    { generation: null, 'golden-built-at': null, 'old-generation': true, 'shared-bytes': 0, vms: ['abc-1-d'] },
+    { generation: T1, 'golden-built-at': T1, 'old-generation': true, 'shared-bytes': 8 * KB, vms: ['abc-1-a', 'abc-1-b', 'abc-1-c'] },   // the deleted image's 8 blocks, once
+    { generation: T2, 'golden-built-at': T2, 'old-generation': false, 'shared-bytes': 0, vms: ['abc-2-a'] },
+  ]);
+  assert.deepEqual([inventory['golden-bytes'], inventory['shared-bytes'], inventory['golden-built-at']], [6 * KB, 8 * KB, T2]);
+  // What they occupy, block by block as written: the old image's 8, abc-1-a's 1, abc-1-b's 4, abc-1-d's 2, abc-2-a's 1,
+  // golden-p's 4 and golden-p-build's 2. du counts every clone's shared blocks again.
+  const occupied = (8 + 1 + 4 + 2 + 1 + 4 + 2) * KB;
+  assert.equal(inventory['use-bytes'], occupied);
+  const du = ['golden-p', 'golden-p-build', 'abc-1-a', 'abc-1-b', 'abc-1-c', 'abc-1-d', 'abc-2-a'].reduce((sum, n) => sum + allocated(join(d.v.instances, n, 'disk')), 0);
+  assert.equal(du, occupied + (8 + 4 + 8 - 8) * KB + 4 * KB, 'du: the old image\'s blocks once per clone holding them, golden-p\'s twice');
+  assert.equal(d.vms()['abc-1-b']['disk-bytes'], 4 * KB, 'vms.json too');
+});
+
+test('ASS-403: where the disks\' extents cannot be read, vm:inventory says so and falls back to each VM\'s APFS private size and the golden images\' allocated bytes — never more than they occupy', async () => {
+  const d = disk();
+  label(d, 'golden-p', T2);
+  cloneOf(d, join(d.v.instances, 'golden-p', 'disk'), 'abc-2-a'); label(d, 'abc-2-a', T2);
+  appendFileSync(join(d.v.instances, 'abc-2-a', 'disk'), randomBytes(KB));
+  writeFileSync(d.at('projects', 'p', 'vms.json'), entries([['abc-2-a', 'ABC-2']]));
+  mkdirSync(join(d.home, '.harness', 'bin'), { recursive: true });
+  writeFileSync(join(d.home, '.harness', 'bin', 'shared-size'), '#!/bin/sh\necho "no extents" >&2; exit 1\n', { mode: 0o755 });   // newer than its source: not rebuilt
+  const { stdout, stderr } = await d.cli('vm:inventory', 'p');
+  assert.match(stderr, /shared-size: could not read the disks' extents; VM disk use falls back to each one's private size/);
+  const inventory = JSON.parse(stdout);
+  assert.deepEqual([inventory['use-bytes'], inventory['golden-bytes'], inventory['shared-bytes'], inventory.vms[0]['disk-bytes']], [5 * KB, 4 * KB, 0, KB]);
+});
+
+// AC3: the same VMs before and after a rebuild: use rises by the new image's size, no more — the old image's blocks
+// its clones still hold were counted already, as golden-p's. AC4: vm:create charges the corrected use against the
+// limit, so the rebuild does not refuse it (charged as before, 3 clones × 9 blocks + 8 + 8 needed: 43 of 30).
+test('ASS-403 AC3, AC4: a golden image rebuild alone raises use by at most the new image\'s size, and vm:create after it fits within the limit as before it', async () => {
+  const d = disk({ limit: 30 * KB / 1e9 });
+  d.mount();
+  const golden = join(d.v.instances, 'golden-p', 'disk');
+  writeFileSync(golden, randomBytes(8 * KB)); label(d, 'golden-p', T1);
+  for (const vm of ['abc-1-a', 'abc-1-b', 'abc-1-c']) {
+    cloneOf(d, golden, vm, 'Running'); label(d, vm, T1);                           // running: never deleted to make room
+    appendFileSync(join(d.v.instances, vm, 'disk'), randomBytes(KB));
+  }
+  writeFileSync(d.at('projects', 'p', 'vms.json'), entries([['abc-1-a', 'ABC-1'], ['abc-1-b', 'ABC-1'], ['abc-1-c', 'ABC-1']]));
+  const before = await d.inventory();
+  assert.deepEqual([before['use-bytes'], before['golden-bytes'], before['shared-bytes']], [11 * KB, 8 * KB, 0]);
+
+  rmSync(golden); writeFileSync(golden, randomBytes(8 * KB)); label(d, 'golden-p', T2);   // the rebuild
+  const after = await d.inventory();
+  assert.ok(after['use-bytes'] - before['use-bytes'] <= allocated(golden), `${before['use-bytes']} → ${after['use-bytes']}`);
+  assert.deepEqual([after['use-bytes'], after['golden-bytes'], after['shared-bytes']], [19 * KB, 8 * KB, 8 * KB]);
+  assert.deepEqual(after.vms.map(v => [v['disk-bytes'], v['old-generation']]), [[KB, true], [KB, true], [KB, true]]);
+
+  const { stdout } = await d.cli('vm:create', 'p', 'ABC-3', 'A');                   // 19 + 8 needed: 27 of 30
+  assert.equal(JSON.parse(stdout).created, true);
+  assert.deepEqual(['abc-1-a', 'abc-1-b', 'abc-1-c', 'abc-3-a'].map(d.exists), [true, true, true, true]);
+});
+
+// AC4: deleting the last VM of an old generation frees the blocks its clones shared too: make_room counts them
+// (frees-bytes), where the VMs' disk-bytes alone (3 of the 7 needed) would have refused.
+test('ASS-403 AC4: vm:create deletes an old generation\'s VMs to fit within the limit, counting its shared blocks as freed once the last of them goes', async () => {
+  const d = disk({ limit: 20 * KB / 1e9 });
+  d.mount();
+  const golden = join(d.v.instances, 'golden-p', 'disk');
+  writeFileSync(golden, randomBytes(8 * KB)); label(d, 'golden-p', T1);
+  ['abc-1-a', 'abc-1-b', 'abc-1-c'].forEach((vm, i) => {
+    cloneOf(d, golden, vm); label(d, vm, T1);
+    appendFileSync(join(d.v.instances, vm, 'disk'), randomBytes(KB));
+    utimesSync(join(d.v.instances, vm, 'disk'), new Date(`2026-10-0${i + 1}T00:00:00Z`), new Date(`2026-10-0${i + 1}T00:00:00Z`));
+  });
+  writeFileSync(d.at('projects', 'p', 'vms.json'), entries([['abc-1-a', 'ABC-1', '2026-10-01T00:00:00Z'], ['abc-1-b', 'ABC-1', '2026-10-02T00:00:00Z'], ['abc-1-c', 'ABC-1', '2026-10-03T00:00:00Z']]));
+  rmSync(golden); writeFileSync(golden, randomBytes(8 * KB)); label(d, 'golden-p', T2);   // use: 3 + 8 shared + 8 golden = 19; 8 more needed
+  const { stdout, stderr } = await d.cli('vm:create', 'p', 'ABC-3', 'A');
+  assert.equal(JSON.parse(stdout).created, true, stderr);
+  assert.match(stderr, /deleted abc-1-a \(ABC-1 A, last accessed 2026-10-01T00:00:00Z, [\d.]+ GB\)[\s\S]*deleted abc-1-b [\s\S]*deleted abc-1-c /);
+  assert.deepEqual(['abc-1-a', 'abc-1-b', 'abc-1-c', 'abc-3-a'].map(d.exists), [false, false, false, true]);
 });
 
 test('ASS-287 AC3: vm:create with less free space on LIMA_HOME\'s volume (df) than golden-p\'s size deletes the least recently accessed deletable VMs until there is enough, though well within the project\'s limit', async () => {
@@ -345,7 +427,7 @@ test('ASS-289 AC2: vm:inventory reports a leftover golden-p-build apart from the
   let inventory = await d.inventory();
   assert.deepEqual(inventory['golden-build'], { ...build('Running'), leftover: true, deletable: false });
   assert.deepEqual(inventory.vms.map(v => v.name), ['abc-1-a'], 'not a ticket VM');
-  assert.deepEqual([inventory['use-bytes'], inventory['golden-bytes']], [1 * KB, 7 * KB]);
+  assert.deepEqual([inventory['use-bytes'], inventory['golden-bytes']], [8 * KB, 7 * KB]);   // ASS-403: use-bytes has the golden images in it
   assert.equal(d.vms()['golden-p-build'], undefined, 'never taken into vms.json');
 
   status(d, 'golden-p-build', 'Stopped');

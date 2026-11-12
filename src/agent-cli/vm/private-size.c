@@ -1,8 +1,10 @@
 // private-size FILE… — per file, "<private bytes> <allocated bytes>": the
 // bytes of its data no APFS clone shares (getattrlist ATTR_CMNEXT_PRIVATESIZE),
-// and all it has allocated (st_blocks). A clone VM's own disk use is its disk
-// files' private size; a golden image's, their allocated size (ASS-69 AC3:
-// du and ls count shared blocks, so every clone looks as big as its golden).
+// and all it has allocated (st_blocks) (ASS-69 AC3: du and ls count shared
+// blocks, so every clone looks as big as its golden). ASS-403: VM disk use is
+// measured by shared-size.c now, each block counted once; this gives a golden
+// image's allocated size (what a new VM is charged) and the private sizes
+// vm.bash falls back to where shared-size cannot read the extents.
 // Node cannot call getattrlist; vm.bash builds this once (clang), on use.
 #include <stdio.h>
 #include <string.h>

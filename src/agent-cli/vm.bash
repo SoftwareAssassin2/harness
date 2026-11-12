@@ -114,29 +114,36 @@ start_sandboxed() {
 # is taken in, accessed when its disk was last written; each one's state and
 # disk-bytes read afresh — but where limactl cannot read the Mac's boot
 # session (sysctl kern.bootsessionuuid denied, as in an agent's sandbox) it
-# calls every VM "Broken", so there a recorded state is kept (ASS-240). It prints { project, limit-bytes, use-bytes, vms:
-# [{ name, ticket, variation, state, disk-bytes, last-accessed, deletable,
-# credential-kind?, golden-built-at, old-generation }], golden-bytes, golden-built-at,
-# golden-build }, oldest access first.
-# A VM's disk is its own disk files' (disk, or diffdisk
-# and basedisk) APFS private size, the blocks no clone shares (private-size.c,
-# ASS-69 AC3) — while it is a clone of the current golden-<project>, the blocks
-# it shares being the image's. Generations (ASS-287): a VM holds a copy of the
-# label of the image it was cloned from (vm:create), and every rebuild deletes
-# the image — but on APFS a deleted file's blocks stay allocated while any clone
-# references them, so a VM whose label's generation is not golden-<project>'s
-# now (old-generation) pins its old
-# image's blocks, and is charged its disk files' allocated bytes: the private
-# size cannot tell blocks shared with the current image from blocks shared with a
-# deleted one, and none of it is the current image's. (Sibling clones of one old
-# generation are each charged the blocks they share: they are freed only once all
-# go.) With no labelled golden-<project> no VM is of an old generation. A
+# calls every VM "Broken", so there a recorded state is kept (ASS-240). It prints { project, limit-bytes, use-bytes,
+# golden-bytes, shared-bytes, golden-built-at, golden-build, generations: [{ generation, golden-built-at,
+# old-generation, shared-bytes, vms }], vms: [{ name, ticket, variation, state, disk-bytes, last-accessed,
+# deletable, credential-kind?, golden-built-at, old-generation }] }, vms oldest access first.
+# ASS-403: the disk is what the project's VMs and golden images occupy on the
+# volume, each block counted once (measure_disks, shared-size.c: the disk
+# files' — disk, or diffdisk and basedisk — physical extents). A VM is an APFS
+# clone of golden-<project>; every block it has not written since it shares
+# with the image, or with its sibling clones once a rebuild has deleted the
+# image (on APFS a deleted file's blocks stay while any clone references them).
+# So: golden-bytes, the golden images' blocks — golden-<project> and a
+# golden-<project>-build left over — the clones' shared ones among them; a VM's
+# disk-bytes, its private bytes, the blocks no other VM or golden image has,
+# whatever its generation; a generation's shared-bytes, the blocks its VMs
+# share and no golden image has: an older golden image's still held, counted
+# once while any VM of it remains (a block VMs of two generations share counted
+# as the older's; the generation null: VMs cloned before VMs recorded theirs);
+# shared-bytes their sum; and use-bytes all of it: the VMs' disk-bytes, the
+# generations' shared-bytes and golden-bytes. (Until ASS-403 a VM of an older
+# generation was charged all it had allocated, so every one of its clones paid
+# for the old image's blocks again: a rebuild alone could put a project far
+# over its limit.) Generations (ASS-287): a VM holds a copy of the label of the
+# image it was cloned from (vm:create); one whose label's generation is not
+# golden-<project>'s now is old-generation. With no labelled golden-<project>
+# no VM is of an old generation. A
 # label's generation (ASS-291) is its generation id, unique to each build
 # (vm:build-golden), else — a label from before it — its built-at: whole
 # seconds, which two builds may share, and then a VM of the last image looked
 # current. golden-built-at stays the label's built-at (null without one). The
-# golden images — golden-<project> and a golden-<project>-build left over —
-# are counted apart, allocated (golden-bytes: AC3); the registry cache is not.
+# registry cache is not counted.
 # A golden-<project>-build (ASS-289) is no ticket's VM, and is never in vms.json
 # or vms: golden-build is { name, state, disk-bytes (allocated, in golden-bytes
 # too), last-accessed (its disk last written), leftover, deletable }, null with
@@ -170,22 +177,51 @@ record_vm() {
               + (if $k == "" then {} else { "credential-kind": $k } end))'
 }
 
-# private_size <file…> — "<private> <allocated>" bytes per file; the helper built on first use.
-private_size() {
-  local bin="${HARNESS_HOME:-$HOME/.harness}/bin/private-size" src="$here_vm/vm/private-size.c"
+# helper <name> <arg…> — vm/<name>.c run, built on first use (and again when its source is newer) into $HARNESS_HOME/bin.
+helper() {
+  local name="$1" bin="${HARNESS_HOME:-$HOME/.harness}/bin/$1" src="$here_vm/vm/$1.c"; shift
   if [[ ! -x "$bin" || "$src" -nt "$bin" ]]; then
     mkdir -p "$(dirname "$bin")"
-    clang -O2 -o "$bin.$$" "$src" 2>/dev/null && mv -f "$bin.$$" "$bin" || { rm -f "$bin.$$"; echo "private-size: could not build $src (clang)" >&2; return 1; }
+    clang -O2 -o "$bin.$$" "$src" 2>/dev/null && mv -f "$bin.$$" "$bin" || { rm -f "$bin.$$"; echo "$name: could not build $src (clang)" >&2; return 1; }
   fi
   "$bin" "$@"
 }
 
+# private_size <file…> — "<private> <allocated>" bytes per file (private-size.c).
+private_size() { helper private-size "$@"; }
+
+# disk_files <instance folder> — its disk files (disk, or diffdisk and basedisk), one per line.
+disk_files() { local name; for name in disk diffdisk basedisk; do [[ ! -f "$1/$name" ]] || echo "$1/$name"; done; }
+
 # disk_bytes <instance folder> <1|2> — its disk files' private (1) or allocated (2) bytes.
 disk_bytes() {
-  local files=() name
-  for name in disk diffdisk basedisk; do [[ -f "$1/$name" ]] && files+=("$1/$name"); done
+  local files=()
+  mapfile -t files < <(disk_files "$1")
   [[ ${#files[@]} -gt 0 ]] || { echo 0; return; }
   private_size "${files[@]}" | awk -v c="$2" '{ s += $c } END { printf "%.0f\n", s }'
+}
+
+# measure_disks <goldens> <instance folder…> (ASS-403) — "<own> <shared> <allocated>" bytes per folder, in
+# order: its disk files' blocks no other folder's have, those it has with another when it is the first (in
+# order) to have them, and all they have allocated (shared-size.c: their physical extents, each block counted
+# once). The first <goldens> folders are golden images. Where the extents cannot be read it says so on stderr
+# and falls back to a golden image's allocated bytes and a VM's APFS private size as its own, none shared —
+# never more than they occupy, but blind to the blocks clones share once their golden image is gone.
+measure_disks() {
+  local goldens="$1" args=() dir file out i=0; shift
+  for dir; do
+    [[ ${#args[@]} -eq 0 ]] || args+=(--)
+    while IFS= read -r file; do args+=("$file"); done < <(disk_files "$dir")
+  done
+  [[ $# -gt 0 ]] || return 0
+  if out="$(helper shared-size "${args[@]}")" && [[ "$(wc -l <<<"$out")" -eq $# ]]; then echo "$out"; return; fi
+  echo "shared-size: could not read the disks' extents; VM disk use falls back to each one's private size, uncounted the blocks clones share" >&2
+  for dir; do
+    mapfile -t args < <(disk_files "$dir")
+    if [[ ${#args[@]} -eq 0 ]]; then echo "0 0 0"
+    else private_size "${args[@]}" | awk -v golden=$(( i < goldens )) '{ p += $1; a += $2 } END { printf "%.0f 0 %.0f\n", golden ? a : p, a }'; fi
+    i=$(( i + 1 ))
+  done
 }
 
 # accessed_at <instance folder> — when its disk (else the folder) was last written.
@@ -224,6 +260,7 @@ vm_disk_limit() {
 # arguments: past ARG_MAX (1 MB on macOS) jq would not start (ASS-135).
 reconcile_vms() {
   local command="$1" project="$2" file listing sprint recorded measured="{}" name dir limit blind=false current="" current_at="" golden=0 generation old build=null leftover
+  local folders=() names=() goldens sizes=() own shared allocated k build_bytes=0
   file="$(vms_file "$project")"
   sysctl -n kern.bootsessionuuid >/dev/null 2>&1 || blind=true
   limit="$(vm_disk_limit "$command" "$project")" || return 1
@@ -231,25 +268,38 @@ reconcile_vms() {
     | jq -Rn '[inputs | split("\t") | select(length == 3) | { key: .[0], value: { status: .[1], dir: .[2] } }] | from_entries')"
   sprint="$(sprint_file "$command" "$project" 2>/dev/null)"; [[ -f "$sprint" ]] || sprint=/dev/null   # none: $s[0] is null
   recorded="$(jq -nc --slurpfile s "$sprint" '[$s[0] | (.features, .bugs, .spikes) // [] | .[] | .key as $k | .variations // [] | .[] | select(.vm.name) | { key: .vm.name, value: { ticket: $k, variation: .name } }] | from_entries')"
+  # ASS-403: every disk measured at once, the golden images first, then the VMs by generation and name (measure_disks).
   for name in "golden-$project" "golden-$project-build"; do
     dir="$(jq -r --arg n "$name" '.[$n].dir // empty' <<<"$listing")"
-    [[ -z "$dir" ]] || golden=$(( golden + $(disk_bytes "$dir" 2) ))
+    [[ -z "$dir" ]] || folders+=("$dir")
     [[ -z "$dir" || "$name" != "golden-$project" ]] || { current="$(generation_of "$dir")" current_at="$(built_at "$dir")"; }
+  done
+  goldens=${#folders[@]}
+  while IFS=$'\t' read -r name dir generation; do names+=("$name"); folders+=("$dir"); done < <(
+    jq -rn --slurpfile v "$file" --slurpfile l <(printf '%s' "$listing") --slurpfile r <(printf '%s' "$recorded") \
+      '$l[0] as $l | $v[0] + $r[0] | keys[] | select($l[.]) | "\(.)\t\($l[.].dir)"' \
+    | while IFS=$'\t' read -r name dir; do [[ -z "$name" ]] || printf '%s\t%s\t%s\n' "$name" "$dir" "$(generation_of "$dir")"; done \
+    | LC_ALL=C sort -t $'\t' -k3,3 -k1,1)
+  [[ ${#folders[@]} -eq 0 ]] || mapfile -t sizes < <(measure_disks "$goldens" "${folders[@]}")
+  for (( k = 0; k < goldens; k++ )); do
+    read -r own shared allocated <<<"${sizes[k]:-0 0 0}"
+    golden=$(( golden + own + shared )) build_bytes="$allocated"   # golden-<project>-build, when there is one, the last
   done
   dir="$(jq -r --arg n "golden-$project-build" '.[$n].dir // empty' <<<"$listing")"
   if [[ -n "$dir" ]]; then
     leftover=true; ! build_in_progress "$project" || leftover=false
-    build="$(jq -c --arg n "golden-$project-build" --argjson b "$(disk_bytes "$dir" 2)" --arg at "$(accessed_at "$dir")" --argjson leftover "$leftover" --argjson blind "$blind" \
+    build="$(jq -c --arg n "golden-$project-build" --argjson b "$build_bytes" --arg at "$(accessed_at "$dir")" --argjson leftover "$leftover" --argjson blind "$blind" \
       '.[$n].status as $s | { name: $n, state: $s, "disk-bytes": $b, "last-accessed": $at, leftover: $leftover, deletable: ($leftover and $s != "Running" and ($blind | not)) }' <<<"$listing")"
   fi
-  while IFS=$'\t' read -r name dir; do
-    [[ -n "$name" ]] || continue
+  for (( k = goldens; k < ${#folders[@]}; k++ )); do
+    name="${names[k - goldens]}" dir="${folders[k]}"
+    read -r own shared allocated <<<"${sizes[k]:-0 0 0}"
     generation="$(generation_of "$dir")" old=false
     [[ -z "$current" || "$generation" == "$current" ]] || old=true
-    measured="$(jq -c --arg n "$name" --argjson b "$(disk_bytes "$dir" "$( [[ $old == true ]] && echo 2 || echo 1)")" --arg at "$(accessed_at "$dir")" \
-      --arg g "$(built_at "$dir")" --argjson old "$old" '.[$n] = { bytes: $b, accessed: $at, "built-at": (if $g == "" then null else $g end), old: $old }' <<<"$measured")"
-  done < <(jq -rn --slurpfile v "$file" --slurpfile l <(printf '%s' "$listing") --slurpfile r <(printf '%s' "$recorded") \
-    '$l[0] as $l | $v[0] + $r[0] | keys[] | select($l[.]) | "\(.)\t\($l[.].dir)"')
+    measured="$(jq -c --arg n "$name" --argjson b "$own" --argjson sh "$shared" --arg at "$(accessed_at "$dir")" \
+      --arg g "$(built_at "$dir")" --arg gen "$generation" --argjson old "$old" \
+      '.[$n] = { bytes: $b, shared: $sh, accessed: $at, "built-at": (if $g == "" then null else $g end), generation: (if $gen == "" then null else $gen end), old: $old }' <<<"$measured")"
+  done
   update_json "$file" --slurpfile l <(printf '%s' "$listing") --slurpfile r <(printf '%s' "$recorded") --slurpfile m <(printf '%s' "$measured") --argjson blind "$blind" \
     '. as $old | $l[0] as $l | $r[0] as $r
     | $m[0] | with_entries(.key as $n | .value = (($old[$n] // ($r[$n] + { "last-accessed": .value.accessed }))
@@ -264,37 +314,47 @@ reconcile_vms() {
     ($vms[0] | to_entries | map({ name: .key } + .value | . + { deletable: (.state != "Running" and (live(.) as $v | $v == null or (use($v) | . == null or . == "released"))),
         "golden-built-at": $m[0][.name]["built-at"], "old-generation": $m[0][.name].old })
       | sort_by(.["last-accessed"], .name)) as $list
-    | { project: $p, "limit-bytes": $limit, "use-bytes": ($list | map(.["disk-bytes"]) | add // 0), "golden-bytes": $golden,
-        "golden-built-at": (if $current == "" then null else $current end), "golden-build": $build, vms: $list }'
+    | ($m[0] | to_entries | group_by(.value.generation) | map({ generation: .[0].value.generation, "golden-built-at": .[0].value["built-at"],
+        "old-generation": .[0].value.old, "shared-bytes": (map(.value.shared) | add), vms: map(.key) }) | sort_by(.["golden-built-at"], .generation)) as $generations
+    | ($generations | map(.["shared-bytes"]) | add // 0) as $shared
+    | { project: $p, "limit-bytes": $limit, "use-bytes": (($list | map(.["disk-bytes"]) | add // 0) + $shared + $golden), "golden-bytes": $golden,
+        "shared-bytes": $shared, "golden-built-at": (if $current == "" then null else $current end), "golden-build": $build,
+        generations: $generations, vms: $list }'
 }
 
 # make_room (ASS-75, ASS-287 AC3; ASS-289: a deletable golden-<project>-build,
-# a failed build left over, is deleted first, before any ticket VM): first the project's limit — its VMs' use
-# plus its golden images' (golden-bytes) plus <bytes> — unless given volume (a
-# golden image build: not a ticket's VM); then the free space df reports on the
+# a failed build left over, is deleted first, before any ticket VM): first the project's limit — its use
+# (use-bytes: its VMs, the blocks their generations share and its golden images, ASS-403) plus <bytes> —
+# unless given volume (a golden image build: not a ticket's VM); then the free space df reports on the
 # volume holding LIMA_HOME, which every project's VMs, the golden images and
 # whatever else is there share. Either way, when deleting every deletable VM
 # of the project's could not make room, it deletes none and returns 3 with the
 # reason in $room_short and $room_long (on stderr too); else it deletes them,
 # least recently accessed first, until there is room — for the volume, reading
 # df again after each, as a deleted clone frees only the blocks no other file
-# shares (an estimate beforehand: its disk-bytes); short still once none is
-# left, it returns 3 as well.
+# shares (an estimate beforehand: its frees-bytes, its disk-bytes and, when it is
+# the last of its generation to go, the generation's shared-bytes: ASS-403);
+# short still once none is left, it returns 3 as well.
 make_room() {
   local command="$1" project="$2" need="$3" vm="$4" scope="${5:-}" inventory limit use golden free avail bytes taken
   inventory="$(reconcile_vms "$command" "$project")" || return 1
-  # .deletable: what may go, in the order it goes — the leftover build, then the VMs, least recently accessed first.
-  inventory="$(jq -c '. + { deletable: ([.["golden-build"] // empty | select(.deletable) | { name, "disk-bytes", "last-accessed", build: true }]
-    + [.vms[] | select(.deletable) | { name, "disk-bytes", ticket, variation, "last-accessed", build: false }]) }' <<<"$inventory")"
-  read -r limit use golden free < <(jq -r '[.["limit-bytes"], .["use-bytes"], .["golden-bytes"], (.deletable | map(.["disk-bytes"]) | add // 0)] | @tsv' <<<"$inventory")
+  # .deletable: what may go, in the order it goes — the leftover build, then the VMs, least recently accessed first;
+  # each one's frees-bytes, what deleting it gives back (ASS-403): the last of a generation's VMs to go, the ones
+  # before it gone too, frees the blocks they shared as well.
+  inventory="$(jq -c '.generations as $g | [.vms[] | select(.deletable)] as $d
+    | . + { deletable: ([.["golden-build"] // empty | select(.deletable) | { name, "disk-bytes", "frees-bytes": .["disk-bytes"], "last-accessed", build: true }]
+      + [range(0; $d | length) as $k | $d[$k] | . as $v | (first($g[] | select(any(.vms[]; . == $v.name))) // { vms: [], "shared-bytes": 0 }) as $gen
+        | { name, "disk-bytes", "frees-bytes": (.["disk-bytes"] + (if $gen.vms - [$d[0:$k + 1][].name] == [] then $gen["shared-bytes"] else 0 end)),
+            ticket, variation, "last-accessed", build: false }]) }' <<<"$inventory")"
+  read -r limit use golden free < <(jq -r '[.["limit-bytes"], .["use-bytes"], .["golden-bytes"], (.deletable | map(.["frees-bytes"]) | add // 0)] | @tsv' <<<"$inventory")
   if [[ "$scope" != volume ]]; then
-    if (( use + golden - free + need > limit )); then
+    if (( use - free + need > limit )); then
       room_short="VM disk limit reached"
       room_long="$project's VMs use $(gb "$use") GB of its $(gb "$limit") GB VM disk limit (vm-disk-limit-gb), and $vm needs $(gb "$need") GB (golden-$project's size); its golden images take $(gb "$golden") GB of it; nothing more may be deleted: every other VM is running or its variation still in flight. Free space by finishing or setting aside variations, or raise vm-disk-limit-gb."
       echo "$command: $room_long" >&2
       return 3
     fi
-    taken=$(( use + golden ))   # a deleted build was among the golden images, a VM among the use
+    taken=$use   # ASS-403: use-bytes has the golden images in it
     while (( taken + need > limit )); do
       room_delete "within $project's VM disk limit" || return 1
       taken=$(( taken - bytes )) free=$(( free - bytes ))
@@ -317,10 +377,10 @@ make_room() {
 }
 
 # room_delete <why> — make_room's: the first of $inventory's deletable (the leftover build, else the least recently
-# accessed VM) deleted, and taken out of it; $bytes its disk-bytes.
+# accessed VM) deleted, and taken out of it; $bytes its frees-bytes (ASS-403).
 room_delete() {
   local name ticket variation accessed build
-  IFS=$'\t' read -r name bytes accessed build ticket variation < <(jq -r 'first(.deletable[]) | [.name, .["disk-bytes"], .["last-accessed"], .build, .ticket, .variation] | @tsv' <<<"$inventory")
+  IFS=$'\t' read -r name bytes accessed build ticket variation < <(jq -r 'first(.deletable[]) | [.name, .["frees-bytes"], .["last-accessed"], .build, .ticket, .variation] | @tsv' <<<"$inventory")
   if [[ "$build" == true ]]; then
     delete_build "$command" "$project" || return 1
     echo "$command: deleted $name ($project's leftover golden image build, last accessed $accessed, $(gb "$bytes") GB) to make room $1" >&2
