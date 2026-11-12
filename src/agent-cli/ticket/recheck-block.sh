@@ -25,6 +25,10 @@ set -euo pipefail
 #      ({ rechecked: false, recheck-why }): Troubleshoot goes on as before;
 #   1  bad arguments, an unknown ticket or variation.
 # Every outcome is logged in the variation's change log (work.bash blocked_log, AC3).
+# ASS-392: vm:image-recheck runs it to verify Repair Image's repair, logged
+# under its own step: RECHECK_STEP names it, RECHECK_NEXT_PASS,
+# RECHECK_NEXT_FAIL and RECHECK_NEXT_NONE what follows a pass, a failure and
+# nothing to re-run (Check First's by default: the last as a failure).
 # The passes are counted by ticket:fix-attempts (a run kept in blocks with
 # recheck-passed true — a re-check that failed, Troubleshoot then finding
 # nothing wrong, is none), so a check that passes only on re-check
@@ -34,6 +38,7 @@ source "$here_vm/code.bash"
 source "$here_vm/work.bash"
 
 command=ticket:recheck-block
+step="${RECHECK_STEP:-Check First}" next_pass="${RECHECK_NEXT_PASS:-No agent dispatched; the ticket resumes.}" next_fail="${RECHECK_NEXT_FAIL:-On to Troubleshoot.}"
 [[ $# -eq 3 ]] || { echo "usage: $command <project> <ticket-key> <variation>" >&2; exit 1; }
 project="$1" key="$(upper "$2")" variation="$3"
 variation_exists "$command" "$project" "$key" "$variation"
@@ -45,7 +50,7 @@ choice="$(jq -nc --arg project "$project" --arg ticket "$key" --argjson variatio
 
 why="$(jq -r '.why // empty' <<< "$choice")"
 if [[ -n "$why" ]]; then
-  blocked_log "$project" "$key" "$variation" "Check First" "Not re-checked: $why. On to Troubleshoot."
+  blocked_log "$project" "$key" "$variation" "$step" "Not re-checked: $why. ${RECHECK_NEXT_NONE:-$next_fail}"
   jq -c '{ rechecked: false, "recheck-why": .why }' <<< "$choice"
   echo "$command: not re-checked: $why" >&2
   exit 3
@@ -56,11 +61,11 @@ while IFS= read -r word; do argv+=("$word"); done < <(jq -r '.argv[1:][]' <<< "$
 code=0
 output="$("$here_vm/../../agent.sh" "${argv[@]}" 2>&1 < /dev/null)" || code=$?
 if [[ "$code" -eq 0 ]]; then
-  blocked_log "$project" "$key" "$variation" "Check First" "Passed on re-check; nothing to fix. Re-ran \`$line\` (the step $at, where it was blocked): exit 0. No agent dispatched; the ticket resumes."
+  blocked_log "$project" "$key" "$variation" "$step" "Passed on re-check; nothing to fix. Re-ran \`$line\` (the step $at, where it was blocked): exit 0. $next_pass"
   jq -nc --arg at "$at" --arg line "$line" '{ "needs-fix": false, rechecked: true, "recheck-passed": true, summary: "Passed on re-check; nothing to fix", recheck: { at: $at, command: $line, exit: 0 } }'
   exit 0
 fi
 tail_lines="$(tail -n 20 <<< "$output" | cut -c 1-300)"
-blocked_log "$project" "$key" "$variation" "Check First" "Re-checked the step $at: \`$line\` still fails (exit $code). On to Troubleshoot. Its last lines:"$'\n```\n'"$tail_lines"$'\n```'
+blocked_log "$project" "$key" "$variation" "$step" "Re-checked the step $at: \`$line\` still fails (exit $code). $next_fail Its last lines:"$'\n```\n'"$tail_lines"$'\n```'
 jq -nc --arg at "$at" --arg line "$line" --argjson code "$code" --arg tail "$tail_lines" '{ rechecked: true, recheck: { at: $at, command: $line, exit: $code, output: $tail } }'
 exit 3

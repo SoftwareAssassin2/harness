@@ -89,6 +89,8 @@ const ALLOWED = {
     '"$h/agent-url"': 'inside the VM, not the harness\'s data (ASS-215: kept across its rm -rf)',
   },
   'src/agent-cli/vm/in-vm/demo-desktop.sh': { '"$R$rc"': 'runs inside the VM' },
+  // ASS-392: a temp file beside the definition file, its mode then set, renamed over it (replace_file would reset the mode).
+  'src/agent-cli/vm/golden-write.sh': { '"$tmp"': 'a temp file beside the target, renamed over it, its mode kept' },
   'src/agent-cli/vm/raise-golden-rebuilds.sh': { '"$body"': 'a temp file', '"$lines"': 'a temp file' },
   'src/agent-cli/vm/golden.bash': { '", $ARGV[0]) or exit 1; exit(flock($f, LOCK_EX | LOCK_NB) ? 1 : 0)\' "': 'perl\'s open mode in a lock probe, not a redirect' },
   'src/agent-cli/vm/firewall.sh': { '/sbin/pfctl</string><string>-E</string><string>-a</string><string>com.apple/harness-vm</string><string>-f</string><string>$anchor</string></array>': 'XML text, not a redirect' },

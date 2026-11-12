@@ -265,6 +265,21 @@
                 },
                 {
                     "condition": {
+                        "all": [
+                            {
+                                "turn-complete": true
+                            },
+                            {
+                                "structured-output": {
+                                    "issue": "image"
+                                }
+                            }
+                        ]
+                    },
+                    "move-to-state": "await-golden-build"
+                },
+                {
+                    "condition": {
                         "turn-complete": true
                     },
                     "move-to-state": "blocked-for-human"
@@ -982,8 +997,122 @@
             ]
         },
         {
-            "id": "done",
+            "id": "await-golden-build",
             "sequence": 29,
+            "name": "Await the Golden Build",
+            "description": "ASS-392 AC3: one golden rebuild of a project at a time. Before Repair Image, and again whenever it found or started one, wait while the project's golden image is being built (vm:golden-wait: golden-build.lock held, or golden-build-run.json's build still going — the reading vm:build-golden-start refuses a second start on, whoever started it: control's golden rebuild ticket, the operator, another ticket's Repair Image), polling (exit 1, its waiting-exit-code: no failure counted); no build running (exit 0), Repair Image, which re-checks first whether the problem is still there; no golden-image definition (exit 2), Blocked for Human. Its max-visits bounds the builds one stay may wait for",
+            "max-visits": 4,
+            "on-max-visits": "blocked-for-human",
+            "record-script-output": true,
+            "action": {
+                "type": "script",
+                "command": "./agent.sh vm:golden-wait {project}",
+                "mode": "timer",
+                "timer-minutes": 5,
+                "waiting-exit-code": 1
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "exit-code": 0
+                    },
+                    "move-to-state": "repair-image"
+                },
+                {
+                    "condition": {
+                        "exit-code": 2
+                    },
+                    "move-to-state": "blocked-for-human"
+                }
+            ]
+        },
+        {
+            "id": "repair-image",
+            "sequence": 30,
+            "name": "Repair the Image",
+            "description": "ASS-392 AC2: an image issue, on the host (the Blocked agents in the VM cannot rebuild images), confined as Troubleshoot on the Host is: it re-checks first whether the problem is still there (a build may have finished while it waited: gone, it rebuilds nothing), then may only start the project's registry (registry:up), edit its image definition in its golden-image folder (vm:golden-write, nothing outside it), rebuild the golden image (vm:build-golden-start, which never overlaps another build) and recreate the ticket's VM from the current image (vm:recreate, never losing work not on a remote) — nothing else on the Mac, never a credential. A build running, found or started (golden-building), waits at Await the Golden Build and comes back; fixed, Verify the Repaired Image; else Blocked for Human with what it tried",
+            "action": {
+                "type": "prompt",
+                "prompt": "repair-image-on-host-grouped",
+                "agent-count": 1,
+                "run-in-dev-container": false
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "all": [
+                            {
+                                "turn-complete": true
+                            },
+                            {
+                                "structured-output": {
+                                    "golden-building": true
+                                }
+                            }
+                        ]
+                    },
+                    "move-to-state": "await-golden-build"
+                },
+                {
+                    "condition": {
+                        "all": [
+                            {
+                                "turn-complete": true
+                            },
+                            {
+                                "structured-output": {
+                                    "fixed": true
+                                }
+                            }
+                        ]
+                    },
+                    "move-to-state": "verify-image"
+                },
+                {
+                    "condition": {
+                        "turn-complete": true
+                    },
+                    "move-to-state": "blocked-for-human"
+                }
+            ]
+        },
+        {
+            "id": "verify-image",
+            "sequence": 31,
+            "name": "Verify the Repaired Image",
+            "description": "ASS-392 AC4: done only when the failing check passes on a VM from the repaired image (vm:image-recheck, on the host, the VM kept running for it): the golden image current (built from its definition as it is now), the ticket's VM, when it has one, a clone of it, and the blocked step's check (ticket:recheck-block, as Check First runs it) passing there (exit 0); no check of the harness's own to re-run (exit 2: an agent's step, or one that makes a VM), Repair Image's run of it stands; else (exit 3, or the command failing) Blocked for Human with what was tried. Each outcome logged in the change log",
+            "vm": "running",
+            "record-script-output": true,
+            "action": {
+                "type": "script",
+                "command": "./agent.sh vm:image-recheck {project} {work-item} {variation}"
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "exit-code": 0
+                    },
+                    "move-to-state": "done"
+                },
+                {
+                    "condition": {
+                        "exit-code": 2
+                    },
+                    "move-to-state": "done"
+                },
+                {
+                    "condition": {
+                        "not": {
+                            "exit-code": 0
+                        }
+                    },
+                    "move-to-state": "blocked-for-human"
+                }
+            ]
+        },
+        {
+            "id": "done",
+            "sequence": 32,
             "name": "Done",
             "description": "Fixed, repaired, nothing wrong any more, or sent back to fix its own branch (ASS-384), passed on re-check, its fix merge request merged, or sent to wait for its dependency merge request (ASS-390): the parent follows return-to-state, or the run's resume-at where engine.js allows it, on the API key fallback or after its rate limit reset (ASS-391), or held by its project's credentials (ASS-395)",
             "is-done": true,
@@ -993,7 +1122,7 @@
         },
         {
             "id": "retry",
-            "sequence": 30,
+            "sequence": 33,
             "name": "Retry",
             "description": "The fix ticket was closed unmerged, a failed attempt: the parent goes round Blocked again, its attempts counted afresh",
             "is-done": true,
@@ -1003,7 +1132,7 @@
         },
         {
             "id": "blocked-for-human",
-            "sequence": 31,
+            "sequence": 34,
             "name": "Blocked for Human",
             "description": "No fix could be raised, waited on or made, or 3 fix attempts failed: the parent goes to Blocked for Human, the run's ai-feedback saying why",
             "is-done": true,

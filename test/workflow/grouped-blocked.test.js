@@ -78,6 +78,10 @@ const defaults = {
   'repair-project-on-host': { structuredOutput: { fixed: true, 'fix-merge-request': FIX_MR, evidence: [], 'ai-feedback-short': `Opened ${FIX_MR}`, 'ai-feedback-long': 'L' } },
   'wait-on-fix-merge-request': { exitCode: 0, scriptOutput: { ticket: 'X-1', variation: 'A', 'waits-on': { 'merge-request': FIX_MR } } },
   'await-fix-merge-request': { exitCode: 0, scriptOutput: { status: 'Merged', landed: true, 'fix-merge-request': FIX_MR, 'ai-feedback-short': null, 'ai-feedback-long': null } },
+  // ASS-392: no golden build running; Repair Image fixes it; verified on a VM from the repaired image.
+  'await-golden-build': { exitCode: 0, scriptOutput: { project: 'p', image: 'golden-p', status: 'failed', 'built-at': '2026-11-01T10:00:00Z', generation: 'g1', fix: null } },
+  'repair-image': { structuredOutput: { 'golden-building': false, fixed: true, evidence: ['vm:golden-write p images.txt → ok'], 'ai-feedback-short': 'Pinned the arm64 image', 'ai-feedback-long': 'L' } },
+  'verify-image': { exitCode: 0, scriptOutput: { 'needs-fix': false, rechecked: true, 'recheck-passed': true, summary: 'Passed on re-check; nothing to fix', recheck: { at: 'build/automated-testing', command: 'c', exit: 0 }, 'image-verified': true } },
 };
 const issue = value => ({ classify: { structuredOutput: { issue: value, reasoning: 'R' } } });
 const steps = run => run.trail.filter(id => !['find-where', 'check-first'].includes(id));
@@ -107,7 +111,7 @@ test('AC1: Troubleshoot, then Classify — its structured output the issue (harn
   }
   const schema = JSON.parse(readFileSync(join(ROOT, 'prompts', 'classify-issue-grouped', 'prompt.json'), 'utf8')).output;
   assert.deepEqual(schema.properties.issue.enum.slice(0, 4), ['harness', 'project', 'environment', 'dependency'], 'ASS-390: dependency');
-  for (const added of ['rate-limit', 'credentials']) assert.ok(schema.properties.issue.enum.includes(added), `ASS-391, ASS-395: ${added}`);
+  for (const added of ['rate-limit', 'credentials', 'image']) assert.ok(schema.properties.issue.enum.includes(added), `ASS-391, ASS-395, ASS-392: ${added}`);
   assert.deepEqual(schema.required, ['issue', 'reasoning']);
   // The troubleshooter finds the cause; where the fix goes is Classify's alone.
   for (const p of ['troubleshoot-block-grouped', 'troubleshoot-block-on-host-grouped']) assert.equal(JSON.parse(readFileSync(join(ROOT, 'prompts', p, 'prompt.json'), 'utf8')).output.properties['cause-in'], undefined, p);
@@ -379,7 +383,8 @@ test('AC7: when no fix ticket can be raised or waited on, the ticket never resum
 test('ASS-75, ASS-240 AC2: the grouped Blocked runs its VM where it works in it — from its first step (count-attempts), troubleshooting, classifying and repairing', () => {
   const vm = engines['grouped-blocked'].steps.filter(s => s.vm).map(s => [s.id, s.vm]);
   assert.deepEqual(vm, [['count-attempts', 'running'], ['check-first', 'running'], ['find-where', 'running'], ['troubleshoot', 'running'], ['classify', 'running'], ['check-on-master', 'running'], ['own-branch-or-obstacle', 'running'], ['own-branch-or-human', 'running'], ['plan-obstacle-fix', 'running'],
-    ['find-where-to-repair-project', 'running'], ['repair-project', 'running'], ['add-repository', 'running'], ['repair-environment', 'running']]);
+    ['find-where-to-repair-project', 'running'], ['repair-project', 'running'], ['add-repository', 'running'], ['repair-environment', 'running'],
+    ['verify-image', 'running']]);   // ASS-392: the failing check re-run on the ticket's VM from the repaired image
 });
 
 test('learning (operator, 2026-10-24): every Blocked run is kept on the ticket (append-output-to: blocks), and troubleshooting and classifying are given those earlier blocks ({problem}: facts.js blockHistory) to take into account', () => {
@@ -563,7 +568,8 @@ test('ASS-384: Troubleshoot names the failing file, Classify says own-branch; th
 
 // ASS-390 — Blocked fixes whatever blocks a ticket in its scope, adds Repair
 // Project, checks first, and logs everything.
-const BLOCKED_PROMPTS = ['troubleshoot-block-grouped', 'troubleshoot-block-on-host-grouped', 'classify-issue-grouped', 'repair-environment-grouped', 'repair-environment-on-host-grouped', 'repair-project-grouped', 'repair-project-on-host-grouped'];
+const BLOCKED_PROMPTS = ['troubleshoot-block-grouped', 'troubleshoot-block-on-host-grouped', 'classify-issue-grouped', 'repair-environment-grouped', 'repair-environment-on-host-grouped', 'repair-project-grouped', 'repair-project-on-host-grouped',
+  'repair-image-on-host-grouped'];   // ASS-392
 const promptText = p => readFileSync(join(ROOT, 'prompts', p, 'prompt.txt'), 'utf8');
 const promptJson = p => JSON.parse(readFileSync(join(ROOT, 'prompts', p, 'prompt.json'), 'utf8'));
 
@@ -770,4 +776,86 @@ test('ASS-395 AC5: Classify\'s credentials runs a fresh credentials check, then 
   assert.equal(nextState(unseen, grouped, { exitCode: 1 }, []).to, 'blocked-for-human', 'a failure there still reaches the operator');
   assert.match(promptText('classify-issue-grouped'), /- "credentials": a missing or failing credential — a keychain item, a token, a login/);
   assert.equal(promptJson('classify-issue-grouped').output.properties.issue.enum.includes('credentials'), true);
+});
+
+// ASS-392 — Blocked repairs a broken golden image, or the ticket's VM built
+// from it, on the Mac (Repair Image), one golden rebuild at a time.
+const IMAGE = { classify: { structuredOutput: { issue: 'image', reasoning: 'amd64-only image on arm64' } } };
+const BUILDING = { exitCode: 1, scriptOutput: { status: 'building' } };
+
+test('ASS-392 AC1/AC4: Classify\'s image outcome waits out any golden build, then Repair Image on the host; verified on a VM from the repaired image, the run is done and the ticket resumes, nothing raised', () => {
+  const run = walk('grouped-blocked', IMAGE);
+  assert.deepEqual(steps(run), ['count-attempts', 'troubleshoot', 'classify', 'await-golden-build', 'repair-image', 'verify-image', 'done']);
+  resumes('grouped-blocked', run);
+  assert.equal(run.output['image-verified'], true);
+  assert.ok(!run.trail.includes('create-fix-ticket') && !run.trail.some(id => id.startsWith('repair-environment')), 'nothing raised, no other repair');
+  assert.match(blockHistory({ blocks: [{ ...run.output, 'ended-at': 'done' }] }), /its image repaired \(Pinned the arm64 image\), verified on a VM from it/);
+  const analysis = { id: 'r', project: 'example', parent: {}, 'structured-output': { summary: 'S', issue: 'image', reasoning: 'R' } };
+  assert.equal(problemOf(analysis, [], { harness: { 'harness-project': 'harness' } }).includes('Raise the fix ticket in'), false, 'no fix ticket for an image issue');
+  assert.match(problemOf(analysis, [], {}), /Classified: an image issue/);
+  // Only an image issue reaches it.
+  const into = engines['grouped-blocked'].steps.flatMap(s => (s['exit-events'] ?? []).filter(e => e['move-to-state'] === 'await-golden-build').map(() => s.id));
+  assert.deepEqual([...new Set(into)].toSorted(), ['classify', 'repair-image']);
+  for (const value of ['harness', 'project', 'environment', 'dependency']) assert.ok(!walk('grouped-blocked', issue(value)).trail.includes('repair-image'), value);
+});
+
+test('ASS-392 AC3: one golden rebuild at a time — Await the Golden Build polls vm:golden-wait on a timer while a build runs (exit 1, its waiting-exit-code: no failure counted); a build Repair Image finds or starts sends it back to wait, then Repair Image runs again to re-check first; bounded by max-visits', () => {
+  const grouped = engines['grouped-blocked'], wait = stepOf(grouped, 'await-golden-build');
+  assert.deepEqual([wait.action.type, wait.action.command, wait.action.mode, wait.action['timer-minutes'], wait.action['waiting-exit-code'], wait['record-script-output'], wait.vm],
+    ['script', './agent.sh vm:golden-wait {project}', 'timer', 5, 1, true, undefined], 'on the host, its VM let stop while it waits');
+  assert.equal(nextState(wait, grouped, BUILDING, []), null, 'building: waits, no exit, no failure');
+  assert.deepEqual([0, 2].map(code => nextState(wait, grouped, { exitCode: code }, []).to), ['repair-image', 'blocked-for-human']);
+  // Repair Image found a build running, or started one: back to wait, then again — its re-check finding the problem gone (no rebuild), verified.
+  const again = walk('grouped-blocked', { ...IMAGE, 'repair-image': [
+    { structuredOutput: { 'golden-building': true, fixed: false, evidence: ['vm:build-golden-start p → started'], 'ai-feedback-short': 'Started a golden rebuild', 'ai-feedback-long': 'L' } },
+    { structuredOutput: { 'golden-building': false, fixed: true, 'problem-gone': true, evidence: ['vm:golden-wait p → current'], 'ai-feedback-short': 'Gone after the rebuild', 'ai-feedback-long': 'L' } },
+  ] });
+  assert.deepEqual(steps(again).slice(3), ['await-golden-build', 'repair-image', 'await-golden-build', 'repair-image', 'verify-image', 'done']);
+  assert.equal(again.output['problem-gone'], true);
+  // A repair that only ever waits on builds reaches the operator.
+  const forever = walk('grouped-blocked', { ...IMAGE, 'repair-image': { structuredOutput: { 'golden-building': true, fixed: false, evidence: [], 'ai-feedback-short': 'Waiting on golden-p\'s build', 'ai-feedback-long': 'L' } } });
+  assert.equal(forever.trail.filter(id => id === 'await-golden-build').length, wait['max-visits']);
+  toHuman('grouped-blocked', forever, /Waiting on golden-p/);
+  // The wait reads the lock and the started build the harness already uses (golden.bash golden_status), never a lock of its own.
+  const sh = readFileSync(join(ROOT, 'src', 'agent-cli', 'vm', 'golden-wait.sh'), 'utf8');
+  assert.match(sh, /golden_status "\$1"/);
+  assert.doesNotMatch(sh, /lock_on|flock/);
+});
+
+test('ASS-392 AC4: Verify the Repaired Image — vm:image-recheck on the host, its VM running: passed (exit 0), or no check of the harness\'s own with the image current and the VM its clone (exit 2), done; still failing, not current, an old clone or the command failing, Blocked for Human with what was tried; Repair Image not fixed, Blocked for Human', () => {
+  const grouped = engines['grouped-blocked'], verify = stepOf(grouped, 'verify-image');
+  assert.deepEqual([verify.action.type, verify.action.command, verify['record-script-output'], verify.vm, verify['run-location']],
+    ['script', './agent.sh vm:image-recheck {project} {work-item} {variation}', true, 'running', undefined]);
+  assert.deepEqual([0, 2, 3, 1].map(code => nextState(verify, grouped, { exitCode: code }, []).to), ['done', 'done', 'blocked-for-human', 'blocked-for-human']);
+  const still = walk('grouped-blocked', { ...IMAGE, 'verify-image': { exitCode: 3, scriptOutput: { 'image-verified': false, 'ai-feedback-short': 'Repair Image: the failing check still fails on a VM from the repaired image', 'ai-feedback-long': 'L' } } });
+  assert.deepEqual(still.trail.slice(-2), ['verify-image', 'blocked-for-human']);
+  toHuman('grouped-blocked', still, /still fails on a VM from the repaired image/);
+  const notFixed = walk('grouped-blocked', { ...IMAGE, 'repair-image': { structuredOutput: { 'golden-building': false, fixed: false, evidence: [], 'ai-feedback-short': 'The Claude token is missing: the operator adds it', 'ai-feedback-long': 'L' } } });
+  assert.deepEqual(notFixed.trail.slice(-2), ['repair-image', 'blocked-for-human']);
+  toHuman('grouped-blocked', notFixed, /token is missing/);
+});
+
+test('ASS-392 AC2: Repair Image is a confined host prompt step — not the VM, not unconfined — and its prompt states its limits: re-check first, wait for a running build, registry:up, the image definition in the project\'s golden-image folder only through vm:golden-write, vm:build-golden-start, vm:recreate; nothing else on the Mac — no other project, the shared checkout or the operator\'s settings — and never a credential', () => {
+  const step = stepOf(engines['grouped-blocked'], 'repair-image');
+  assert.deepEqual([step.action.type, step.action.prompt, step['run-location'], step.vm, step.action['works-on-code'], step.action['run-in-dev-container']],
+    ['prompt', 'repair-image-on-host-grouped', undefined, undefined, undefined, false], 'on the host, confined (confinement.test.js: not among the unconfined)');
+  const t = promptText('repair-image-on-host-grouped'), out = promptJson('repair-image-on-host-grouped').output;
+  assert.match(t, /First, re-check: is the original problem still there\?/);
+  assert.match(t, /a build finished after the block may already have fixed it/);
+  assert.match(t, /Gone: rebuild nothing/);
+  assert.match(t, /One golden rebuild at a time\. If status is building [^\n]*golden-build\.lock held, or golden-build-run\.json's build still going[^\n]*start nothing and change nothing: finish at once with golden-building true/);
+  assert.match(t, /never delete or touch golden-build\.lock, golden-build-run\.json or golden-build-start\.lock/);
+  assert.ok(t.includes('`{agent-sh} vm:golden-wait {project}`'));
+  assert.ok(t.includes('`{agent-sh} registry:up {project}`'));
+  assert.match(t, /edit the project's image definition — only files in its golden-image folder \(\{project-folder\}\/project\.json's golden-image\.folder: provision\.sh, template\.yaml, images\.txt, warm\.sh, tests\.json, run-test\.sh\) — and only through `\{agent-sh\} vm:golden-write \{project\} <file in that folder>/);
+  assert.ok(t.includes('`{agent-sh} vm:build-golden-start {project}`'));
+  assert.ok(t.includes('`{agent-sh} vm:recreate {project} {ticket} {variation}`'));
+  assert.match(t, /You may not touch anything else on this Mac: no other project's files, VMs, image or registry; not the project's shared checkout[^\n]*not the operator's settings[^\n]*nothing outside the project's golden-image folder but through the commands above\./);
+  assert.match(t, /Never a credential, token or secret — never read, write, add or rotate one[^\n]*a missing or expired token is the operator's, as Setup's credential check reports it/);
+  assert.match(t, /Fixed only when it passes\./);
+  assert.doesNotMatch(t, /vm:build-golden [^s]|vm:delete|limactl (delete|stop|start)/, 'no other way to build or delete');
+  assert.deepEqual([out.properties['golden-building'].type, out.properties.fixed.type, out.properties['problem-gone'].type, out.required], ['boolean', 'boolean', 'boolean', ['golden-building', 'fixed', 'evidence', 'ai-feedback-short', 'ai-feedback-long']]);
+  // Its commands run on the Mac alone: a VM agent may not call them through the forwarder.
+  const allowed = JSON.parse(readFileSync(join(ROOT, 'src', 'control', 'forwarder-allowlist.json'), 'utf8'));
+  for (const c of ['vm:golden-wait', 'vm:golden-write', 'vm:recreate', 'vm:image-recheck', 'registry:up']) assert.equal(allowed[c], undefined, c);
 });

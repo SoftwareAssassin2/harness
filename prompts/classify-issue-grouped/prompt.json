@@ -36,9 +36,10 @@
                     "environment",
                     "dependency",
                     "rate-limit",
-                    "credentials"
+                    "credentials",
+                    "image"
                 ],
-                "description": "Where the fix is made: harness (a fix ticket in the harness project's backlog), project (the cause is in the project's own code: checked against the latest master next, a bug raised in the project's own ticket system only when it fails there; the harness's backlog on the harness project), environment (where the work runs: repaired in place, else by the operator); dependency (ASS-390: no fault — it only waits for one of the ticket's own merge requests, one another depends on in another repository, to merge: back to Build's Await Sequential Merge); rate-limit (ASS-391: no fault of the ticket's — Claude usage or rate limits stopped its agents: Await Rate Limit resumes it on the API key fallback at once, or once the limit resets); credentials (ASS-395 AC5: a missing or failing credential — keychain item, token, login: a fresh credentials check; the project held, the ticket waits for the operator's fix there; else Blocked for Human with this reasoning)"
+                "description": "Where the fix is made: harness (a fix ticket in the harness project's backlog), project (the cause is in the project's own code: checked against the latest master next, a bug raised in the project's own ticket system only when it fails there; the harness's backlog on the harness project), environment (where the work runs: repaired in place, else by the operator); dependency (ASS-390: no fault — it only waits for one of the ticket's own merge requests, one another depends on in another repository, to merge: back to Build's Await Sequential Merge); rate-limit (ASS-391: no fault of the ticket's — Claude usage or rate limits stopped its agents: Await Rate Limit resumes it on the API key fallback at once, or once the limit resets); credentials (ASS-395 AC5: a missing or failing credential — keychain item, token, login: a fresh credentials check; the project held, the ticket waits for the operator's fix there; else Blocked for Human with this reasoning); image (ASS-392: the project's golden image, the ticket's VM cloned from it, or the local image registry: Repair Image on the Mac, one golden rebuild at a time)"
             },
             "reasoning": {
                 "type": "string",

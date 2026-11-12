@@ -689,6 +689,50 @@ the last exit, `turn-complete` alone, sends an outcome with no exit of its
 own to Blocked for Human rather than leaving the run stuck. A new outcome is
 an enum value, its line in the prompt, its exit, and the steps it routes to.
 
+Blocked repairs a broken image on the Mac, one golden rebuild at a time
+(ASS-392). Classify's `image` outcome says the cause is in the project's
+golden image (its definition in the project's golden-image folder, or its
+build), the ticket's VM cloned from it, or the project's local registry the
+image pulls through — an amd64-only image on arm64, `claude` missing from the
+image, zot not answering, `golden-build.lock` held. The Blocked agents in the
+VM cannot rebuild images, so the path runs on the host:
+- Await the Golden Build (`await-golden-build`, `vm:golden-wait`, on a
+  5-minute timer, exit 1 its waiting exit: no failure counted) waits while
+  the project's golden image is being built — `golden-build.lock` held, or the
+  build `golden-build-run.json` records still going: golden.bash's
+  `golden_status`, the reading `vm:build-golden-start` refuses a second start
+  on, whoever started the build (control's golden rebuild ticket, ASS-151;
+  the operator; another ticket's Repair Image). No new lock: the harness's
+  own, so no two builds overlap. Its `max-visits` (4) bounds the builds one
+  stay waits for; then Blocked for Human.
+- Repair the Image (`repair-image`, prompt `repair-image-on-host-grouped`,
+  a host step confined as Troubleshoot on the Host is: it writes only temp,
+  the harness's data only through agent.sh) re-checks first whether the
+  problem is still there — a build finished while the ticket waited may have
+  fixed it; then it rebuilds nothing (`problem-gone`). Found building, or
+  having started a build, it ends with `golden-building: true` and goes back
+  to wait, then runs again to re-check. It may only: start the registry
+  (`registry:up`); edit the image definition through `vm:golden-write
+  <project> <file>` (stdin; only a file of the golden-image folder — no
+  absolute path, `..`, dot-file or symlink — and never while a build runs);
+  rebuild (`vm:build-golden-start`, which builds only a definition that
+  changed); and recreate the ticket's VM from the current image
+  (`vm:recreate`: refused while a build runs or while the VM holds work no
+  remote has; it puts each repository back on its branch and marks Setup
+  complete again). Nothing else on the Mac — no other project, the shared
+  checkout or the operator's settings — and never a credential (a missing
+  token is the operator's, as Setup's credential check reports it). None of
+  these commands is allowed through the forwarder.
+- Verify the Repaired Image (`verify-image`, `vm:image-recheck`, the VM
+  running) is done only when the failing check passes on a VM from the
+  repaired image: the golden image current (built from its definition as it
+  is now), the ticket's VM, when it has one, of the same generation, and the
+  blocked step's check passing there (`ticket:recheck-block`, as Check First
+  runs it; `image-verified: true`). With no check of the harness's own to
+  re-run (an agent's step, or one that makes a VM: exit 2) Repair Image's own
+  run stands. Anything else, or Repair Image not fixing it, is Blocked for
+  Human with what was tried. Each command logs to the change log.
+
 Blocked logs everything and cites only what it read (ASS-390 AC3, AC7).
 Every prompt grouped-blocked runs (Troubleshoot, Classify, both Repairs, on
 the VM and the host) has its agent append to `change-log-<variation>.md`

@@ -1,0 +1,73 @@
+{
+    "description": "Prompt for repairing a blocked ticket's image on the Mac (the grouped engines' Blocked, ASS-392): the project's golden image, the ticket's VM cloned from it, or the project's local registry — re-checking first whether the problem is still there (a build may have finished while it waited), one golden rebuild at a time (a build running: golden-building, the harness waits), and only within its limits: registry:up, the image definition in the project's golden-image folder through vm:golden-write, vm:build-golden-start, vm:recreate — nothing else on the Mac, never a credential; fixed only when the failing check passes on a VM from the repaired image; logs what it found and changed, cites only what it read",
+    "supported-command-line-interfaces": [
+        "claude"
+    ],
+    "supported-models": [
+        "claude-opus-5-5",
+        "claude-opus-5",
+        "claude-sonnet-5",
+        "claude-opus-4-8",
+        "claude-opus-4-7"
+    ],
+    "persona": "developer",
+    "input-arguments": [
+        {
+            "name": "project",
+            "description": "Project folder name under data/projects/",
+            "example": "my-project",
+            "required": true
+        },
+        {
+            "name": "ticket",
+            "description": "Ticket number",
+            "example": "ABC-1234",
+            "required": true
+        },
+        {
+            "name": "problem",
+            "description": "The checked analysis of the block: summary, root cause, evidence, its classification",
+            "example": "golden image pulls an amd64-only image on an arm64 Mac",
+            "required": true
+        }
+    ],
+    "output": {
+        "type": "object",
+        "properties": {
+            "golden-building": {
+                "type": "boolean",
+                "description": "true when a build of the project's golden image runs now — found running, or started by this run — so the harness waits for it, no failure counted, then runs the repair again to re-check"
+            },
+            "fixed": {
+                "type": "boolean",
+                "description": "true when the failing check passes on a VM from the repaired image"
+            },
+            "problem-gone": {
+                "type": "boolean",
+                "description": "true when the re-check found the original problem already gone (a build since the block fixed it)"
+            },
+            "evidence": {
+                "type": "array",
+                "items": {
+                    "type": "string"
+                },
+                "description": "The commands run and what each showed"
+            },
+            "ai-feedback-short": {
+                "type": "string",
+                "description": "Fixed: what was done; building: the build waited for; else what the operator must do — one line, shown on the dashboard"
+            },
+            "ai-feedback-long": {
+                "type": "string",
+                "description": "What was found, what was tried or done, and what must be done"
+            }
+        },
+        "required": [
+            "golden-building",
+            "fixed",
+            "evidence",
+            "ai-feedback-short",
+            "ai-feedback-long"
+        ]
+    }
+}
