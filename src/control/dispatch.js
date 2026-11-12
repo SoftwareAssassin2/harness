@@ -7,7 +7,7 @@
 import { existsSync, readFileSync, mkdirSync, appendFileSync } from 'node:fs';
 import { join, dirname, resolve } from 'node:path';
 import { stepOf, engineSteps, resolveTarget, isActive, isManual } from './engine.js';
-import { enginesFor, heldKinds } from './state.js';
+import { enginesFor, heldKinds, payWith } from './state.js';
 import { planFor, grooming, refinementDue, seatsOf } from './plan.js';
 import { rankBacklog } from './rank.js';
 import { waitsForSeat } from './fast-track.js';
@@ -254,19 +254,6 @@ async function hostKind(ctx, project) {
   return kind;
 }
 
-// rateHeld(ctx, limited, project, step, key, variation) — whether the
-// candidate's agent is held by a rate limit on its credential kind (ASS-215;
-// `limited`: project id → the kinds held, heldKinds): a VM step's by its
-// VM's recorded kind — one recording none is held while any kind is — a host
-// step's by hostKind, asked only when the project has a kind held.
-async function rateHeld(ctx, limited, project, step, key, variation) {
-  const held = limited.get(project.id) ?? [];
-  if (!held.length) return false;
-  if (!runsInVm(step)) return held.includes(await hostKind(ctx, project));
-  const kind = credentialKindOf(ctx, project.id, vmNameOf(project, key, variation));
-  return !kind || held.includes(kind);
-}
-
 // The name of the VM a ticket variation of the project records, or undefined.
 const vmNameOf = (project, key, variation) => project.tickets.find(t => t.key === key)?.variations?.find(v => v.name === variation)?.vm?.name;
 
@@ -277,18 +264,21 @@ const vmNameOf = (project, key, variation) => project.tickets.find(t => t.key ==
 // `both`) — { payment: 'subscription' } unless its claude kind is rate
 // limited, else { payment: 'api' } unless the anthropic kind is too or an API
 // cap holds (project.json api-cap-hold, superviseAgents); else null. Where it
-// declares one, { payment: null } unless rateHeld holds it, as before.
+// declares one, { payment: null } unless a rate limit holds its credential kind
+// (ASS-215: a VM step's by its VM's recorded kind — one recording none is held
+// while any kind is — a host step's by hostKind), as before. The rule is
+// state.js payWith's.
 // `weekly`: the candidate is grooming or background work of a project at its
 // weekly usage limit with an API key (moves.js weeklyLimit 'api', ASS-327) —
 // it skips the subscription, paid api as above or waiting; where this step
 // cannot pay by the key (a VM with one credential), it waits, held as ASS-232
 // holds a project with none.
 async function paymentFor(ctx, limited, project, step, key, variation, weekly = false) {
-  const both = runsInVm(step) ? credentialKindOf(ctx, project.id, vmNameOf(project, key, variation)) === 'both' : Boolean(configDir(ctx, project, 'api'));
-  if (!both) return weekly || (await rateHeld(ctx, limited, project, step, key, variation)) ? null : { payment: null };
-  const held = limited.get(project.id) ?? [];
-  if (!weekly && !held.includes('claude')) return { payment: 'subscription' };
-  return held.includes('anthropic') || project.json['api-cap-hold'] ? null : { payment: 'api' };
+  const held = limited.get(project.id) ?? [], recorded = runsInVm(step) ? credentialKindOf(ctx, project.id, vmNameOf(project, key, variation)) : undefined;
+  const both = runsInVm(step) ? recorded === 'both' : Boolean(configDir(ctx, project, 'api'));
+  // The one kind it runs on, asked only when a kind is held (hostKind asks claude auth status); payWith decides (ASS-400: shared with vm-lifecycle.js).
+  const kind = both || !held.length ? null : runsInVm(step) ? recorded : await hostKind(ctx, project);
+  return payWith({ held, both, kind, capHold: project.json['api-cap-hold'], weekly });
 }
 
 // A VM agent's credential is chosen by unsetting the other one in its command (ASS-217): both are in the VM's env.
@@ -545,7 +535,7 @@ function waitsOnAnswer(ctx, state) {
 // A fast-tracked ticket's run or step left without an agent, max-agents full,
 // is remembered as waiting for an agent seat (fast-track.js, ASS-83); its
 // backlog entry, after a failed join, is never groomed. An agent whose
-// credential kind its project holds under a rate limit (rateHeld, ASS-215) is not dispatched; one of a
+// credential kind its project holds under a rate limit (paymentFor, ASS-215) is not dispatched; one of a
 // project declaring both a subscription and an API key is dispatched on the one paymentFor picks, or waits (ASS-217).
 // A project at its weekly usage limit (moves.js weeklyLimit, ASS-232) grooms
 // nothing and puts no agent on a background run (moves.js backgroundProject):
@@ -566,7 +556,7 @@ export async function dispatch(ctx, state) {
   // A project on the wrong Claude account starts none of its agents (accountHold); nor does one its credentials hold (ASS-395, credentials.js).
   const accountHeld = new Set();
   for (const project of state.projects) if (await accountHold(ctx, project) || credentialsHeld(project)) accountHeld.add(project.id);
-  // Each project's credential kinds held by a rate limit (rateHeld).
+  // Each project's credential kinds held by a rate limit (paymentFor).
   const limited = new Map(state.projects.map(p => [p.id, heldKinds(p, ctx.now().getTime())]));
   // Each project at its weekly usage limit (weeklyLimit: 'held' or 'api'), asked every tick so its hold is logged as it starts and lifts.
   const weekly = new Map(state.projects.map(p => [p.id, weeklyLimit(ctx, p)]));

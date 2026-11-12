@@ -188,4 +188,22 @@ export function loadState(paths) {
 export const heldKinds = (project, at) => Object.entries(project.rateLimit ?? {})
   .filter(([, e]) => Date.parse(e?.['resets-at']) > at).map(([kind]) => kind);
 
+// payWith({ held, both, kind, capHold, weekly }) — dispatch's billing choice
+// for an agent (ASS-217; dispatch.js paymentFor, shared with vm-lifecycle.js
+// for ASS-400), or null while it waits. `held`: the project's kinds held
+// (heldKinds); `both`: where it runs declares a subscription and an API key
+// (a host step's project its .claude-api, a VM step's VM credential-kind
+// `both`); `kind`: else the one credential kind it runs on (null for a VM
+// recording none, held while any kind is); `capHold`: project.json's
+// api-cap-hold; `weekly`: grooming or background work at the weekly usage
+// limit (ASS-327), which skips the subscription. Both declared: {
+// payment: 'subscription' } unless the claude kind is held (or `weekly`), else
+// { payment: 'api' } unless the anthropic kind is held too or an API cap
+// holds. One declared: { payment: null } unless its kind is held (or `weekly`).
+export function payWith({ held = [], both = false, kind = null, capHold = null, weekly = false }) {
+  if (!both) return weekly || (held.length && (!kind || held.includes(kind))) ? null : { payment: null };
+  if (!weekly && !held.includes('claude')) return { payment: 'subscription' };
+  return held.includes('anthropic') || capHold ? null : { payment: 'api' };
+}
+
 export const enginesFor = (state, id) => (state.allProjects ?? state.projects).find(p => p.id === id)?.engines ?? state.engines;

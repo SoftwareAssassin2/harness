@@ -923,6 +923,22 @@ Blocked for Human, saying what was found and what to do.
   mid-step (ASS-349). Control matches the VMs to this once per
   loop (`src/control/vm-lifecycle.js`), so a move by hand in the TUI is
   followed; `move_to` and the TUI do nothing of their own.
+- **Rate limited, no API fallback (ASS-400).** While a project's Claude kind
+  is rate limited (its `rate-limit.json` entry's `resets-at` still ahead) and
+  dispatch has no API fallback for a variation's next agent (no `.claude-api`
+  for a host step, a VM not holding both credentials, an API cap hold, or the
+  API key limited too: `state.js` `payWith`, the rule `dispatch.js`
+  `paymentFor` uses), the VM of each variation whose deepest step is a prompt
+  step is stopped, logged `stopped (…; rate-limited until <time>, no API
+  fallback)` — one with an assignment on it left until that ends (ASS-349).
+  A script step (in the VM or not) and a human step follow their `vm` setting.
+  The variation waits as for a slot: its steps are not judged, and the VM-up
+  ceiling never sends it to Blocked. Its VM counts towards no memory hold
+  (ASS-398), and its Health reads `Waiting for the rate limit to reset at
+  <time> (no API fallback)` — it is at no blocked step, so never Operator
+  Needed — cleared once the wait ends. When the limit resets, or a fallback
+  becomes available, the VM is started again as its step says; no step is
+  re-run and no visit spent.
 - **Released (ASS-325).** A step may instead say `released`: the variation's
   VM is deleted as soon as it gets there, so its disk goes back to the
   project's VM disk budget at once rather than when a new VM is short of

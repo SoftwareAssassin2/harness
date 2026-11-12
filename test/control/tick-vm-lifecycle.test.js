@@ -568,12 +568,13 @@ test('ASS-297 AC1, AC2: no VM started while paused, one stopped by hand included
   assert.deepEqual(await l.pass(), ['vm:start p ABC-3 A', 'vm:start p ABC-3 B']);
 });
 
-test('ASS-297 AC3: another project\'s human pause, an AI pause (its own or "all"), self-healing and a rate limit stop no VM and hold no start', async () => {
+test('ASS-297 AC3: another project\'s human pause, an AI pause (its own or "all") and self-healing stop no VM and hold no start; a rate limit with no API fallback (ASS-400) stops a VM at a prompt step and starts none', async () => {
   for (const [pauses, extra, limited] of [[{ q: HUMAN }], [{ p: AI }], [{ all: AI }], [{}, { 'self-healing': { 'ABC-9': { since: '2026-10-24T11:00:00Z' } } }], [{}, {}, true]]) {
     const l = lifecycle({ A: [BUILDING, 'Running'], B: [BUILDING, 'Stopped'] });
     pauseWith(l, pauses, [], extra);
     if (limited) writeFileSync(l.file('projects', 'p', 'rate-limit.json'), JSON.stringify({ claude: { 'resets-at': '2026-10-24T13:00:00Z' }, anthropic: { 'resets-at': '2026-10-24T13:00:00Z' } }));
-    assert.deepEqual(await l.pass(), ['vm:start p ABC-3 B'], JSON.stringify({ pauses, extra, limited }));
+    const vmCalls = (await l.pass()).filter(c => c.startsWith('vm:'));
+    assert.deepEqual(vmCalls, limited ? ['vm:stop p abc-3-a'] : ['vm:start p ABC-3 B'], JSON.stringify({ pauses, extra, limited }));
   }
 });
 

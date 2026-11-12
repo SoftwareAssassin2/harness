@@ -8,7 +8,7 @@ set -euo pipefail
 # credential kind in data/projects/<project>/rate-limit.json ({ <kind>: {
 # since, type, resets-at } }, project:set-rate-limit; claude a subscription,
 # anthropic a Console API key, ASS-215) and dispatches none of that kind's
-# agents until it resets (dispatch.js rateHeld, paymentFor). A kind holds
+# agents until it resets (dispatch.js paymentFor, state.js payWith). A kind holds
 # while its resets-at is after now.
 #
 # The API key fallback (dispatch.js paymentFor, ASS-217) is available when
