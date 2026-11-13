@@ -10,7 +10,7 @@ import { execFile, execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import { initialState, handleKey, render, decided, openRequested, controlStarted, controlExited, controlDraining, drawColumns } from './app.js';
 import { loadProjects, loadWorkflows, loadPauses, loadSelfHealing, loadAssignments, loadTransientEngines, loadChats, loadHarness, loadModelUsage, loadDiskSpace, watchFiles, dataFiles, keepSame, projectsChanged, activeSprintFile } from './load.js';
-import { operatorNeededNotifier } from '../notify/notifier.js';
+import { operatorNeededNotifier, headerWarningNotifier } from '../notify/notifier.js';
 import { startControl } from '../control/process.js';
 import { ender, stillNamed } from './shutdown.js';
 import { sessionDir, readSession, readSessionTail, sessionModified } from '../agents/session.js';
@@ -305,20 +305,31 @@ function reload() {
 const notifier = operatorNeededNotifier({
   seenFile: join(DATA, 'operator-needed-seen.json'), projectsDir: join(DATA, 'projects'), agentSh: join(ROOT, 'agent.sh'), log,
 });
+// ASS-412: the header warnings (frame.js headerWarnings) of every project
+// alike, through the same notifier, their seen set in
+// data/header-warnings-seen.json; checked with the Operator Needed set, and by
+// the clock once a warning that waits before it notifies (No work in
+// progress) is due (checkWarnings).
+const warningNotifier = headerWarningNotifier({ seenFile: join(DATA, 'header-warnings-seen.json'), agentSh: join(ROOT, 'agent.sh'), log });
+const checkWarnings = () => { try { warningNotifier.check(state); } catch (error) { log(`Header warning notifications: ${error.message}`); } };
 function notifyLater() {
-  setImmediate(() => { try { notifier.check(state); } catch (error) { log(`Operator Needed notifications: ${error.message}`); } });
+  setImmediate(() => {
+    try { notifier.check(state); } catch (error) { log(`Operator Needed notifications: ${error.message}`); }
+    checkWarnings();
+  });
 }
 // A notification clicked (ASS-383): terminal-notifier runs agent.sh
 // notify:open-ticket, which writes data/open-ticket-request.json; read here
 // once it changes (it is watched with the rest), removed, and the dashboard
 // switched to that project with the ticket's screen open (openRequested) —
-// its chat briefed as a ticket opened by key is.
+// its chat briefed as a ticket opened by key is. ASS-412: a request without a
+// key (a header warning's click) only switches to the project.
 const REQUEST = join(DATA, 'open-ticket-request.json');
 function takeRequest() {
   let request;
   try { request = JSON.parse(readFileSync(REQUEST, 'utf8')); } catch { return; }
   rmSync(REQUEST, { force: true });
-  if (typeof request?.project !== 'string' || typeof request?.key !== 'string') return;
+  if (typeof request?.project !== 'string' || (request.key != null && typeof request.key !== 'string')) return;
   let next = openRequested(state, request);
   if (next.ticketChatOpen) {
     const open = next.ticketChatOpen;
@@ -492,6 +503,7 @@ setInterval(() => { // keeps the clock and an open session log current
   health.poll(state.projects, Date.now());
   state = withSession(state);
   draw();
+  if (warningNotifier.due()) checkWarnings();   // ASS-412: a warning that waits before it notifies, now due
 }, 1000);
 health.poll(state.projects, Date.now());
 state = withSession(state);

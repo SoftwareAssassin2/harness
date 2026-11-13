@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
-# Description: Ask the dashboard to open a ticket's screen — notify:open-ticket <project> <ticket-key>; what a click on an Operator Needed notification runs.
+# Description: Ask the dashboard to open a ticket's screen, or select a project — notify:open-ticket <project> [<ticket-key>]; what a click on a notification runs.
 set -euo pipefail
+
+# ASS-412: the ticket key is optional. A header warning's notification runs
+# it with the project alone; it then writes { project, at } and the dashboard
+# only switches to that project.
 
 # ASS-383: terminal-notifier's -execute runs this when the operator clicks an
 # Operator Needed notification. It writes { project, key, at } to
@@ -14,7 +18,12 @@ set -euo pipefail
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../json-file.bash"
 file="${OPEN_TICKET_REQUEST_FILE:-$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../../../data/open-ticket-request.json}"
 
-[[ $# -eq 2 ]] || { echo "usage: notify:open-ticket <project> <ticket-key>" >&2; exit 1; }
+[[ $# -eq 1 || $# -eq 2 ]] || { echo "usage: notify:open-ticket <project> [<ticket-key>]" >&2; exit 1; }
 [[ "$1" =~ ^[A-Za-z0-9_-]+$ ]] || { echo "notify:open-ticket: invalid project '$1'" >&2; exit 1; }
+at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+if [[ $# -eq 1 ]]; then
+  update_json --create "$file" --arg project "$1" --arg at "$at" '{ project: $project, at: $at }'
+  exit 0
+fi
 [[ "$2" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] || { echo "notify:open-ticket: invalid ticket key '$2'" >&2; exit 1; }
-update_json --create "$file" --arg project "$1" --arg key "$2" --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '{ project: $project, key: $key, at: $at }'
+update_json --create "$file" --arg project "$1" --arg key "$2" --arg at "$at" '{ project: $project, key: $key, at: $at }'

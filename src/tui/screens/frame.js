@@ -40,23 +40,51 @@ function idle(state) {
   const keys = new Set(Object.keys(ICONS).flatMap(type => sprint[type] ?? []).map(t => t.key.toLowerCase()));
   return !liveAssignments(state).some(a => !refining(state, a) && keys.has(String(a['work-item']).toLowerCase()));
 }
-// The sprint header's warnings, in the order they show: the project held by its credentials (ASS-395), the logins to renew, background work off (ASS-127), the memory and disk holds (ASS-398), the landed fixes a restart would load (ASS-393), then idleness.
-const warnings = state => [
-  state.projects[state.project]?.credentialsHold && 'Project blocked by credentials',
-  state.projects[state.project]?.gcloudReauthentication && "run 'gcloud auth login' asap",
-  state.projects[state.project]?.glabReauthentication && "run 'glab auth login' asap",
-  state.projects[state.project]?.backgroundWorkOff && 'Background work off',
-  ...holdFlags(state),
-  restartNotice(state),
-  idle(state) && 'No work in progress',
-].filter(Boolean);
+// ASS-412: the selected project's warnings, one list for the header and the
+// Mac notifications (src/notify/warnings.js evaluates it for every project,
+// each selected on its live sprint). Each is { id, text, scope, operator, chip,
+// todo, after? }: `id` stable whatever the text's numbers; `text` as the header
+// says it; `scope` 'harness' for one the whole harness shares (the memory and
+// disk holds, the disk low, the landed fixes, a pause of every project), else
+// 'project'; `operator` for one the operator caused (background work off, the
+// human's pause), which never notifies; `chip` for one the sprint header shows
+// in a white-on-red box — the rest are the banner's and the disk line's, which
+// render from the same helpers (banner, diskLines); `todo` the one line saying
+// what to do; `after` the ms it must stay up before it notifies (No work in
+// progress: IDLE_AFTER_MS). The chips, in the order they show: the project held
+// by its credentials (ASS-395), the logins to renew, background work off
+// (ASS-127), the memory and disk holds (ASS-398: any project's
+// memory-hold.json, the disk hold of ASS-288), the landed fixes a restart would
+// load (ASS-393), then idleness (ASS-59); then the banner's: the disk low
+// (ASS-288), the account hold, the rate limit, self-healing and the human's pause.
+export const IDLE_AFTER_MS = 5 * 60e3;
+export function headerWarnings(state, now = Date.now()) {
+  const project = state.projects[state.project];
+  const warning = (id, text, todo, { scope = 'project', operator = false, chip = false, after } = {}) => ({ id, text, scope, operator, chip, todo, ...(after ? { after } : {}) });
+  const fixes = [...restartFixes(state)];
+  const firstFix = project?.credentialsHold?.problems?.[0];
+  const { limit } = limitFor(project, now);
+  const healing = healingFor(state), account = project?.accountHold ?? null, { human, everyone } = holding(state);
+  return [
+    project?.credentialsHold && warning('credentials', 'Project blocked by credentials', firstFix?.fix ? `Run ${firstFix.fix}` : 'Fix the credentials the dashboard lists for this project', { chip: true }),
+    project?.gcloudReauthentication && warning('gcloud-login', "run 'gcloud auth login' asap", 'Run gcloud auth login in a terminal', { chip: true }),
+    project?.glabReauthentication && warning('glab-login', "run 'glab auth login' asap", 'Run glab auth login in a terminal', { chip: true }),
+    project?.backgroundWorkOff && warning('background-work-off', 'Background work off', 'Turn background work back on when you want it', { chip: true, operator: true }),
+    state.projects.some(p => p.memoryHold) && warning('out-of-memory', 'Out of memory', 'Free memory on the Mac: no new VM starts until there is enough', { chip: true, scope: 'harness' }),
+    state.disk?.level === 'hold' && warning('out-of-disk-space', 'Out of disk space', `Free disk space: nothing new starts until ${state.disk['warn-bytes'] / 1e9} GB is free`, { chip: true, scope: 'harness' }),
+    fixes.length > 0 && warning('restart', restartNotice(fixes.length), `Restart the harness to load ${fixes.join(', ')}`, { chip: true, scope: 'harness' }),
+    idle(state) && warning('idle', 'No work in progress', 'No agent is working a sprint ticket: check the sprint', { chip: true, after: IDLE_AFTER_MS }),
+    state.disk?.level === 'warn' && warning('disk-low', 'Disk low', `Free disk space: ${gib(state.disk['free-bytes'])} GiB free, below the ${state.disk['warn-bytes'] / 1e9} GB warning level`, { scope: 'harness' }),
+    account && warning('sign-in', 'Sign in', `Sign in: ${account['config-dir'] ? `CLAUDE_CONFIG_DIR=${account['config-dir']} ` : ''}claude, then /login as ${account.expected}`),
+    limit && warning('rate-limited', 'Rate limited', `Wait: control sends its ${limit.kinds.join(' and ')} agents nothing until it resets ${resetText(limit['resets-at'], now)}`),
+    healing && warning('self-healing', 'Self healing', `Control is fixing ${healing.summary}`),
+    human && warning('paused-by-human', 'Paused by human', 'Press space to release it', { operator: true, scope: everyone ? 'harness' : 'project' }),
+  ].filter(Boolean);
+}
+// The sprint header's white-on-red boxes (sprintLines): headerWarnings' chips' texts, in its order (ASS-412).
+const warnings = (state, now) => headerWarnings(state, now).filter(w => w.chip).map(w => w.text);
 // ASS-393: one notice for every landed harness fix the running control has not loaded (restartFixes), never one per ticket.
-const restartNotice = state => {
-  const n = restartFixes(state).size;
-  return n > 0 && `Restart to load ${n} landed fix${n === 1 ? '' : 'es'}`;
-};
-// ASS-398: while control holds new VMs for want of the Mac's memory (any project's memory-hold.json) or disk (the disk hold, ASS-288).
-const holdFlags = state => [state.projects.some(p => p.memoryHold) && 'Out of memory', state.disk?.level === 'hold' && 'Out of disk space'];
+const restartNotice = n => `Restart to load ${n} landed fix${n === 1 ? '' : 'es'}`;
 
 // The disk (ASS-288), harness-wide, as control last read it (disk-space.json,
 // state.disk): below disk-free-warn-gb the free space in amber — never red,
@@ -118,7 +146,7 @@ export const headerLines = (state, columns, now) => (state.screen === 'S' || sta
   // A past day is seen as it was captured, at the end of that day (shownAt).
   // The project's name and the warnings are about now, so they show whatever the day.
   ...besideRight(sprintLines(viewedSprint(state), shownAt(state, now), state.focus === 'day',
-    state.projects[state.project], warnings(state)), metricTiles(state, now), columns),
+    state.projects[state.project], warnings(state, now)), metricTiles(state, now), columns),
   '',
 ]);
 

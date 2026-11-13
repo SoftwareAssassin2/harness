@@ -110,6 +110,29 @@ notifies again only after it has stopped waiting and starts again.
   in its `data/projects/<project>/project.json`. They are on when it is
   absent.
 
+### Header warning notifications
+
+The dashboard header's warnings notify the same way, for every project, not
+only the one selected: "Project blocked by credentials", the gcloud and glab
+logins to renew, "Out of memory", "Out of disk space", "Restart to load …
+landed fixes", "No work in progress", and the banner's disk low, sign-in,
+rate limit and self-healing. The notification's title is the warning, its
+subtitle the project (or "All projects" for one the whole harness shares), and
+its body says what to do, such as the credentials hold's first fix or
+"Restart the harness to load …". Clicking it brings Ghostty forward and
+selects that project.
+
+- Each warning notifies once when it appears, and again only after it clears
+  and comes back. Warnings already up when the dashboard starts don't notify
+  (the seen set is kept in `data/header-warnings-seen.json`).
+- "No work in progress" notifies only once it has stayed up for 5 minutes.
+- Warnings you caused yourself (Background work off, your own pause) never
+  notify.
+- Harness-wide warnings (Out of memory, Out of disk space, the disk low,
+  Restart to load …) notify once, not once per project.
+- `"operator-needed-notifications": false` turns these off for that project
+  too.
+
 ## Exporting a project
 
 To share a project you run with a teammate:

@@ -258,7 +258,7 @@ test('ASS-383 AC5, AC7: the click command is fixed — only a plain project id a
   execFileSync('/bin/sh', ['-c', openCommand(join(ROOT, 'agent.sh'), 'p', 'A-2')], { env });   // as terminal-notifier's -execute runs it
   const request = JSON.parse(readFileSync(file, 'utf8'));
   assert.deepEqual([request.project, request.key], ['p', 'A-2']);
-  for (const args of [['p', 'A-1 x'], ['../p', 'A-1'], ['p']]) {
+  for (const args of [['p', 'A-1 x'], ['../p', 'A-1'], ['p', 'A-1', 'extra'], []]) {   // ASS-412: the project alone is a valid request now
     await assert.rejects(new Promise((done, fail) => execFile(join(ROOT, 'agent.sh'), ['notify:open-ticket', ...args], { env: { ...env, OPEN_TICKET_REQUEST_FILE: join(dir, 'bad.json') } }, e => (e ? fail(e) : done()))));
   }
   assert.equal(existsSync(join(dir, 'bad.json')), false);
