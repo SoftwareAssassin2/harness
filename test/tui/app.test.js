@@ -899,6 +899,13 @@ test('under the progress bar, a computer per variation at a script step, after t
   assert.match(bottom(s), /^└🤖─+🤖💻💻─+┘$/);
   // A past day, the same tickets: nothing is running, so no robots and no computers.
   assert.match(bottom({ ...s, day: '2026-09-30', projects: [{ ...project, days: { '2026-09-30': project.sprint } }] }), /^└─+┘$/);
+  // ASS-416: S, the same state, shows the same 💻 after the robots — S-2's and S-3's at Lint, none held,
+  // paused or worked by hand — and none on a past day.
+  const floor = st => lines({ ...st, screen: 'S' }, { ...wide, rows: 80 });
+  const lint = boxOf(floor(s), rectOf(floor(s), 'Lint')).join('');
+  assert.equal(lint.split('💻').length - 1, 2);
+  assert.ok(lint.includes('🤖💻💻'));
+  assert.ok(!floor({ ...s, day: '2026-09-30', projects: [{ ...project, days: { '2026-09-30': project.sprint } }] }).some(l => l.includes('💻')));
 });
 
 test('on a past day the ticket table takes all the space under the progress bar', () => {

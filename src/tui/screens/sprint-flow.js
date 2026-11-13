@@ -4,9 +4,8 @@ import { floorNotes } from '../metrics.js';
 import { scrollBox } from '../table.js';
 import { link } from '../text.js';
 import { below, headerLines, platform } from './frame.js';
-import { chooseView, viewChoice, sprintTickets, stateStats, projectWorkflows, liveAssignments } from './shared.js';
+import { chooseView, viewChoice, sprintTickets, stateStats, projectWorkflows, liveAssignments, runsScript } from './shared.js';
 import { nestedFloor, subflowHint, scrollsFloor, floorScroll } from './nested.js';
-import { isHeld } from '../../control/engine.js';
 
 // The flowchart screen: its choice of what each station shows with the keys'
 // hint, and the project's state engine drawn as a factory floor (see
@@ -18,7 +17,8 @@ import { isHeld } from '../../control/engine.js';
 // ASS-245), each ticket under its deepest step with its 🤖 — a live
 // assignment's, on its variation or the ticket's first row when it names
 // none — and a 💻 while its deepest step is a script, as the progress bar
-// counts them (sprint.js): not at its gate, held, or on a past day.
+// counts them (ASS-416: runsScript, the one rule both share): not at its gate,
+// held, or on a past day.
 function flowchartView(state, { columns = 0, rows = Infinity, now = 0 }) {
   const steps = projectWorkflows(state).find(w => w.name === state.projects[state.project]?.stateEngine)?.steps ?? [];
   const [choice, hint, gap] = viewChoice(state.flowchartView, state.focus === 'flowchart');
@@ -32,7 +32,7 @@ function flowchartView(state, { columns = 0, rows = Infinity, now = 0 }) {
       path: t.status.chain.map(l => l.state),
       line: { name: t.url ? link(name, t.url) : name, stats: stateStats(t.variation, undefined, [], steps, t.step) ?? '' },
       agents: agents.filter(a => a === t).length,
-      script: !state.day && t.status.detailStep?.action?.type === 'script' && t.gate == null && !isHeld(t, t.variation),
+      script: runsScript(state, t),
     };
   });
   const notes = state.flowchartView === 'metrics' && floorNotes(tickets.map(t => t.variation), NOTE_WIDTH);

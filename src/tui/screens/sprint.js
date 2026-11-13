@@ -7,9 +7,8 @@ import { boxTable, lastStart, tableLayout } from '../table.js';
 import { pad, link, visible, clip } from '../text.js';
 import { workedByHand, tokenSpend, testCounts } from '../ticket.js';
 import { below, headerLines, platform } from './frame.js';
-import { NONE, feedback, agentLines, liveAssignments, ticketMarks, sprintMark, markDot, GLYPHS, move, green, red, gold, gray, sprintTickets, statusCell, ticketAgents, chatSpend, seatHolders } from './shared.js';
+import { NONE, feedback, agentLines, liveAssignments, ticketMarks, sprintMark, markDot, GLYPHS, move, green, red, gold, gray, sprintTickets, statusCell, ticketAgents, chatSpend, seatHolders, runsScript } from './shared.js';
 import { openTicket } from './ticket.js';
-import { isHeld } from '../../control/engine.js';
 import { slotKind } from '../../control/plan.js';
 import { enginesOf } from '../status.js';
 
@@ -326,7 +325,7 @@ export function view(state, size) {
   // ticket's first row when it names none. And a computer (ASS-237) per variation
   // whose deepest step is a script, bar one at its gate (humanGate) or held (isHeld:
   // paused, or worked by hand), which control leaves where it is; none on a past
-  // day, as no robots (liveAssignments).
+  // day, as no robots (liveAssignments). ASS-416: runsScript, shared with S.
   // A run per step and color: a group's tickets split by their deepest steps' colors (ASS-67),
   // each named under the bar by its step.
   const shade = t => t?.step && `${t.step.id}\n${t.color ?? ''}`;
@@ -337,7 +336,7 @@ export function view(state, size) {
   const before = runsBefore(state, size.now, runs);
   const agents = Map.groupBy(liveAssignments(state).map(a => tickets.find(t => t.key === a['work-item'] && (a.variation == null || a.variation === t.variation.name))), shade);
   const segments = [...counts.values()].map(list => ({ sequence: list[0].step.sequence, color: list[0].color, name: list[0].step.name ?? list[0].step.id, count: list.length, change: before && list.length - (before.get(shade(list[0]))?.length ?? 0), agents: agents.get(shade(list[0]))?.length ?? 0,
-    scripts: state.day ? 0 : list.filter(t => t.status.detailStep?.action?.type === 'script' && t.gate == null && !isHeld(t, t.variation)).length }));
+    scripts: list.filter(t => runsScript(state, t)).length }));
   return [
     ...progressBar(segments, { steps, columns }),
     '',

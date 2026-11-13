@@ -39,6 +39,11 @@ export const agentLines = list => (list.length
 export const projectAssignments = state => state.assignments.filter(a => a.project === state.projects[state.project]?.id);
 // Assignments describe the current day only, so a past day shows none.
 export const liveAssignments = state => (state.day ? [] : projectAssignments(state));
+// ASS-416: whether a sprint ticket's variation counts a 💻 — its deepest step's
+// action a script, not at its gate (humanGate), not held (isHeld: paused or
+// worked by hand), and not on a past day, as no robots there (liveAssignments).
+// One rule for the s screen's progress bar and the S floor's stations.
+export const runsScript = (state, t) => !state.day && t.status.detailStep?.action?.type === 'script' && t.gate == null && !isHeld(t, t.variation);
 // The sprint on show: a past day's end-of-day snapshot, or the live sprint.json.
 export const viewedSprint = state => {
   const project = state.projects[state.project];
