@@ -83,6 +83,8 @@ function menuBox(state, columns) {
 }
 // The bottom line: the ? menu's hint, a restart's drain (ASS-200), or the shut-down under way.
 const legend = state => {
+  // ASS-417: a quit's VMs stopping, counted down as each stops.
+  if (state.quitting && state.vmsStopping) return `shutting down: Stopping ${state.vmsStopping} VM${state.vmsStopping === 1 ? '' : 's'}… — Q again force-stops ${state.vmsStopping === 1 ? 'it' : 'them'}`;
   if (state.quitting) return `${state.restart ? 'restarting' : 'shutting down'}: stopping control, the downloader and every agent — ctrl-c forces it`;
   const n = Object.values(state.draining).reduce((sum, count) => sum + count, 0);
   if (n) return `restarting: waiting for ${n} agent${n === 1 ? ' to end its turn' : 's to end their turns'}`;

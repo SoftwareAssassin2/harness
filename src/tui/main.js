@@ -12,7 +12,8 @@ import { initialState, handleKey, render, decided, openRequested, controlStarted
 import { loadProjects, loadWorkflows, loadPauses, loadSelfHealing, loadAssignments, loadTransientEngines, loadChats, loadHarness, loadModelUsage, loadDiskSpace, loadAnalytics, watchFiles, dataFiles, keepSame, projectsChanged, activeSprintFile } from './load.js';
 import { operatorNeededNotifier, headerWarningNotifier } from '../notify/notifier.js';
 import { startControl } from '../control/process.js';
-import { ender, stillNamed } from './shutdown.js';
+import { ender, stillNamed, vmStopper, goldenBuilds } from './shutdown.js';
+import { limaEnv } from '../control/vm.js';
 import { sessionDir, readSession, readSessionTail, sessionModified } from '../agents/session.js';
 import { readUsage } from '../agents/session-usage.js';
 import { chatRunner, chatSpendArgs } from '../agents/chats.js';
@@ -252,10 +253,23 @@ const log = text => {
   state = { ...state, controlLog: [...state.controlLog, { text: `dashboard  ${text}`, stream: 'stderr', at: new Date() }].slice(-CONTROL_LINES) };
   draw();
 };
+// ASS-417: on a quit (not a restart), once control and the downloader have
+// stopped, a golden image build still running is interrupted and every
+// running VM under the harness's LIMA_HOME (limaEnv) stopped (vmStopper),
+// each given harness.json's vm-stop-timeout-seconds (60) before it is
+// force-stopped; the legend counts them down (state.vmsStopping), and Q
+// again force-stops the rest at once (end.force).
+const harnessJson = () => { try { return JSON.parse(readFileSync(process.env.HARNESS_FILE ?? join(DATA, 'harness.json'), 'utf8')); } catch { return {}; } };
+const isGoldenBuild = pid => { try { return execFileSync('ps', ['-o', 'command=', '-p', String(pid)], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).includes('vm:build-golden'); } catch { return false; } };
 const end = ender({
   children: [...controls, downloader],
   agentPids: () => { try { return loadAssignments(ASSIGNMENTS).map(a => a['process-id']); } catch { return []; } },
   alive, kill: (pid, signal) => process.kill(pid, signal), log,
+  goldenBuilds: () => goldenBuilds(join(DATA, 'projects'), isGoldenBuild),
+  vms: vmStopper({
+    env: limaEnv(process.env), timeoutMs: (harnessJson()['vm-stop-timeout-seconds'] ?? 60) * 1000, log,
+    counted: n => { state = { ...state, vmsStopping: n }; draw(); },
+  }),
 }, code => process.exit(code));
 function quit(code = 0) {
   log(code === 75 ? 'restarting: a control asked for it' : 'shutting down');
@@ -358,6 +372,8 @@ function rewatch() {
 rewatch();
 
 stdin.on('keypress', (_, key) => {
+  // ASS-417: Q again while the VMs stop force-stops the rest; the dashboard exits once they have.
+  if (state.quitting && state.vmsStopping && key.sequence === 'Q' && !key.ctrl) { log('Q pressed again: force-stopping the VMs still stopping'); end.force(); return; }
   // The time the screens size themselves at, as render draws the footer (ASS-295).
   let next = handleKey(state, key, { columns: drawColumns(stdout.columns), rows: stdout.rows, now: new Date() });
   if (next.quit) process.exit(0);

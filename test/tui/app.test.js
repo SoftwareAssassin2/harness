@@ -2933,6 +2933,13 @@ test('Q starts the shut-down: the control screen shows it, the bottom line says 
   assert.equal(openDraft(handleKey(typing, key('q', { shift: true, sequence: 'Q' }))), 'Q'); // text where text is typed
 });
 
+test('ASS-417 AC3: while a quit\'s VMs stop, the bottom line counts them down', () => {
+  const quitting = handleKey(state, key('q', { shift: true, sequence: 'Q' }));
+  assert.ok(lines({ ...quitting, vmsStopping: 4 }, { ...screen, columns: 400 }).at(-1).includes('shutting down: Stopping 4 VMs… — Q again force-stops them'));
+  assert.ok(lines({ ...quitting, vmsStopping: 1 }, { ...screen, columns: 400 }).at(-1).includes('shutting down: Stopping 1 VM… — Q again force-stops it'));
+  assert.ok(lines({ ...quitting, vmsStopping: 0 }, { ...screen, columns: 400 }).at(-1).includes('stopping control, the downloader and every agent'));
+});
+
 // The ticket screen: enter on the focused ticket grid, esc back.
 const detailed = {
   key: 'ABC-5', title: 'Detailed', url: 'http://t/ABC-5', priority: 4, points: 8,

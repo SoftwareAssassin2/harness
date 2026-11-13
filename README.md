@@ -70,6 +70,15 @@ this repo.
    It skips `/install` once a project is installed, when the terminal isn't
    interactive, or with `HARNESS_SKIP_INSTALL=1`.
 
+   `Q` quits: control and the downloader stop (control stops its agents),
+   then every running VM in the harness's Lima folder is stopped, a running
+   golden image build is interrupted (the next build starts over), and the
+   dashboard exits. Each VM gets `vm-stop-timeout-seconds` (in
+   `data/harness.json`, 60 by default) to stop before it is force-stopped;
+   press `Q` again to force-stop them all at once. VMs are only stopped,
+   never deleted. A restart (a fix asking the harness to load new code)
+   leaves the VMs running.
+
 `/install` does its file work through a command you can also run yourself:
 
 ```sh
