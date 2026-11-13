@@ -29,12 +29,12 @@ test('each ticket\'s open merge requests in depends-on order, the ones it waits 
   assert.equal(openMergeRequestText(groups, NOW), [
     'Merge requests ready for approval (3), 2026-11-11',
     '',
-    'EX-12: Capture parent lineage from source',
-    `  - api !1005  ${forge('api', 1005)}`,
-    `  - ingest !577  ${forge('ingest', 577)}  (after api !1005)`,
+    'EX-12:',
+    `- api  ${forge('api', 1005)}`,
+    `- ingest  ${forge('ingest', 577)}  (after api)`,
     '',
-    'EX-40: Measure use of downloads',
-    `  - api !1019  ${forge('api', 1019)}`,
+    'EX-40:',
+    `- api  ${forge('api', 1019)}`,
   ].join('\n'));
 });
 
@@ -42,18 +42,18 @@ test('a merge request waiting on several is placed after them all, naming each; 
   const [{ mrs }] = openMergeRequests([{ key: 'EX-1', title: 'T', variation: { 'merge-request': [
     mr(3, 'web', 7, { 'depends-on': [1, 2] }), mr(2, 'lib', 4, { 'depends-on': [1] }), mr(1, 'api', 12),
   ] } }]);
-  assert.deepEqual(mrs.map(m => [m.name, m.after]), [['api !12', []], ['lib !4', ['api !12']], ['web !7', ['api !12', 'lib !4']]]);
+  assert.deepEqual(mrs.map(m => [m.name, m.after]), [['api', []], ['lib', ['api']], ['web', ['api', 'lib']]]);
   const [{ mrs: cycle }] = openMergeRequests([{ key: 'EX-2', title: 'T', variation: { 'merge-request': [
     mr(1, 'api', 1, { 'depends-on': [2] }), mr(2, 'web', 2, { 'depends-on': [1] }),
   ] } }]);
-  assert.deepEqual(cycle.map(m => m.name), ['api !1', 'web !2']);
+  assert.deepEqual(cycle.map(m => m.name), ['api', 'web']);
 });
 
 test('with none open the text says so; the key is linked for display only and copies plain (ASS-366 AC3, AC4)', () => {
   assert.deepEqual(openMergeRequestLines([], NOW), ['No merge requests ready for approval.']);
   const groups = openMergeRequests([{ key: 'EX-1', title: 'T', url: 'https://tickets.example.com/EX-1', variation: { 'merge-request': [mr(1, 'api', 1)] } }]);
-  assert.equal(openMergeRequestLines(groups, NOW)[2], `${link('EX-1', 'https://tickets.example.com/EX-1')}: T`);
-  assert.equal(openMergeRequestText(groups, NOW).split('\n')[2], 'EX-1: T');
+  assert.equal(openMergeRequestLines(groups, NOW)[2], `${link('EX-1', 'https://tickets.example.com/EX-1')}:`);
+  assert.equal(openMergeRequestText(groups, NOW).split('\n')[2], 'EX-1:');
 });
 
 test('the variation in play is the first not set aside (ASS-366 AC2)', () => {
@@ -84,9 +84,9 @@ test('U opens the open MRs screen, listed in the menu as your open MRs; the scre
   const out = lines(open);
   const at = text => out.findIndex(l => l === text);
   assert.ok(at('Merge requests ready for approval (2), 2026-11-11') > 0);
-  assert.ok(out.includes(`  - api !1005  ${forge('api', 1005)}`));
-  assert.ok(!out.some(l => l.includes('old !1')));                                 // the set-aside variation's
-  assert.ok(at('EX-40: Measure use of downloads') < at('EX-12: Capture parent lineage from source'));   // the sprint's order: by priority here
+  assert.ok(out.includes(`- api  ${forge('api', 1005)}`));
+  assert.ok(!out.some(l => l.includes(forge('old', 1))));                                 // the set-aside variation's
+  assert.ok(at('EX-40:') < at('EX-12:'));   // the sprint's order: by priority here
   assert.equal(press(open, 's').screen, 's');
   assert.equal(press(open, 'u').screen, 'u');
   assert.equal(press(press(s, 'u'), 'U').screen, 'U');
@@ -101,7 +101,7 @@ test('with no open merge requests the screen says so (ASS-366 AC3)', () => {
 test('up and down scroll text taller than the window, no further than its end (ASS-366 AC5)', () => {
   const many = stateOf(sprint(Array.from({ length: 40 }, (_, i) => ticket(`EX-${i}`, 'T', i, [mr(1, 'api', i)]))));
   const open = press(many, 'U');
-  const shown = s => lines(s).filter(l => /^EX-\d+: T$/.test(l)).map(l => l.split(':')[0]);
+  const shown = s => lines(s).filter(l => /^EX-\d+:$/.test(l)).map(l => l.split(':')[0]);
   assert.equal(shown(open)[0], 'EX-0');
   assert.ok(!shown(open).includes('EX-39'));
   const end = press(open, ...Array(300).fill('down'));
@@ -118,7 +118,7 @@ test('only merge requests ready for approval are listed; a dependency not ready 
     mr(4, 'cli', 40, { 'approval-wait-since': undefined }),                  // not yet set to auto-merge
   ] } }, { key: 'EX-13', title: 'None ready', variation: { 'merge-request': [mr(1, 'api', 11, { 'approval-wait-since': null })] } }]);
   assert.deepEqual(groups.map(g => g.key), ['EX-12']);
-  assert.deepEqual(groups[0].mrs.map(m => [m.name, m.after, m.since]), [['web !20', [], SINCE], ['lib !30', ['web !20'], SINCE]]);
+  assert.deepEqual(groups[0].mrs.map(m => [m.name, m.after, m.since]), [['web', [], SINCE], ['lib', ['web'], SINCE]]);
   assert.deepEqual(openMergeRequestLines(openMergeRequests([{ key: 'EX-13', title: 'T', variation: { 'merge-request': [mr(1, 'api', 11, { 'approval-wait-since': null })] } }]), NOW),
     ['No merge requests ready for approval.']);
 });
@@ -126,6 +126,18 @@ test('only merge requests ready for approval are listed; a dependency not ready 
 test('no merge request line says how long it has waited (ASS-372)', () => {
   const groups = openMergeRequests([{ key: 'EX-12', title: 'T', variation: { 'merge-request': [mr(1, 'api', 10), mr(2, 'web', 20, { 'depends-on': [1] })] } }]);
   const out = openMergeRequestLines(groups, NOW);
-  assert.equal(out.filter(l => l.startsWith('  - ')).length, 2);
+  assert.equal(out.filter(l => l.startsWith('- ')).length, 2);
   assert.ok(!out.some(l => l.includes('waiting since')));
+});
+
+test('a dependency sharing its repo with another listed one is named by its url (ASS-414 AC3)', () => {
+  const groups = openMergeRequests([{ key: 'EX-12', title: 'T', variation: { 'merge-request': [
+    mr(1, 'api', 10), mr(2, 'api', 11, { 'depends-on': [1] }), mr(3, 'web', 20, { 'depends-on': [2] }),
+  ] } }]);
+  assert.deepEqual(openMergeRequestText(groups, NOW).split('\n').slice(2), [
+    'EX-12:',
+    `- api  ${forge('api', 10)}`,
+    `- api  ${forge('api', 11)}  (after ${forge('api', 10)})`,
+    `- web  ${forge('web', 20)}  (after ${forge('api', 11)})`,
+  ]);
 });

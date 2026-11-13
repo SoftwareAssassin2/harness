@@ -24,7 +24,8 @@ const isOpen = m => m?.key != null && mrStatus(m) === 'Open';
 // to act on, cleared once not. Drafts, ones with feedback being acted on and
 // ones not yet set to auto-merge have none. No step decides this.
 const isReady = m => isOpen(m) && m['approval-wait-since'] != null;
-const named = m => [repoName(m.repository), m.key].filter(Boolean).join(' ');
+// ASS-414: a merge request is named by its repository alone, no key.
+const named = m => repoName(m.repository) ?? '';
 
 // openMergeRequests(tickets) — [{ key, url, title, mrs: [{ name, url, after, since }] }]
 // (ASS-366): `tickets`, in the sprint's ticket order, each { key, title, url,
@@ -33,10 +34,12 @@ const named = m => [repoName(m.repository), m.key].filter(Boolean).join(' ');
 // (isReady, ASS-367; was every open one, isOpen), in
 // depends-on order — each placed once every open one of the ticket's it
 // depends on is, in list order among those ready, a cycle's rest at the end;
-// `name` "<repo> <key>" (repo the repository url's last path segment, as
-// ASS-363's AWAITING MERGE line names it), `after` the names of the ticket's
-// listed ones it depends on, in that order (one not ready is left unnamed,
-// ASS-367), `since` its approval-wait-since. A ticket with none is left out.
+// `name` its repo (the repository url's last path segment, as ASS-363's
+// AWAITING MERGE line names it; ASS-414: no key), `after` the names of the
+// ticket's listed ones it depends on, in that order (one not ready is left
+// unnamed, ASS-367) — ASS-414: a dependency whose repo another listed one of
+// the ticket shares is named by its url instead — `since` its
+// approval-wait-since. A ticket with none is left out.
 export function openMergeRequests(tickets) {
   return tickets.flatMap(t => {
     const open = (t.variation?.['merge-request'] ?? []).filter(isReady);
@@ -49,9 +52,11 @@ export function openMergeRequests(tickets) {
       ordered.push(next);
       rest = rest.filter(m => m !== next);
     }
+    const shared = d => ordered.some(o => o !== d && named(o) === named(d));
+    const afterName = d => (shared(d) && d.url) || named(d);
     const mrs = ordered.map(m => ({
       name: named(m), url: m.url ?? null,
-      after: ordered.filter(d => deps(m).includes(d)).map(named),
+      after: ordered.filter(d => deps(m).includes(d)).map(afterName),
       since: m['approval-wait-since'],
     }));
     return mrs.length ? [{ key: t.key, url: t.url ?? null, title: t.title ?? '', mrs }] : [];
@@ -60,8 +65,9 @@ export function openMergeRequests(tickets) {
 
 // openMergeRequestLines(groups, now) — the text as lines (ASS-366): a header
 // counting the merge requests and giving `now`'s UTC date, a blank line, then
-// each ticket's "<KEY>: <title>" over its merge requests ("  - <repo> <key>
-// <url>  (after <repo> <key>, …)"), a blank line between tickets; "No merge
+// each ticket's "<KEY>:" over its merge requests ("- <repo>  <url>  (after
+// <repo>, …)") — ASS-414: no title, no indent, no merge request key — a
+// blank line between tickets; "No merge
 // requests ready for approval." with none (ASS-367: the header and that read
 // "ready for approval"; ASS-372: no "waiting since <time>" on each line). Never wrapped, so a url copies whole; the key
 // linked to its ticket's url (display only: it copies as plain text) when
@@ -72,10 +78,10 @@ export function openMergeRequestLines(groups, now, { linked = true } = {}) {
   const date = new Date(now).toISOString().slice(0, 10);
   return [
     `Merge requests ready for approval (${count}), ${date}`,
-    ...groups.flatMap(({ key, url, title, mrs }) => [
+    ...groups.flatMap(({ key, url, mrs }) => [
       '',
-      `${linked && url ? link(key, url) : key}: ${title}`,
-      ...mrs.map(m => `  - ${[m.name, m.url].filter(Boolean).join('  ')}${m.after.length ? `  (after ${m.after.join(', ')})` : ''}`),
+      `${linked && url ? link(key, url) : key}:`,
+      ...mrs.map(m => `- ${[m.name, m.url].filter(Boolean).join('  ')}${m.after.length ? `  (after ${m.after.join(', ')})` : ''}`),
     ]),
   ];
 }
