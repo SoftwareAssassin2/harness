@@ -3,19 +3,20 @@
 // tickets (and, on a comment cycle, their Jira comments), and hand them to the
 // agent-cli. It writes no JSON itself: every mutation is an agent.sh call
 // (ticket:snapshot-day, ticket:sync, ticket:sync-outside, ticket:sync-jira-comments,
-// project:set-ticket-system-account-id, project:set-last-data-download), so
-// the file rules live in one place.
+// project:set-ticket-system-account-id, analytics:sync-merge-requests,
+// project:set-last-data-download), so the file rules live in one place.
 import { readFileSync, writeFileSync, mkdtempSync, rmSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parseBoardUrl } from './jira.js';
 import { scanMergeRequests } from './merge-requests.js';
+import { syncMergedMergeRequests } from './merged-merge-requests.js';
 import { dataDir } from '../data-folder.js';
 
 // runCycle({ root, project, now, adapters, exec, comments, lookups, dryRun, log }) — root is the
 // repo root (agent.sh is under it and, unless PROJECTS_DIR says otherwise,
 // data/projects/); now the time of this cycle; adapters { jira, gitlab, github,
-// offBoard } the modules of this folder, or fakes; lookups, on a lookup cycle
+// offBoard, mergedMergeRequests } the modules of this folder, or fakes; lookups, on a lookup cycle
 // (main.js: the comment cycles), the merge-request scan's direct fetches and targeted lookups; exec(file, args) runs a command and
 // resolves to its stdout, rejecting with the exit status as `code`; log(text)
 // takes one line per action; comments, given on a comment cycle (main.js:
@@ -83,6 +84,15 @@ import { dataDir } from '../data-folder.js';
 //    ticket, its comments (adapters.jira.fetchComments) — `ticket:sync-jira-
 //    comments <project> <key> <file>`. One that fails keeps what it had and
 //    the cycle goes on; it is logged only when it starts failing.
+// 5b. Analytics' merged merge requests (ASS-408), every cycle, when adapters
+//    has mergedMergeRequests (merged-merge-requests.js): for each GitLab or
+//    GitHub repository in project.json's `repositories`, by its url's host
+//    (one on another host skipped, logged once), its merged merge requests
+//    or pull requests updated since a few minutes before its fetched-through
+//    time in analytics/merge-requests.json (all of them the first time), page
+//    by page — `analytics:sync-merge-requests <project> <file>`. One whose read fails is logged once until that
+//    changes, and its fetched-through stays; the others still go. Separate
+//    from step 2's scan, which stays as it is.
 // 6. `project:set-last-data-download <project> <now>`.
 // Each ticket list is stamped with when it was read ("fetched-at", the time
 // just before the read): a status control sets on a sprint ticket while the
@@ -202,6 +212,15 @@ export async function runCycle({ root, project, now = new Date(), adapters, exec
         }
       }
       log(`comments: ${jiraKeys.length} tickets`);
+    }
+
+    // 5b. Analytics: every merged merge request (ASS-408).
+    if (adapters.mergedMergeRequests) {
+      const file = join(projects, project, 'analytics', 'merge-requests.json');
+      let recorded = {};
+      try { recorded = existsSync(file) ? JSON.parse(readFileSync(file, 'utf8')) ?? {} : {}; } catch { /* unreadable: read every repository from the start */ }
+      const readers = { gitlab: adapters.mergedMergeRequests.fetchMergedMergeRequests, github: adapters.mergedMergeRequests.fetchMergedPullRequests };
+      await syncMergedMergeRequests({ key: join(projects, project), project, repositories: config.repositories ?? [], recorded, call, readers, run: exec, log });
     }
 
     await call(['project:set-last-data-download', project, now.toISOString()]);

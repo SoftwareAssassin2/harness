@@ -33,6 +33,7 @@ import * as jira from './jira.js';
 import * as gitlab from './gitlab.js';
 import * as github from './github.js';
 import * as offBoard from './off-board.js';
+import * as mergedMergeRequests from './merged-merge-requests.js';
 import { runCycle } from './cycle.js';
 import { dataDir } from '../data-folder.js';
 import { claim, release, runs, harnessHome } from '../single-instance.js';
@@ -98,7 +99,7 @@ for (let round = 0; ; round++) {
   const slow = round % COMMENTS_EVERY === 0, comments = slow ? failing : undefined;
   for (const project of downloadProjects()) {
     try {
-      await runCycle({ root: ROOT, project, now: new Date(), adapters: { jira, gitlab, github, offBoard }, exec, comments, lookups: slow, dryRun, log: text => say(project, text) });
+      await runCycle({ root: ROOT, project, now: new Date(), adapters: { jira, gitlab, github, offBoard, mergedMergeRequests }, exec, comments, lookups: slow, dryRun, log: text => say(project, text) });
     } catch (err) {
       console.error(`${new Date().toISOString()} ${project} cycle failed: ${err.message}`);
     }
