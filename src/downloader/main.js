@@ -6,7 +6,10 @@
 // is logged to stderr and the others still run. The first round, then every
 // COMMENTS_EVERY-th, is a comment cycle: each Jira ticket's comments too
 // (ASS-37) — one acli call a ticket, so not every round — and a lookup cycle:
-// the merge-request scan's direct fetches and targeted lookups (ASS-98/122). It writes no JSON itself:
+// the merge-request scan's direct fetches and targeted lookups (ASS-98/122).
+// Every cycle also reads, for analytics, every ticket of the board's project
+// with its history and the board's sprints through Jira's REST API with
+// Node's fetch (jira-rest.js, ASS-406). It writes no JSON itself:
 // every mutation is an agent.sh call.
 //
 //   node src/downloader/main.js [--once] [--dry-run]
@@ -34,6 +37,7 @@ import * as gitlab from './gitlab.js';
 import * as github from './github.js';
 import * as offBoard from './off-board.js';
 import * as mergedMergeRequests from './merged-merge-requests.js';
+import * as jiraRest from './jira-rest.js';
 import { runCycle } from './cycle.js';
 import { dataDir } from '../data-folder.js';
 import { claim, release, runs, harnessHome } from '../single-instance.js';
@@ -99,7 +103,7 @@ for (let round = 0; ; round++) {
   const slow = round % COMMENTS_EVERY === 0, comments = slow ? failing : undefined;
   for (const project of downloadProjects()) {
     try {
-      await runCycle({ root: ROOT, project, now: new Date(), adapters: { jira, gitlab, github, offBoard, mergedMergeRequests }, exec, comments, lookups: slow, dryRun, log: text => say(project, text) });
+      await runCycle({ root: ROOT, project, now: new Date(), adapters: { jira, gitlab, github, offBoard, jiraRest, mergedMergeRequests }, exec, comments, lookups: slow, dryRun, log: text => say(project, text) });
     } catch (err) {
       console.error(`${new Date().toISOString()} ${project} cycle failed: ${err.message}`);
     }

@@ -3,7 +3,8 @@
 // tickets (and, on a comment cycle, their Jira comments), and hand them to the
 // agent-cli. It writes no JSON itself: every mutation is an agent.sh call
 // (ticket:snapshot-day, ticket:sync, ticket:sync-outside, ticket:sync-jira-comments,
-// project:set-ticket-system-account-id, analytics:sync-merge-requests,
+// project:set-ticket-system-account-id, analytics:sync-tickets,
+// analytics:sync-sprints, analytics:sync-merge-requests,
 // project:set-last-data-download), so the file rules live in one place.
 import { readFileSync, writeFileSync, mkdtempSync, rmSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -13,10 +14,12 @@ import { scanMergeRequests } from './merge-requests.js';
 import { syncMergedMergeRequests } from './merged-merge-requests.js';
 import { dataDir } from '../data-folder.js';
 
-// runCycle({ root, project, now, adapters, exec, comments, lookups, dryRun, log }) — root is the
+// runCycle({ root, project, now, adapters, exec, fetch, comments, lookups, dryRun, log }) — root is the
 // repo root (agent.sh is under it and, unless PROJECTS_DIR says otherwise,
 // data/projects/); now the time of this cycle; adapters { jira, gitlab, github,
-// offBoard, mergedMergeRequests } the modules of this folder, or fakes; lookups, on a lookup cycle
+// offBoard, jiraRest, mergedMergeRequests } the modules of this folder, or fakes; fetch the HTTP
+// fetch jiraRest's reads go through (Node's global one unless given: tests
+// pass a fake); lookups, on a lookup cycle
 // (main.js: the comment cycles), the merge-request scan's direct fetches and targeted lookups; exec(file, args) runs a command and
 // resolves to its stdout, rejecting with the exit status as `code`; log(text)
 // takes one line per action; comments, given on a comment cycle (main.js:
@@ -84,7 +87,20 @@ import { dataDir } from '../data-folder.js';
 //    ticket, its comments (adapters.jira.fetchComments) — `ticket:sync-jira-
 //    comments <project> <key> <file>`. One that fails keeps what it had and
 //    the cycle goes on; it is logged only when it starts failing.
-// 5b. Analytics' merged merge requests (ASS-408), every cycle, when adapters
+// 5b. Analytics (ASS-406), every cycle, for a project whose jira work source
+//    has api-email and api-token (Jira REST's basic auth), when adapters.
+//    jiraRest is given: every ticket of the board's Jira project (sub-tasks
+//    left out), whoever holds it, with its full changelog (jiraRest.
+//    fetchAnalyticsTickets) — those updated since ANALYTICS_OVERLAP_MS before
+//    analytics/tickets.json's fetched-through, all of them when there is none
+//    — to `analytics:sync-tickets <project> <file>` with { fetched-through
+//    (the time just before the read), tickets: [...] }; then the board's
+//    sprints of every state (jiraRest.fetchBoardSprints) to `analytics:
+//    sync-sprints <project> <file>` with { sprints: [...] }. Neither touches
+//    the sprint files or backlog.json. No credentials, or a read (or its
+//    write) that fails, is logged once until that changes, the file it would
+//    have written stays as it was, and the cycle goes on.
+// 5c. Analytics' merged merge requests (ASS-408), every cycle, when adapters
 //    has mergedMergeRequests (merged-merge-requests.js): for each GitLab or
 //    GitHub repository in project.json's `repositories`, by its url's host
 //    (one on another host skipped, logged once), its merged merge requests
@@ -98,10 +114,10 @@ import { dataDir } from '../data-folder.js';
 // just before the read): a status control sets on a sprint ticket while the
 // merge requests are looked up is newer than the list, and ticket:sync keeps
 // it (ASS-128).
-// The Jira steps (2, 3, 3b, 3c, 5) only for a project with a jira work source; one with
+// The Jira steps (2, 3, 3b, 3c, 5, 5b) only for a project with a jira work source; one with
 // only an off-board source (the harness's own) syncs those tickets alone.
 // Fails before anything runs when the project has neither.
-export async function runCycle({ root, project, now = new Date(), adapters, exec, comments, lookups = false, dryRun = false, log = () => {} }) {
+export async function runCycle({ root, project, now = new Date(), adapters, exec, fetch: fetchFn = globalThis.fetch, comments, lookups = false, dryRun = false, log = () => {} }) {
   const projects = process.env.PROJECTS_DIR ?? join(dataDir(root), 'projects');
   const read = file => JSON.parse(readFileSync(join(projects, project, file), 'utf8'));
   const config = read('project.json');
@@ -214,7 +230,12 @@ export async function runCycle({ root, project, now = new Date(), adapters, exec
       log(`comments: ${jiraKeys.length} tickets`);
     }
 
-    // 5b. Analytics: every merged merge request (ASS-408).
+    // 5b. Analytics (ASS-406): its own failures logged, never the cycle's.
+    if (source && adapters.jiraRest) {
+      await syncAnalytics({ key: join(projects, project), project, source, board, tickets: join(projects, project, 'analytics', 'tickets.json'), call, rest: adapters.jiraRest, fetchFn, log });
+    }
+
+    // 5c. Analytics: every merged merge request (ASS-408).
     if (adapters.mergedMergeRequests) {
       const file = join(projects, project, 'analytics', 'merge-requests.json');
       let recorded = {};
@@ -274,6 +295,52 @@ async function syncOutside({ project, board, tickets, recorded, call, jira, exec
   log(`outside dependencies: ${keys.length} depended on, ${read.length} read`);
   const fields = t => ({ key: t.key, title: t.title ?? '', url: t.url ?? null, 'ticket-system-status': t['ticket-system-status'] ?? null, 'ticket-system-assignment': t['ticket-system-assignment'] ?? null });
   await call(['ticket:sync-outside', project], { 'fetched-at': fetchedAt, keys, tickets: read.map(fields) });
+}
+
+// How far before the last analytics read's fetched-through the next one
+// starts (ASS-406), so a ticket updated while that read was under way, or
+// stamped by a Jira clock a little behind this one, is not missed.
+export const ANALYTICS_OVERLAP_MS = 5 * 60_000;
+
+// The last thing syncAnalytics logged that stays until it changes, by
+// projects folder and project, and by part (credentials, tickets, sprints).
+const analyticsNotes = new Map();
+
+// syncAnalytics: step 5b (ASS-406).
+async function syncAnalytics({ key, project, source, board, tickets, call, rest, fetchFn, log }) {
+  const note = (part, text) => {
+    const at = `${key}\0${part}`;
+    if (text === null) return void analyticsNotes.delete(at);
+    if (analyticsNotes.get(at) !== text) log(text);
+    analyticsNotes.set(at, text);
+  };
+  const email = source['api-email'], token = source['api-token'];
+  if (!email || !token) return note('credentials', 'analytics skipped: the jira work source has no api-email and api-token');
+  note('credentials', null);
+  const auth = { site: board.site, email, token };
+  const reason = err => String(err?.message ?? err).split('\n')[0];
+
+  let since = null;
+  try {
+    const through = Date.parse(JSON.parse(readFileSync(tickets, 'utf8'))['fetched-through']);
+    if (!Number.isNaN(through)) since = new Date(through - ANALYTICS_OVERLAP_MS).toISOString();
+  } catch { /* no tickets.json yet, or unreadable: the first read, all of them */ }
+  try {
+    const fetchedThrough = new Date().toISOString();
+    const read = await rest.fetchAnalyticsTickets({ ...auth, projectKey: board.projectKey, storyPointsField: source['story-points-field'], sprintField: source['sprint-field'], since }, fetchFn);
+    log(`analytics: ${read.length} tickets ${since ? `updated since ${since}` : 'read, all of them'}`);
+    await call(['analytics:sync-tickets', project], { 'fetched-through': fetchedThrough, tickets: read });
+    note('tickets', null);
+  } catch (err) {
+    note('tickets', `analytics: the tickets could not be read; tickets.json stays as it is: ${reason(err)}`);
+  }
+  try {
+    const sprints = await rest.fetchBoardSprints({ ...auth, boardId: board.boardId }, fetchFn);
+    await call(['analytics:sync-sprints', project], { sprints });
+    note('sprints', null);
+  } catch (err) {
+    note('sprints', `analytics: the board's sprints could not be read; sprints.json stays as it is: ${reason(err)}`);
+  }
 }
 
 // The last thing recordAccount logged, by projects folder and project: a
