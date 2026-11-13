@@ -15,9 +15,12 @@ set -euo pipefail
 #   merge-request-considerations.md     when it has one
 #
 # project.json keeps name, execution-state-engine, dev-container, uses-points,
-# merge-request-area-of-interest, work-sources, worktree-setup, every max-*
+# merge-request-area-of-interest, worktree-setup, every max-*
 # and check-for-expired-*, dev-container-env, story-point-scale,
 # raised-bug-priority, merge-request-title, numbered-files (ASS-385), advisory-review-bots (ASS-389) and vm-full-checks as they are, and
+#   work-sources        each without api-email and api-token (ASS-407: the
+#                       jira source's Jira REST credentials, ASS-406's analytics
+#                       download; install-project tells the operator to add them)
 #   repositories        each with url, description and work-space.branch only
 #   local-environments  each with name and type; local-pc's folder is {project-root}
 #   registry            without storage-path (install rebuilds it)
@@ -65,8 +68,8 @@ set -euo pipefail
 # literal hindsight llm-api-key is dropped unread. Before anything is
 # written the bundle is scanned, and the export fails, naming the file, when
 # any file holds a token-shaped string (glpat-, ghp_, github_pat_, sk-ant-,
-# AIza, a private key) or one of the project's keychain service names, user
-# names or emails, or a JSON or Markdown file holds an email address or a
+# AIza, an Atlassian API token's ATATT (ASS-407), a private key) or one of
+# the project's keychain service names, user names or emails, or a JSON or Markdown file holds an email address or a
 # machine path (/Users/, /Volumes/, /home/). It fails too, writing nothing,
 # for a missing project or a state engine in neither the project's own engines
 # folder nor engines/ (engine.bash's engine_path, ASS-276).
@@ -157,6 +160,7 @@ done
 jq '
   def only($keys): with_entries(select(.key as $k | $keys | index($k)));
   with_entries(select(.key | test("^(name|execution-state-engine|dev-container|uses-points|merge-request-area-of-interest|work-sources|repositories|local-environments|worktree-setup|dev-container-env|registry|hindsight|golden-image|story-point-scale|raised-bug-priority|merge-request-title|numbered-files|advisory-review-bots|vm-full-checks)$|^max-|^check-for-expired-")))
+  | if (.["work-sources"] | type) == "array" then .["work-sources"] |= map(if type == "object" then del(.["api-email"], .["api-token"]) else . end) else . end
   | if has("repositories") then .repositories |= map(only(["url", "description"])
       + (if .["work-space"].branch? != null then {"work-space": {branch: .["work-space"].branch}} else {} end)) else . end
   | if has("local-environments") then .["local-environments"] |= map(only(["name", "type"])
@@ -270,7 +274,7 @@ jq -n --arg project "$as" --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg commit
 ' > "$stage/manifest.json"
 
 # 6. The scan, before anything is written. Each failure names the bundle file.
-tokens='glpat-[A-Za-z0-9_-]{20,}|ghp_[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9_]{22,}|sk-ant-[A-Za-z0-9_-]{20,}|AIza[0-9A-Za-z_-]{35}|-----BEGIN ([A-Z0-9]+ )*PRIVATE KEY-----'
+tokens='glpat-[A-Za-z0-9_-]{20,}|ghp_[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9_]{22,}|sk-ant-[A-Za-z0-9_-]{20,}|AIza[0-9A-Za-z_-]{35}|ATATT[A-Za-z0-9_=-]{20,}|-----BEGIN ([A-Z0-9]+ )*PRIVATE KEY-----'
 emails='[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}'
 paths='(^|[^A-Za-z0-9_.~-])/(Users|Volumes|home)/'
 # found <what> <grep -E args…> — fail naming the first bundle file that matches.

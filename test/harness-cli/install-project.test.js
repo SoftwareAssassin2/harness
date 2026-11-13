@@ -26,7 +26,7 @@ const git = (dir, ...args) => execFileSync('git', ['-C', dir, ...args], { encodi
 // engines/ with dev and build (and a test that p's own shadows), a
 // harness.json with other settings, credentials for another project q, and a
 // project checkout at work/acme.
-function setup() {
+function setup({ project = {} } = {}) {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), 'install-project-')));
   const at = (...p) => join(dir, ...p);
   write(at('from', 'projects', 'p', 'project.json'), {
@@ -38,6 +38,7 @@ function setup() {
     registry: { 'storage-path': 'projects/p/registry', port: 5102 },
     hindsight: { port: 8892, 'llm-api-key-keychain-service': 'Hindsight Key (Acme)' },
     'golden-image': { folder: 'projects/p/golden-image', tools: ['pnpm'] },
+    ...project,
   });
   write(at('from', 'projects', 'p', 'golden-image', 'template.yaml'), 'video: none\n');
   write(at('from', 'projects', 'p', 'merge-request-considerations.md'), '# Considerations\n');
@@ -258,4 +259,22 @@ test('it fails, changing nothing, for a bundle entry outside the bundle, or a pr
   fails(s, [link, ...root(s)], /link/);
   const name = repack(s, d => write(join(d, 'manifest.json'), { ...json(join(d, 'manifest.json')), project: '../x' }));
   fails(s, [name, ...root(s)], /project/);
+});
+
+// ASS-407 AC3: the bundle drops the jira work source's api-email and
+// api-token, so the install's list of what is left says to add them by hand.
+test('ASS-407 AC3: a jira work source without api-email and api-token adds a last setup step saying to add them', () => {
+  const jira = { name: 'Example', type: 'jira', url: 'https://example.atlassian.net/jira/software/c/projects/EX/boards/1', 'api-email': 'ada@example.com', 'api-token': 'ATATT3xFfGF0' + 'Q'.repeat(40) };
+  const s = setup({ project: { 'work-sources': [jira] } });
+  const r = s.install(s.bundle, '--project-root', s.at('work', 'acme'), '--lima-home', s.at('lima'));
+  assert.equal(r.status, 0, r.stderr);
+  assert.deepEqual(json(s.at('to', 'projects', 'p', 'project.json'))['work-sources'], [{ name: 'Example', type: 'jira', url: jira.url }]);
+  const steps = r.stdout.slice(r.stdout.indexOf('Remaining setup steps:'));
+  assert.match(steps, /\d+\. Add api-email .* and api-token .* to the jira work source in .*project\.json.*analytics/);
+  assert.ok(steps.indexOf('api-token') > steps.indexOf('memory:up'), steps);   // after the manifest's steps
+  // without a jira work source there is no such step.
+  const t = setup();
+  const u = t.install(t.bundle, '--project-root', t.at('work', 'acme'), '--lima-home', t.at('lima'));
+  assert.equal(u.status, 0, u.stderr);
+  assert.ok(!u.stdout.includes('api-token'), u.stdout);
 });

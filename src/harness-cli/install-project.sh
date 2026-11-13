@@ -27,7 +27,10 @@ set -euo pipefail
 #     declares keeps its entry, said so, unless --force. The keychain is never
 #     touched;
 #   - prints the manifest's setup steps left, in its order, and the
-#     placeholders still to fill.
+#     placeholders still to fill. A jira work source without api-email or
+#     api-token (export-project drops both, ASS-407) adds a last step: the
+#     operator adds their own to it by hand, for the P screen's analytics
+#     download (ASS-406).
 #
 # Fails, changing nothing, for a missing file or one that is not a bundle (not
 # a gzipped tarball, an entry outside it or a link, no manifest.json, a file
@@ -201,8 +204,11 @@ jq -r --argjson entry "$entry" --slurpfile pj "$target/project.json" --arg file 
   def clean: tostring | gsub("[[:cntrl:]]"; "");
   ([$entry, $pj[0]] | [.. | strings]) as $left
   | (.placeholders // {}) as $ph
-  | [(.setup // [])[] | select(type == "object")
-      | select(.step != "keychain-item" or .in != "vm-credentials.template.json" or (.placeholder as $x | $left | index($x)))] as $steps
+  | ([(.setup // [])[] | select(type == "object")
+      | select(.step != "keychain-item" or .in != "vm-credentials.template.json" or (.placeholder as $x | $left | index($x)))]
+    + (if any(($pj[0]["work-sources"] // [] | arrays)[]; type == "object" and .type == "jira" and ((.["api-email"] | type) != "string" or (.["api-token"] | type) != "string"))
+         then [{step: "jira-api-credentials", description: "Add api-email (your Atlassian email) and api-token (an API token from id.atlassian.com) to the jira work source in \($pjfile) (its .\"work-sources\" entry with type jira); the P screen'"'"'s analytics download needs them"}]
+         else [] end)) as $steps
   | [$ph | to_entries[] | select(.key as $k | $left | index($k))] as $todo
   | (if ($steps | length) > 0 then "\nRemaining setup steps:" else "\nNo setup steps left." end),
     ($steps | to_entries[] | .key as $i | .value

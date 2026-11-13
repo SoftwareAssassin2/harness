@@ -448,3 +448,34 @@ test('ASS-280 AC3: an --engine-prefix whose new name collides with an existing e
   write(t.at('projects', 'acme-shop', 'engines', 'engineering-build', 'state-engine.json'), { steps: [] });   // the project's own
   failsWith(t, ['acme-shop', 'b.tar.gz', '--engine-prefix', 'acme=engineering'], /engineering-build.*already/);
 });
+
+// ASS-407: a jira work source's api-email and api-token (Jira REST basic-auth,
+// ASS-406's analytics download) never travel in a bundle, and an Atlassian API
+// token (ATATT…) anywhere in it fails the export like the other token shapes.
+const ATLASSIAN_TOKEN = 'ATATT3xFfGF0' + 'Q'.repeat(40) + '=0A1B2C3D';
+
+test('ASS-407 AC1: export-project drops api-email and api-token from every work source, keeping the rest of each', () => {
+  const s = setup({ project: { 'work-sources': [
+    { name: 'Example', type: 'jira', url: 'https://example.atlassian.net/jira/software/c/projects/EX/boards/1', 'story-points-field': 'customfield_1', 'api-email': 'ada@example.com', 'api-token': ATLASSIAN_TOKEN },
+    { name: 'Other', type: 'jira', url: 'https://example.atlassian.net/jira/software/c/projects/OT/boards/2', 'api-email': 'ada@example.com' },
+    { name: 'Plain', type: 'jira', url: 'https://example.atlassian.net/jira/software/c/projects/PL/boards/3' },
+  ] } });
+  const r = s.exportProject('p', 'b.tar.gz');
+  assert.equal(r.status, 0, r.stderr);
+  assert.ok(!(r.stdout + r.stderr).includes(ATLASSIAN_TOKEN));
+  const b = s.unpack(s.at('out', 'b.tar.gz'));
+  assert.deepEqual(b.json('project.json')['work-sources'], [
+    { name: 'Example', type: 'jira', url: 'https://example.atlassian.net/jira/software/c/projects/EX/boards/1', 'story-points-field': 'customfield_1' },
+    { name: 'Other', type: 'jira', url: 'https://example.atlassian.net/jira/software/c/projects/OT/boards/2' },
+    { name: 'Plain', type: 'jira', url: 'https://example.atlassian.net/jira/software/c/projects/PL/boards/3' },
+  ]);
+  for (const f of b.files) assert.ok(!b.text(f).includes(ATLASSIAN_TOKEN) && !b.text(f).includes('ada@example.com'), f);
+});
+
+test('ASS-407 AC2: export-project fails, writing nothing, naming the file, when the bundle holds an Atlassian API token', () => {
+  const s = setup();
+  write(s.at('projects', 'p', 'golden-image', 'provision.sh'), `#!/usr/bin/env bash\nJIRA_TOKEN=${ATLASSIAN_TOKEN}\n`);
+  fails(s, /golden-image\/provision\.sh holds a token-shaped string/);
+  const t = setup({ project: { 'worktree-setup': `JIRA_TOKEN=${ATLASSIAN_TOKEN} pnpm install` } });
+  fails(t, /project\.json holds a token-shaped string/);
+});

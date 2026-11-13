@@ -165,6 +165,13 @@ When you're done, no `{…}` placeholder may be left in the entry:
 jq -r --arg p "<project>" '.[$p] | .. | strings | select(test("^\\{.*\\}$"))' ~/.harness/vm-credentials.json
 ```
 
+**Jira API credentials** (a `jira-api-credentials` step): the bundle never
+carries the jira work source's `api-email` and `api-token` (the P screen's
+analytics download reads them), so the person adds their own to that work
+source in `data/projects/<project>/project.json`: `api-email` their Atlassian
+email, `api-token` an API token from id.atlassian.com. Have them edit the file
+**themselves** so the token never passes through you.
+
 **Logins**: for a `glab-login` step have the person run `! glab auth login`,
 and for a `gcloud-login` step `! gcloud auth login`. These are interactive
 and need their browser. Check with `glab auth status` / `gcloud auth list`.
