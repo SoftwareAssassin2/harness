@@ -2848,18 +2848,17 @@ test('enter opens the date and time on show; tab moves between them; enter shows
   const out = lines(set, wide);
   assert.ok(out.some(l => /^Since +date 2026-09-25 +time 09:00 UTC/.test(l)));
   const at = text => out.findIndex(l => l.startsWith(text));
-  assert.ok(at('Done (1).') > 0);
-  assert.equal(out[at('Done (1).') + 1], '- P-1: Shipped.');
-  assert.ok(at('In Progress: building (1).') > at('Done (1).'));
-  assert.ok(at('Net since Fri Sep 25, 09:00 UTC:') > at('In Progress: building'));
+  // ASS-415: bold headings with counts, in the engine's order, no closing line.
+  assert.ok(at('*Done (1):*') > 0);
+  assert.equal(out[at('*Done (1):*') + 1], '- P-1: Shipped');
+  assert.ok(at('*In Progress (1):*') > at('*Done (1):*'));
+  assert.ok(!out.some(l => l.startsWith('Net since')));
   assert.equal(press(set, 'return').updatesForm.date, '2026-09-25');                // reopening starts from what is set
 });
 
-test('a bullet too long for the screen wraps under its own text', () => {
+test('a long title is cut to its first 20 characters and "..." (ASS-415: it no longer needs to wrap)', () => {
   const out = lines(setSince(updating, '2026-09-25', '9:00'), { ...wide, columns: 80 });
-  const first = out.findIndex(l => l.startsWith('- P-2: Reviewing'));
-  assert.ok(out[first].length <= 80);
-  assert.match(out[first + 1], /^ {2}\S/);
+  assert.ok(out.includes('- P-2: Reviewing a very lon...'), out.join('\n'));
 });
 
 test('a date or time that is not real says so and keeps the form open; escape gives up', () => {

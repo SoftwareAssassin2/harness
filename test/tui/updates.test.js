@@ -1,11 +1,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { progressSince, progressLines, lastWeekdayMorning } from '../../src/tui/updates.js';
+import { progressSince, progressLines, lastWeekdayMorning, boardOf } from '../../src/tui/updates.js';
+import { enginesOf } from '../../src/tui/status.js';
 import { link, visible } from '../../src/tui/text.js';
 
 // ASS-332: the update written the way the team sees the work on the board,
-// grouped by the ticket system's status. An execution engine whose steps pair
-// with the board's statuses, and the engines of the steps that have their own.
+// grouped by the ticket system's status. ASS-415: a short list per status,
+// in the order the engine gives. An execution engine whose steps pair with
+// the board's statuses, and the engines of the steps that have their own.
 const step = (id, name, sequence, fields = {}) => ({ id, name, sequence, action: { type: 'prompt' }, ...fields });
 const workflows = [
   { name: 'prj-dev', steps: [
@@ -27,9 +29,9 @@ const workflows = [
 const ENGINES = { plan: 'prj-plan', build: 'prj-build', blocked: 'prj-blocked' };
 // A status or a change's side as 'top' or 'top/sub'.
 const at = path => path.split('/');
-const status = path => {
+const status = (path, engine = 'prj-dev') => {
   const [top, sub] = at(path);
-  return { state: top, 'state-engine': 'prj-dev', ...(sub ? { 'sub-status': { state: sub, 'state-engine': ENGINES[top] } } : {}) };
+  return { state: top, 'state-engine': engine, ...(sub ? { 'sub-status': { state: sub, 'state-engine': ENGINES[top] } } : {}) };
 };
 // A move from one 'top' or 'top/sub' to another, as the state-changes it
 // makes: within one top step, the sub-step's change beneath it; into another
@@ -43,32 +45,35 @@ const move = (from, to, timestamp) => {
 // A one-variation ticket whose status is where its last move went (else `where`).
 const ticket = (key, title, fields, moves = [], where = moves.at(-1)?.[1], variation = {}) => ({
   key, title, ...fields,
-  variations: [{ name: 'A', 'harness-status': status(where), 'state-changes': moves.flatMap(m => move(...m)), ...variation }],
+  variations: [{ name: 'A', 'harness-status': status(where, variation.engine), 'state-changes': moves.flatMap(m => move(...m)), ...variation }],
 });
 
 const since = Date.parse('2026-11-06T04:00:00Z');
 const before = '2026-11-05T12:00:00Z', after = n => `2026-11-09T0${n}:00:00Z`;
 const sprint = {
   features: [
-    ticket('PRJ-1', 'Shipped it', { 'ticket-system-status': 'Done' }, [['committed', 'build/gen-tests', before], ['build/gen-tests', 'qa', after(1)], ['qa', 'done', after(2)]]),
-    ticket('PRJ-2', 'Old news', { 'ticket-system-status': 'Done' }, [['qa', 'done', before]]),
-    ticket('PRJ-3', 'Being verified', { 'ticket-system-status': 'In Testing' }, [['committed', 'build/run-tests', before], ['build/run-tests', 'qa', after(1)]]),
-    ticket('PRJ-4', 'Back to building', { 'ticket-system-status': 'On Hold' }, [['build/gen-tests', 'blocked/troubleshoot-it', before], ['blocked/troubleshoot-it', 'build/run-tests', after(1)]]),
-    ticket('PRJ-5', 'Planning it', { 'ticket-system-status': 'In Progress' }, [['committed', 'plan/write-plan', before], ['plan/write-plan', 'plan/check-plan', after(1)]]),
-    ticket('PRJ-6', 'Held back', { 'ticket-system-status': 'In Progress', dependencies: ['PRJ-3'] }, [['committed', 'plan/write-plan', before]], undefined, { 'is-paused': true }),
-    ticket('PRJ-7', 'Queued', { 'ticket-system-status': 'To Do', dependencies: ['PRJ-5', 'PRJ-1', 'OTHER-1'] }, [], 'committed'),
+    ticket('EX-1', 'Shipped it', { 'ticket-system-status': 'Done' }, [['committed', 'build/gen-tests', before], ['build/gen-tests', 'qa', after(1)], ['qa', 'done', after(2)]]),
+    ticket('EX-2', 'Old news', { 'ticket-system-status': 'Done' }, [['qa', 'done', before]]),
+    ticket('EX-3', 'Being verified', { 'ticket-system-status': 'In Testing' }, [['committed', 'build/run-tests', before], ['build/run-tests', 'qa', after(1)]]),
+    ticket('EX-4', 'Back to building', { 'ticket-system-status': 'On Hold' }, [['build/gen-tests', 'blocked/troubleshoot-it', before], ['blocked/troubleshoot-it', 'build/run-tests', after(1)]]),
+    ticket('EX-5', 'Planning it', { 'ticket-system-status': 'In Progress' }, [['committed', 'plan/write-plan', before], ['plan/write-plan', 'plan/check-plan', after(1)]]),
+    ticket('EX-6', 'Held back', { 'ticket-system-status': 'In Progress', dependencies: ['EX-3'] }, [['committed', 'plan/write-plan', before]], undefined, { 'is-paused': true }),
+    ticket('EX-7', 'Queued', { 'ticket-system-status': 'To Do', dependencies: ['EX-5', 'EX-1', 'OTHER-1'] }, [], 'committed'),
+    ticket('EX-11', 'Not started yet', { 'ticket-system-status': 'To Do' }, [], 'committed'),
+    ticket('EX-13', 'Made room', { 'ticket-system-status': 'In Progress' }, [['committed', 'build/gen-tests', before]], undefined, { 'is-paused': true, 'paused-for-fast-track': 'EX-99' }),
+    ticket('EX-14', 'By hand', { 'ticket-system-status': 'In Progress', 'worked-manually': { by: 'someone', since: '2026-11-05T10:00:00Z' } }, [['committed', 'setup', before]]),
   ],
   bugs: [
-    ticket('PRJ-8', 'Stuck', { 'ticket-system-status': 'On Hold' }, [['committed', 'build/gen-tests', before], ['build/gen-tests', 'blocked/await-fix', after(2)]], undefined, { 'waits-on': { project: 'prj', ticket: 'PRJ-9' }, 'ai-feedback-short': 'gen-tests failed 3 times' }),
-    ticket('PRJ-10', 'Needs a person', { 'ticket-system-status': 'On Hold' }, [['committed', 'build/run-tests', before], ['build/run-tests', 'blocked-for-human', after(3)]]),
+    ticket('EX-8', 'Stuck', { 'ticket-system-status': 'On Hold' }, [['committed', 'build/gen-tests', before], ['build/gen-tests', 'blocked/await-fix', after(2)]], undefined, { 'waits-on': { project: 'prj', ticket: 'EX-9' } }),
+    ticket('EX-10', 'Needs a person', { 'ticket-system-status': 'On Hold' }, [['committed', 'build/run-tests', before], ['build/run-tests', 'blocked-for-human', after(3)]]),
   ],
   spikes: [
-    ticket('PRJ-12', 'Released', {}, [['qa', 'release', after(4)]]),
+    ticket('EX-12', 'Released', {}, [['qa', 'release', after(4)]]),
   ],
 };
 const progress = progressSince({ sprint, workflows, since });
-const group = title => progress.sections.find(s => s.title.startsWith(`${title} (`));
-const texts = title => group(title)?.bullets.map(b => b.text);
+const section = (out, name) => out.sections.find(s => s.name === name);
+const keysOf = list => list.map(b => b.key);
 
 test('the default moment is 04:00 UTC on the weekday before today\'s UTC date: Monday\'s is Friday\'s, a weekend\'s Friday\'s (ASS-332)', () => {
   const morning = now => new Date(lastWeekdayMorning(new Date(now))).toISOString();
@@ -81,235 +86,172 @@ test('the default moment is 04:00 UTC on the weekday before today\'s UTC date: M
   assert.equal(morning('2026-11-15T12:00:00Z'), '2026-11-13T04:00:00.000Z');   // Sunday
 });
 
-test('each ticket is listed once, under its board status now, in board order, each heading counting it and saying what it means (ASS-332)', () => {
-  assert.deepEqual(progress.sections.map(s => s.title), [
-    'Done (1). Finished and accepted.',
-    'In Testing (1). The work is done and being verified.',
-    'In Progress: building (1). Code is written or being written, and tests are running.',
-    'In Progress: planning (1). Being analyzed and planned before any code.',
-    'On Hold (4). Paused on purpose, waiting on another ticket, or stopped until a problem is fixed.',   // PRJ-7 waits on PRJ-5 (ASS-355): no longer To Do
-    'In Review (1)',
+test('ASS-415 AC1: each section is a bold heading with its count, one "- <KEY>: <title>" line per ticket and a blank line; no notes and no closing line', () => {
+  const lines = progressLines(progress, 200);
+  assert.deepEqual(lines, [
+    '*Done (1):*', '- EX-1: Shipped it', '',
+    '*In Testing (1):*', '- EX-3: Being verified', '',
+    '*In Review (1):*', '- EX-12: Released', '',
+    '*In Progress (4):*', '- EX-4: Back to building', '- EX-5: Planning it', '- EX-13: Made room', '- EX-14: By hand', '',
+    '*On Hold (4):*',
+    'Paused on purpose (1):', '- EX-6: Held back', '',
+    'Waiting on another ticket (1):', '- EX-7: Queued', '',
+    'Stopped until a problem is fixed (2):', '- EX-8: Stuck', '- EX-10: Needs a person', '',
   ]);
-  const keys = progress.sections.flatMap(s => s.bullets.map(b => b.key));
-  assert.equal(new Set(keys).size, keys.length);
-  assert.ok(!keys.includes('PRJ-2'), 'done before the moment and not changed since: left out');
+  assert.equal(progress.net, undefined);
+  const keys = progress.sections.flatMap(s => keysOf(s.bullets));
+  assert.equal(new Set(keys).size, keys.length, 'each ticket once');
 });
 
-test('the status is the ticket system\'s, else the one its step pairs with; one its step pairs with none keeps the ticket system\'s (ASS-332)', () => {
-  assert.deepEqual(texts('In Review'), ['PRJ-12: Released. At the Release step.']);
-  const unpaired = progressSince({ sprint: { features: [ticket('PRJ-20', 'Changed', { 'ticket-system-status': 'Selected' }, [['build/gen-tests', 'reqs-changed', after(1)]])] }, workflows, since });
-  assert.deepEqual(unpaired.sections.map(s => s.title), ['Selected (1)']);
+test('ASS-415 AC1: a title longer than 20 characters is cut to its first 20 and "..."; one of 20 or fewer stays whole', () => {
+  const titled = title => progressSince({ sprint: { features: [ticket('EX-20', title, {}, [['build/run-tests', 'qa', after(1)]])] }, workflows, since }).sections[0].bullets[0].text;
+  assert.equal(titled('Capture parent court records'), 'EX-20: Capture parent court...');
+  assert.equal(titled('Exactly twenty chars'), 'EX-20: Exactly twenty chars');
+  assert.equal(titled('Twenty-one characters'), 'EX-20: Twenty-one character...');
 });
 
-test('in progress splits into building and planning (a planning-stage step); a paused one is On Hold, and one waiting on its dependencies is On Hold under Waiting on another ticket (ASS-332, ASS-352, ASS-355)', () => {
-  assert.deepEqual(group('In Progress: building').bullets.map(b => b.key), ['PRJ-4']);
-  assert.deepEqual(group('In Progress: planning').bullets.map(b => b.key), ['PRJ-5']);
-  assert.equal(group('In Progress: held on purpose'), undefined);
-  assert.deepEqual(group('On Hold').groups[0].bullets.map(b => b.key), ['PRJ-6']);
-  const waiting = progressSince({ sprint: { features: [
-    ticket('PRJ-30', 'First', { 'ticket-system-status': 'In Testing' }, [['build/run-tests', 'qa', after(1)]]),
-    ticket('PRJ-31', 'Second', { 'ticket-system-status': 'In Progress', dependencies: ['PRJ-30'] }, [['committed', 'setup', after(2)]]),
+test('ASS-415 AC2: sections follow the highest sequence of the steps paired with each status, closest to done first, the held one last', () => {
+  assert.deepEqual(progress.sections.map(s => s.name), ['Done', 'In Testing', 'In Review', 'In Progress', 'On Hold']);
+  const board = boardOf(enginesOf(workflows), ['prj-dev']);
+  assert.deepEqual(Object.fromEntries(board.rank), { 'On Hold': 0, 'To Do': 2, 'In Progress': 5, 'In Review': 6, 'In Testing': 7, Done: 8 });
+  assert.deepEqual([board.held, board.queued, board.done], ['On Hold', 'To Do', 'Done']);
+  // A status no step pairs with (the ticket system's alone) follows the engine's, before the held one.
+  const unpaired = progressSince({ sprint: { features: [ticket('EX-21', 'Changed', { 'ticket-system-status': 'Selected' }, [['build/gen-tests', 'reqs-changed', after(1)]]), sprint.bugs[1], sprint.features[0]] }, workflows, since });
+  assert.deepEqual(unpaired.sections.map(s => s.name), ['Done', 'Selected', 'On Hold']);
+});
+
+test('ASS-415 AC3: In Progress is one flat list, whether planning, planned, building or held on purpose', () => {
+  const inProgress = section(progress, 'In Progress');
+  assert.deepEqual(keysOf(inProgress.bullets), ['EX-4', 'EX-5', 'EX-13', 'EX-14']);   // building, planning, paused for a fast-track, worked by hand
+  assert.equal(inProgress.groups, undefined);
+  assert.ok(!progress.sections.some(s => s.name.startsWith('In Progress:')));
+});
+
+test('ASS-415 AC4: the held section keeps its three plain sub-groups in order, each counted, the empty ones left out, its heading counting them all (ASS-352, ASS-355)', () => {
+  const onHold = section(progress, 'On Hold');
+  assert.deepEqual(onHold.groups.map(g => [g.name, keysOf(g.bullets)]), [
+    ['Paused on purpose', ['EX-6']], ['Waiting on another ticket', ['EX-7']], ['Stopped until a problem is fixed', ['EX-8', 'EX-10']],
+  ]);
+  assert.deepEqual(keysOf(onHold.bullets), onHold.groups.flatMap(g => keysOf(g.bullets)));
+  const onlyStopped = progressSince({ sprint: { bugs: [sprint.bugs[1]] }, workflows, since });
+  assert.deepEqual(progressLines(onlyStopped, 80), ['*On Hold (1):*', 'Stopped until a problem is fixed (1):', '- EX-10: Needs a person', '']);
+  // A paused ticket at any step not done is Paused on purpose; a paused one that is done stays Done.
+  const paused = { 'is-paused': true };
+  const out = progressSince({ sprint: { features: [
+    ticket('EX-30', 'Verify later', { 'ticket-system-status': 'In Testing' }, [['build/run-tests', 'qa', before]], undefined, paused),
+    ticket('EX-31', 'Paused and done', { 'ticket-system-status': 'Done' }, [['qa', 'done', after(1)]], undefined, paused),
+    ticket('EX-32', 'Blocked and paused', { 'ticket-system-status': 'On Hold' }, [['build/gen-tests', 'blocked/await-fix', before]], undefined, paused),
   ] }, workflows, since });
-  assert.equal(waiting.sections.find(s => s.title.startsWith('In Progress: held')), undefined);
-  assert.deepEqual(waiting.sections.find(s => s.title.startsWith('On Hold')).groups.map(g => [g.title, g.bullets.map(b => b.text)]),
-    [['Waiting on another ticket (1). Held until a ticket it depends on is done.', ['PRJ-31: Second. At the Setup step, waits for PRJ-30 to finish.']]]);
+  assert.deepEqual(out.sections.map(s => [s.name, keysOf(s.bullets)]), [['Done', ['EX-31']], ['On Hold', ['EX-30', 'EX-32']]]);
+  assert.deepEqual(section(out, 'On Hold').groups.map(g => g.name), ['Paused on purpose']);
 });
 
-test('each line is the key, title and where it is in plain words, with why when it is held or on hold; no step id shows (ASS-332)', () => {
-  assert.deepEqual(texts('Done'), ['PRJ-1: Shipped it.']);
-  assert.deepEqual(texts('In Testing'), ['PRJ-3: Being verified. At the QA step.']);
-  assert.deepEqual(texts('In Progress: planning'), ['PRJ-5: Planning it. At the Review the Plan step.']);
-  assert.equal(texts('To Do'), undefined);
-  assert.deepEqual(texts('On Hold'), [
-    'PRJ-6: Held back. Paused at the Write the Plan step, waits for PRJ-3 to finish.',
-    'PRJ-7: Queued. Waits for PRJ-5 to finish.',                                       // waiting on another ticket (ASS-355)
-    'PRJ-8: Stuck. Stopped at the Generate Tests step, waiting for a fix in PRJ-9.',
-    'PRJ-10: Needs a person. Stopped at the Run Automated Tests step, needs a person to look at it.',
-  ]);
-  const endedInBlocked = ticket('PRJ-21', 'Gave up', { 'ticket-system-status': 'On Hold' }, [['committed', 'build/run-tests', before], ['build/run-tests', 'build/build-blocked', after(1)], ['build/build-blocked', 'blocked/troubleshoot-it', after(1)]]);
-  assert.deepEqual(progressSince({ sprint: { bugs: [endedInBlocked] }, workflows, since }).sections[0].bullets.map(b => b.text),
-    ['PRJ-21: Gave up. Stopped at the Run Automated Tests step, being looked into.'], 'a sub-engine\'s own Blocked end is not where it stopped');
-  const all = progressLines(progress, 200).join('\n');
-  for (const id of workflows.flatMap(w => w.steps.map(s => s.id)).filter(id => id.includes('-'))) assert.ok(!all.includes(id), id);
-  for (const word of ['prj-dev', 'prj-build', 'Blocked for Human']) assert.ok(!all.includes(word), word);
+test('ASS-415 AC5: the committed queue\'s status (To Do) is left out; Done lists only tickets that became done since the moment', () => {
+  assert.equal(section(progress, 'To Do'), undefined);
+  const keys = progress.sections.flatMap(s => keysOf(s.bullets));
+  assert.ok(!keys.includes('EX-11'), 'at the committed queue: left out');
+  assert.ok(!keys.includes('EX-2'), 'done before the moment and not changed since: left out');
+  assert.deepEqual(keysOf(section(progress, 'Done').bullets), ['EX-1']);
 });
 
-test('a ticket whose board status differs from the one its step pairs with is placed by its step and flagged (ASS-332)', () => {
-  assert.deepEqual(texts('In Progress: building'), ['PRJ-4: Back to building. At the Run Automated Tests step. (board may still show On Hold)']);
-});
-
-test('a closing line nets the change since the moment: holds cleared, On Hold then and now, active then and now, in testing and reached Done (ASS-332)', () => {
-  assert.equal(progress.net, 'Net since Fri Nov 6, 04:00 UTC: 1 hold cleared; On Hold went from 3 tickets to 4, 1 of them paused on purpose, 1 waiting on another ticket. 2 tickets are actively being built or planned, down from 5. 1 in testing, 1 reached Done.');
-});
-
-test('a ticket with more than one variation is listed by variation; nothing to list says so (ASS-332)', () => {
-  const two = { ...ticket('PRJ-40', 'Two ways', { 'ticket-system-status': 'In Progress' }, [['committed', 'setup', after(1)]]) };
-  two.variations.push({ ...two.variations[0], name: 'B' });
-  assert.deepEqual(progressSince({ sprint: { features: [two] }, workflows, since }).sections[0].bullets.map(b => b.key), ['PRJ-40.A', 'PRJ-40.B']);
-  const quiet = progressSince({ sprint: { features: [sprint.features[1]] }, workflows, since });
+test('ASS-415 AC6: empty sections are left out; nothing to list says so; the key is linked for display only and the text stays plain', () => {
+  const quiet = progressSince({ sprint: { features: [sprint.features[1], sprint.features[7]] }, workflows, since });
   assert.deepEqual(quiet.sections, []);
-  assert.deepEqual(progressLines(quiet, 80)[0], 'Nothing on the sprint has moved since then.');
-});
-
-test('the lines are plain text with "- " bullets, the key linked when the sprint has its url, a long one wrapped under its own text for display (ASS-332)', () => {
-  const plain = progressLines(progress, 200);
-  assert.ok(plain.every(l => !l.includes('\x1b')));
-  assert.equal(plain[0], 'Done (1). Finished and accepted.');
-  assert.equal(plain[1], '- PRJ-1: Shipped it.');
-  assert.equal(plain.slice(plain.lastIndexOf('') + 1).join(' '), progress.net);   // the net line, wrapped at 200 (ASS-355 made it longer)
+  assert.deepEqual(progressLines(quiet, 80), ['Nothing on the sprint has moved since then.']);
   const linked = progressSince({ sprint: { features: [{ ...sprint.features[0], url: 'http://t/1' }] }, workflows, since });
-  assert.ok(progressLines(linked, 200).includes(`- ${link('PRJ-1', 'http://t/1')}: Shipped it.`));
-  const narrow = progressLines(progress, 30);
-  assert.ok(narrow.every(l => visible(l) <= 30), narrow.join('\n'));
-  const first = narrow.findIndex(l => l.startsWith('  - PRJ-10'));
-  assert.match(narrow[first + 1], /^ {4}\S/, 'under On Hold\'s sub-group, indented two more');
+  assert.equal(linked.sections[0].bullets[0].text, 'EX-1: Shipped it');
+  assert.ok(progressLines(linked, 200).includes(`- ${link('EX-1', 'http://t/1')}: Shipped it`));
+  assert.ok(progressLines(progress, 200).every(l => !l.includes('\x1b')));
+  const narrow = progressLines(progress, 14);
+  assert.ok(narrow.every(l => visible(l) <= 14), narrow.join('\n'));
 });
 
-// ASS-352: a ticket paused on purpose — by the operator, a requirements
-// change's hold or a reassignment's — is On Hold, apart from one stopped by a
-// problem, whatever its step; control's pause to free a seat for a fast-track is not.
-const paused = { 'is-paused': true };
-const pausedSprint = {
-  features: [
-    ticket('PRJ-50', 'Verify later', { 'ticket-system-status': 'In Testing' }, [['build/run-tests', 'qa', before]], undefined, paused),
-    ticket('PRJ-51', 'Not started', { 'ticket-system-status': 'To Do', 'is-paused': true, dependencies: ['PRJ-50'] }, [], 'committed'),
-    ticket('PRJ-52', 'Mid build', { 'ticket-system-status': 'In Progress' }, [['committed', 'build/run-tests', before]], undefined, paused),
-    ticket('PRJ-55', 'Went to someone', { 'ticket-system-status': 'In Progress', reassigned: { to: 'Sam Lee', 'detected-at': '2026-11-05T10:00:00Z', 'paused-variations': ['A'] } }, [['committed', 'build/gen-tests', before]], undefined, paused),
-    ticket('PRJ-56', 'Went to no one', { 'ticket-system-status': 'In Progress', reassigned: { to: null, 'detected-at': '2026-11-05T10:00:00Z', 'paused-variations': ['A'] } }, [['committed', 'plan/write-plan', before]], undefined, paused),
-    ticket('PRJ-57', 'Made room', { 'ticket-system-status': 'In Progress' }, [['committed', 'build/gen-tests', before]], undefined, { 'is-paused': true, 'paused-for-fast-track': 'PRJ-99' }),
-    ticket('PRJ-58', 'By hand', { 'ticket-system-status': 'In Progress', 'worked-manually': { by: 'someone', since: '2026-11-05T10:00:00Z' } }, [['committed', 'setup', before]]),
-    ticket('PRJ-59', 'Paused and done', { 'ticket-system-status': 'Done' }, [['qa', 'done', after(1)]], undefined, paused),
-    ticket('PRJ-60', 'Requirements changed', { 'ticket-system-status': 'In Progress', 'pending-requirements-change': { description: 'new' } }, [['build/gen-tests', 'reqs-changed', before]], undefined, paused),
-    ticket('PRJ-61', 'Paused after moving', { 'ticket-system-status': 'In Testing' }, [['build/run-tests', 'qa', after(2)]], undefined, paused),
-  ],
-  bugs: [
-    ticket('PRJ-53', 'Blocked and paused', { 'ticket-system-status': 'On Hold' }, [['committed', 'build/gen-tests', before], ['build/gen-tests', 'blocked/await-fix', before]], undefined, { ...paused, 'waits-on': { project: 'prj', ticket: 'PRJ-9' } }),
-    ticket('PRJ-54', 'Needs a look', { 'ticket-system-status': 'On Hold' }, [['committed', 'build/run-tests', before], ['build/run-tests', 'blocked-for-human', after(1)]]),
-  ],
-};
-const held = progressSince({ sprint: pausedSprint, workflows, since });
-const heldSection = title => held.sections.find(s => s.title.startsWith(`${title} (`));
-const onHold = held.sections.find(s => s.title.startsWith('On Hold ('));
-const subGroup = name => onHold.groups.find(g => g.title.startsWith(`${name} (`));
+test('a ticket with more than one variation is listed by variation (ASS-332)', () => {
+  const two = { ...ticket('EX-40', 'Two ways', { 'ticket-system-status': 'In Progress' }, [['committed', 'setup', after(1)]]) };
+  two.variations.push({ ...two.variations[0], name: 'B' });
+  assert.deepEqual(progressSince({ sprint: { features: [two] }, workflows, since }).sections[0].bullets.map(b => b.text), ['EX-40.A: Two ways', 'EX-40.B: Two ways']);
+});
 
-test('a ticket paused on purpose at any step, not Done, is On Hold under Paused on purpose, its note still saying where it is paused and what it waits for (ASS-352 AC1)', () => {
-  assert.deepEqual(subGroup('Paused on purpose').bullets.map(b => b.text), [
-    'PRJ-50: Verify later. Paused at the QA step.',                                       // In Testing's step
-    'PRJ-51: Not started. Paused, waits for PRJ-50 to finish.',                           // To Do's, the ticket paused
-    'PRJ-52: Mid build. Paused at the Run Automated Tests step.',                          // In Progress's
-    'PRJ-55: Went to someone. Reassigned to Sam Lee, paused at the Generate Tests step.',  // reassigned away (ASS-345)
-    'PRJ-56: Went to no one. Unassigned, paused at the Write the Plan step.',
-    'PRJ-60: Requirements changed. Stopped at the Build step, being looked into.', // a requirements change's hold
-    'PRJ-61: Paused after moving. Paused at the QA step.',
-    'PRJ-53: Blocked and paused. Stopped at the Generate Tests step, waiting for a fix in PRJ-9.', // a blocked step, its fix noted
+// ASS-415 AC7: an engine whose status names are none of today's — and whose
+// blocked state sits at a high sequence — orders and groups the same way,
+// proving nothing is read by name.
+const alt = [{ name: 'alt-dev', steps: [
+  step('needs-eyes', 'Needs Eyes', 99, { area: 'quarantine', 'is-blocked-state': true, 'paired-ticket-system-status': 'Parked', action: { type: 'human' } }),
+  step('waiting-room', 'Waiting Room', 1, { 'paired-ticket-system-status': 'Icebox', 'is-planning-stage': true, action: { type: 'none' } }),
+  step('ready', 'Ready', 2, { 'paired-ticket-system-status': 'Ready', 'is-planning-stage': true, action: { type: 'none' } }),
+  step('think', 'Think', 3, { 'paired-ticket-system-status': 'Underway', 'is-planning-stage': true }),
+  step('make', 'Make', 4, { 'paired-ticket-system-status': 'Underway' }),
+  step('look', 'Look', 5, { 'paired-ticket-system-status': 'Being Looked At' }),
+  step('try', 'Try', 6, { 'paired-ticket-system-status': 'Aiming' }),
+  step('shipped', 'Shipped', 7, { 'paired-ticket-system-status': 'Zipped', 'is-done': true, action: { type: 'none' } }),
+] }];
+const altTicket = (key, title, where, fields = {}, variation = {}, moves = [{ 'state-engine': 'alt-dev', 'from-state': 'ready', 'to-state': where, timestamp: after(1) }]) => ({
+  key, title, ...fields, variations: [{ name: 'A', 'harness-status': { state: where, 'state-engine': 'alt-dev' }, 'state-changes': moves, ...variation }],
+});
+
+test('ASS-415 AC7: an engine with other status names gets its order, held section and left-out queue from its steps alone', () => {
+  const out = progressSince({ sprint: { features: [
+    altTicket('EX-50', 'Thinking it over', 'think'),
+    altTicket('EX-51', 'Made it', 'shipped'),
+    altTicket('EX-52', 'In the queue', 'ready', {}, {}, []),
+    altTicket('EX-53', 'Help wanted', 'needs-eyes'),
+    altTicket('EX-54', 'Trying it', 'try'),
+    altTicket('EX-55', 'Looking it over', 'look'),
+    altTicket('EX-56', 'Making it', 'make', {}, { 'is-paused': true }),
+    altTicket('EX-57', 'Old ship', 'shipped', {}, {}, []),
+  ] }, workflows: alt, since, hold: () => ({ waits: [] }) });
+  assert.deepEqual(progressLines(out, 200), [
+    '*Zipped (1):*', '- EX-51: Made it', '',
+    '*Aiming (1):*', '- EX-54: Trying it', '',
+    '*Being Looked At (1):*', '- EX-55: Looking it over', '',
+    '*Underway (1):*', '- EX-50: Thinking it over', '',
+    '*Parked (2):*',
+    'Paused on purpose (1):', '- EX-56: Making it', '',
+    'Stopped until a problem is fixed (1):', '- EX-53: Help wanted', '',
   ]);
-  for (const title of ['In Testing', 'To Do', 'In Progress: building', 'In Progress: planning']) assert.equal(heldSection(title), undefined, title);
 });
 
-test('On Hold has Paused on purpose then Stopped until a problem is fixed, each counted and saying what it means, the heading their sum; a blocked and paused ticket once; an empty one left out (ASS-352 AC2)', () => {
-  assert.equal(onHold.title, 'On Hold (9). Paused on purpose, waiting on another ticket, or stopped until a problem is fixed.');
-  assert.deepEqual(onHold.groups.map(g => g.title), [
-    'Paused on purpose (8). Held until resumed.',
-    'Stopped until a problem is fixed (1). Blocked, not paused.',
-  ]);
-  assert.deepEqual(subGroup('Stopped until a problem is fixed').bullets.map(b => b.key), ['PRJ-54']);
-  assert.deepEqual(onHold.bullets.map(b => b.key), onHold.groups.flatMap(g => g.bullets.map(b => b.key)));
-  const keys = held.sections.flatMap(s => s.bullets.map(b => b.key));
-  assert.equal(keys.filter(k => k === 'PRJ-53').length, 1);
-  assert.equal(new Set(keys).size, keys.length);
-  const onlyStopped = progressSince({ sprint: { bugs: [pausedSprint.bugs[1]] }, workflows, since }).sections[0];
-  assert.deepEqual(onlyStopped.groups.map(g => g.title), ['Stopped until a problem is fixed (1). Blocked, not paused.']);
-  const onlyPaused = progressSince({ sprint: { features: [pausedSprint.features[0]] }, workflows, since }).sections[0];
-  assert.deepEqual(onlyPaused.groups.map(g => g.title), ['Paused on purpose (1). Held until resumed.']);
-  const lines = progressLines(held, 200);
-  const at = lines.indexOf(onHold.title);
-  assert.deepEqual(lines.slice(at, at + 3), [onHold.title, '  Paused on purpose (8). Held until resumed.', '  - PRJ-50: Verify later. Paused at the QA step.']);
-  assert.ok(lines.includes('  Stopped until a problem is fixed (1). Blocked, not paused.'));
+test('ASS-415 AC7: when the blocked state pairs with a working status, the engine has no held section and that status stays one flat list', () => {
+  const shared = [{ name: 'alt-dev', steps: alt[0].steps.map(s => (s.id === 'needs-eyes' ? { ...s, 'paired-ticket-system-status': 'Underway' } : s)) }];
+  assert.equal(boardOf(enginesOf(shared), ['alt-dev']).held, undefined);
+  const out = progressSince({ sprint: { features: [
+    altTicket('EX-60', 'Help wanted', 'needs-eyes'),
+    altTicket('EX-61', 'Making it', 'make', {}, { 'is-paused': true }),
+  ] }, workflows: shared, since, hold: () => ({ waits: [] }) });
+  assert.deepEqual(out.sections.map(s => [s.name, keysOf(s.bullets), s.groups]), [['Underway', ['EX-60', 'EX-61'], undefined]]);
 });
 
-test('In Progress: held on purpose keeps only the ones worked by hand or waiting on a dependency, and control\'s pause for a fast-track (ASS-352 AC3)', () => {
-  assert.deepEqual(heldSection('In Progress: held on purpose').bullets.map(b => b.text), [
-    'PRJ-57: Made room. Paused for fast-tracked PRJ-99 at the Generate Tests step.',
-    'PRJ-58: By hand. Worked by hand at the Setup step.',
-  ]);
-  assert.ok(!subGroup('Paused on purpose').bullets.some(b => b.key === 'PRJ-57'), 'a fast-track\'s pause is not on purpose');
-});
-
-test('the net line counts the paused on purpose as On Hold now and then, says how many of now\'s are, and leaves them out of the other counts (ASS-352 AC4)', () => {
-  // Then: the seven paused now with no state change since (PRJ-61 moved since, so it was running then);
-  // now: those, PRJ-61 and PRJ-54. Paused PRJ-61 is not in testing; only PRJ-54 was being built then.
-  assert.equal(held.net, 'Net since Fri Nov 6, 04:00 UTC: 0 holds cleared; On Hold went from 7 tickets to 9, 8 of them paused on purpose. 0 tickets are actively being built or planned, down from 1. 0 in testing, 1 reached Done.');
-  const one = progressSince({ sprint: { features: [pausedSprint.features[0]] }, workflows, since });
-  assert.match(one.net, /On Hold went from 1 ticket to 1, paused on purpose\. .* 0 in testing,/);
-  const none = progressSince({ sprint: { bugs: [pausedSprint.bugs[1]] }, workflows, since });
-  assert.match(none.net, /On Hold went from 0 tickets to 1\. /);
-});
-
-test('a paused ticket that is Done is still listed under Done (ASS-352 AC5)', () => {
-  assert.deepEqual(heldSection('Done').bullets.map(b => b.key), ['PRJ-59']);
-});
-
-// ASS-355 AC7: On Hold's third sub-group, Waiting on another ticket, holds the
-// variations control's dependencyHold holds — between Paused on purpose and
-// Stopped until a problem is fixed — each line saying what it waits on; one
-// both paused and waiting is under Paused on purpose alone. The screen judges
-// with control's predicate over the project as control sees it.
-test('ASS-355 AC7: On Hold gets Waiting on another ticket for held variations, listing what each waits on; paused and waiting goes under Paused on purpose only', () => {
+// ASS-355 AC7: the held section's Waiting on another ticket holds the
+// variations control's dependencyHold holds; one both paused and waiting is
+// under Paused on purpose alone. The screen judges with control's predicate
+// over the project as control sees it.
+test('ASS-355 AC7: Waiting on another ticket holds the variations `hold` holds; paused and waiting goes under Paused on purpose only', () => {
   const sprintOf = {
     features: [
-      ticket('PRJ-70', 'Waits outside', { 'ticket-system-status': 'In Progress', dependencies: ['EX-1'] }, [['committed', 'build/gen-tests', before]]),
-      ticket('PRJ-71', 'Paused and waiting', { 'ticket-system-status': 'In Progress', dependencies: ['EX-1'] }, [['committed', 'build/gen-tests', before]], undefined, { 'is-paused': true }),
-      ticket('PRJ-72', 'Free', { 'ticket-system-status': 'In Progress', dependencies: ['EX-2'] }, [['committed', 'build/gen-tests', before]]),
+      ticket('EX-70', 'Waits outside', { 'ticket-system-status': 'In Progress', dependencies: ['EX-1'] }, [['committed', 'build/gen-tests', before]]),
+      ticket('EX-71', 'Paused and waiting', { 'ticket-system-status': 'In Progress', dependencies: ['EX-1'] }, [['committed', 'build/gen-tests', before]], undefined, { 'is-paused': true }),
+      ticket('EX-72', 'Free', { 'ticket-system-status': 'In Progress', dependencies: ['EX-2'] }, [['committed', 'build/gen-tests', before]]),
     ],
-    bugs: [ticket('PRJ-73', 'Needs a look', { 'ticket-system-status': 'On Hold' }, [['committed', 'build/run-tests', before], ['build/run-tests', 'blocked-for-human', after(1)]])],
+    bugs: [ticket('EX-73', 'Needs a look', { 'ticket-system-status': 'On Hold' }, [['committed', 'build/run-tests', before], ['build/run-tests', 'blocked-for-human', after(1)]])],
   };
-  // Control's predicate, as the updates screen hands it over: EX-1 outside and not done, EX-2 done.
   const hold = (t, v) => ({ waits: (t.dependencies ?? []).filter(k => k === 'EX-1').filter(() => v['harness-status'].state !== 'done'), ignores: [] });
   const out = progressSince({ sprint: sprintOf, workflows, since, hold });
-  const section = out.sections.find(s => s.title.startsWith('On Hold ('));
-  assert.deepEqual(section.groups.map(g => [g.title, g.bullets.map(b => b.text)]), [
-    ['Paused on purpose (1). Held until resumed.', ['PRJ-71: Paused and waiting. Paused at the Generate Tests step, waits for EX-1 to finish.']],
-    ['Waiting on another ticket (1). Held until a ticket it depends on is done.', ['PRJ-70: Waits outside. At the Generate Tests step, waits for EX-1 to finish.']],
-    ['Stopped until a problem is fixed (1). Blocked, not paused.', ['PRJ-73: Needs a look. Stopped at the Run Automated Tests step, needs a person to look at it.']],
+  assert.deepEqual(section(out, 'On Hold').groups.map(g => [g.name, keysOf(g.bullets)]), [
+    ['Paused on purpose', ['EX-71']], ['Waiting on another ticket', ['EX-70']], ['Stopped until a problem is fixed', ['EX-73']],
   ]);
-  assert.deepEqual(out.sections.find(s => s.title.startsWith('In Progress: building')).bullets.map(b => b.key), ['PRJ-72']);
-  assert.ok(progressLines(out, 200).includes('  Waiting on another ticket (1). Held until a ticket it depends on is done.'));
+  assert.deepEqual(keysOf(section(out, 'In Progress').bullets), ['EX-72']);
 });
 
 test('ASS-355 AC7: the updates screen judges the hold with control\'s predicate — the project\'s flag, its engine\'s done status and its outside-tickets.json', async () => {
   const { view } = await import('../../src/tui/screens/updates.js');
   const { initialState } = await import('../../src/tui/app.js');
-  const features = [ticket('PRJ-80', 'Waits on a teammate', { 'ticket-system-status': 'In Progress', dependencies: ['EX-9'] }, [['committed', 'build/gen-tests', after(1)]])];
+  const features = [ticket('EX-80', 'Waits on a teammate', { 'ticket-system-status': 'In Progress', dependencies: ['EX-9'] }, [['committed', 'build/gen-tests', after(1)]])];
   const screen = (flag, status) => {
     const project = { id: 'prj', name: 'Prj', stateEngine: 'prj-dev', waitForDependencies: flag, outside: [{ key: 'EX-9', 'ticket-system-status': status, 'ticket-system-assignment': 'A Teammate' }], sprint: { number: 1, features, bugs: [], spikes: [] }, questions: [] };
     const state = { ...initialState({ projects: [project], workflows, assignments: [] }), updatesSince: since, updatesScroll: 0 };
     return view(state, { columns: 200, rows: 60, now: new Date(since) }).join('\n');
   };
-  assert.match(screen(true, 'In Progress'), /Waiting on another ticket \(1\)[^\n]*\n {2}- PRJ-80: Waits on a teammate\. At the Generate Tests step, waits for EX-9 to finish\./);
-  assert.doesNotMatch(screen(true, 'Done'), /Waiting on another ticket/);   // the engine's done step pairs Done
+  assert.match(screen(true, 'In Progress'), /\*On Hold \(1\):\*\nWaiting on another ticket \(1\):\n- EX-80: Waits on a teammate\n/);
+  assert.match(screen(true, 'Done'), /\*In Progress \(1\):\*\n- EX-80/);   // the engine's done step pairs Done
   assert.doesNotMatch(screen(false, 'In Progress'), /Waiting on another ticket/);   // flag off: control holds nothing
-});
-
-// ASS-362 AC6: a variation whose plan is finished (its planning step's
-// sub-engine at an is-done step) holds no seat and only waits for one to move
-// on to Build: listed apart, not under In Progress: planning, and not counted
-// as actively being planned — then or now.
-test('ASS-362 AC6: a finished plan is listed as planned, waiting for a build seat, apart from planning, and not counted as active', () => {
-  const planned = workflows.map(w => (w.name === 'prj-dev' ? { ...w, steps: w.steps.map(s => (s.id === 'plan' ? { ...s, 'exit-events': [{ condition: { 'is-done': true }, 'move-to-state': 'build' }] } : s)) }
-    : w.name === 'prj-plan' ? { ...w, steps: [...w.steps, step('plan-done', 'Done', 3, { 'is-done': true, action: { type: 'none' } })] } : w));
-  const ours = { features: [
-    ticket('PRJ-20', 'Just planned', { 'ticket-system-status': 'In Progress' }, [['committed', 'plan/check-plan', before], ['plan/check-plan', 'plan/plan-done', after(1)]]),
-    ticket('PRJ-21', 'Still planning', { 'ticket-system-status': 'In Progress' }, [['committed', 'plan/check-plan', before]]),
-    ticket('PRJ-22', 'Planned a while ago', { 'ticket-system-status': 'In Progress' }, [['committed', 'plan/check-plan', before], ['plan/check-plan', 'plan/plan-done', before]]),
-  ], bugs: [], spikes: [] };
-  const { sections, net } = progressSince({ sprint: ours, workflows: planned, since });
-  const of = title => sections.find(s => s.title.startsWith(`${title} (`));
-  assert.deepEqual(of('In Progress: planned, waiting for a build seat').bullets.map(b => b.key), ['PRJ-20', 'PRJ-22']);
-  assert.equal(of('In Progress: planned, waiting for a build seat').title, 'In Progress: planned, waiting for a build seat (2). Planning is finished; building starts when a seat frees up.');
-  assert.deepEqual(of('In Progress: planning').bullets.map(b => b.key), ['PRJ-21']);
-  assert.equal(of('In Progress: planned, waiting for a build seat').bullets[0].text, 'PRJ-20: Just planned. At the Plan step.');
-  // Listed before planning, after building, in the board's order.
-  assert.deepEqual(sections.map(s => s.title.split(' (')[0]), ['In Progress: planned, waiting for a build seat', 'In Progress: planning']);
-  // PRJ-21 alone is active now; then PRJ-20 (planning then) too, PRJ-22 already planned.
-  assert.match(net, / 1 ticket is actively being built or planned, down from 2; 2 planned, waiting for a build seat\. /);
 });

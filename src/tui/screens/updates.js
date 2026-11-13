@@ -1,5 +1,6 @@
 // The updates screen (u): the progress made since a date and time (ASS-201: moved from app.js),
-// written by the board's statuses, paste-ready (ASS-332); what holds a ticket
+// written by the board's statuses, paste-ready (ASS-332; ASS-415: a short
+// list per status, in the order the project's engines give); what holds a ticket
 // for its dependencies judged by control's own dependencyHold (ASS-355).
 import { progressSince, progressLines, lastWeekdayMorning } from '../updates.js';
 import { dependencyHold } from '../../control/dependencies.js';
