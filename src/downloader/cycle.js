@@ -5,7 +5,7 @@
 // (ticket:snapshot-day, ticket:sync, ticket:sync-outside, ticket:sync-jira-comments,
 // project:set-ticket-system-account-id, analytics:sync-tickets (Jira's and,
 // ASS-413, the off-board tickets'),
-// analytics:sync-sprints, analytics:sync-merge-requests,
+// analytics:sync-sprints, analytics:sync-merge-requests, team:update,
 // project:set-last-data-download), so the file rules live in one place.
 import { readFileSync, writeFileSync, mkdtempSync, rmSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -19,7 +19,7 @@ import { dataDir } from '../data-folder.js';
 // runCycle({ root, project, now, adapters, exec, fetch, comments, lookups, dryRun, log }) — root is the
 // repo root (agent.sh is under it and, unless PROJECTS_DIR says otherwise,
 // data/projects/); now the time of this cycle; adapters { jira, gitlab, github,
-// offBoard, jiraRest, mergedMergeRequests } the modules of this folder, or fakes; fetch the HTTP
+// offBoard, jiraRest, mergedMergeRequests, team } the modules of this folder, or fakes; fetch the HTTP
 // fetch jiraRest's reads go through (Node's global one unless given: tests
 // pass a fake); lookups, on a lookup cycle
 // (main.js: the comment cycles), the merge-request scan's direct fetches and targeted lookups; exec(file, args) runs a command and
@@ -118,6 +118,12 @@ import { dataDir } from '../data-folder.js';
 //    by page — `analytics:sync-merge-requests <project> <file>`. One whose read fails is logged once until that
 //    changes, and its fetched-through stays; the others still go. Separate
 //    from step 2's scan, which stays as it is.
+// 5d. The team (ASS-409), every cycle, after the analytics syncs, when
+//    adapters has team (team.js) and the project has analytics/tickets.json
+//    or analytics/merge-requests.json: `team:update <project>`, which keeps
+//    team.json under its lock, each line it prints (a member added or
+//    linked) logged. One that fails is logged once until the reason changes,
+//    and the cycle goes on.
 // 6. `project:set-last-data-download <project> <now>`.
 // Each ticket list is stamped with when it was read ("fetched-at", the time
 // just before the read): a status control sets on a sprint ticket while the
@@ -256,6 +262,11 @@ export async function runCycle({ root, project, now = new Date(), adapters, exec
       try { recorded = existsSync(file) ? JSON.parse(readFileSync(file, 'utf8')) ?? {} : {}; } catch { /* unreadable: read every repository from the start */ }
       const readers = { gitlab: adapters.mergedMergeRequests.fetchMergedMergeRequests, github: adapters.mergedMergeRequests.fetchMergedPullRequests };
       await syncMergedMergeRequests({ key: join(projects, project), project, repositories: config.repositories ?? [], recorded, call, readers, run: exec, log });
+    }
+
+    // 5d. The team, from the analytics data (ASS-409).
+    if (adapters.team && ['tickets.json', 'merge-requests.json'].some(f => existsSync(join(projects, project, 'analytics', f)))) {
+      await adapters.team.updateTeam({ key: join(projects, project), project, call, log });
     }
 
     await call(['project:set-last-data-download', project, now.toISOString()]);

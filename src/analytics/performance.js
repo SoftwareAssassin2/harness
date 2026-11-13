@@ -119,8 +119,9 @@ const repoName = repo => String(repo).split('/').filter(Boolean).pop() ?? String
 
 // assigneeBefore(ticket, at) — the ticket's assignee ({ id, name } or null) just
 // before the moment `at` (ms): the assignee before its first assignee change,
-// then each change made before `at` (ASS-410 AC3).
-function assigneeBefore(ticket, at) {
+// then each change made before `at` (ASS-410 AC3). team.js credits a ticket's
+// developer the same way (ASS-409).
+export function assigneeBefore(ticket, at) {
   const changes = ticket['assignee-changes'] ?? [];
   let who = changes.length ? changes[0].from : ticket.assignee;
   for (const change of changes) if (Date.parse(change.at) < at) who = change.to;
