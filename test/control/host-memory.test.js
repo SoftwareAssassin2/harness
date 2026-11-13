@@ -1,7 +1,7 @@
 // The memory hold (ASS-398, reworked by ASS-404): before control starts or
 // creates a VM it reads the Mac's memory (ctx.hostMemory — replaced here, never
 // the real Mac's: macOS's free percentage and pressure level, and each Lima
-// VM's resident size) and holds the VM while macOS reports warn or critical
+// VM's physical footprint, compressed pages included: ASS-419) and holds the VM while macOS reports warn or critical
 // pressure, or free memory below what a VM of the project needs — the largest
 // use of its running VMs plus memory-free-margin-gib, between
 // memory-need-floor-gib and its configured memory (its golden image
@@ -22,7 +22,7 @@ import { runSteps } from '../../src/control/steps.js';
 import { createContext } from '../../src/control/tick.js';
 import { planFor } from '../../src/control/plan.js';
 import { mayMove } from '../../src/control/moves.js';
-import { parseSysctl, parseVzProcesses, matchInstances, parseMemory, vmMemoryBytes, memoryNeed, memoryVerdict, MEMORY_READ_EVERY } from '../../src/control/host-memory.js';
+import { parseSysctl, parseVzProcesses, parseFootprint, matchInstances, parseMemory, vmMemoryBytes, memoryNeed, vmNeed, memoryVerdict, MEMORY_READ_EVERY } from '../../src/control/host-memory.js';
 import { fakeVm } from '../support/fake-vm.js';
 import { engineDir, engineNames } from '../support/engine-walk.js';
 
@@ -98,21 +98,80 @@ test('ASS-404 AC1: the need is the largest use of the project\'s running VMs plu
   const reading = vms => ({ ...mac(), vms: vms && new Map(Object.entries(vms)) });
   // From the running VMs: the largest, 3.2 GiB, plus 2; another project's VM not counted.
   assert.deepEqual(memoryNeed(h.f.ctx, { harness: {} }, project, reading({ 'abc-3-a': 3.2 * GIB, 'abc-3-b': 2.9 * GIB, 'xyz-1-a': 9 * GIB })),
-    { bytes: 5.2 * GIB, why: 'the largest of its 2 running VMs, 3.2 GiB resident, plus a 2 GiB margin' });
+    { bytes: 5.2 * GIB, why: 'the largest of its 2 running VMs, 3.2 GiB footprint (compressed pages included), plus a 2 GiB margin', measure: 'footprint' });
   // The floor: none running, or not measured — never the configured 10 GiB.
-  assert.deepEqual(memoryNeed(h.f.ctx, { harness: {} }, project, reading({ 'xyz-1-a': 9 * GIB })), { bytes: 4 * GIB, why: 'none of its VMs running to measure: the 4.0 GiB floor' });
-  assert.deepEqual(memoryNeed(h.f.ctx, { harness: {} }, project, { ...reading(null), vmsError: 'lsof: gone' }), { bytes: 4 * GIB, why: 'its VMs not measured (lsof: gone): the 4.0 GiB floor' });
+  assert.deepEqual(memoryNeed(h.f.ctx, { harness: {} }, project, reading({ 'xyz-1-a': 9 * GIB })), { bytes: 4 * GIB, why: 'none of its VMs running to measure: the 4.0 GiB floor', measure: 'floor' });
+  assert.deepEqual(memoryNeed(h.f.ctx, { harness: {} }, project, { ...reading(null), vmsError: 'lsof: gone' }), { bytes: 4 * GIB, why: 'its VMs not measured (lsof: gone): the 4.0 GiB floor', measure: 'floor' });
   assert.equal(memoryNeed(h.f.ctx, { harness: { 'memory-need-floor-gib': 6 } }, project, reading({})).bytes, 6 * GIB, 'the floor configurable');
   // Raised to the floor, capped at the ceiling.
-  assert.deepEqual(memoryNeed(h.f.ctx, { harness: {} }, project, reading({ 'abc-3-a': GIB })), { bytes: 4 * GIB, why: 'the largest of its 1 running VM, 1.0 GiB resident, plus a 2 GiB margin, raised to the 4.0 GiB floor' });
-  assert.deepEqual(memoryNeed(h.f.ctx, { harness: {} }, project, reading({ 'abc-3-a': 9.5 * GIB })), { bytes: 10 * GIB, why: 'the largest of its 1 running VM, 9.5 GiB resident, plus a 2 GiB margin, capped at its configured 10.0 GiB' });
+  assert.deepEqual(memoryNeed(h.f.ctx, { harness: {} }, project, reading({ 'abc-3-a': GIB })), { bytes: 4 * GIB, why: 'the largest of its 1 running VM, 1.0 GiB footprint (compressed pages included), plus a 2 GiB margin, raised to the 4.0 GiB floor', measure: 'footprint' });
+  assert.deepEqual(memoryNeed(h.f.ctx, { harness: {} }, project, reading({ 'abc-3-a': 9.5 * GIB })), { bytes: 10 * GIB, why: 'the largest of its 1 running VM, 9.5 GiB footprint (compressed pages included), plus a 2 GiB margin, capped at its configured 10.0 GiB', measure: 'footprint' });
   assert.equal(memoryNeed(h.f.ctx, { harness: { 'memory-free-margin-gib': 1 } }, project, reading({ 'abc-3-a': 3 * GIB })).bytes, 4 * GIB);
-  assert.deepEqual(memoryNeed(h.f.ctx, { harness: { 'memory-free-hold-gib': 3 } }, project, reading({})), { bytes: 3 * GIB, why: "harness.json's memory-free-hold-gib" });
+  assert.deepEqual(memoryNeed(h.f.ctx, { harness: { 'memory-free-hold-gib': 3 } }, project, reading({})), { bytes: 3 * GIB, why: "harness.json's memory-free-hold-gib", measure: 'configured' });
   // A configured size below the floor caps it.
   const small = holding({}, { memory: '2GiB' });
   assert.equal(memoryNeed(small.f.ctx, { harness: {} }, small.f.ctx.load().projects[0], reading({})).bytes, 2 * GIB);
   assert.equal(parseMemory('4096MiB'), 4 * GIB);
   assert.equal(vmMemoryBytes(holding({}, { memory: null }).f.ctx, project), 4 * GIB);
+});
+
+// ASS-419: a VM's cost is its physical footprint (top's MEM, compressed pages
+// included), read with `footprint`; ps rss only when that cannot be read.
+test('ASS-419 AC1: footprint\'s phys_footprint per VM process, only the pids asked for', () => {
+  const text = [
+    '======================================================================',
+    'com.apple.Virtualization.VirtualMachine [101]: 64-bit    Footprint: 10758553056 B (16384 bytes per page)',
+    '======================================================================',
+    'Auxiliary data:',
+    '    phys_footprint: 10759519712 B',
+    '    phys_footprint_peak: 10764205536 B',
+    'other [555]: 64-bit    Footprint: 304809472 B (16384 bytes per page)',
+    '    phys_footprint: 304842240 B',
+    'com.apple.Virtualization.VirtualMachine [103]: 64-bit    Footprint: 3 B (16384 bytes per page)',
+    '    phys_footprint: 3221225472 B',
+  ].join('\n');
+  assert.deepEqual([...parseFootprint(text, [101, 103])], [[101, 10759519712], [103, 3 * GIB]], 'the peak not taken; a process not asked for left out');
+  assert.deepEqual([...parseFootprint('', [101])], []);
+});
+
+test('ASS-419 AC2/AC3: a footprint far above resident memory raises the need — capped at the configured size or the footprint when larger; never below the configured size once a VM was seen at it; the resident size said when that is all there is; vmNeed reads the Mac (cached) itself', async () => {
+  const h = holding({ A: [BUILDING, 'Running'], B: [BUILDING, 'Stopped'] }, { memory: '16GiB' });
+  const project = h.f.ctx.load().projects[0];
+  const reading = (vms, measure) => ({ ...mac(), vms: new Map(Object.entries(vms)), ...(measure ? { measure } : {}) });
+  // ASS-404 read 1 GiB resident for a VM top showed at 10 GiB: the footprint is the cost now.
+  assert.deepEqual(memoryNeed(h.f.ctx, { harness: {} }, project, reading({ 'abc-3-a': GIB }, 'resident')),
+    { bytes: 4 * GIB, why: 'the largest of its 1 running VM, 1.0 GiB resident (ps rss, its footprint not read), plus a 2 GiB margin, raised to the 4.0 GiB floor', measure: 'resident' });
+  assert.deepEqual(memoryNeed(h.f.ctx, { harness: {} }, project, reading({ 'abc-3-a': 10 * GIB }, 'footprint')),
+    { bytes: 12 * GIB, why: 'the largest of its 1 running VM, 10.0 GiB footprint (compressed pages included), plus a 2 GiB margin', measure: 'footprint' });
+  // A footprint above the configured size (the VM's own overhead): the footprint is the cap.
+  assert.deepEqual(memoryNeed(h.f.ctx, { harness: {} }, project, reading({ 'abc-3-a': 16.5 * GIB })),
+    { bytes: 16.5 * GIB, why: 'the largest of its 1 running VM, 16.5 GiB footprint (compressed pages included), plus a 2 GiB margin, capped at that footprint, above its configured 16.0 GiB', measure: 'footprint' });
+  // Seen at its configured size, the need never drops below it: a smaller VM, or none running.
+  assert.deepEqual(memoryNeed(h.f.ctx, { harness: {} }, project, reading({ 'abc-3-a': 2 * GIB })),
+    { bytes: 16 * GIB, why: 'the largest of its 1 running VM, 2.0 GiB footprint (compressed pages included), plus a 2 GiB margin, raised to its configured 16.0 GiB, a VM of it once seen using that much', measure: 'footprint' });
+  assert.deepEqual(memoryNeed(h.f.ctx, { harness: {} }, project, reading({})),
+    { bytes: 16 * GIB, why: 'none of its VMs running to measure: its configured 16.0 GiB, a VM of it once seen using that much', measure: 'floor' });
+  // vmNeed: the need for one new VM, the Mac read through ctx.hostMemory, at most every MEMORY_READ_EVERY.
+  const fresh = holding({ A: [BUILDING, 'Running'], B: [BUILDING, 'Stopped'] }, { memory: '16GiB' });
+  fresh.set({ free: 64, vms: { 'abc-3-a': 9 * GIB } });
+  const state = fresh.f.ctx.load();
+  assert.equal((await vmNeed(fresh.f.ctx, state, state.projects[0])).bytes, 11 * GIB);
+  fresh.set({ free: 64, vms: { 'abc-3-a': 12 * GIB } });
+  assert.equal((await vmNeed(fresh.f.ctx, state, state.projects[0])).bytes, 11 * GIB, 'the cached reading');
+  assert.equal(fresh.reads(), 1);
+  fresh.later(MEMORY_READ_EVERY);
+  assert.equal((await vmNeed(fresh.f.ctx, state, state.projects[0])).bytes, 14 * GIB);
+  fresh.f.ctx.hostMemory = null;
+  assert.deepEqual(await vmNeed(fresh.f.ctx, state, state.projects[0]), { bytes: 4 * GIB, why: 'its VMs not measured: the 4.0 GiB floor', measure: 'floor' });
+});
+
+test('ASS-419 AC2/AC3: the hold uses the footprint — 8 GiB free holds a VM whose sibling is 1 GiB resident but 10 GiB footprint', async () => {
+  const h = holding({ A: [BUILDING, 'Stopped'], B: [BUILDING, 'Running'] }, { memory: '16GiB' });
+  h.set({ free: 8, vms: { 'abc-3-b': 10 * GIB } });
+  assert.deepEqual(await h.pass(), []);
+  assert.ok(h.holds()[0].includes('below the 12.0 GiB a VM needs'), h.holds().join('\n'));
+  assert.equal(h.record()['need-measure'], 'footprint');
+  assert.equal(h.record()['need-bytes'], 12 * GIB);
 });
 
 test('ASS-404 AC2: held under warn or critical pressure, or free memory below the need; under normal pressure with room, not', () => {
@@ -145,13 +204,13 @@ test('ASS-398 AC1/AC3, ASS-404 AC2/AC4: under warn pressure no VM is started or 
   });
   h.set({ free: 30, pressure: 'warn', vms: { 'abc-3-e': 3 * GIB } });
   assert.deepEqual(await h.pass(), ['vm:stop p abc-3-e']);
-  assert.deepEqual(h.holds(), ['hold Out of memory: memory pressure warn (macOS: pressure warn, 30% free, 30.0 of 100.0 GiB); a p VM needs 4.0 GiB (the largest of its 1 running VM, 3.0 GiB resident, plus a 2 GiB margin, capped at its configured 4.0 GiB): abc-3-a (ABC-3 A) not started — no p VM starts or is created until macOS reports normal pressure and that much free; its variation waits as for a slot, holding no seat, no failure counted']);
+  assert.deepEqual(h.holds(), ['hold Out of memory: memory pressure warn (macOS: pressure warn, 30% free, 30.0 of 100.0 GiB); a p VM needs 4.0 GiB (the largest of its 1 running VM, 3.0 GiB footprint (compressed pages included), plus a 2 GiB margin, capped at its configured 4.0 GiB): abc-3-a (ABC-3 A) not started — no p VM starts or is created until macOS reports normal pressure and that much free; its variation waits as for a slot, holding no seat, no failure counted']);
   assert.ok(h.f.lines.includes('vm p abc-3-a: not started: out of memory; waits as for a slot'), h.f.lines.join('\n'));
   assert.ok(h.f.lines.includes('vm p abc-3-b: not recreated: out of memory; waits as for a slot'), h.f.lines.join('\n'));
   assert.equal(h.f.ctx.memory.vms.get('p').held.size, 0, 'no failure counted, no backoff');
   assert.deepEqual(h.record(), {
     since: '2026-11-12T10:00:00Z', pressure: 'warn', 'free-percent': 30, 'free-bytes': 30 * GIB, 'total-bytes': 100 * GIB,
-    'need-bytes': 4 * GIB, 'need-why': 'the largest of its 1 running VM, 3.0 GiB resident, plus a 2 GiB margin, capped at its configured 4.0 GiB', why: 'memory pressure warn (macOS: pressure warn, 30% free, 30.0 of 100.0 GiB)',
+    'need-bytes': 4 * GIB, 'need-why': 'the largest of its 1 running VM, 3.0 GiB footprint (compressed pages included), plus a 2 GiB margin, capped at its configured 4.0 GiB', 'need-measure': 'footprint', why: 'memory pressure warn (macOS: pressure warn, 30% free, 30.0 of 100.0 GiB)',
     vm: 'abc-3-a', held: [{ vm: 'abc-3-a', key: 'ABC-3', variation: 'A', state: 'build' }, { vm: 'abc-3-b', key: 'ABC-3', variation: 'B', state: 'build' }],
   });
   // Its steps wait as for a slot: not judged, past VM_WAIT too.

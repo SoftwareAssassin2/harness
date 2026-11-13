@@ -12,19 +12,34 @@
 //     2 warn, 4 critical);
 //   - the need (memoryNeed) is what a VM of the project really uses (ASS-404:
 //     Virtualization framework VMs take memory as the guest uses it, not their
-//     configured size up front — 10 GiB VMs used about 3): the largest
-//     resident size (ps rss) of the project's running VMs' Virtualization
-//     framework processes (com.apple.Virtualization.VirtualMachine, matched to
-//     their Lima instances by the instance files they hold open, lsof), plus
+//     configured size up front): the largest physical footprint (ASS-419) of
+//     the project's running VMs' Virtualization framework processes
+//     (com.apple.Virtualization.VirtualMachine, matched to their Lima
+//     instances by the instance files they hold open, lsof), plus
 //     harness.json's memory-free-margin-gib (2 by default), at least
 //     memory-need-floor-gib (4 by default) and at most the VM's configured
 //     memory — the `memory:` of the project's golden image template.yaml
-//     (project.json golden-image.folder), Lima's 4 GiB when it says none.
-//     With none of its VMs running to measure, the floor (never the
-//     configured size). harness.json's memory-free-hold-gib, when set, is
-//     the need instead, as before. (`footprint` and `vmmap --summary` count a
-//     VM's whole guest memory as dirty — its configured size — so the
-//     resident size is what is read.)
+//     (project.json golden-image.folder), Lima's 4 GiB when it says none — or
+//     that footprint when larger (ASS-419). Once a VM of the project has been
+//     seen at its configured memory, the need is never less than it again
+//     (ASS-419, for as long as control runs). With none of its VMs running to
+//     measure, the floor. harness.json's memory-free-hold-gib, when set, is
+//     the need instead, as before. vmNeed is the need for one new VM of a
+//     project, reading the Mac (cached) itself (ASS-419, for seats by capacity).
+//   - ASS-419: a VM's cost is its physical footprint, compressed pages
+//     included — what `top`'s MEM column shows — read with `footprint -f bytes
+//     --noCategories -p <pid> …` (its phys_footprint). ASS-404 read the
+//     resident size (ps rss), which leaves compressed and swapped pages out:
+//     on 2026-11-12 a 10 GiB case-law VM had 0.96 GiB resident while top
+//     showed it at 10G MEM, 17G CMPRS. Compared on this Mac that day: top's
+//     MEM 10G (291M, 76M for two other processes); footprint 10759519712 B
+//     (305546752, 80200616); proc_pid_rusage's ri_phys_footprint, from a test
+//     C helper, byte for byte the same; footprint's peak 10764205536 B — a
+//     live figure, 22 MB above the configured 10 GiB, not the configured
+//     size. footprint took 0.03 s per VM, top -l 1 -pid 0.67 s with whole-unit
+//     figures ("10G"), and the helper would need building with clang; so
+//     footprint. When it cannot be read the resident size is used, and the
+//     need says so (reading.measure 'footprint' or 'resident').
 // A VM is held while macOS reports warn or critical pressure, or free memory
 // below the need; under normal pressure with that much free nothing is held.
 // Held, the VM is not started: its variation waits as for a slot (awaitsVm
@@ -78,7 +93,8 @@ export function parseSysctl(text) {
 const VZ_PROCESS = /com\.apple\.Virtualization\.VirtualMachine$/;
 
 // parseVzProcesses(text) — `ps -axo pid=,rss=,comm=`'s Virtualization
-// framework VM processes: pid → resident bytes (ps gives KiB).
+// framework VM processes: pid → resident bytes (ps gives KiB; ASS-419: the
+// fallback when their footprint cannot be read).
 export function parseVzProcesses(text) {
   const procs = new Map();
   for (const line of text.split('\n')) {
@@ -105,20 +121,54 @@ export function matchInstances(lsof, home, procs) {
   return vms;
 }
 
+// parseFootprint(text, pids) — ASS-419: `footprint -f bytes --noCategories
+// -p <pid> …`'s phys_footprint per process, pid → bytes, for the pids asked
+// for only (footprint takes a -p it cannot find as a process name, which may
+// list others).
+export function parseFootprint(text, pids) {
+  const want = new Set(pids), out = new Map();
+  let pid = null;
+  for (const line of text.split('\n')) {
+    const head = /\[(\d+)\]:/.exec(line);
+    if (head) { pid = Number(head[1]); continue; }
+    const m = /^\s*phys_footprint:\s*(\d+)\s*B\b/.exec(line);
+    if (m && want.has(pid) && !out.has(pid)) out.set(pid, Number(m[1]));
+  }
+  return out;
+}
+
+// footprints(procs) — ASS-419: procs (pid → resident bytes) with each
+// process's footprint instead, and the measure: 'footprint' when every one
+// was read, else the resident sizes as they were, 'resident', and why.
+async function footprints(procs) {
+  if (!procs.size) return { procs, measure: 'footprint' };
+  try {
+    const read = parseFootprint(await run('footprint', ['-f', 'bytes', '--noCategories', ...[...procs.keys()].flatMap(pid => ['-p', String(pid)])]), procs.keys());
+    const missing = [...procs.keys()].filter(pid => !read.has(pid));
+    if (!missing.length) return { procs: read, measure: 'footprint' };
+    return { procs, measure: 'resident', error: `footprint: no phys_footprint for ${missing.join(', ')}` };
+  } catch (error) { return { procs, measure: 'resident', error: error.message }; }
+}
+
 const run = (command, args) => new Promise((resolve, reject) => execFile(command, args, { timeout: 10_000, maxBuffer: 16 * 2 ** 20 }, (error, stdout) => {
   if (error && !stdout) reject(new Error(`${command}: ${error.message}`));   // lsof exits 1 when a file is not listable, its listing given all the same
   else resolve(stdout);
 }));
 
 // readHostMemory(home) — ASS-404: a reading of the Mac's memory now, {
-// freePercent, pressure, totalBytes, vms (Lima instance name → its VM
-// process's resident bytes, for the instances in `home`, LIMA_HOME; null when
-// they could not be measured, vmsError saying why) } — sysctl, ps and lsof,
+// freePercent, pressure, totalBytes, freeBytes (ASS-419), vms (Lima instance
+// name → its VM process's footprint bytes, ASS-419, for the instances in
+// `home`, LIMA_HOME; null when they could not be measured, vmsError saying
+// why), measure (ASS-419: 'footprint', or 'resident' when only ps rss could
+// be read, footprintError saying why) } — sysctl, ps, footprint and lsof,
 // each well under a second.
 export const readHostMemory = home => async () => {
   const reading = parseSysctl(await run('sysctl', ['kern.memorystatus_level', 'kern.memorystatus_vm_pressure_level', 'hw.memsize']));
+  reading.freeBytes = freeBytes(reading);
   try {
-    const procs = parseVzProcesses(await run('ps', ['-axo', 'pid=,rss=,comm=']));
+    const measured = await footprints(parseVzProcesses(await run('ps', ['-axo', 'pid=,rss=,comm=']))), procs = measured.procs;
+    reading.measure = measured.measure;
+    if (measured.error) reading.footprintError = measured.error;
     let real = home;
     try { real = realpathSync(home); } catch { /* not there: no instance matches */ }
     reading.vms = procs.size ? matchInstances(await run('lsof', ['-nP', '-Fpn', '-p', [...procs.keys()].join(',')]), real, procs) : new Map();
@@ -158,25 +208,45 @@ function projectVms(ctx, project) {
   return names;
 }
 
-// memoryNeed(ctx, state, project, reading) — { bytes, why }: the free memory a
-// new VM of the project needs (ASS-404, see the module comment): the largest
-// use of its running VMs in `reading` plus the margin, between the floor and
-// its configured memory; the floor with none running.
+// MEASURE — ASS-419: the words for a reading's measure of a VM.
+const MEASURE = { footprint: 'footprint (compressed pages included)', resident: 'resident (ps rss, its footprint not read)' };
+
+// memoryNeed(ctx, state, project, reading) — { bytes, why, measure }: the
+// free memory a new VM of the project needs (ASS-404, see the module
+// comment): the largest footprint (ASS-419) of its running VMs in `reading`
+// plus the margin, at least the floor — the configured memory once a VM of
+// the project has been seen at it (ASS-419: memory.memorySeenFull) — and at
+// most its configured memory or that footprint, whichever is larger; the
+// floor with none running.
 export function memoryNeed(ctx, state, project, reading) {
   const h = state.harness ?? {};
-  if (h['memory-free-hold-gib'] != null) return { bytes: h['memory-free-hold-gib'] * GIB, why: "harness.json's memory-free-hold-gib" };
+  if (h['memory-free-hold-gib'] != null) return { bytes: h['memory-free-hold-gib'] * GIB, why: "harness.json's memory-free-hold-gib", measure: 'configured' };
   const ceiling = vmMemoryBytes(ctx, project), margin = h['memory-free-margin-gib'] ?? DEFAULT_MARGIN_GIB, floorGib = h['memory-need-floor-gib'] ?? DEFAULT_FLOOR_GIB;
-  const floor = Math.min(floorGib * GIB, ceiling);
+  const measure = reading?.measure ?? 'footprint';
   const names = projectVms(ctx, project);
   const used = [...(reading?.vms ?? new Map())].filter(([name]) => names.has(name)).map(([, bytes]) => bytes);
+  const largest = used.length ? Math.max(...used) : 0;
+  const seen = (ctx.memory ??= {}).memorySeenFull ??= new Set();   // ASS-419: projects with a VM seen at its configured memory
+  if (measure === 'footprint' && used.length && largest >= ceiling) seen.add(project.id);
+  const full = seen.has(project.id);
+  const floor = full ? ceiling : Math.min(floorGib * GIB, ceiling);
+  const floorWords = full ? `its configured ${gib(floor)} GiB, a VM of it once seen using that much` : `the ${gib(floor)} GiB floor`;
   if (!used.length) {
     const none = reading?.vms ? `none of its VMs running to measure` : `its VMs not measured${reading?.vmsError ? ` (${reading.vmsError})` : ''}`;
-    return { bytes: floor, why: `${none}: the ${gib(floor)} GiB floor` };
+    return { bytes: floor, why: `${none}: ${floorWords}`, measure: 'floor' };
   }
-  const largest = Math.max(...used), estimate = largest + margin * GIB;
-  const bytes = Math.min(ceiling, Math.max(floor, estimate));
-  const bound = bytes === ceiling && estimate > ceiling ? `, capped at its configured ${gib(ceiling)} GiB` : bytes > estimate ? `, raised to the ${gib(floor)} GiB floor` : '';
-  return { bytes, why: `the largest of its ${used.length} running VM${used.length === 1 ? '' : 's'}, ${gib(largest)} GiB resident, plus a ${margin} GiB margin${bound}` };
+  const cap = Math.max(ceiling, largest), estimate = largest + margin * GIB;
+  const bytes = Math.min(cap, Math.max(floor, estimate));
+  const bound = bytes === cap && estimate > cap ? (cap === ceiling ? `, capped at its configured ${gib(ceiling)} GiB` : `, capped at that footprint, above its configured ${gib(ceiling)} GiB`) : bytes > estimate ? `, raised to ${floorWords}` : '';
+  return { bytes, why: `the largest of its ${used.length} running VM${used.length === 1 ? '' : 's'}, ${gib(largest)} GiB ${MEASURE[measure] ?? measure}, plus a ${margin} GiB margin${bound}`, measure };
+}
+
+// vmNeed(ctx, state, project) — ASS-419: { bytes, why, measure }, the free
+// memory one new VM of the project needs now (memoryNeed), the Mac read as
+// the hold reads it (at most every MEMORY_READ_EVERY); with memory not read
+// (HOST_MEMORY_DISABLED, or a failed reading) the floor.
+export async function vmNeed(ctx, state, project) {
+  return memoryNeed(ctx, state, project, ctx.hostMemory ? await reading(ctx) : null);
 }
 
 // freeBytes(reading) — the free memory macOS reports: its free percentage of the Mac's memory.
@@ -220,7 +290,7 @@ function record(ctx, id, hold) {
   const r = hold.reading, body = `${JSON.stringify({
     since: iso(hold.since),
     pressure: r.pressure, 'free-percent': r.freePercent, 'free-bytes': freeBytes(r), 'total-bytes': r.totalBytes,
-    'need-bytes': hold.need.bytes, 'need-why': hold.need.why, why: hold.why,
+    'need-bytes': hold.need.bytes, 'need-why': hold.need.why, 'need-measure': hold.need.measure, why: hold.why,
     vm: hold.first, held: [...hold.variations.values()],
   }, null, 2)}\n`;
   if (body === hold.written) return;
