@@ -245,7 +245,9 @@ it names none, so a project's Release could run it over the whole variation).
 
 Each looping step's max-visits ends the run at `blocked`. Its prompt steps
 say `"vm": "running"`, as a project Release's Address Merge Request Feedback
-does, so they have the VM under a Release too. The ticket system's exits of
+does, so they have the VM under a Release too; its host scripts say
+`"vm": "stopped"` (ASS-418), so the loop's forge polls hold no VM under
+Build either. The ticket system's exits of
 Release's Team Code Review (In Testing, In Progress) are not the loop's: they
 are Release's own, and in Build the ticket is In Progress.
 
@@ -919,10 +921,11 @@ Blocked for Human, saying what was found and what to do.
 
 - **Running and stopping.** A step's `vm` says whether the variation's VM runs
   there (`running`) or is kept, stopped (`stopped`); the deepest level of the
-  variation's status that sets it decides. Running: Setup through Review, Self
-  Healing, and beneath, Blocked's Find Where, Troubleshoot, Classify and Repair and a project
+  variation's status that sets it decides. Running: Setup through Review, and
+  beneath, Blocked's steps that need it (below) and a project
   Release's Address Merge Request Feedback (they run in it). Stopped and kept:
-  Blocked (once it waits on its fix) and Blocked for Human. Anywhere else
+  Blocked (once it waits on its fix), Blocked for Human, and, beneath a
+  running group, each step that needs no VM (ASS-418, below). Anywhere else
   (Backlog, Committed, Release, QA, Done) it is not needed: stopped. A paused
   variation or ticket (`is-paused`) and a set-aside one (lost Variation
   Selection) have theirs stopped too. A VM to be stopped, for any of these
@@ -934,6 +937,47 @@ Blocked for Human, saying what was found and what to do.
   mid-step (ASS-349). Control matches the VMs to this once per
   loop (`src/control/vm-lifecycle.js`), so a move by hand in the TUI is
   followed; `move_to` and the TUI do nothing of their own.
+- **Only while a step works in it (ASS-418).** A case-law VM holds its full
+  configured memory (about 10 GB) while it runs, so a ticket only waiting
+  holds none: every step whose work does not run in the VM says
+  `"vm": "stopped"`, overriding its group's `running` (the deepest setting
+  decides). Stopped: forge reads and polls (Await Sequential Merge;
+  grouped-merge's Check Reviewed at Head, Mark Reviewed, Take out of Draft
+  Mode, Check the Merge Requests, Check the Feedback Round and Ensure
+  Auto-Merge; Document's Check Merge Request Details), host steps and host
+  agents (Blocked's Classify and Check on the Latest Master; Requirements
+  Changed's Verdict; Plan's Ask the Operator About the Plan; every step of
+  Self Healing's `self-healing-fix`), and people (Plan's Awaiting the Plan
+  Answer, Review's Payment Gate and Variation Selection). Blocked's waits
+  (Await the Fix, Await Rate Limit, the fix merge request's waits) and a
+  project Release's (Team Code Review) already ran stopped, under Blocked's
+  and Release's own setting. A step keeps the VM running when:
+  - it runs in it (`run-location: vm`): every agent of Plan, Build, Test,
+    Document and Review, Address Merge Request Feedback, the repairs and
+    Troubleshoot, Automated Testing and CI Checks;
+  - its command reaches it (`limactl`, `in_project`, a `vm:` command): Setup's
+    Create VM and Mark Setup Complete, Build's Refresh the Reference
+    Repositories (both), Check Numbered Files, Blocked's own-branch checks,
+    Add the Missing Repository and Verify the Repaired Image, and Check First
+    (it re-runs the blocked check, which may be a VM one);
+  - an exit condition probes it (`vm:setup-complete`): Check Setup Complete,
+    Find Where to Troubleshoot, Find Where to Repair the Project;
+  - it finishes at once and every way on is a step that needs it, so
+    stopping would only start it again seconds later: Blocked's Count the Fix
+    Attempts and Plan the Obstacle Fix, Plan's two Record the Objections.
+
+  `test/workflow/vm-use.test.js` lists every step of every grouped engine
+  (each engine harness-development-grouped, harness-development-v2 or the
+  example project's two grouped top-level engines runs, shared ones
+  included) with whether it needs the VM by these rules and the setting it
+  runs under, and fails on a step that leaves the VM running without needing
+  it — a step added later under a running group without a setting included.
+  The v2 copies say the same (v2-document's Check Merge Request Details,
+  v2-review's Human Review, Payment Gate and Variation Selection), and
+  v2-local-testing's Await the Golden Build, a wait on the host, stops it too.
+  Leaving a step for one that needs the VM, the lifecycle starts it again and
+  the step waits for it (`awaitsVm`, ASS-387), no step re-run and no visit
+  spent; a VM with an agent at work is still left till it ends (ASS-349).
 - **Rate limited, no API fallback (ASS-400).** While a project's Claude kind
   is rate limited (its `rate-limit.json` entry's `resets-at` still ahead) and
   dispatch has no API fallback for a variation's next agent (no `.claude-api`

@@ -197,7 +197,8 @@
             "id": "ask-operator-about-plan",
             "sequence": 6,
             "name": "Ask the Operator About the Plan",
-            "description": "The stronger re-plan was rejected too: its review is added to plan-objections-<variation>.md and the operator gets a blocking question listing the open objections and asking how to proceed, instead of the ticket going to Blocked (ASS-399)",
+            "description": "The stronger re-plan was rejected too: its review is added to plan-objections-<variation>.md and the operator gets a blocking question listing the open objections and asking how to proceed, instead of the ticket going to Blocked (ASS-399). ASS-418: on the host, so its VM is stopped here (started again, by the lifecycle, at the next step that needs it)",
+            "vm": "stopped",
             "is-planning-stage": true,
             "action": {
                 "type": "script",
@@ -224,7 +225,8 @@
             "id": "awaiting-plan-answer",
             "sequence": 7,
             "name": "Awaiting the Plan Answer",
-            "description": "Rests while a blocking question on the ticket is open; once the operator has answered, Write Execution Plan runs again with the answer, every step's visits counted afresh (ASS-399)",
+            "description": "Rests while a blocking question on the ticket is open; once the operator has answered, Write Execution Plan runs again with the answer, every step's visits counted afresh (ASS-399). ASS-418: a wait for the operator, so its VM is stopped here (started again, by the lifecycle, at the next step that needs it)",
+            "vm": "stopped",
             "is-planning-stage": true,
             "restarts-visit-count": true,
             "action": {

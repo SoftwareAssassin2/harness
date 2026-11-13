@@ -4,7 +4,8 @@
             "id": "check-review",
             "sequence": 1,
             "name": "Check Reviewed at Head",
-            "description": "Whether Code Review and Security Review have passed with each merge request of the set at its head commit; one not reviewed there (exit 2) goes to Code Review first, so nothing leaves draft or is set to auto-merge unreviewed (ASS-365). A project that switches off this engine's Code Review and Security Review has the heads marked reviewed as they are",
+            "description": "Whether Code Review and Security Review have passed with each merge request of the set at its head commit; one not reviewed there (exit 2) goes to Code Review first, so nothing leaves draft or is set to auto-merge unreviewed (ASS-365). A project that switches off this engine's Code Review and Security Review has the heads marked reviewed as they are. ASS-418: a forge read, so its VM is stopped here (started again, by the lifecycle, at the next step that needs it)",
+            "vm": "stopped",
             "max-visits": 10,
             "on-max-visits": "blocked",
             "action": {
@@ -134,7 +135,8 @@
             "id": "mark-reviewed",
             "sequence": 4,
             "name": "Mark Reviewed",
-            "description": "Record the head commits the passing reviews saw as reviewed, then check them again: a commit pushed during the review is reviewed again (ASS-365)",
+            "description": "Record the head commits the passing reviews saw as reviewed, then check them again: a commit pushed during the review is reviewed again (ASS-365). ASS-418: on the host, so its VM is stopped here (started again, by the lifecycle, at the next step that needs it)",
+            "vm": "stopped",
             "max-visits": 5,
             "on-max-visits": "blocked",
             "action": {
@@ -162,7 +164,8 @@
             "id": "take-out-of-draft-mode",
             "sequence": 5,
             "name": "Take out of Draft Mode",
-            "description": "Finalizing the set's merge requests",
+            "description": "Finalizing the set's merge requests. ASS-418: a forge call, so its VM is stopped here (started again, by the lifecycle, at the next step that needs it)",
+            "vm": "stopped",
             "max-visits": 5,
             "on-max-visits": "blocked",
             "action": {
@@ -190,7 +193,8 @@
             "id": "check",
             "sequence": 6,
             "name": "Check the Merge Requests",
-            "description": "The set's merge requests read from their forges; polled until every one is merged",
+            "description": "The set's merge requests read from their forges; polled until every one is merged. ASS-418: a forge poll, so its VM is stopped here (started again, by the lifecycle, at the next step that needs it)",
+            "vm": "stopped",
             "max-visits": 10,
             "on-max-visits": "blocked",
             "action": {
@@ -296,7 +300,8 @@
             "id": "check-feedback-round",
             "sequence": 8,
             "name": "Check the Feedback Round",
-            "description": "Whether Address Merge Request Feedback changed anything: a commit pushed to a merge request it was sent for (its head is not the one the check saw), or a thread or comment replied to or resolved. A round that changed nothing goes back to the check with cause no-op-round, and control counts no visit for it, so a merge request that only waits on its pipeline or approvals is not sent to Blocked by do-nothing rounds; one that changed something, or a failure here, goes on as before (ASS-388)",
+            "description": "Whether Address Merge Request Feedback changed anything: a commit pushed to a merge request it was sent for (its head is not the one the check saw), or a thread or comment replied to or resolved. A round that changed nothing goes back to the check with cause no-op-round, and control counts no visit for it, so a merge request that only waits on its pipeline or approvals is not sent to Blocked by do-nothing rounds; one that changed something, or a failure here, goes on as before (ASS-388). ASS-418: a forge read, so its VM is stopped here (started again, by the lifecycle, at the next step that needs it)",
+            "vm": "stopped",
             "max-visits": 5,
             "on-max-visits": "blocked",
             "action": {
@@ -340,7 +345,8 @@
             "id": "ensure-auto-merge",
             "sequence": 9,
             "name": "Ensure Auto-Merge",
-            "description": "Setting the set's merge requests to auto-merge, in depends-on order, once every flag is cleared",
+            "description": "Setting the set's merge requests to auto-merge, in depends-on order, once every flag is cleared. ASS-418: a forge call, so its VM is stopped here (started again, by the lifecycle, at the next step that needs it)",
+            "vm": "stopped",
             "max-visits": 3,
             "on-max-visits": "blocked",
             "action": {

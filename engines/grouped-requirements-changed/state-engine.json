@@ -90,7 +90,8 @@
             "id": "verdict",
             "sequence": 3,
             "name": "Verdict",
-            "description": "Every revised criterion passes: back to the step the variation was in; any fails: requirements-change-reason.md written, then Root Cause Analysis (ASS-79 AC3)",
+            "description": "Every revised criterion passes: back to the step the variation was in; any fails: requirements-change-reason.md written, then Root Cause Analysis (ASS-79 AC3). ASS-418: on the host, so its VM is stopped here (started again, by the lifecycle, at the next step that needs it)",
+            "vm": "stopped",
             "action": {
                 "type": "script",
                 "command": "./agent.sh ticket:requirements-change-verdict {project} {work-item} {variation} {run}"

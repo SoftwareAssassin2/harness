@@ -235,7 +235,7 @@ test('AC7: Setup leaves at once when the VM holds its setup-complete marker; wit
 });
 
 // ASS-75: a step's `vm` — running, or stopped (kept) — says whether the variation's VM runs there, the deepest level that sets it deciding.
-test('ASS-75: the VM runs from Setup through Review and in Self Healing, and stops at Blocked and Blocked for Human, kept; elsewhere it is not needed — but for the steps beneath that run in it: Blocked\'s troubleshooting, classifying and repair, and example\'s Address Merge Request Feedback', () => {
+test('ASS-75: the VM runs from Setup through Review and in Self Healing, and stops at Blocked and Blocked for Human, kept; elsewhere it is not needed — but for the steps beneath that run in it: Blocked\'s troubleshooting and repair, and example\'s Address Merge Request Feedback', () => {
   const RUNNING = ['self-healing', ...DETOURS, ...Object.keys(GROUPS)];
   for (const top of Object.keys(CURRENT)) {
     assert.deepEqual(engines[top].steps.filter(s => s.vm).map(s => [s.id, s.vm]), [['blocked-for-human', 'stopped'], ['blocked', 'stopped'], ...RUNNING.map(id => [id, 'running'])], top);
@@ -249,10 +249,11 @@ test('ASS-75: the VM runs from Setup through Review and in Self Healing, and sto
     };
     check(top);
   }
-  const beneath = Object.keys(engines).filter(n => n.startsWith('grouped-')).flatMap(n => engines[n].steps.filter(s => s.vm).map(s => `${n}/${s.id}=${s.vm}`));
+  // ASS-418: the steps beneath that stop it (vm: stopped) are test/workflow/vm-use.test.js's; here, those that run it.
+  const beneath = Object.keys(engines).filter(n => n.startsWith('grouped-')).flatMap(n => engines[n].steps.filter(s => s.vm === 'running').map(s => `${n}/${s.id}=${s.vm}`));
   // ASS-365: grouped-merge's agents run in the VM wherever it runs — Build's, or a project Release's where the VM is not otherwise needed.
   // ASS-390: Check First, and Repair Project's own find-where and VM step.
-  assert.deepEqual(beneath.sort(), ['grouped-blocked/add-repository=running', 'grouped-blocked/check-first=running', 'grouped-blocked/check-on-master=running', 'grouped-blocked/classify=running', 'grouped-blocked/count-attempts=running', 'grouped-blocked/find-where-to-repair-project=running', 'grouped-blocked/find-where=running', 'grouped-blocked/own-branch-or-human=running', 'grouped-blocked/own-branch-or-obstacle=running', 'grouped-blocked/plan-obstacle-fix=running', 'grouped-blocked/repair-environment=running', 'grouped-blocked/repair-project=running', 'grouped-blocked/troubleshoot=running', 'grouped-blocked/verify-image=running',
+  assert.deepEqual(beneath.sort(), ['grouped-blocked/add-repository=running', 'grouped-blocked/check-first=running', 'grouped-blocked/count-attempts=running', 'grouped-blocked/find-where-to-repair-project=running', 'grouped-blocked/find-where=running', 'grouped-blocked/own-branch-or-human=running', 'grouped-blocked/own-branch-or-obstacle=running', 'grouped-blocked/plan-obstacle-fix=running', 'grouped-blocked/repair-environment=running', 'grouped-blocked/repair-project=running', 'grouped-blocked/troubleshoot=running', 'grouped-blocked/verify-image=running',
     'grouped-merge/address-merge-request-feedback=running', 'grouped-merge/code-review=running', 'grouped-merge/security-review=running', 'grouped-release-example/address-merge-request-feedback=running']);
 });
 

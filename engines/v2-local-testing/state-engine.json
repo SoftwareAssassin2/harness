@@ -4,7 +4,8 @@
             "id": "await-golden-build",
             "sequence": 1,
             "name": "Await the Golden Build",
-            "description": "A golden rebuild ticket waits here until its detached image build settles, polled about every 10 seconds; any other ticket goes straight on to Test",
+            "description": "A golden rebuild ticket waits here until its detached image build settles, polled about every 10 seconds; any other ticket goes straight on to Test. ASS-418: a wait for the golden image build on the host, so its VM is stopped here (started again, by the lifecycle, at the next step that needs it)",
+            "vm": "stopped",
             "action": {
                 "type": "script",
                 "command": "./agent.sh vm:golden-ready {project} {work-item}",

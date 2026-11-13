@@ -125,7 +125,8 @@
             "id": "payment-gate",
             "sequence": 5,
             "name": "Payment Gate",
-            "description": "Gate for human approval to incur AI token expenses",
+            "description": "Gate for human approval to incur AI token expenses. ASS-418: a wait for the operator, so its VM is stopped here (started again, by the lifecycle, at the next step that needs it)",
+            "vm": "stopped",
             "max-visits": 3,
             "on-max-visits": "blocked",
             "action": {
@@ -157,7 +158,8 @@
             "id": "variation-selection",
             "sequence": 6,
             "name": "Variation Selection",
-            "description": "Selecting the appropriate variation for the merge request",
+            "description": "Selecting the appropriate variation for the merge request. ASS-418: a wait for the operator, so its VM is stopped here (started again, by the lifecycle, at the next step that needs it)",
+            "vm": "stopped",
             "max-visits": 3,
             "on-max-visits": "blocked",
             "action": {

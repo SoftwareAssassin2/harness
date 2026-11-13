@@ -64,7 +64,7 @@ function lifecycle(variations, { fail = () => null, answer = () => '', limits = 
 test('each variation\'s VM runs from Setup through Review and in Self Healing, and is stopped at Release, Done, Blocked, Blocked for Human, while paused and once set aside', async () => {
   const l = lifecycle({
     A: [at('setup', ['grouped-setup', 'mark-setup-complete']), 'Stopped'],
-    B: [at('review', ['grouped-review', 'variation-selection']), 'Stopped'],
+    B: [at('review', ['grouped-review', 'explain-the-change']), 'Stopped'],   // ASS-418: Variation Selection, a human step, now stops it
     C: [at('self-healing'), 'Stopped'],
     D: [at('build', ['grouped-build', 'code-review']), 'Running'],                         // as it should be
     E: [at('release', ['grouped-release-example', 'team-code-review']), 'Running'],
@@ -256,6 +256,53 @@ test('ASS-387 AC3: a VM whose start is still under way at vmUpCeilingMs sends it
   assert.ok(!l.calls.some(c => c.endsWith(' in abc-3-a')), l.calls.join('\n'));
   assert.ok(!l.f.lines.some(x => x.includes('judged as it stands')), l.f.lines.join('\n'));
   await l.settle();
+});
+
+// ASS-418 AC3: a step that needs no VM says vm stopped beneath its running
+// group, so a ticket parked at a wait — Build's Await Sequential Merge, a
+// forge poll on a timer — has its VM stopped by the lifecycle while it polls;
+// once it moves on to a step that needs the VM (Refresh the Reference
+// Repositories Before Testing) the VM is started again and the step waits for
+// it (ASS-387), then runs once: no step re-run, no visit spent. One with an
+// agent still at work on its variation is left till that ends (ASS-349).
+const AWAITING_MERGE = at('build', ['grouped-build', 'await-dependencies']);
+
+test('ASS-418 AC3: a ticket parked at Await Sequential Merge has its VM stopped while it polls; moving on to a step that needs it starts it again, the step waiting for it, then run once — no step re-run, no visit spent', async () => {
+  const l = await reentering({ A: [AWAITING_MERGE, 'Running'] });
+  let merged = false;
+  l.f.ctx.script = async (argv, vm) => { l.calls.push(`${argv.join(' ').replace('./agent.sh ', '')}${vm ? ` in ${vm}` : ''}`); return { exitCode: argv[1] === 'merge-request:await-dependencies' && !merged ? 2 : 0, stdout: '' }; };
+  const jobs = () => Promise.all([...l.f.ctx.memory.vms.values()].map(r => r.job));
+  await l.tick(); await jobs();
+  assert.ok(l.calls.includes('vm:stop p abc-3-a'), l.calls.join('\n'));
+  assert.ok(l.f.lines.includes('vm p abc-3-a: stopped (ABC-3 A at build)'), l.f.lines.join('\n'));
+  assert.equal(l.runAt('A'), 'await-dependencies', l.f.lines.join('\n'));
+  writeFileSync(join(l.v.instances, 'abc-3-a', 'status'), 'Stopped');   // as vm:stop left it
+  l.later(5 * 60_000); await l.tick(); await jobs();   // polled again, its VM stopped: nothing started
+  assert.equal(l.calls.filter(c => c.startsWith('merge-request:await-dependencies')).length, 2, l.calls.join('\n'));
+  assert.ok(!l.calls.some(c => c.startsWith('vm:start')), l.calls.join('\n'));
+  merged = true;
+  l.later(5 * 60_000); await l.tick();   // merged: on to Refresh the Reference Repositories Before Testing
+  assert.equal(l.runAt('A'), 'refresh-before-testing', l.f.lines.join('\n'));
+  await l.tick();   // its VM's start under way beside the tick: the step waits, not run
+  assert.ok(l.calls.includes('vm:start p ABC-3 A'), l.calls.join('\n'));
+  assert.ok(!l.calls.some(c => c.startsWith('vm:refresh-repositories')), l.calls.join('\n'));
+  await l.settle(); await l.tick();
+  assert.equal(l.calls.filter(c => c.startsWith('vm:refresh-repositories')).length, 1, l.calls.join('\n'));
+  assert.equal(l.calls.filter(c => c.startsWith('merge-request:await-dependencies')).length, 3, l.calls.join('\n'));
+  const run = l.f.assignments()['transient-state-engines'].find(r => r.parent?.variation === 'A');
+  assert.equal((run?.['state-changes'] ?? []).filter(c => c['to-state'] === 'refresh-before-testing').length, 1, JSON.stringify(run));
+  assert.equal((run?.['state-changes'] ?? []).filter(c => c['to-state'] === 'await-dependencies').length, 0, JSON.stringify(run));
+  assert.equal(l.f.variation('A')['harness-status'].state, 'build', l.f.lines.join('\n'));
+  assert.ok(!l.f.lines.some(x => / → blocked|judged as it stands/.test(x)), l.f.lines.join('\n'));
+});
+
+test('ASS-418 AC3: a VM at a wait with an agent still at work on its variation is left running till the agent ends (ASS-349), then stopped', async () => {
+  const l = lifecycle({ A: [AWAITING_MERGE, 'Running'] });
+  pauseWith(l, {}, [working('A')]);
+  assert.deepEqual(await l.pass(), []);
+  assert.ok(l.f.lines.some(x => x.startsWith('vm p abc-3-a: to stop (ABC-3 A at build)') && x.endsWith('waits until its agent finishes')), l.f.lines.join('\n'));
+  pauseWith(l, {}, []);
+  assert.deepEqual(await l.pass(), ['vm:stop p abc-3-a']);
 });
 
 // ASS-225: a paused variation's sub-engine runs are held with it — the
@@ -507,9 +554,12 @@ test('ASS-233 AC1, AC3: a variation waiting for a slot has its VM stopped, logge
   assert.ok(l.f.lines.includes('vm p abc-3-b: stopped (ABC-3 B at build; waits for a slot)'), l.f.lines.join('\n'));
 });
 
-test('ASS-233 AC1, AC3: a seat holder waiting at a human step (ASS-203) keeps its VM; the variation behind it waits for the slot without one', async () => {
+// ASS-418: the seat holder keeps its seat at a human step (ASS-203), but no longer its VM: Payment Gate says vm stopped.
+test('ASS-233 AC1, AC3, ASS-418: a seat holder waiting at a human step (ASS-203) keeps its seat, its VM stopped there; the variation behind it waits for the slot without one', async () => {
   const l = lifecycle({ A: [PAYMENT_GATE, 'Running'], B: [BUILDING, 'Running'] }, ONE_SEAT);
-  assert.deepEqual(await l.pass(), ['vm:stop p abc-3-b']);
+  assert.deepEqual(await l.pass(), ['vm:stop p abc-3-a', 'vm:stop p abc-3-b']);
+  assert.ok(l.f.lines.includes('vm p abc-3-a: stopped (ABC-3 A at review)'), l.f.lines.join('\n'));
+  assert.ok(l.f.lines.includes('vm p abc-3-b: stopped (ABC-3 B at build; waits for a slot)'), l.f.lines.join('\n'));
 });
 
 test('ASS-233 AC2, AC3: once the seat holder leaves, the waiting variation\'s VM is started, and its step waits for it (awaitsVm) — not judged while it waits for its slot', async () => {

@@ -380,9 +380,10 @@ test('AC7: when no fix ticket can be raised or waited on, the ticket never resum
 
 // ASS-240 AC2: count-attempts too — without it, it inherits the top engine's Blocked `vm: stopped`, so entering
 // Blocked stopped the VM and find-where started it again, troubleshoot dispatched into a stopping VM.
-test('ASS-75, ASS-240 AC2: the grouped Blocked runs its VM where it works in it — from its first step (count-attempts), troubleshooting, classifying and repairing', () => {
+// ASS-418: Classify (a host agent) and Check on the Latest Master (a forge read) need no VM, so they stop it.
+test('ASS-75, ASS-240 AC2, ASS-418: the grouped Blocked runs its VM where it works in it — from its first step (count-attempts), troubleshooting and repairing — and stops it for Classify and Check on the Latest Master', () => {
   const vm = engines['grouped-blocked'].steps.filter(s => s.vm).map(s => [s.id, s.vm]);
-  assert.deepEqual(vm, [['count-attempts', 'running'], ['check-first', 'running'], ['find-where', 'running'], ['troubleshoot', 'running'], ['classify', 'running'], ['check-on-master', 'running'], ['own-branch-or-obstacle', 'running'], ['own-branch-or-human', 'running'], ['plan-obstacle-fix', 'running'],
+  assert.deepEqual(vm, [['count-attempts', 'running'], ['check-first', 'running'], ['find-where', 'running'], ['troubleshoot', 'running'], ['classify', 'stopped'], ['check-on-master', 'stopped'], ['own-branch-or-obstacle', 'running'], ['own-branch-or-human', 'running'], ['plan-obstacle-fix', 'running'],
     ['find-where-to-repair-project', 'running'], ['repair-project', 'running'], ['add-repository', 'running'], ['repair-environment', 'running'],
     ['verify-image', 'running']]);   // ASS-392: the failing check re-run on the ticket's VM from the repaired image
 });

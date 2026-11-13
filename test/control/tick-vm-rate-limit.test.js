@@ -122,8 +122,9 @@ test('ASS-400 AC1: no API fallback — a VM recording no kind, an API cap holdin
   assert.deepEqual(await l.pass(), { vm: [], health: [] });
 });
 
-test('ASS-400 AC2: a VM with its agent at work is left till the agent ends (ASS-349), its health unwritten meanwhile; a script step in the VM and a human step keep theirs', async () => {
-  const l = lifecycle({ A: [BUILDING, 'Running'], B: [TESTING, 'Running'], C: [ANSWERING, 'Running'] });
+// ASS-418: a human step now says vm stopped, so C's stopped VM stays so — its own setting followed, not the rate limit's.
+test('ASS-400 AC2: a VM with its agent at work is left till the agent ends (ASS-349), its health unwritten meanwhile; a script step in the VM and a human step follow their own vm setting', async () => {
+  const l = lifecycle({ A: [BUILDING, 'Running'], B: [TESTING, 'Running'], C: [ANSWERING, 'Stopped'] });
   l.kinds({ 'abc-3-a': 'claude', 'abc-3-b': 'claude', 'abc-3-c': 'claude' });
   l.assign([['ABC-3', 'A']]);
   assert.deepEqual(await l.pass(), { vm: [], health: [] });

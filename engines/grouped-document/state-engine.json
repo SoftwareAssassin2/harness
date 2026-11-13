@@ -50,7 +50,8 @@
             "id": "check-merge-request-details",
             "sequence": 3,
             "name": "Check Merge Request Details",
-            "description": "Checking each merge request's title and description, and waiting for its pipeline's pre-stage jobs",
+            "description": "Checking each merge request's title and description, and waiting for its pipeline's pre-stage jobs. ASS-418: a forge poll, so its VM is stopped here (started again, by the lifecycle, at the next step that needs it)",
+            "vm": "stopped",
             "max-visits": 3,
             "on-max-visits": "blocked",
             "action": {

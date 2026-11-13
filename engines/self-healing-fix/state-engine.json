@@ -1,42 +1,42 @@
 {
     "steps": [
 
-        { "id": "pause-work", "sequence": 1, "name": "Pause Work", "description": "Pausing, one by one, just the tickets the fix's plan holds while it is built, tested and deployed, and putting the TUI into SELF HEALING — again on every attempt",
+        { "id": "pause-work", "sequence": 1, "name": "Pause Work", "description": "Pausing, one by one, just the tickets the fix's plan holds while it is built, tested and deployed, and putting the TUI into SELF HEALING — again on every attempt. ASS-418: on the host, so its VM is stopped here", "vm": "stopped",
             "action": { "type": "script", "command": "./agent.sh self-healing:start {project} {ticket}" },
             "exit-events": [
                 { "condition": { "exit-code": 0 }, "move-to-state": "apply-fix" },
                 { "condition": { "not": { "exit-code": 0 } }, "move-to-state": "apply-fix" }
             ]
         },
-        { "id": "apply-fix", "sequence": 2, "name": "Apply Fix", "description": "Fixing the issue described in the ticket, on its ticket, while the tickets it holds stay paused",
+        { "id": "apply-fix", "sequence": 2, "name": "Apply Fix", "description": "Fixing the issue described in the ticket, on its ticket, while the tickets it holds stay paused. ASS-418: on the host, so its VM is stopped here", "vm": "stopped",
             "action": { "type": "prompt", "prompt": "apply-fix", "agent-count": 1, "run-in-dev-container": false, "works-on-code": true },
             "exit-events": [
                 { "condition": { "all": [ { "turn-complete": true }, { "structured-output": { "is-fixed": false } } ] }, "move-to-state": "hand-to-human" },
                 { "condition": { "turn-complete": true }, "move-to-state": "request-restart" }
             ]
         },
-        { "id": "hand-to-human", "sequence": 3, "name": "Hand to Human", "description": "Not fixed — it needs the operator: the ticket goes to Blocked for Human with what they must do, SELF HEALING still held; resolved, it comes back here for another attempt",
+        { "id": "hand-to-human", "sequence": 3, "name": "Hand to Human", "description": "Not fixed — it needs the operator: the ticket goes to Blocked for Human with what they must do, SELF HEALING still held; resolved, it comes back here for another attempt. ASS-418: on the host, so its VM is stopped here", "vm": "stopped",
             "action": { "type": "script", "command": "./agent.sh self-healing:hand-to-human {project} {ticket} {summary} {summary}" },
             "exit-events": [
                 { "condition": { "exit-code": 0 }, "move-to-state": "done" },
                 { "condition": { "not": { "exit-code": 0 } }, "move-to-state": "done" }
             ]
         },
-        { "id": "request-restart", "sequence": 4, "name": "Request Restart", "description": "Asking the harness to restart on the fixed code",
+        { "id": "request-restart", "sequence": 4, "name": "Request Restart", "description": "Asking the harness to restart on the fixed code. ASS-418: on the host, so its VM is stopped here", "vm": "stopped",
             "action": { "type": "script", "command": "./agent.sh harness:request-restart {ticket}" },
             "exit-events": [
                 { "condition": { "exit-code": 0 }, "move-to-state": "await-restart" },
                 { "condition": { "not": { "exit-code": 0 } }, "move-to-state": "resume-work" }
             ]
         },
-        { "id": "await-restart", "sequence": 5, "name": "Await Restart", "description": "Waiting for control and the dashboard to come back on the new code — a minute between asks, half an hour at most", "max-visits": 30, "on-max-visits": "resume-work",
+        { "id": "await-restart", "sequence": 5, "name": "Await Restart", "description": "Waiting for control and the dashboard to come back on the new code — a minute between asks, half an hour at most. ASS-418: a wait on the host, so its VM is stopped here", "max-visits": 30, "on-max-visits": "resume-work", "vm": "stopped",
             "action": { "type": "script", "command": "./agent.sh harness:restarted {ticket}" },
             "exit-events": [
                 { "condition": { "exit-code": 0 }, "move-to-state": "resume-work" },
                 { "condition": { "not": { "exit-code": 0 } }, "move-to-state": "await-restart" }
             ]
         },
-        { "id": "resume-work", "sequence": 6, "name": "Resume Work", "description": "Unpausing the tickets the fix held",
+        { "id": "resume-work", "sequence": 6, "name": "Resume Work", "description": "Unpausing the tickets the fix held. ASS-418: on the host, so its VM is stopped here", "vm": "stopped",
             "action": { "type": "script", "command": "./agent.sh self-healing:stop {project} {ticket}" },
             "exit-events": [
                 { "condition": { "exit-code": 0 }, "move-to-state": "done" },
