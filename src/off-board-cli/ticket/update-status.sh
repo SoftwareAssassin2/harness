@@ -5,7 +5,10 @@ set -euo pipefail
 # Rewrites the status line of the ticket's front matter (see ticket.bash),
 # adding one when it has none, and stamps updated. The status is one of the
 # four off-board statuses: Backlog, Committed, In Progress, Done (the
-# harness-development engine pairs each step with one). Prints
+# harness-development engine pairs each step with one). A change of status
+# is appended to the ticket's status history, <KEY>.history.json, as
+# { at (the new updated), from, to } (ASS-413, see ticket.bash); setting the
+# status it already has stamps updated and records nothing. Prints
 # { key, status }. Fails, writing nothing, on any other status, when the
 # project is missing or has no off-board work source, the ticket is missing,
 # or its file is malformed.
@@ -15,7 +18,14 @@ source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../ticket.bash"
 case "$3" in Backlog|Committed|"In Progress"|Done) ;; *) echo "ticket:update-status: unknown status '$3'; one of Backlog, Committed, In Progress, Done" >&2; exit 1 ;; esac
 file="$(ticket_file ticket:update-status "$1" "$2")"
 
+# The status history (ASS-413): under the store lock, taken before the read,
+# a ticket without one backfilled from its state before this change; the
+# change appended after the rewrite, at its new updated stamp.
+lock_store ticket:update-status "$(dirname "$file")"
+ensure_history ticket:update-status "$file"
+from="$(ticket_json ticket:update-status "$file" | jq -r '.status // ""')"
 rewrite_ticket ticket:update-status "$file" --arg status "$3" '
   close as $c | (.[:$c] | index_of(startswith("status:"))) as $i
   | if $i < 0 then .[:$c] + ["status: " + $status] + .[$c:] else .[$i] = "status: " + $status end'
+[[ "$from" == "$3" ]] || append_history ticket:update-status "$file" "$from" "$3" "$(ticket_json ticket:update-status "$file" | jq -r '.updated')"
 jq -n --arg key "$(ticket_key "$file")" --arg status "$3" '{ key: $key, status: $status }'

@@ -14,7 +14,7 @@ import { priorityOrder } from '../../src/control/rank.js';
 const run = promisify(execFile);
 const OFF_BOARD = join(import.meta.dirname, '..', '..', 'off-board.sh');
 const STAMP = /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$/;
-const COMMANDS = ['create', 'get', 'list', 'update-name', 'update-status', 'update-requirements', 'add-acceptance-criteria', 'update-acceptance-criteria', 'replace-acceptance-criteria', 'update-points', 'update-priority', 'set-dependencies', 'set-overlaps', 'keep-whole', 'mark-split', 'mark-fast-track'];
+const COMMANDS = ['create', 'get', 'list', 'update-name', 'update-status', 'update-requirements', 'add-acceptance-criteria', 'update-acceptance-criteria', 'replace-acceptance-criteria', 'update-points', 'update-priority', 'set-dependencies', 'set-overlaps', 'keep-whole', 'mark-split', 'mark-fast-track', 'history'];
 const fails = (promise, message) => assert.rejects(promise, e => message.test(e.stderr));
 
 const write = (file, content) => {

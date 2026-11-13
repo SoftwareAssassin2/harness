@@ -173,3 +173,60 @@ rewrite_ticket() {
     return 1
   fi
 }
+
+# Status history (ASS-413): beside each ticket, <folder>/<KEY>.history.json —
+# { "key": "<KEY>", "status-changes": [ { "at", "from", "to" }… ] } in the
+# order they happened, `from` null on the first (ticket:create's Backlog);
+# ticket:update-status and ticket:mark-split append each status change.
+# Not a *.md, so ticket_files, ticket_file and everything that lists tickets
+# never see it. Every write holds the store lock and goes to a temp file
+# renamed over the original, as a ticket's rewrite does.
+#
+#   history_file <file>                     # the ticket file's history file
+#   backfilled_history <command> <file>     # the history a ticket without one is given, as JSON
+#   ensure_history <command> <file>         # write the backfilled history when the ticket has none
+#   start_history <command> <file> <at>     # write a new ticket's history: Backlog at <at>
+#   append_history <command> <file> <from> <to> <at>   # append one change (ensure_history first)
+#
+# A ticket with no history file (one made before ASS-413, or written by hand)
+# is backfilled the first time it is read (ticket:history) or its status
+# changes (ticket:update-status, ticket:mark-split's Done, before the change): Backlog at its created, then its
+# current status at its updated when that differs, each entry marked
+# "backfilled": true — all the file can tell.
+history_file() { echo "${1%.md}.history.json"; }
+
+backfilled_history() {
+  ticket_json "$1" "$2" | jq -c '{ key, "status-changes": ([{ at: .created, from: null, to: "Backlog", backfilled: true }]
+    + (if (.status // "Backlog") == "Backlog" then [] else [{ at: .updated, from: "Backlog", to: .status, backfilled: true }] end)) }'
+}
+
+# write_history <file> <json> — the history file of ticket <file>, replaced whole.
+write_history() {
+  local target tmp
+  target="$(history_file "$1")"
+  tmp="$(mktemp "$target.XXXXXX")"
+  if jq '.' <<< "$2" > "$tmp"; then mv "$tmp" "$target"; else rm -f "$tmp"; return 1; fi
+}
+
+ensure_history() {
+  local history
+  [[ -f "$(history_file "$2")" ]] && return 0
+  lock_store "$1" "$(dirname "$2")" || return 1
+  [[ -f "$(history_file "$2")" ]] && return 0
+  history="$(backfilled_history "$1" "$2")" || return 1
+  write_history "$2" "$history"
+}
+
+start_history() {
+  lock_store "$1" "$(dirname "$2")" || return 1
+  write_history "$2" "$(jq -nc --arg key "$(ticket_key "$2")" --arg at "$3" '{ key: $key, "status-changes": [{ at: $at, from: null, to: "Backlog" }] }')"
+}
+
+append_history() {
+  local history
+  lock_store "$1" "$(dirname "$2")" || return 1
+  ensure_history "$1" "$2" || return 1
+  history="$(jq -c --arg from "$3" --arg to "$4" --arg at "$5" '."status-changes" = ((."status-changes" // []) + [{ at: $at, from: (if $from == "" then null else $from end), to: $to }])' "$(history_file "$2")")" \
+    || { echo "$1: $(history_file "$2") is not a history file" >&2; return 1; }
+  write_history "$2" "$history"
+}

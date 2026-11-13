@@ -34,7 +34,13 @@ for arg in "$@"; do
 done
 list="$(jq -cn '$ARGS.positional' --args "${pieces[@]}")"
 
+# Its status going to Done is a status change (ASS-413): under the store lock,
+# taken before the read, appended to its history (backfilled first when it
+# has none) at the new updated stamp.
+lock_store ticket:mark-split "$(dirname "$file")"
+from="$(ticket_json ticket:mark-split "$file" | jq -r '.status // ""')"
 if [[ "$(ticket_json ticket:mark-split "$file" | jq -c '[.status, (.["split-into"] // [])]')" != "$(jq -c '["Done", .]' <<< "$list")" ]]; then
+  ensure_history ticket:mark-split "$file"
   rewrite_ticket ticket:mark-split "$file" --argjson pieces "$list" '
     close as $c
     | (.[:$c] | index_of(startswith("status:"))) as $s
@@ -45,5 +51,6 @@ if [[ "$(ticket_json ticket:mark-split "$file" | jq -c '[.status, (.["split-into
     | if $i >= 0 then .[$i] = $line
       else (.[:$c] | index_of(startswith("created:"))) as $at
         | if $at < 0 then .[:$c] + [$line] + .[$c:] else .[:$at] + [$line] + .[$at:] end end'
+  [[ "$from" == Done ]] || append_history ticket:mark-split "$file" "$from" Done "$(ticket_json ticket:mark-split "$file" | jq -r '.updated')"
 fi
 jq -n --arg key "$key" --argjson pieces "$list" '{ key: $key, "split-into": $pieces, status: "Done" }'

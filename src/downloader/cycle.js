@@ -3,7 +3,8 @@
 // tickets (and, on a comment cycle, their Jira comments), and hand them to the
 // agent-cli. It writes no JSON itself: every mutation is an agent.sh call
 // (ticket:snapshot-day, ticket:sync, ticket:sync-outside, ticket:sync-jira-comments,
-// project:set-ticket-system-account-id, analytics:sync-tickets,
+// project:set-ticket-system-account-id, analytics:sync-tickets (Jira's and,
+// ASS-413, the off-board tickets'),
 // analytics:sync-sprints, analytics:sync-merge-requests,
 // project:set-last-data-download), so the file rules live in one place.
 import { readFileSync, writeFileSync, mkdtempSync, rmSync, existsSync } from 'node:fs';
@@ -12,6 +13,7 @@ import { join } from 'node:path';
 import { parseBoardUrl } from './jira.js';
 import { scanMergeRequests } from './merge-requests.js';
 import { syncMergedMergeRequests } from './merged-merge-requests.js';
+import { syncOffBoardAnalytics } from './off-board-analytics.js';
 import { dataDir } from '../data-folder.js';
 
 // runCycle({ root, project, now, adapters, exec, fetch, comments, lookups, dryRun, log }) — root is the
@@ -100,6 +102,13 @@ import { dataDir } from '../data-folder.js';
 //    the sprint files or backlog.json. No credentials, or a read (or its
 //    write) that fails, is logged once until that changes, the file it would
 //    have written stays as it was, and the cycle goes on.
+// 5b′. Off-board analytics (ASS-413), every cycle, for a project with an
+//    off-board work source, when adapters.offBoard has fetchAnalyticsTickets:
+//    every off-board ticket with its status history (ticket:history) and the
+//    project's own sprints, in 5b's shapes, to the same `analytics:sync-
+//    tickets` and `analytics:sync-sprints` (off-board-analytics.js), the
+//    operator their one assignee. Its failures are logged once, never the
+//    cycle's.
 // 5c. Analytics' merged merge requests (ASS-408), every cycle, when adapters
 //    has mergedMergeRequests (merged-merge-requests.js): for each GitLab or
 //    GitHub repository in project.json's `repositories`, by its url's host
@@ -233,6 +242,11 @@ export async function runCycle({ root, project, now = new Date(), adapters, exec
     // 5b. Analytics (ASS-406): its own failures logged, never the cycle's.
     if (source && adapters.jiraRest) {
       await syncAnalytics({ key: join(projects, project), project, source, board, tickets: join(projects, project, 'analytics', 'tickets.json'), call, rest: adapters.jiraRest, fetchFn, log });
+    }
+
+    // 5b′. Off-board analytics (ASS-413): the off-board tickets' status histories and the project's own sprints.
+    if (offBoard && adapters.offBoard?.fetchAnalyticsTickets) {
+      await syncOffBoardAnalytics({ key: join(projects, project), root, projectDir: join(projects, project), project, hasJira: Boolean(source), call, offBoard: adapters.offBoard, run: exec, log });
     }
 
     // 5c. Analytics: every merged merge request (ASS-408).

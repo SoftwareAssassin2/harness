@@ -4,7 +4,9 @@ set -euo pipefail
 
 # Writes <OFF_BOARD_DIR>/<folder>/<KEY>.md (see ticket.bash), the key one past
 # the highest number in the folder (read under the store lock), status
-# Backlog, the time now as created and updated. The body file's Markdown (H2 sections) follows the H1 title;
+# Backlog, the time now as created and updated, and beside it, still under
+# the lock, its status history <KEY>.history.json with that first Backlog
+# (ASS-413, see ticket.bash). The body file's Markdown (H2 sections) follows the H1 title;
 # without one, the User story, Context and Acceptance criteria headings are
 # written empty. --priority, last, writes a priority line after the status,
 # one of ticket.bash's $priorities (see ticket:update-priority); without it
@@ -66,4 +68,5 @@ tmp="$(mktemp "$folder/.$key.XXXXXX")"
   if [[ $# -eq 4 ]]; then cat "$4"; else printf '## User story\n\n## Context\n\n## Acceptance criteria\n'; fi
 } > "$tmp"
 mv "$tmp" "$file"
+start_history ticket:create "$file" "$now"
 jq -n --arg key "$key" --arg file "$file" '{ key: $key, file: $file }'
