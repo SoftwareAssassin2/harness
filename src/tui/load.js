@@ -1,5 +1,6 @@
 // Reads the dashboard's data from the repo's JSON files.
 import { readdirSync, readFileSync, existsSync, statSync, watch } from 'node:fs';
+import { readFile } from 'node:fs/promises';
 import { join, dirname, basename } from 'node:path';
 import { requiresReauthentication, loadCollaborations, loadChatSpend, loadMemorySpend, loadOutside } from '../control/state.js';
 import { isLiveBacklogEntry } from '../control/rank.js';
@@ -338,6 +339,29 @@ export const loadChats = file => (existsSync(file) ? readJson(file).chats ?? [] 
 // The transient state engines control has running (the file's
 // transient-state-engines); [] when none.
 export const loadTransientEngines = file => readJson(file)['transient-state-engines'] ?? [];
+
+// loadAnalytics(projectDir) — what the performance screen (ASS-411) works its
+// grid out from, read when the screen opens or is refreshed rather than with
+// the dashboard's other files, so the analytics (large, and needed by no other
+// screen) never slow a reload: a promise of { tickets, sprints, mergeRequests,
+// team, accountId } — analytics/tickets.json, sprints.json and
+// merge-requests.json, team.json, each parsed ({} for one not there yet, but
+// tickets.json), and the signed-in user's ticket-system-account-id, trimmed,
+// or null for a project without one (an off-board project) — or of null when
+// the project has no analytics/tickets.json yet. Read without blocking: the
+// screen draws "loading" meanwhile and every other screen goes on as before.
+export async function loadAnalytics(projectDir) {
+  const read = async (file, missing) => {
+    try { return await readFile(join(projectDir, file), 'utf8'); } catch (error) { if (error.code === 'ENOENT') return missing; throw error; }
+  };
+  const tickets = await read(join('analytics', 'tickets.json'), null);
+  if (tickets == null) return null;
+  const json = async file => JSON.parse(await read(file, '{}'));
+  const [sprints, mergeRequests, team, account] = await Promise.all([
+    json(join('analytics', 'sprints.json')), json(join('analytics', 'merge-requests.json')), json('team.json'), read('ticket-system-account-id', null),
+  ]);
+  return { tickets: JSON.parse(tickets), sprints, mergeRequests, team, accountId: account?.trim() || null };
+}
 
 // watchFiles(files, onChange, { delay }) — onChange() once a burst of changes
 // to any of `files` has been quiet for `delay` ms; { close } stops it. Each

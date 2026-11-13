@@ -588,7 +588,7 @@ test('the project menu has focus at first; tab moves it to the day, the ticket g
   assert.equal(dayState.focus, 'menu');
   assert.deepEqual(['tab', 'tab', 'tab', 'tab'].map((_, i) => press(dayState, ...Array(i + 1).fill('tab')).focus), ['day', 'tickets', 'menu', 'day']);
   assert.deepEqual([1, 2, 3].map(n => press({ ...dayState, screen: 'r' }, ...Array(n).fill('tab')).focus), ['day', 'repos', 'menu']);   // the repository grid on its own screen
-  assert.deepEqual([1, 2, 3].map(n => press({ ...dayState, screen: 'p' }, ...Array(n).fill('tab')).focus), ['day', 'menu', 'day']);   // no grids on other screens
+  assert.deepEqual([1, 2, 3].map(n => press({ ...dayState, screen: 'm' }, ...Array(n).fill('tab')).focus), ['day', 'menu', 'day']);   // no grids on other screens (p is the performance screen since ASS-411)
 });
 
 test('the focused component shows its selection in reverse video; an unfocused menu underlines its project', () => {
@@ -1285,7 +1285,7 @@ test('ASS-183: ? opens the menu: one entry per line — key, label, agent count 
   const menu = menuOf(state);
   assert.deepEqual(menu, [
     's sprint 🤖x3', 'S sprint flow', 'b backlog 🤖x0', 'B backlog flow', 'c control', 'f sub-flows 🤖x0', 'm merge requests 🤖x0',
-    'r repos 🤖x0', 'u updates', 'U MRs ready for approval', 'a agents 🤖x0', 'x chat', 'h memory',
+    'r repos 🤖x0', 'u updates', 'U MRs ready for approval', 'a agents 🤖x0', 'x chat', 'h memory', 'p performance',   // p: ASS-411
     'A agents for all projects',   // its own group (ASS-188, ASS-246)
     'space pause Example', '! pause every project', '/ hide project menu', 'Q quit',
     '⦿ needs you — counted on Operator Needed if a sprint ticket (backlog: ●)', '⦿ going on with an assumption — not counted (backlog: ●)',   // what the marks mean, a blank line apart (ASS-248)
@@ -3807,8 +3807,8 @@ test('the control screen shows the selected project\'s control output only — a
 const shifted = letter => key(letter, { shift: true, sequence: letter.toUpperCase() });
 const plain = letter => key(letter, { sequence: letter });
 
-test('ASS-103 AC1–AC3: the menu lists the screens s S b B c f m r u U a x h (ASS-366: U) — no questions, no p or o (ASS-262) — then space and !, / and Q', () => {
-  assert.deepEqual(menuOf(state).map(e => e.split(' ')[0]), [...'sSbBcfmruUaxh', 'A', 'space', '!', '/', 'Q', '⦿', '⦿', '⦿', '⚉', '✦']);   // A in its own group (ASS-188, ASS-246); the marks' legend (ASS-248, ASS-259)
+test('ASS-103 AC1–AC3: the menu lists the screens s S b B c f m r u U a x h (ASS-366: U) — no questions, no o (ASS-262), p the performance screen (ASS-411) — then space and !, / and Q', () => {
+  assert.deepEqual(menuOf(state).map(e => e.split(' ')[0]), [...'sSbBcfmruUaxhp', 'A', 'space', '!', '/', 'Q', '⦿', '⦿', '⦿', '⚉', '✦']);   // A in its own group (ASS-188, ASS-246); the marks' legend (ASS-248, ASS-259)
 });
 
 test('ASS-103 AC1–AC3: s opens the sprint and S the sprint flow; d, D and q open nothing', () => {
@@ -3819,17 +3819,17 @@ test('ASS-103 AC1–AC3: s opens the sprint and S the sprint flow; d, D and q op
 
 // The feature flags (ASS-262): the chat screen (chat-screen) and the ticket
 // screen's Chat tab (ticket-chat-tab), each there only with its flag on.
-test('ASS-262 AC1: p and o are gone — in no menu, and pressing them opens nothing, the flags on or off', () => {
+test('ASS-262 AC1: o is gone — in no menu, and pressing it opens nothing, the flags on or off (p is the performance screen since ASS-411)', () => {
   for (const s of [state, flagsOff(state)]) {
-    assert.ok(!menuOf(s).some(e => /^[po] /.test(e)), menuOf(s).join('|'));
-    for (const k of 'po') assert.equal(handleKey({ ...s, screen: 'b' }, plain(k)).screen, 'b', k);
-    assert.equal(handleKey({ ...s, menuOpen: true }, plain('p')).menuOpen, true);   // not a menu key either
+    assert.ok(!menuOf(s).some(e => /^o /.test(e)), menuOf(s).join('|'));
+    assert.equal(handleKey({ ...s, screen: 'b' }, plain('o')).screen, 'b');
+    assert.equal(handleKey({ ...s, menuOpen: true }, plain('o')).menuOpen, true);   // not a menu key either
   }
 });
 
 test('ASS-262 AC3: with chat-screen off, x is not in the menu and pressing it does nothing; with it on, x opens the chat screen, after a', () => {
   const off = flagsOff(state);
-  assert.deepEqual(menuOf(off).map(e => e.split(' ')[0]), [...'sSbBcfmruUah', 'A', 'space', '!', '/', 'Q', '⦿', '⦿', '⦿', '⚉', '✦']);
+  assert.deepEqual(menuOf(off).map(e => e.split(' ')[0]), [...'sSbBcfmruUahp', 'A', 'space', '!', '/', 'Q', '⦿', '⦿', '⦿', '⚉', '✦']);
   assert.equal(handleKey({ ...off, screen: 'b' }, plain('x')).screen, 'b');
   assert.equal(handleKey({ ...off, menuOpen: true }, plain('x')).menuOpen, true);   // not a menu key either
   const on = flagsOff(state, { 'chat-screen': true });
@@ -6091,7 +6091,7 @@ test('ASS-188 AC5: the ? menu lists A agents for all projects in its own group, 
   const at = open.findIndex(l => l.includes('A agents for all projects'));
   const left = open[at].lastIndexOf('│', open[at].indexOf('A agents')), right = open[at].indexOf('│', open[at].indexOf('A agents'));
   assert.match(open[at - 1].slice(left, right + 1), /^│ +│$/);                            // a blank row before it
-  assert.match(open[at - 2], /h +memory/);                                                 // the screens' own keys stay lined up in their columns
+  assert.match(open[at - 2], /p +performance/);                                            // the screens' own keys stay lined up in their columns (p last since ASS-411)
 });
 
 test('ASS-188 AC5: A opens the all-projects screen with its grid focused, from the ? menu too; its ticket numbers are marked', () => {

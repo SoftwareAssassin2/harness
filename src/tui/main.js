@@ -9,7 +9,7 @@ import { homedir } from 'node:os';
 import { execFile, execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import { initialState, handleKey, render, decided, openRequested, controlStarted, controlExited, controlDraining, drawColumns } from './app.js';
-import { loadProjects, loadWorkflows, loadPauses, loadSelfHealing, loadAssignments, loadTransientEngines, loadChats, loadHarness, loadModelUsage, loadDiskSpace, watchFiles, dataFiles, keepSame, projectsChanged, activeSprintFile } from './load.js';
+import { loadProjects, loadWorkflows, loadPauses, loadSelfHealing, loadAssignments, loadTransientEngines, loadChats, loadHarness, loadModelUsage, loadDiskSpace, loadAnalytics, watchFiles, dataFiles, keepSame, projectsChanged, activeSprintFile } from './load.js';
 import { operatorNeededNotifier, headerWarningNotifier } from '../notify/notifier.js';
 import { startControl } from '../control/process.js';
 import { ender, stillNamed } from './shutdown.js';
@@ -19,6 +19,7 @@ import { chatRunner, chatSpendArgs } from '../agents/chats.js';
 import { configDir } from '../control/dispatch.js';
 import { ticketChat, opening, briefing, chatId, problems } from './collaboration.js';
 import { memoryLoaded, healthPoller, memoryChecked } from './memory.js';
+import { analyticsLoaded } from './screens/performance.js';
 import { loadFeatures, featureOn } from './features.js';
 import { settlePending, refused } from './screens/agents.js';
 import { refinementSteps } from './status.js';
@@ -466,6 +467,16 @@ stdin.on('keypress', (_, key) => {
     deleteMemory(port, project, document).then(() => { state = { ...state, memoryMessage: `deleted ${document}` }; }, error => { state = { ...state, memoryMessage: error.message }; })
       .then(() => loadMemories(project, port));
     next = { ...next, memoryDelete: null };
+  }
+  // The performance screen (ASS-411): opened, its project switched or l
+  // pressed, the project's analytics files read without blocking — the screen
+  // says it is loading meanwhile, every other screen draws as before — or what
+  // went wrong said.
+  if (next.performanceLoad) {
+    const id = next.performanceLoad;
+    loadAnalytics(join(DATA, 'projects', id)).then(data => ({ data }), error => ({ error: `${id}'s analytics: ${error.message}` }))
+      .then(result => { state = analyticsLoaded(state, id, result); draw(); });
+    next = { ...next, performanceLoad: null };
   }
   // A ticket's screen opened: its chat briefed or caught up; a message typed there, to its agent (ASS-35).
   if (next.ticketChatOpen) {

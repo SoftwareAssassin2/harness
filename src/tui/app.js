@@ -24,13 +24,14 @@ import * as agents from './screens/agents.js';
 import * as chat from './screens/chat.js';
 import * as memory from './screens/memory.js';
 import * as ticket from './screens/ticket.js';
+import * as performance from './screens/performance.js';
 
 // Screen keys, in menu order (ASS-23): each list beside its flow — s and S
 // the sprint and its flow (ASS-103), b and B the backlog and its flow. The
 // project and options screens, never built, are gone (ASS-262).
 const SCREENS = {
   s: 'sprint', S: 'sprint flow', b: 'backlog', B: 'backlog flow', c: 'control', f: 'sub-flows',
-  m: 'merge requests', r: 'repos', u: 'updates', U: 'MRs ready for approval', a: 'agents', x: 'chat', h: 'memory',   // U: the open merge requests by ticket, to paste (ASS-366), only those ready for approval (ASS-367)
+  m: 'merge requests', r: 'repos', u: 'updates', U: 'MRs ready for approval', a: 'agents', x: 'chat', h: 'memory', p: 'performance',   // U: the open merge requests by ticket, to paste (ASS-366), only those ready for approval (ASS-367); p: each developer's performance, the operator's row highlighted (ASS-411)
   A: 'agents for all projects',   // every project's agents (ASS-188), beside a (ASS-246), apart from the rest in the menu
 };
 // The screen key a keypress names: its sequence, so S is told from s; its name when it has none.
@@ -43,7 +44,7 @@ const shown = (state, k) => Object.hasOwn(SCREENS, k) && (!FLAGGED[k] || feature
 // Each screen's module (ASS-201) by its key: view(state, size), its body's lines,
 // and onKey(state, key, size, { step, sideways }), the next state or undefined
 // to fall through to the screen keys.
-const SCREEN_MODULES = { s: sprint, S: sprintFlow, b: backlog, B: backlogFlow, c: control, f: subflows, m: mergeRequests, r: repos, u: updates, U: openMrs, a: agents, x: chat, h: memory, A: agents };
+const SCREEN_MODULES = { s: sprint, S: sprintFlow, b: backlog, B: backlogFlow, c: control, f: subflows, m: mergeRequests, r: repos, u: updates, U: openMrs, a: agents, x: chat, h: memory, p: performance, A: agents };
 
 // Which of the selected project's agents a screen key counts in the menu:
 // agents refining the backlog beside b; the other agents on tickets beside s,
@@ -96,7 +97,7 @@ const pastDays = project => Object.keys(project?.days ?? {})
 // projects: [{ id (its data/projects/ folder), name, stateEngine, sprint: sprint.json | null,
 //   days: { 'YYYY-MM-DD': end-of-day sprint snapshot } }].
 // assignments: from assignments.json; each names its project by folder.
-// focus: the component the arrow keys move — 'menu', 'day', 'tickets', 'repos', 'agents', 'updates', 'openmrs' or 'flowchart'.
+// focus: the component the arrow keys move — 'menu', 'day', 'tickets', 'repos', 'agents', 'updates', 'openmrs', 'performance' (ASS-411) or 'flowchart'.
 // day: the past day on show ('YYYY-MM-DD'), or null for the current day.
 // selected / repoSelected / agentSelected: each grid's selected row; scroll /
 // repoScroll / agentScroll: the first one shown. The dashboard's selected and
@@ -142,6 +143,14 @@ const pastDays = project => Object.keys(project?.days ?? {})
 // "<KEY>.<variation>" — { status: starting, ready or failed, message }.
 // null; updatesForm: its date and time being set — { field, date, time } — or
 // null; updatesScroll: its first line shown; updatesMessage: what is wrong.
+// The performance screen (p, ASS-411): analytics, each project's analytics
+// files as main.js read them, by project id — { data } (data null before the
+// project has any) or { error }; performanceLoad: the project whose files
+// main.js is to read (load.js loadAnalytics), which it clears; performanceSpan:
+// the span on show — null for the active sprint to today, { sprint: id } for
+// another sprint, { start, end } dates set by hand; performanceForm: the
+// from/to dates being set — { field, from, to } — or null; performanceScroll:
+// the grid's first body line shown; performanceMessage: what is wrong.
 // openMrsScroll: the open MRs screen's first line shown (ASS-366).
 // sessionWritten: when each agent's session log was last written (ms), by
 // agent-name, which main.js reads; an agent without one is not in it.
@@ -201,6 +210,7 @@ export const initialState = ({ projects = [], workflows = [], assignments = [], 
   draft: null, submit: null, message: '',
   controlLog: [], flowchartView: 'metrics', flowchartScroll: 0, backlogFlowScroll: 0, backlogFlowView: 'tickets',
   updatesSince: null, updatesForm: null, updatesScroll: 0, updatesMessage: '', openMrsScroll: 0,
+  analytics: {}, performanceLoad: null, performanceSpan: null, performanceForm: null, performanceScroll: 0, performanceMessage: '',
   ticket: null, ...ticket.OPENED_TICKET, priorityDraft: null, reasonDraft: null, returnDraft: null, gatesDraft: null, decide: null, decideCloses: false, demoRun: null, demos: {},
   backlogSelected: 0, backlogScroll: 0, subflowStart: 0, subflowScroll: 0, agentSelected: 0, agentScroll: 0, agentsGrid, agentsTable: false, agentPage: 0, agentTile: 0, sessionWritten: {}, sessionTails: {}, pending: {}, agent: null, agentLog: null, agentLogScroll: null, agentDraft: {}, agentCursor: {}, agentTyping: false, keyTail: null, agentPrompt: null, agentMessage: '', agentEvents: false, quitting: false, restart: false, controls, draining: {}, controlsDown: {}, menuOpen: false,
   chats, chatsRunning, chatsWritten, chatSelected: 0, chatScroll: 0, chat: null, chatLog: null, chatLogScroll: null, chatDraft: '', chatCursor: 0, chatMessage: '', chatEvents: false, chatSend: null, chatDelete: null, chatConfirm: null,
@@ -226,6 +236,7 @@ const focusable = state => [
   ...(state.screen === 'f' ? ['subflows'] : []),
   ...(state.screen === 'x' ? ['chats'] : []),
   ...(state.screen === 'h' ? ['memories'] : []),
+  ...(state.screen === 'p' ? ['performance'] : []),   // its grid's scroll and from/to form (ASS-411)
 ];
 
 // handleKey(state, key, { columns, rows, now }) — `key` is a node:readline keypress
@@ -243,6 +254,7 @@ export function handleKey(state, key, size = {}) {
   }
   if (state.draft != null) return ticket.editAnswer(state, key);
   if (state.updatesForm) return updates.editUpdates(state, key);
+  if (state.performanceForm) return performance.editSpan(state, key);   // ASS-411: the from/to dates' form
   if (state.agent != null) return viewLog(state, key, size, agents.AGENT_LOG);   // its keys are a prompt's text, space too, and ←/→ move its cursor rather than a component (ASS-41)
   if (state.chat != null) return viewLog(state, key, size, chat.CHAT_LOG);
   if (state.agentTyping) {
@@ -294,7 +306,9 @@ export function handleKey(state, key, size = {}) {
   const sideways = key.name === 'left' || key.name === 'right';
   const top = { selected: null, scroll: null, repoSelected: 0, repoScroll: 0, agentSelected: 0, agentScroll: 0, agentPage: 0, agentTile: 0, flowchartScroll: 0, backlogFlowScroll: 0, subflowStart: 0, subflowScroll: 0 };
   if (sideways && state.focus === 'menu') {
-    return { ...state, ...top, day: null, project: clamp(state.project + step, 0, state.projects.length - 1) };
+    const next = { ...state, ...top, day: null, project: clamp(state.project + step, 0, state.projects.length - 1) };
+    // ASS-411: the performance screen loads the project switched to, on its active sprint.
+    return next.screen === 'p' && next.project !== state.project ? performance.opened(next, { switched: true }) : next;
   }
   if (sideways && state.focus === 'day') {
     // The current day sits after the last past day.
@@ -306,12 +320,13 @@ export function handleKey(state, key, size = {}) {
   const own = SCREEN_MODULES[state.screen]?.onKey?.(state, key, size, { step, sideways });
   if (own !== undefined) return own;
   if (!key.ctrl && shown(state, screenKey(key))) {
-    // The updates, open MRs (ASS-366), repos and agents screens open on their own component;
+    // The updates, open MRs (ASS-366), performance (ASS-411), repos and agents screens open on their own component;
     // elsewhere the focus stays where it can, else goes to the menu (the day while it is hidden).
     const next = screenKey(key) === 'h' ? memoryOpened({ ...state, screen: 'h' })
       : screenKey(key) === 'u' ? updates.opened({ ...state, screen: 'u' }, new Date(size.now ?? Date.now()))   // ASS-332: the last weekday's 04:00 UTC by default
+      : screenKey(key) === 'p' ? performance.opened({ ...state, screen: 'p' })   // ASS-411: its analytics asked of main.js
       : { ...state, screen: screenKey(key) };
-    const own = { u: 'updates', U: 'openmrs', r: 'repos', a: 'agents', A: 'agents', b: 'backlog', B: 'backlogflow', f: 'subflows', x: 'chats', h: 'memories' }[next.screen];
+    const own = { u: 'updates', U: 'openmrs', r: 'repos', a: 'agents', A: 'agents', b: 'backlog', B: 'backlogflow', f: 'subflows', x: 'chats', h: 'memories', p: 'performance' }[next.screen];
     return { ...next, focus: own ?? (focusable(next).includes(state.focus) ? state.focus : focusable(next)[0]) };
   }
   return state;
