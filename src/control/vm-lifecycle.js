@@ -136,12 +136,13 @@ import { declaredCredentials } from './vm-credentials.js';
 const PHASE = 'vm';
 
 // vmUse(engines, engineName, variation) — `vm` of the deepest step of the
-// variation's status that sets it ('running', 'stopped' or 'released', ASS-325), or undefined.
-const vmUse = (engines, engineName, variation) => statusOf(engines, engineName, variation).chain.findLast(l => l.step?.vm)?.step.vm;
+// variation's status that sets it ('running', 'stopped' or 'released', ASS-325), or undefined. (Exported for seat-memory.js, ASS-420.)
+export const vmUse = (engines, engineName, variation) => statusOf(engines, engineName, variation).chain.findLast(l => l.step?.vm)?.step.vm;
 
-// waitsForSlot(plan, ticket, variation) — the variation is in motion but holds no slot (planFor's `waiting`, ASS-233),
+// waitsForSlot(plan, ticket, variation) — the variation is in motion but holds no slot (planFor's `waiting`, ASS-233;
+// its `memoryWaiting`, ASS-420: refused a seat for want of memory for its VM, which so stays stopped),
 // or its plan is finished and it waits for a build seat (`ready`, ASS-362).
-const waitsForSlot = (plan, ticket, variation) => [...plan.waiting, ...plan.ready].some(w => w.key === ticket?.key && w.variation === variation.name);
+const waitsForSlot = (plan, ticket, variation) => [...plan.waiting, ...plan.ready, ...(plan.memoryWaiting ?? [])].some(w => w.key === ticket?.key && w.variation === variation.name);
 
 // rateLimitStop(ctx, state, project, variation) — ASS-400: why the
 // variation's VM is stopped for a rate limit (see the module comment), as {
@@ -330,6 +331,7 @@ export async function superviseVms(ctx, state) {
   if (!projects.length) return;
   let status;
   try { status = await statuses(ctx); } catch (error) { ctx.log('error', `${PHASE}: ${error.message}`); return; }
+  ctx.memory.vmStatus = status;   // ASS-420: what seat-memory.js reads as running
   for (const [, vms] of projects) for (const [name, vm] of vms) {
     if (status.get(name) !== 'Running') ctx.memory.vmsUp?.delete(name);
     if (!vm.run) ctx.memory.vmWaits?.delete(name);

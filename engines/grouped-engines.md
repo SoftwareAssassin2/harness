@@ -965,12 +965,31 @@ Blocked for Human, saying what was found and what to do.
   need; under normal pressure with room nothing is held. A held VM's
   variation waits as for a slot — its steps not judged, no failure counted —
   and holds no planning or in-progress seat meanwhile (`plan.js`
-  `memoryHeld`); while the hold is on, the seat it freed goes only to a
-  variation whose VM is up. The hold is logged under `hold` with macOS's
+  `memoryHeld`). The hold is logged under `hold` with macOS's
   figures, the need and how it was estimated, and the VM held, and recorded
   in the project's `memory-hold.json` (the header's "Out of memory" flag).
   It lifts by itself once there is room; the held variations take a seat
   again in rank order, no step re-run and no visit spent.
+- **A seat only when its VM fits (ASS-420).** Before control gives a
+  variation a planning or in-progress seat — a move into one (`moves.js`
+  `mayMove`: Committed into Setup, a finished plan on to Build) or a seat
+  coming round to one already at a seat-taking step — whose next steps need
+  a VM that is not running (its step's `vm` is `running`), it checks the VM
+  fits (`src/control/seat-memory.js`, a phase each tick before the VM
+  lifecycle): macOS pressure normal, and free memory at least the need
+  (`host-memory.js` `vmNeed`) on top of the VMs already starting for seats
+  so given. One that does not fit takes no seat: it waits as for a slot —
+  its VM not started, no move, no ticket-system status change, no visit
+  spent — listed in the project's `memory-wait.json` (`plan.js`
+  `memoryWaiting`: no 💺 on the dashboard), its Health `Waiting for memory
+  for its VM (need X GB, Y GB free)`, cleared once it gets its seat. Seats
+  go in rank order, and one that does not fit does not block a lower-ranked
+  one that does (its VM already up, say); a variation whose VM is running,
+  or whose next steps need none, takes its seat as before. It is weighed
+  again every tick, so the seat is given once memory frees up. This
+  replaces ASS-404's rule that, while the hold was on, a freed seat went
+  only to a variation whose VM was up; the memory hold stays the safety net
+  on VM starts.
 - **Released (ASS-325).** A step may instead say `released`: the variation's
   VM is deleted as soon as it gets there, so its disk goes back to the
   project's VM disk budget at once rather than when a new VM is short of

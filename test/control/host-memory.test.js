@@ -22,6 +22,7 @@ import { runSteps } from '../../src/control/steps.js';
 import { createContext } from '../../src/control/tick.js';
 import { planFor } from '../../src/control/plan.js';
 import { mayMove } from '../../src/control/moves.js';
+import { seatMemory } from '../../src/control/seat-memory.js';
 import { parseSysctl, parseVzProcesses, parseFootprint, matchInstances, parseMemory, vmMemoryBytes, memoryNeed, vmNeed, memoryVerdict, MEMORY_READ_EVERY } from '../../src/control/host-memory.js';
 import { fakeVm } from '../support/fake-vm.js';
 import { engineDir, engineNames } from '../support/engine-walk.js';
@@ -259,15 +260,16 @@ test('ASS-404 AC3: a variation whose VM is held for memory holds no seat while i
   assert.deepEqual(variations.map(v => [v['harness-status'].state, v['state-changes'].length]), [['build', 0], ['build', 0]]);
 });
 
-test('ASS-404 AC3: while the hold is on, a seat a held variation freed goes to a variation whose VM is up, not to one whose VM would be held too; a held variation that moves off its step is dropped from the hold', async () => {
+test('ASS-404 AC3, ASS-420 AC4: while the hold is on, a seat a held variation freed goes to a variation whose VM is up, not to one whose VM does not fit (ASS-420\'s check, replacing ASS-404\'s VM-up rule); a held variation that moves off its step is dropped from the hold', async () => {
   const h = holding({ A: [BUILDING, 'Stopped'], C: [PLANNING, 'Running'], D: [PLANNING, 'Stopped'] }, { harness: { 'max-tickets-in-progress': 1 } });
   h.set({ free: 2 });
   await h.pass();
   assert.deepEqual(h.record().held.map(x => x.variation), ['A', 'D']);
   const state = h.f.ctx.load(), project = state.projects[0], [, c, d] = project.tickets[0].variations;
   h.f.ctx.memory.vmsUp = new Set(['abc-3-c']);
+  await seatMemory(h.f.ctx, state);   // ASS-420: the Mac's memory and the need, read for the tick's moves
   assert.equal(mayMove(h.f.ctx, 'steps', state, project, d, 'ABC-3 D plan', 'build'), false);
-  assert.ok(h.f.lines.includes('steps ABC-3 D plan: waits for an in-progress slot to move to build (the one free is a seat a VM held for memory left: its VM would be held too)'), h.f.lines.join('\n'));
+  assert.ok(h.f.lines.includes('steps ABC-3 D plan: waits for memory for its VM to move to build (need 4.0 GB, 2.0 GB free)'), h.f.lines.join('\n'));
   assert.equal(mayMove(h.f.ctx, 'steps', state, project, c, 'ABC-3 C plan', 'build'), true, 'C\'s VM is up: it takes the seat');
   // D moved on (by hand, to committed): dropped from the hold, its record rewritten.
   const sprint = h.file('projects', 'p', 'sprints', 'sprint-10', 'sprint.json'), json = JSON.parse(readFileSync(sprint, 'utf8'));

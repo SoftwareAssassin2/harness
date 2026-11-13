@@ -7,7 +7,9 @@
 //                                memory, memory.js (ASS-62), backed up
 //                                daily, memory-backup.js (ASS-148), its
 //                                Claude spend read, memory-spend.js (ASS-269)
-//   3. VMs by state              vm-lifecycle.js
+//   3. seats and memory          seat-memory.js: a seat only when its
+//                                VM fits in the Mac's memory (ASS-420)
+//      VMs by state              vm-lifecycle.js
 //   4. fast-tracked tickets      fast-track.js: pre-empting running work
 //                                for the seats they waited for (ASS-83)
 //      non-agent steps           steps.js
@@ -52,6 +54,7 @@ import { superviseMemory } from './memory.js';
 import { backupMemory } from './memory-backup.js';
 import { recordMemorySpend } from './memory-spend.js';
 import { superviseVms } from './vm-lifecycle.js';
+import { seatMemory } from './seat-memory.js';
 import { dispatch } from './dispatch.js';
 import { fastTrack } from './fast-track.js';
 import { checkUsage } from './usage.js';
@@ -171,9 +174,9 @@ const login = (command, args) => () => new Promise(done => execFile(command, arg
 
 // The phases that start agents, skipped while a restart drains.
 const NEW_WORK = new Set([fastTrack, refineBacklog, dispatch]);
-const PHASES = [finishEnded, superviseRegistries, superviseMemory, backupMemory, recordMemorySpend, superviseVms, fastTrack, runSteps, detectGaps, fireTimers, detectReverts, checkGcloud, checkGlab, checkUsage, checkApiCost, checkPushAccount, sampleHealth, raiseDependencies, refineBacklog, superviseAgents, dispatch];
+const PHASES = [finishEnded, superviseRegistries, superviseMemory, backupMemory, recordMemorySpend, seatMemory, superviseVms, fastTrack, runSteps, detectGaps, fireTimers, detectReverts, checkGcloud, checkGlab, checkUsage, checkApiCost, checkPushAccount, sampleHealth, raiseDependencies, refineBacklog, superviseAgents, dispatch];
 
-// tick(ctx) — the twenty-one phases, in order, each reading the data afresh; a
+// tick(ctx) — the twenty-two phases, in order, each reading the data afresh; a
 // phase that throws is logged under "error" and the next still runs. The
 // rate limits — recorded by the finish phase, so checked after it — are
 // logged and cleared (checkRateLimits), the tick going on. Then the disk

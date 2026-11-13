@@ -8,6 +8,8 @@ import { join } from 'node:path';
 import { cleared, ticketKey, runKey } from './backoff.js';
 import { changePath, stepOf, isHeld } from './engine.js';
 import { mayEnter, slotKind, topRun } from './plan.js';
+import { memoryShortForSeat } from './seat-memory.js';   // ASS-420
+import { gib } from './host-memory.js';
 
 // firstStepId(engine) — the id of the step with the lowest sequence, where a run starts.
 export const firstStepId = engine => (engine?.steps ?? []).toSorted((a, b) => a.sequence - b.sequence)[0]?.id;
@@ -220,17 +222,26 @@ export async function moveTicket(ctx, phase, project, ticket, variation, to, why
 // mayEnter, ASS-126); when not, said once per visit. Every move control makes
 // on its own asks first (steps.js, dispatch.js's pass-over) — all but an
 // agent's finished turn (finish.js), whose work is done and would only be
-// redone at the step it left. While its project's memory hold is on (ASS-404,
-// host-memory.js) a variation whose VM is not up takes no seat a held
-// variation freed (mayEnter's memorySeats): its own VM would be held too.
+// redone at the step it left. ASS-420: a move that takes a seat its
+// variation does not hold, into steps that need a VM not running, is made only
+// when the VM fits in the Mac's memory (seat-memory.js memoryShortForSeat);
+// else it waits, said once per visit — replacing ASS-404's rule that, while
+// the memory hold was on, only a variation whose VM was up took a freed seat.
 export function mayMove(ctx, phase, state, project, variation, who, to) {
-  const memorySeats = Boolean(project.memoryHold) && !(variation.vm?.name && ctx.memory.vmsUp?.has(variation.vm.name));
-  if (mayEnter(state, project, variation, to, { memorySeats })) return true;
-  const key = `slot/${project.id}/${who}/${(variation['state-changes'] ?? []).length}/${to}`;
+  const visit = `${project.id}/${who}/${(variation['state-changes'] ?? []).length}/${to}`;
+  if (mayEnter(state, project, variation, to)) {
+    const short = memoryShortForSeat(ctx, state, project, variation, to);   // ASS-420
+    if (!short) return true;
+    if (!ctx.memory.warned.has(`seat-memory/${visit}`)) {
+      ctx.memory.warned.add(`seat-memory/${visit}`);
+      ctx.log(phase, `${who}: waits for memory for its VM to move to ${to} (need ${gib(short.need.bytes)} GB, ${gib(Math.max(0, short.free))} GB free)`);
+    }
+    return false;
+  }
+  const key = `slot/${visit}`;
   if (!ctx.memory.warned.has(key)) {
     ctx.memory.warned.add(key);
-    const memory = memorySeats && mayEnter(state, project, variation, to) ? ' (the one free is a seat a VM held for memory left: its VM would be held too)' : '';   // ASS-404
-    ctx.log(phase, `${who}: waits for ${slotKind(stepOf(project.engine, to)) === 'planning' ? 'a planning' : 'an in-progress'} slot to move to ${to}${memory}`);
+    ctx.log(phase, `${who}: waits for ${slotKind(stepOf(project.engine, to)) === 'planning' ? 'a planning' : 'an in-progress'} slot to move to ${to}`);
   }
   return false;
 }

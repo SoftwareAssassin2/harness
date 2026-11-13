@@ -323,14 +323,16 @@ export function seatHolders(state) {
 // (ASS-355): json's wait-for-dependencies, backlog and outside — the same
 // loaded data holdingOf gives dependencyHold, so a held row has no 💺 — and
 // memoryHold (ASS-404: control's memory-hold.json, whose held variations
-// hold no seat while their VMs wait for memory).
+// hold no seat while their VMs wait for memory) and memoryWait (ASS-420:
+// control's memory-wait.json, the variations refused a seat for want of
+// memory for their VMs: no 💺; their Health says so, control's ai-feedback).
 function planProject(state, p) {
   const seen = enginesOf(state.workflows.filter(w => w.project == null || w.project === p.id).toReversed());   // its own listed first: last wins
   const engines = switchOff(seen, (p.switchedOffSteps ?? []).filter(e => !switchedOffStepErrors(e, seen).length));
   const tickets = flattenSprint(p.sprint ?? {});
   const asking = new Set(tickets.filter(t => t['ticket-system-status'] !== 'Done' && (p.questions ?? []).some(q => q.source === t.key && blocksTicket(q))).map(t => t.key));
   const json = { ...p.limits?.project, ...(p.waitForDependencies === true ? { 'wait-for-dependencies': true } : {}) };
-  return { id: p.id, json, engines, engine: engines[p.stateEngine], tickets, backlog: p.backlog ?? [], outside: p.outside ?? [], asking, memoryHold: p.memoryHold ?? null };
+  return { id: p.id, json, engines, engine: engines[p.stateEngine], tickets, backlog: p.backlog ?? [], outside: p.outside ?? [], asking, memoryHold: p.memoryHold ?? null, memoryWait: p.memoryWait ?? null };
 }
 
 // Which of two sprint tickets is closer to done: the higher step sequence at
