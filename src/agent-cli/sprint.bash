@@ -81,6 +81,9 @@
 # statusOf in bash): one "<engine>\t<state>" line per level of its
 # harness-status, top first, each sub-status beneath; nothing without a
 # state. Fails, naming <command>, when the ticket or variation is missing.
+# <engine> is empty when that level names none, so cut the field off the line
+# (`${line%%$'\t'*}`) rather than reading it with IFS=$'\t', which strips the
+# leading tab and puts the state in the engine (ASS-449).
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/json-file.bash"
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/engine.bash"
 projects="${PROJECTS_DIR:-$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../../data/projects}"

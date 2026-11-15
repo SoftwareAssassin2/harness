@@ -5,15 +5,15 @@ set -euo pipefail
 # Moves the variation to <to-state> in the project's active sprint, as
 # sprint.bash's move_to does, then the ticket system follows the new step's
 # paired-ticket-system-status (sync_paired_status). Given a start step (not
-# -), <to-state> must be a state-engine step of the project's engine and the
-# step one of its sub-engine's steps: the same update enters the sub-engine
-# there, as ticket:change-sub-state <sub-engine> - <start> would — sub-status
-# { state: <start>, state-engine: <sub-engine> }, a sub-state change appended
-# after the move — so control starts the run there (steps.js); given an
-# <output-json> object too, the sub-status keeps it as `output`, the run's
-# structured-output to start from (ASS-124; its one caller, the ticket
-# health check's ticket:repair-environment, was removed with that check,
-# ASS-450). Fails, writing nothing, unless the variation is
+# -), <to-state> must be a state-engine step of the variation's own engine
+# (below) and the step one of its sub-engine's steps: the same update enters
+# the sub-engine there, as ticket:change-sub-state <sub-engine> - <start>
+# would — sub-status { state: <start>, state-engine: <sub-engine> }, a
+# sub-state change appended after the move — so control starts the run there
+# (steps.js); given an <output-json> object too, the sub-status keeps it as
+# `output`, the run's structured-output to start from (ASS-124; its one
+# caller, the ticket health check's ticket:repair-environment, was removed
+# with that check, ASS-450). Fails, writing nothing, unless the variation is
 # at <from-state>, or on such a start step, or on an output that is not an
 # object or comes without a start step.
 #
