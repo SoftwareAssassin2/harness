@@ -18,9 +18,15 @@ set -euo pipefail
 #
 # The setup's version (AC2): the sha256 of on-workstation/setup.sh,
 # in-vm/agent.sh, the project's golden-image/workstation-tools.sh (when it
-# has one), the forwarder's URL on the workstation and project.json's
-# golden-image tools, one per line — the script and the tools list, with
-# what the script installs. It is recorded on the workstation, in
+# has one), the forwarder's URL on the workstation, project.json's
+# golden-image tools and (ASS-462) each golden-image file shipped beside
+# workstation-tools.sh, its name and sha256, one per line — the script and
+# the tools list, with what the script installs.
+# Shipped beside it (ASS-462), so it can source a file it shares with
+# provision.sh: when the project has a workstation-tools.sh, the golden-image
+# folder's other top-level regular files, not dotfiles nor the Lima- or
+# test-only ones (provision.sh template.yaml warm.sh images.txt tests.json
+# run-test.sh ci-checks.json); a name that is not a plain file name fails. It is recorded on the workstation, in
 # ~/harness/setup.json (with the boot id it ran under), and in the
 # workstation's live data, workstations.json's `setup`:
 #   { ok, version, checked-at (each run), set-up-at (the last that changed
@@ -56,8 +62,18 @@ folder="$(jq -r '.["golden-image"].folder // empty' "$json")"
 [[ -z "$folder" || "$folder" == /* ]] || folder="$ws_projects/../$folder"
 installer=""
 [[ -z "$folder" || ! -f "$folder/workstation-tools.sh" ]] || installer="$folder/workstation-tools.sh"
+shared=()
+if [[ -n "$installer" ]]; then
+  while IFS= read -r f; do
+    n="${f##*/}"
+    case "$n" in workstation-tools.sh|provision.sh|template.yaml|warm.sh|images.txt|tests.json|run-test.sh|ci-checks.json) continue ;; esac
+    [[ "$n" =~ ^[A-Za-z0-9][A-Za-z0-9._+-]*$ ]] || { echo "$command: $project's golden-image folder has '$n', not a plain file name to ship to the workstation" >&2; exit 1; }
+    shared+=("$n")
+  done < <(find "$folder" -mindepth 1 -maxdepth 1 -type f ! -name '.*' | LC_ALL=C sort)
+fi
 
-version="$( { shasum -a 256 "$script" "$agent_sh" ${installer:+"$installer"} | cut -d' ' -f1; echo "url $url"; printf 'tool %s\n' "${tools[@]+"${tools[@]}"}"; } | shasum -a 256 | cut -d' ' -f1)"
+version="$( { shasum -a 256 "$script" "$agent_sh" ${installer:+"$installer"} | cut -d' ' -f1; echo "url $url"; printf 'tool %s\n' "${tools[@]+"${tools[@]}"}"
+  for n in "${shared[@]+"${shared[@]}"}"; do printf 'file %s %s\n' "$n" "$(shasum -a 256 < "$folder/$n" | cut -d' ' -f1)"; done; } | shasum -a 256 | cut -d' ' -f1)"
 if [[ $# -eq 3 ]]; then echo "$version"; exit 0; fi
 
 workstation_lock "$command" "$project" "$id"
@@ -68,7 +84,7 @@ err="$(mktemp "${TMPDIR:-/tmp}/workstation-setup.XXXXXX")"
 trap 'rm -f "$err"' EXIT
 rc=0
 # Without the lock's descriptor: a setup left hanging past its time is ended (ws_timeout), and holds no lock meanwhile.
-out="$( { b64 "$agent_sh"; b64 "$installer"; } | ws_timeout "${WORKSTATION_SETUP_TIMEOUT:-900}" bash -c "source '$here/../workstation.bash' && workstation_ssh \"\$@\"" _ \
+out="$( { b64 "$agent_sh"; b64 "$installer"; for n in "${shared[@]+"${shared[@]}"}"; do printf '%s ' "$n"; b64 "$folder/$n"; done; } | ws_timeout "${WORKSTATION_SETUP_TIMEOUT:-900}" bash -c "source '$here/../workstation.bash' && workstation_ssh \"\$@\"" _ \
   "$project" "$id" bash -c "$(cat "$script")" workstation-setup "$version" "$url" "${tools[@]+"${tools[@]}"}" 2>"$err" 8>&- 9>&-)" || rc=$?
 cat "$err" >&2
 result="$(tail -n 1 <<< "$out")"

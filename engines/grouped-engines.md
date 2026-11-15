@@ -1410,6 +1410,9 @@ installed (a rerun with nothing missing writes nothing):
   shell files, git identity, SSH keys and `~/workspaces` are never touched.
 - `~/harness/setup.json` — `{ version, boot-id, runtime }` of the last setup
   that completed.
+- `~/harness/golden-image` — the project's `workstation-tools.sh` and the
+  golden-image files shipped beside it (ASS-462), written afresh each time it
+  runs.
 - The runtime folder, `/dev/shm/harness-<uid>` (`/tmp/…` without a writable
   `/dev/shm`), 0700, the workstation's `/run/harness`: `agent-url`
   (`http://127.0.0.1:<forwarder-port>/run`, the connection's reverse
@@ -1425,8 +1428,17 @@ handed to the project's optional `golden-image/workstation-tools.sh` (run in
 arguments, to install them under `$HOME`; not an input of the golden image),
 then checked again. Anything missing or unusable fails setup, each named.
 
+So `workstation-tools.sh` can source a file it shares with `provision.sh`
+(ASS-462) — `. "$(dirname "$0")/<file>"`, no copy — the golden-image folder's
+other top-level regular files are shipped beside it to
+`~/harness/golden-image`: not dotfiles, subfolders, nor the Lima- or test-only
+`provision.sh`, `template.yaml`, `warm.sh`, `images.txt`, `tests.json`,
+`run-test.sh`, `ci-checks.json`. A name that is not a plain file name fails
+setup before anything is sent. Without a `workstation-tools.sh` nothing is shipped.
+
 The setup's version is the sha256 of the two scripts, `agent.sh`,
-`workstation-tools.sh`, the forwarder URL and the tools list
+`workstation-tools.sh`, the forwarder URL, the tools list and each shipped
+file's name and sha256
 (`workstation:setup <project> <id> --version` prints it without a
 connection). It is recorded on the workstation (`setup.json`) and in the live
 data, `workstations.json`'s `setup`: `{ ok, version, checked-at, set-up-at,
