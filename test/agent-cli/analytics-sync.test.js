@@ -66,6 +66,20 @@ test('ASS-406 AC2: a ticket read again replaces its entry, one not read stays, a
   assert.deepEqual(file.tickets['PROJ-1']['assignee-changes'].map(c => c.to.name), ['ada', 'bob']);
 });
 
+test('ASS-440 AC1: includes-subtasks is kept once a read with it is written, whether later reads (or an off-board one) give it or not; a non-boolean is refused', async () => {
+  const f = fixture();
+  await f.sync('sync-tickets', { 'fetched-through': '2026-11-12T12:00:00.000Z', tickets: [ticket('PROJ-1', 'To Do')] });
+  assert.equal('includes-subtasks' in f.read('tickets.json'), false);
+  const sub = ticket('PROJ-2', 'Closed', { type: 'Sub-task', 'status-category': 'done', subtask: true, parent: 'PROJ-1' });
+  await f.sync('sync-tickets', { 'fetched-through': '2026-11-12T12:05:00.000Z', 'includes-subtasks': true, tickets: [sub] });
+  assert.deepEqual(Object.keys(f.read('tickets.json')), ['fetched-through', 'includes-subtasks', 'tickets']);
+  assert.deepEqual(f.read('tickets.json').tickets['PROJ-2'], sub);
+  await f.sync('sync-tickets', { 'fetched-through': '2026-11-12T12:10:00.000Z', tickets: [] });
+  assert.equal(f.read('tickets.json')['includes-subtasks'], true);
+  await assert.rejects(f.sync('sync-tickets', { 'fetched-through': '2026-11-12T12:15:00.000Z', 'includes-subtasks': 'yes', tickets: [] }), /is not \{ fetched-through, includes-subtasks\?/);
+  assert.equal(f.read('tickets.json')['fetched-through'], '2026-11-12T12:10:00.000Z');
+});
+
 test('ASS-406 AC3: analytics:sync-sprints keeps analytics/sprints.json by id, in start order with the undated last', async () => {
   const f = fixture();
   const s = (id, state, start, end) => ({ id, name: `S${id}`, state, start, end });

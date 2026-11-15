@@ -1,13 +1,12 @@
 // A project's background work switched off (ASS-127, project.json
 // background-work false): control starts none of its check-health,
-// check-variation-appeal or check-ticket-health runs — a ticket health check
-// held by the project it would run on, the harness project — and holds those
-// already going; a sprint ticket's gap resolution and its Blocked step go on.
+// check-memory, check-variation-appeal or self-healing runs and holds those
+// already going (ASS-450: the ticket health check, once among them, is removed); a sprint ticket's gap resolution and its Blocked step go on.
 // Read every tick: switched on, the work resumes.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { join } from 'node:path';
-import { writeFileSync, readFileSync, mkdirSync } from 'node:fs';
+import { writeFileSync, readFileSync } from 'node:fs';
 import { controlFixture } from './control-fixture.js';
 import { tick } from '../../src/control/tick.js';
 
@@ -17,13 +16,11 @@ const step = { id: 'x', sequence: 1, action: { type: 'state-engine', engine: 'in
 
 // The fixture with every background trigger due on p's engine — check-health
 // every 300 s, check-variation-appeal every 600 s (ABC-3 has a second
-// variation), check-ticket-health every 2nd state change, p the harness
-// project — and a clock the test moves.
+// variation), p the harness project — and a clock the test moves.
 function background() {
   const f = controlFixture();
   edit(engineFile(f), e => {
-    Object.assign(e, { 'check-health-interval-seconds': 300, 'check-variation-appeal-interval-seconds': 600, 'check-ticket-health-sample-every': 2 });
-    e['check-ticket-health-steps'] = [{ ...step, id: 'check-ticket-health' }];
+    Object.assign(e, { 'check-health-interval-seconds': 300, 'check-variation-appeal-interval-seconds': 600 });
     e['check-variation-appeal-steps'] = [{ ...step, id: 'check-variation-appeal' }];
   });
   edit(join(f.dir, 'harness.json'), h => { h['harness-project'] = 'p'; h['max-tickets-in-planning'] = 2; });   // A and B both in planning (ASS-126: a planning step takes a slot)
@@ -34,11 +31,11 @@ function background() {
   return { ...f, triggers, later: seconds => { clock += seconds * 1000; } };
 }
 
-test('tick: with p\'s background work off, no check-health, check-variation-appeal or check-ticket-health run starts while its tickets move; switched on, they start again', async () => {
+test('tick: with p\'s background work off, no check-health or check-variation-appeal run starts while its tickets move; switched on, they start again', async () => {
   const f = background();
   try {
     await f.agent('project:set-background-work', 'p', 'off');
-    await tick(f.ctx);                                                                           // A moves twice: a sample, dropped
+    await tick(f.ctx);                                                                           // A moves twice
     assert.equal(f.variation()['harness-status'].state, 'plan');
     f.later(600);
     await tick(f.ctx);
@@ -51,37 +48,6 @@ test('tick: with p\'s background work off, no check-health, check-variation-appe
     assert.deepEqual(f.triggers().toSorted(), ['check-health', 'check-variation-appeal']);
   } finally {
     f.ctx.stopAgents();
-  }
-});
-
-// The fixture with h as the harness project, on its own engine, the only one
-// that checks ticket health, sampling every 2nd state change of any project.
-function harnessProject() {
-  const f = controlFixture();
-  const engine = JSON.parse(readFileSync(engineFile(f), 'utf8'));
-  for (const key of ['check-health-interval-seconds', 'check-variation-appeal-interval-seconds', 'check-ticket-health-sample-every', 'check-health-steps']) delete engine[key];
-  writeFileSync(engineFile(f), JSON.stringify(engine));
-  mkdirSync(join(f.dir, 'engines', 'harness-e'));
-  writeFileSync(join(f.dir, 'engines', 'harness-e', 'state-engine.json'), JSON.stringify({ ...engine, 'check-ticket-health-sample-every': 2, 'check-ticket-health-steps': [{ ...step, id: 'check-ticket-health' }] }));
-  mkdirSync(join(f.dir, 'projects', 'h', 'sprints', 'sprint-1'), { recursive: true });
-  writeFileSync(join(f.dir, 'projects', 'h', 'project.json'), JSON.stringify({ name: 'H', 'execution-state-engine': 'harness-e', 'work-sources': [], 'local-environments': [{ name: 'local-pc', type: 'local-pc', folder: join(f.dir, 'workspace'), 'active-branch': null }] }, null, 4));
-  writeFileSync(join(f.dir, 'projects', 'h', 'sprints.json'), JSON.stringify({ list: [{ number: 1, 'is-active': true }] }));
-  writeFileSync(join(f.dir, 'projects', 'h', 'sprints', 'sprint-1', 'sprint.json'), JSON.stringify({ number: 1, features: [], bugs: [], spikes: [] }));
-  edit(join(f.dir, 'harness.json'), h => { h['harness-project'] = 'h'; });
-  return { ...f, healthRuns: () => f.assignments()['transient-state-engines'].filter(r => r.parent.trigger === 'check-ticket-health').map(r => [r.project, r.parent['ticket-project']]) };
-}
-
-test('tick: a ticket health check sampled from p\'s moves is held by the project it would run on — none with the harness project\'s background work off, one with only p\'s off', async () => {
-  for (const [off, runs] of [['h', []], ['p', [['h', 'p']]]]) {
-    const f = harnessProject();
-    try {
-      await f.agent('project:set-background-work', off, 'off');
-      await tick(f.ctx);                                                                         // p's ABC-3 moves twice: sampled
-      assert.notEqual(f.variation()['harness-status'].state, 'backlog');
-      assert.deepEqual(f.healthRuns(), runs, `${off} off`);
-    } finally {
-      f.ctx.stopAgents();
-    }
   }
 });
 

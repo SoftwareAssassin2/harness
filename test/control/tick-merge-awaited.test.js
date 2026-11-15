@@ -13,10 +13,14 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { join } from 'node:path';
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import { controlFixture } from './control-fixture.js';
 import { tick } from '../../src/control/tick.js';
 import { hs } from '../agent-cli/harness-fixture.js';
 import { engineDir } from '../support/engine-walk.js';
+import { fakeForge } from '../support/fake-forge.js';
+
+const AGENT = join(import.meta.dirname, '..', '..', 'agent.sh');
 
 const edit = (file, change) => { const json = JSON.parse(readFileSync(file, 'utf8')); change(json); writeFileSync(file, JSON.stringify(json)); };
 const sprint = f => join(f.dir, 'projects', 'p', 'sprints', 'sprint-10', 'sprint.json');
@@ -162,4 +166,73 @@ test('ASS-365 AC6: without merges-awaited in the status chain, Await Sequential 
   assert.ok(calls.every(c => c.env === undefined), JSON.stringify(calls));
   assert.equal(runOf(f, 'build').state, 'await-dependencies');
   assert.equal(runOf(f, 'grouped-merge'), undefined);
+});
+
+// ASS-424 AC5/AC6: a merge request a build step planned mid-build (ticket:add-merge-request, its row planned-by)
+// goes through the merge loop before the ticket leaves Build, as one from Write Execution Plan. Await Sequential
+// Merge runs for real here (agent.sh over the fixture's ticket, the forge a fake): MR 3 in lib, planned for MR 2 in
+// app (needed-by), is first Not Created — back to Generate Solution; created there (merge-request:create, which the
+// test stands in for) it is what MR 2 waits on — the merge loop over --only 3; merged, Build goes on.
+test('ASS-424 AC5/AC6: a merge request planned mid-build sends Build back to Generate Solution while unbuilt, then goes through the merge loop (--only its id) before the ticket leaves Build', async () => {
+  const LIB = 'https://gitlab.com/g/lib', APP = 'https://gitlab.com/g/app';
+  const forge = fakeForge();
+  for (const repo of ['app', 'lib']) forge.route('glab', new RegExp(`^api projects/g%2F${repo} --hostname gitlab.com$`), { out: { default_branch: 'master' } });
+  const view = (repo, iid, v) => forge.route('glab', new RegExp(`^api projects/g%2F${repo}/merge_requests/${iid} --hostname gitlab.com$`),
+    { out: { iid, state: 'opened', draft: false, title: 'ABC-3', target_branch: 'master', has_conflicts: false, detailed_merge_status: 'mergeable', blocking_discussions_resolved: true, merge_when_pipeline_succeeds: false, head_pipeline: { status: 'success' }, web_url: `https://gitlab.com/g/${repo}/-/merge_requests/${iid}`, ...v } });
+  view('lib', 1, { state: 'merged' });
+  view('app', 9, {});
+  const loop = [];
+  const f = fixture(true, [
+    [/merge-request:reviewed-at-head/, { exitCode: 0, stdout: { reviewed: [{ id: 3 }], unreviewed: [] } }],
+    [/merge-request:check .* --only/, () => { loop.push('check'); view('lib', 12, { state: 'merged' }); return { exitCode: 0, stdout: { 'needs-attention': false, reasons: [], 'auto-merge': true, merged: true } }; }],
+  ]);
+  const dir = join(f.dir, 'projects');
+  edit(join(dir, 'p', 'project.json'), p => { p.repositories = [{ url: APP }, { url: LIB }]; });
+  edit(sprint(f), s => {
+    s.features[0].variations[0]['merge-request'] = [
+      { id: 1, repository: LIB, branch: 'change/ABC-3-1', contents: 'lib', 'depends-on': [], status: 'Merged', key: '!1', url: `${LIB}/-/merge_requests/1`, 'build-status': 'Merged', base: 'master' },
+      { id: 2, repository: APP, branch: 'change/ABC-3-2', contents: 'app', 'depends-on': [1], status: 'Open', key: '!9', url: `${APP}/-/merge_requests/9`, 'build-status': 'Pending', base: 'master' }];
+  });
+  const env = { ...process.env, PROJECTS_DIR: dir, PATH: forge.path };
+  const added = spawnSync(AGENT, ['ticket:add-merge-request', 'p', 'ABC-3', 'A', '-'], { env, encoding: 'utf8',
+    input: JSON.stringify({ repository: LIB, contents: 'the event_id fix', step: 'Code Review finding, Generate Solution', why: 'code-review-A finding 1', 'needed-by': [2] }) });
+  assert.equal(added.status, 0, added.stderr);
+  // Await Sequential Merge, the real command over the fixture's ticket; the rest as the fixture fakes them.
+  const faked = f.ctx.script;
+  f.ctx.script = async (argv, vm, given) => {
+    const at = argv.indexOf('merge-request:await-dependencies');
+    if (at < 0) return faked(argv, vm, given);
+    f.calls.push({ line: argv.join(' '), env: given });
+    const out = spawnSync(AGENT, argv.slice(at), { env: { ...env, ...(given ?? {}) }, encoding: 'utf8' });
+    return { exitCode: out.status, stdout: out.stdout };
+  };
+  const mr3 = () => f.variation()['merge-request'].find(m => m.id === 3);
+  try {
+    for (let i = 0; i < 400 && f.variation()['harness-status'].state !== 'done'; i++) {
+      // Generate Solution's agent (the fixture's) builds it; its merge-request:create stood in for here.
+      if (runOf(f, 'build')?.state === 'generate-solution' && mr3().status === 'Not Created') {
+        edit(sprint(f), s => Object.assign(s.features[0].variations[0]['merge-request'].find(m => m.id === 3), { status: 'Open', key: '!12', url: `${LIB}/-/merge_requests/12` }));
+        view('lib', 12, { draft: true });
+      }
+      await tick(f.ctx); f.now += 6 * 60e3;
+      if (f.ctx.agents.size) await new Promise(r => setTimeout(r, 50));
+    }
+    const said = `${f.lines.join('\n')}\n${f.calls.map(c => c.line).join('\n')}`;
+    assert.equal(f.variation()['harness-status'].state, 'done', said);
+    const moves = f.lines.join('\n');
+    let from = 0;
+    for (const move of ['await-dependencies → generate-solution', 'generate-solution → await-dependencies', 'await-dependencies → merge-awaited', 'merge-awaited → await-dependencies', 'await-dependencies → refresh-before-testing']) {
+      const at = moves.indexOf(move, from);
+      assert.ok(at >= 0, `${move}, in order\n${said}`);
+      from = at;
+    }
+    const lines = f.calls.map(c => c.line);
+    for (const command of ['merge-request:reviewed-at-head p ABC-3 A --only 3', 'merge-request:check p ABC-3 A --only 3'])
+      assert.ok(lines.some(l => l.endsWith(command)), `${command}\n${said}`);
+    assert.deepEqual(loop, ['check']);
+    assert.deepEqual([mr3().status, mr3()['planned-by'].why], ['Merged', 'code-review-A finding 1']);
+    assert.ok(!f.lines.some(l => /max-visits|→ blocked/.test(l)), said);
+  } finally {
+    f.ctx.stopAgents();
+  }
 });

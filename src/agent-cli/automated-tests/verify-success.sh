@@ -114,7 +114,7 @@ case "$1" in
   back) shift; while [ $# -gt 0 ]; do git -C "$1" checkout -q "$2"; shift 2; done ;;
 esac'
 in_checkout() {
-  if [[ -n "$vm" ]]; then LIMA_HOME="$(lima_home)" limactl shell --workdir "$where" "$vm" -- bash -c "$CHECKOUT" checkout "$@" < /dev/null
+  if [[ -n "$vm" ]]; then machine_run --workdir "$where" "$vm" -- bash -c "$CHECKOUT" checkout "$@" < /dev/null
   else (cd "$where" && bash -c "$CHECKOUT" checkout "$@") < /dev/null; fi
 }
 

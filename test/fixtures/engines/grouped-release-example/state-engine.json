@@ -134,7 +134,8 @@
                 "type": "prompt",
                 "prompt": "check-on-merge-request-grouped",
                 "agent-count": 1,
-                "run-in-dev-container": true
+                "run-in-dev-container": true,
+                "model": "claude-opus-5-5"
             },
             "exit-events": [
                 {

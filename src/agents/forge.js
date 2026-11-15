@@ -36,7 +36,7 @@ export function repoPath(url) {
 }
 
 // commonOwner(urls) → the longest common owner path of the urls' pathnames
-// with each repository's own name (the last segment) dropped: 'caselaw-group'
+// with each repository's own name (the last segment) dropped: 'example-group'
 // for 26 urls under it, 'g/sub' for nested groups, '' when the urls share no
 // prefix, the single url's own owner for one url, '' for [].
 export function commonOwner(urls) {

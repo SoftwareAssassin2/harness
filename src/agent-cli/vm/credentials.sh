@@ -48,12 +48,34 @@ set -euo pipefail
 # (ASS-217), or nothing when it declares neither.
 # LIMA_HOME as lima-home.bash resolves it (ASS-273): the env var, else
 # harness.local.json's lima-home (ASS-281), else harness.json's, else ~/.lima.
+#
+# ASS-435: given a workstation machine (workstation:<project>:<id>:<folder>,
+# as vm:start passes a variation placed on a GCP workstation), the same
+# contents go over the workstation's connection, on stdin, into its setup's
+# runtime folder ($HARNESS_RUNTIME, /dev/shm/harness-<uid>: 0700, the user's
+# own, gone at a restart) rather than /run/harness: env with every path in it
+# made the runtime folder's (GIT_CONFIG_GLOBAL=<runtime>/gitconfig, …),
+# gitconfig and npmrc. No sudo, no tmpfs check (the folder is setup's) and no
+# /etc/profile.d: the harness's sessions there source ~/harness/env, which
+# sources the runtime folder's env. agent-token and agent-url are left as
+# they are. Where the project declares no git identity, the gitconfig
+# includes the workstation owner's ~/.gitconfig, so commits carry the owner's
+# identity (accepted for the test workstation, 2026-11-14). The stamps are
+# recorded on the workstation's live data entry's holder
+# (workstations.json), not vms.json.
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../vm-credentials.bash"
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../vm.bash"   # $projects, update_json; LIMA_HOME as lima-home.bash resolves it
 
 [[ $# -eq 2 ]] || { echo "usage: vm:credentials <project> <vm>" >&2; exit 1; }
 [[ "$1" =~ ^[A-Za-z0-9_-]+$ ]] || { echo "vm:credentials: invalid project '$1'" >&2; exit 1; }
-[[ "$2" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "vm:credentials: invalid VM '$2'" >&2; exit 1; }
+target=vm
+if [[ "$2" == workstation:* ]]; then
+  wsm_parts "${2#workstation:}" || exit 1
+  [[ "$wsm_project" == "$1" ]] || { echo "vm:credentials: $2 is not one of $1's workstations" >&2; exit 1; }
+  target=workstation
+else
+  [[ "$2" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "vm:credentials: invalid VM '$2'" >&2; exit 1; }
+fi
 project="$1" vm="$2"
 
 decl="$(declared_credentials vm:credentials "$project" | jq -c 'del(.atlassian)')"
@@ -70,6 +92,7 @@ q() { printf ' %q' "$@"; }
 helper() { echo "!f() { test \"\$1\" = get && echo username=$1 && echo \"password=\$$2\"; }; f"; }
 
 injection_script() {
+  if [[ "$target" == workstation ]]; then workstation_injection; return; fi
   cat <<'EOF'
 set -euo pipefail
 umask 077
@@ -88,12 +111,37 @@ fi
 EOF
   local env=(GH_CONFIG_DIR=/run/harness/gh GLAB_CONFIG_DIR=/run/harness/glab
              NPM_CONFIG_USERCONFIG=/run/harness/npmrc GIT_CONFIG_GLOBAL=/run/harness/gitconfig)
-  [[ -v TOKENS[claude] ]] && env+=("CLAUDE_CODE_OAUTH_TOKEN=${TOKENS[claude]}")
-  [[ -v TOKENS[anthropic] ]] && env+=("ANTHROPIC_API_KEY=${TOKENS[anthropic]}")
-  [[ -v TOKENS[github] ]] && env+=("GH_TOKEN=${TOKENS[github]}")
-  [[ -v TOKENS[gitlab] ]] && env+=("GITLAB_TOKEN=${TOKENS[gitlab]}" "GITLAB_HOST=$gitlab_host")
-  echo "printf '%s\n'$(q "${env[@]}") > \"\$h/env\""
+  echo "printf '%s\n'$(q "${env[@]}" "${secrets[@]+"${secrets[@]}"}") > \"\$h/env\""
+  credential_files
+  cat <<'EOF'
+printf '%s\n' '# Written by the harness (vm:credentials): this boot'\''s credentials, held on tmpfs.' \
+  'if [ -r /run/harness/env ]; then set -a; . /run/harness/env; set +a; fi' | sudo tee "$R/etc/profile.d/harness-credentials.sh" >/dev/null
+sudo chmod 0644 "$R/etc/profile.d/harness-credentials.sh"
+EOF
+}
 
+# workstation_injection — the script for a workstation's runtime folder (ASS-435, above): the env's paths are $h's,
+# expanded there; the gitconfig, npmrc and secrets as a VM's.
+workstation_injection() {
+  cat <<'EOF'
+set -euo pipefail
+umask 077
+[ -r "$HOME/harness/env" ] && . "$HOME/harness/env"
+h="${HARNESS_RUNTIME-}"
+if [ -z "$h" ] || [ -L "$h" ] || [ ! -d "$h" ] || [ ! -O "$h" ]; then
+  echo "vm:credentials: the workstation's runtime folder (${h:-none}) is missing or not its user's own: workstation:setup makes it; no credential written" >&2; exit 1
+fi
+rm -rf "$h/gh" "$h/glab" "$h/env" "$h/gitconfig" "$h/npmrc"
+printf '%s\n' "GH_CONFIG_DIR=$h/gh" "GLAB_CONFIG_DIR=$h/glab" "NPM_CONFIG_USERCONFIG=$h/npmrc" "GIT_CONFIG_GLOBAL=$h/gitconfig" > "$h/env"
+EOF
+  [[ ${#secrets[@]} -eq 0 ]] || echo "printf '%s\n'$(q "${secrets[@]}") >> \"\$h/env\""
+  # shellcheck disable=SC2016
+  [[ -n "$(field git user-name)" ]] || echo 'if [ -f "$HOME/.gitconfig" ]; then git config --file "$h/gitconfig" include.path "$HOME/.gitconfig"; fi'
+  credential_files
+}
+
+# credential_files — the gitconfig and npmrc lines of either script, into "$h".
+credential_files() {
   local gc='git config --file "$h/gitconfig"'
   if [[ -n "$(field git user-name)" ]]; then
     echo "$gc user.name$(q "$(field git user-name)")"
@@ -114,18 +162,24 @@ EOF
     done < <(jq -r '.gitlab["npm-registries"] // {} | to_entries[] | [.key, (.value | tostring)] | @tsv' <<< "$decl")
     [[ ${#npmrc[@]} -eq 0 ]] || echo "printf '%s\n'$(q "${npmrc[@]}") > \"\$h/npmrc\""
   fi
-  cat <<'EOF'
-printf '%s\n' '# Written by the harness (vm:credentials): this boot'\''s credentials, held on tmpfs.' \
-  'if [ -r /run/harness/env ]; then set -a; . /run/harness/env; set +a; fi' | sudo tee "$R/etc/profile.d/harness-credentials.sh" >/dev/null
-sudo chmod 0644 "$R/etc/profile.d/harness-credentials.sh"
-EOF
 }
 
+# The tokens in the env file, KEY=value, for the kinds declared.
+secrets=()
+[[ -v TOKENS[claude] ]] && secrets+=("CLAUDE_CODE_OAUTH_TOKEN=${TOKENS[claude]}")
+[[ -v TOKENS[anthropic] ]] && secrets+=("ANTHROPIC_API_KEY=${TOKENS[anthropic]}")
+[[ -v TOKENS[github] ]] && secrets+=("GH_TOKEN=${TOKENS[github]}")
+[[ -v TOKENS[gitlab] ]] && secrets+=("GITLAB_TOKEN=${TOKENS[gitlab]}" "GITLAB_HOST=$gitlab_host")
+
 script="$(injection_script)"
-printf '%s\n' "$script" | limactl shell "$vm" -- bash -s \
+printf '%s\n' "$script" | machine_run "$vm" -- bash -s \
   || { echo "vm:credentials: could not inject $project's credentials into VM '$vm'" >&2; exit 1; }
 # Only on a row there already: a VM vms.json does not know gets none, and no file is made; and only stamps
-# read: with none (no item shows an mdat) the row is left as it is.
-[[ ! -f "$projects/$project/vms.json" || "$stamps" == '{}' ]] || update_json "$projects/$project/vms.json" --arg n "$vm" --argjson s "$stamps" \
-  'if .[$n] then .[$n]["credential-stamps"] = $s else . end'
+# read: with none (no item shows an mdat) the row is left as it is. A workstation's on its live data's holder.
+if [[ "$target" == workstation ]]; then
+  [[ "$stamps" == '{}' ]] || workstation_record "$project" "$wsm_id" --argjson s "$stamps" 'if .holder then .holder["credential-stamps"] = $s else . end'
+else
+  [[ ! -f "$projects/$project/vms.json" || "$stamps" == '{}' ]] || update_json "$projects/$project/vms.json" --arg n "$vm" --argjson s "$stamps" \
+    'if .[$n] then .[$n]["credential-stamps"] = $s else . end'
+fi
 if [[ -v TOKENS[anthropic] && -v TOKENS[claude] ]]; then echo both; elif [[ -v TOKENS[anthropic] ]]; then echo anthropic; elif [[ -v TOKENS[claude] ]]; then echo claude; fi

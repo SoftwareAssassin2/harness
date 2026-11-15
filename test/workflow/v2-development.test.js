@@ -74,7 +74,7 @@ const FILLED = ['setup', 'plan', 'build', 'test', 'document', 'review', 'release
 const switchedOn = ({ 'is-active': _, ...step }) => step;
 // toHumanReview(step) — grouped-review's step read as it was before ASS-314 took its Human Review
 // out: Risk Assessment going on to Human Review, which is what v2-review's still does. v2-review
-// keeps the gate (harness, software-assassin); grouped-review (case-law) has none, so the engines
+// keeps the gate (harness, software-assassin); grouped-review (a client project) has none, so the engines
 // differ in that one exit alone and the rest of grouped-review stays v2-review's reference.
 const toHumanReview = step => (step?.id !== 'risk-assessment' ? step
   : { ...step, 'exit-events': step['exit-events'].map(e => (e['move-to-state'] === 'token-expense-check' ? { ...e, 'move-to-state': 'human-review' } : e)) });

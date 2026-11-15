@@ -3,13 +3,19 @@
 // phases run in this order, never interleaved, each on the data as it is
 // when it starts:
 //   1. finish ended agents       finish.js
-//   2. image registries          registry.js; and each project's Hindsight
+//   2. image registries          registry.js; each project's golden image
+//                                follow-up, golden-followup.js (ASS-427:
+//                                a queued definition change written and
+//                                rebuilt once its build ends); and each project's Hindsight
 //                                memory, memory.js (ASS-62), backed up
 //                                daily, memory-backup.js (ASS-148), its
 //                                Claude spend read, memory-spend.js (ASS-269)
 //   3. seats and memory          seat-memory.js: a seat only when its
 //                                VM fits in the Mac's memory (ASS-420)
 //      VMs by state              vm-lifecycle.js
+//      workstation connections   workstations.js: each GCP workstation's
+//                                one SSH connection kept up while needed,
+//                                closed once not (ASS-433)
 //   4. fast-tracked tickets      fast-track.js: pre-empting running work
 //                                for the seats they waited for (ASS-83)
 //      non-agent steps           steps.js
@@ -21,10 +27,12 @@
 //                                cost (api-cost.js, ASS-153) and each
 //                                project's push account (push-account.js,
 //                                ASS-307)
-//   7. ticket health sampling    triggers.js; the priority raises a waiting
-//                                ticket's dependencies are given and given
-//                                back, dependencies.js (ASS-195), before
+//   7. dependencies              the priority raises a waiting ticket's
+//                                dependencies are given and given back,
+//                                dependencies.js (ASS-195), before
 //                                refinement reaches a backlog one
+//                                (triggers.js; ASS-450: the ticket health
+//                                sampling that ran here is removed)
 //   8. status nags + shutdowns   supervise.js
 //   9. dispatch                  dispatch.js
 // A rate limit is held per (project, credential kind) (ASS-215): the tick runs
@@ -41,19 +49,22 @@
 // A project missing or failing a credential (credentials.js, ASS-395: checked
 // at the first tick and every few minutes, with the disk) starts none of its
 // agents or VM setups, until a check passes again.
-import { spawnSync, execFile } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
 import { paths, loadState, readDiskSpace } from './state.js';
+import { troubleOf, UNREADABLE_CODES } from './read.js';
 import { runCli, runScript, scriptSucceeds } from './cli.js';
 import { finishEnded, spentSoFar } from './finish.js';
 import { runningSpend } from './spend.js';
 import { runSteps } from './steps.js';
-import { detectGaps, fireTimers, checkGcloud, checkGlab, sampleHealth, refineBacklog } from './triggers.js';
+import { detectGaps, fireTimers, checkGcloud, checkGlab, refineBacklog } from './triggers.js';
 import { superviseAgents } from './supervise.js';
 import { superviseRegistries } from './registry.js';
+import { followGolden } from './golden-followup.js';
 import { superviseMemory } from './memory.js';
 import { backupMemory } from './memory-backup.js';
 import { recordMemorySpend } from './memory-spend.js';
 import { superviseVms } from './vm-lifecycle.js';
+import { superviseWorkstations } from './workstations.js';
 import { seatMemory } from './seat-memory.js';
 import { dispatch } from './dispatch.js';
 import { fastTrack } from './fast-track.js';
@@ -66,6 +77,7 @@ import { checkDisk, diskHeld } from './disk.js';
 import { readHostMemory } from './host-memory.js';
 import { limaHome } from './vm.js';
 import { checkCredentials } from './credentials.js';
+import { login } from './login.js';
 import { sessionUsage } from '../agents/usage.js';
 import { monthCost } from '../agents/api-cost.js';
 import { pushAccount } from '../agents/forge.js';
@@ -95,7 +107,7 @@ export function createContext({ root, env = process.env, command, log = () => {}
     root, env, command, log, now, started: now(), project,
     paths: paths(root, env),
     agents: new Map(), scripts: new Set(),
-    memory: { lastRun: new Map(), ran: new Set(), timers: new Map(), changes: new Map(), health: [], nagged: new Map(), warned: new Set(), holding: new Map(), mounts: new Map(), backoff: new Map() },
+    memory: { lastRun: new Map(), ran: new Set(), timers: new Map(), nagged: new Map(), warned: new Set(), holding: new Map(), mounts: new Map(), backoff: new Map(), staleEngines: new Set() },
   };
   ctx.mounts = container => {
     if (!ctx.memory.mounts.has(container)) {
@@ -109,7 +121,8 @@ export function createContext({ root, env = process.env, command, log = () => {}
   // gcloud() — whether the user's gcloud login is live (ASS-28), by gcloud
   // auth print-access-token; glab() whether glab is authenticated (ASS-61),
   // by glab auth status, which only reads the login and fails however it is
-  // lost (expired, revoked, missing). Neither prompts. See login. Tests replace them.
+  // lost (expired, revoked, missing). Neither prompts. See login.js (ASS-429:
+  // a failure read as expired, offline or unknown). Tests replace them.
   ctx.gcloud = login('gcloud', ['auth', 'print-access-token']);
   ctx.glab = login('glab', ['auth', 'status']);
   // usage(configDir) — a Claude login's 5-hour session and weekly usage (ASS-47, ASS-65, see
@@ -139,10 +152,28 @@ export function createContext({ root, env = process.env, command, log = () => {}
   ctx.cli = (args, env) => runCli(ctx, args, env);
   ctx.script = (argv, vm, env) => runScript(ctx, argv, vm, env);
   ctx.succeeds = (argv, vm) => scriptSucceeds(ctx, argv, vm);
+  // ASS-457/458: a load that fails — an fs error or a file that will not
+  // parse, even read again (read.js readJson) — is the data failing to read:
+  // marked (error.dataTrouble) and kept for the tick (ctx.trouble), which then
+  // stops (see tick). A good load keeps harness.json's
+  // data-unreadable-exit-seconds for while one does not.
   ctx.load = () => {
-    const state = loadState(ctx.paths);
+    let state;
+    try { state = loadState(ctx.paths); } catch (error) {
+      if (error instanceof SyntaxError || UNREADABLE_CODES.has(error?.code)) ctx.trouble ??= (error.dataTrouble = { file: error.file ?? error.path ?? ctx.paths.assignments, reason: error.message });
+      throw error;
+    }
+    ctx.memory.dataLimit = state.harness?.['data-unreadable-exit-seconds'] ?? DATA_UNREADABLE_EXIT_SECONDS;
     // A bad switched-off-steps entry (ASS-209: left on by loadState), logged once.
     for (const p of state.projects) for (const e of p.switchedOffErrors) if (!ctx.memory.warned.has(`switched-off/${p.id}/${e}`)) { ctx.memory.warned.add(`switched-off/${p.id}/${e}`); ctx.log('error', `project ${p.id}: ${e}`); }
+    // A wrong dev-environments (ASS-431: refused by loadState, devEnvironments null), each error logged once.
+    for (const p of state.projects) for (const e of p.devEnvironmentsErrors) if (!ctx.memory.warned.has(`dev-environments/${p.id}/${e}`)) { ctx.memory.warned.add(`dev-environments/${p.id}/${e}`); ctx.log('error', `project ${p.id}: ${e}`); }
+    // An engine declaring keys the harness no longer reads (ASS-450: loadState's obsoleteEngineKeys, ignored), logged once per engine.
+    for (const { file, keys } of state.obsoleteEngineKeys ?? []) if (!ctx.memory.warned.has(`obsolete/${file}`)) { ctx.memory.warned.add(`obsolete/${file}`); ctx.log('engines', `${file}: ${keys.join(', ')} ${keys.length === 1 ? 'is' : 'are'} obsolete and ignored (ASS-450: the ticket health check is removed); remove ${keys.length === 1 ? 'it' : 'them'}`); }
+    // ASS-460: an engine that failed to read, standing at its last good copy (loadState's staleEngines), logged once per failure streak; once it reads again, said so.
+    const stale = new Set((state.staleEngines ?? []).map(({ file }) => file));
+    for (const { file, error } of state.staleEngines ?? []) if (!ctx.memory.staleEngines.has(file)) { ctx.memory.staleEngines.add(file); ctx.log('engines', `${file} could not be read (${error}): its last good copy is used until it reads again`); }
+    for (const file of ctx.memory.staleEngines) if (!stale.has(file)) { ctx.memory.staleEngines.delete(file); ctx.log('engines', `${file} reads again`); }
     const running = runningSpend([...ctx.agents.values()].map(live => ({ record: live.record, usd: spentSoFar(live) })));
     return { ...state, allProjects: state.projects, projects: project ? state.projects.filter(p => p.id === project) : state.projects, running };
   };
@@ -159,56 +190,107 @@ export function createContext({ root, env = process.env, command, log = () => {}
   ctx.stopScripts = () => { for (const child of ctx.scripts) try { process.kill(-child.pid, 'SIGTERM'); } catch { /* gone */ } };
   // attempt(phase, what, fn) — fn() awaited; what it throws is logged under
   // "error" as "<phase> <what>: <message>", so one failing item leaves the
-  // rest of its phase to run.
+  // rest of its phase to run. ASS-457: but the data failing to read
+  // (read.js troubleOf) is thrown on, kept for the tick (ctx.trouble), so the
+  // phase stops there and the tick with it.
   ctx.attempt = async (phase, what, fn) => {
-    try { await fn(); } catch (error) { ctx.log('error', `${phase} ${what}: ${error.message}`); }
+    try { await fn(); } catch (error) {
+      const trouble = troubleOf(ctx, error);
+      if (trouble) { ctx.trouble ??= trouble; throw error; }
+      ctx.log('error', `${phase} ${what}: ${error.message}`);
+    }
   };
   return ctx;
 }
 
-// login(command, args) — a probe of a CLI's login: 'live' when the command
-// exits 0; 'expired' when it exits otherwise; 'unavailable' when it cannot be
-// run or does not answer in 30 seconds.
-const login = (command, args) => () => new Promise(done => execFile(command, args, { timeout: 30_000 }, error =>
-  done(!error ? 'live' : error.code === 'ENOENT' || error.killed ? 'unavailable' : 'expired')));
-
 // The phases that start agents, skipped while a restart drains.
 const NEW_WORK = new Set([fastTrack, refineBacklog, dispatch]);
-const PHASES = [finishEnded, superviseRegistries, superviseMemory, backupMemory, recordMemorySpend, seatMemory, superviseVms, fastTrack, runSteps, detectGaps, fireTimers, detectReverts, checkGcloud, checkGlab, checkUsage, checkApiCost, checkPushAccount, sampleHealth, raiseDependencies, refineBacklog, superviseAgents, dispatch];
+const PHASES = [finishEnded, superviseRegistries, followGolden, superviseMemory, backupMemory, recordMemorySpend, seatMemory, superviseVms, superviseWorkstations, fastTrack, runSteps, detectGaps, fireTimers, detectReverts, checkGcloud, checkGlab, checkUsage, checkApiCost, checkPushAccount, raiseDependencies, refineBacklog, superviseAgents, dispatch];
 
-// tick(ctx) — the twenty-two phases, in order, each reading the data afresh; a
+// tick(ctx) — the twenty-three phases, in order, each reading the data afresh; a
 // phase that throws is logged under "error" and the next still runs. The
 // rate limits — recorded by the finish phase, so checked after it — are
-// logged and cleared (checkRateLimits), the tick going on. Then the disk
+// logged and cleared (checkRateLimits), the tick going on; ASS-460: guarded as
+// every phase is, so a load that throws there (an engine caught half-written)
+// is logged as "hold check: …" and the tick goes on. Then the disk
 // (disk.js checkDisk, ASS-288, at most once a minute): while its hold is on
 // no agent starts — fast track, refinement and dispatch are skipped, as while
 // a restart drains — and the VM and step phases start no VM, clone or golden
 // build (vm-lifecycle.js, steps.js); the rest runs, so running agents' turns
 // are finished.
+//
+// ASS-457, ASS-458: the data failing to read — a load (ctx.load) or a phase's
+// own read meeting an fs error or a file that will not parse even read again,
+// or an agent.sh write failing for the data folder being gone (read.js
+// troubleOf; ctx.trouble) — stops the tick there: no later phase acts on what
+// could not be read, nothing takes the file as empty. The tick is logged as
+// waiting for the data (waitForData) and the next tick tries again; once one
+// runs through, that the data is back is logged (dataRecovered). Running
+// agents are left be: no phase finishes, tends or stops them meanwhile.
 export async function tick(ctx) {
   const now = ctx.now().getTime();
   let held = false;
-  for (const phase of PHASES) {
-    if (phase === fastTrack) {
-      await checkRateLimits(ctx, now);
-      await ctx.attempt('disk', 'check', () => checkDisk(ctx));
-      held = diskHeld({ diskSpace: readDiskSpace(ctx.paths.diskSpace) });
-      await ctx.attempt('credentials', 'check', () => checkCredentials(ctx, ctx.load()));   // ASS-395: a project held by its credentials starts no new work (dispatch.js, steps.js)
+  ctx.trouble = null;
+  try {
+    for (const phase of PHASES) {
+      if (phase === fastTrack) {
+        await ctx.attempt('hold', 'check', () => checkRateLimits(ctx, now));   // ASS-460: guarded as every phase is
+        await ctx.attempt('disk', 'check', () => checkDisk(ctx));
+        held = diskHeld({ diskSpace: readDiskSpace(ctx.paths.diskSpace) });
+        await ctx.attempt('credentials', 'check', () => checkCredentials(ctx, ctx.load()));   // ASS-395: a project held by its credentials starts no new work (dispatch.js, steps.js)
+        if (ctx.trouble) break;
+      }
+      if ((ctx.drain || held) && NEW_WORK.has(phase)) continue;
+      try {
+        await phase(ctx, ctx.load());
+      } catch (error) {
+        const trouble = troubleOf(ctx, error);
+        if (trouble) { ctx.trouble ??= trouble; break; }
+        ctx.log('error', `${phase.name}: ${error.message}`);
+      }
+      if (ctx.trouble) break;
     }
-    if ((ctx.drain || held) && NEW_WORK.has(phase)) continue;
-    try {
-      await phase(ctx, ctx.load());
-    } catch (error) {
-      ctx.log('error', `${phase.name}: ${error.message}`);
-    }
+  } catch (error) {
+    const trouble = troubleOf(ctx, error);
+    if (!trouble) throw error;
+    ctx.trouble ??= trouble;
   }
+  if (ctx.trouble) waitForData(ctx, ctx.trouble);
+  else dataRecovered(ctx);
+}
+
+// waitForData(ctx, { file, reason }) — the data could not be read (see tick):
+// "data waiting: …" logged when the wait starts and whenever what fails
+// changes, not every tick; the dashboard shows it (app.js controlWaiting).
+// Once it has failed longer than harness.json's data-unreadable-exit-seconds
+// (DATA_UNREADABLE_EXIT_SECONDS by default; the last good load's), ctx.dataExit
+// says why, and control exits (main.js, with DATA_EXIT_CODE) for the
+// dashboard to start it again.
+export const DATA_UNREADABLE_EXIT_SECONDS = 300;
+export function waitForData(ctx, { file, reason }) {
+  const now = ctx.now().getTime(), limit = ctx.memory.dataLimit ?? DATA_UNREADABLE_EXIT_SECONDS;
+  const wait = ctx.memory.dataWait ??= { since: now, file: null, reason: null };
+  if (wait.file !== file || wait.reason !== reason) ctx.log('data', `waiting: cannot read ${file} (${reason}); control skips its ticks until it reads, and exits if it cannot for ${limit}s`);
+  Object.assign(wait, { file, reason });
+  const waited = (now - wait.since) / 1000;
+  if (waited > limit) ctx.dataExit = `its data has not read for ${Math.round(waited)}s, over data-unreadable-exit-seconds (${limit}s): ${file} (${reason})`;
+}
+// dataRecovered(ctx) — a tick ran through after the data could not be read:
+// "data recovered …" logged, with how long it waited.
+export function dataRecovered(ctx) {
+  const wait = ctx.memory.dataWait;
+  if (!wait) return;
+  ctx.memory.dataWait = null;
+  ctx.log('data', `recovered: it reads again after ${Math.round((ctx.now().getTime() - wait.since) / 1000)}s (${wait.file}); control carries on with its agents, VMs and workstations`);
 }
 
 // startDrain(ctx) — a restart was asked for (ASS-200): from now the ticks
 // start no agent (see tick) while the running agents — every control's —
-// end their turns, for up to harness.json's restart-drain-seconds (300 by default).
+// end their turns, for up to harness.json's restart-drain-seconds (300 by default;
+// ASS-460: also when the data cannot be read just then, which is logged).
 export function startDrain(ctx) {
-  const seconds = ctx.load().harness['restart-drain-seconds'] ?? 300;
+  let seconds = 300;
+  try { seconds = ctx.load().harness['restart-drain-seconds'] ?? 300; } catch (error) { ctx.log('error', `restart drain: ${error.message}; draining for up to ${seconds}s`); }
   ctx.drain = { seconds, until: ctx.now().getTime() + seconds * 1000, waiting: null };
   drained(ctx);
 }
@@ -222,11 +304,21 @@ export function startDrain(ctx) {
 // control's shut-down stops its own). While it waits, "restart waiting for N
 // agents …" — N this control's — is logged each time N changes (with none
 // of its own, each time the others' count does); the dashboard shows it.
+// ASS-460: while the assignments cannot be read (logged), the others are
+// counted as last seen, or as one when never seen, so the drain waits on —
+// still up to restart-drain-seconds — rather than end or throw.
 const agents = n => `${n} agent${n === 1 ? '' : 's'}`;
 const alive = pid => { try { return pid != null && process.kill(pid, 0); } catch { return false; } };
 export function drained(ctx) {
   const n = ctx.agents.size, { drain } = ctx;
-  const others = ctx.load().assignments.filter(a => !ctx.agents.has(a['agent-name']) && alive(a['process-id'])).length;
+  let others;
+  try {
+    others = ctx.load().assignments.filter(a => !ctx.agents.has(a['agent-name']) && alive(a['process-id'])).length;
+  } catch (error) {
+    ctx.log('error', `restart drain: ${error.message}`);
+    others = drain.others ?? 1;
+  }
+  drain.others = others;
   if (!n && !others) return true;
   if (ctx.now().getTime() >= drain.until) {
     ctx.log('restart', n ? `${agents(n)} still running after ${drain.seconds}s: stopped with control` : `${agents(others)} of other controls still running after ${drain.seconds}s: this control exits all the same`);

@@ -11,6 +11,8 @@ import { visible, link } from '../text.js';
 import { utcDate } from '../../downloader/cycle.js';
 import { flattenSprint } from '../../control/rank.js';
 import { spendRecords, daySpend, sprintSpend, spendText } from '../../control/spend.js';
+import { usesWorkstations } from '../../control/dev-environments.js';
+import { workstationState } from '../../control/workstation-machines.js';
 import { ellipsis, refining, agentLine, projectAssignments, liveAssignments, viewedSprint, operatorNeeded, restartFixes, markDot, ICONS, since, indent, center, middle, color, green, red, gold, timestamp, sprintTickets } from './shared.js';
 
 // Screens where space pauses and releases the agents.
@@ -52,7 +54,8 @@ function idle(state) {
 // render from the same helpers (banner, diskLines); `todo` the one line saying
 // what to do; `after` the ms it must stay up before it notifies (No work in
 // progress: IDLE_AFTER_MS). The chips, in the order they show: the project held
-// by its credentials (ASS-395), the logins to renew, background work off
+// by its credentials (ASS-395), the gcloud login to renew, a workstation whose
+// setup failed (ASS-434), the glab login to renew, background work off
 // (ASS-127), the memory and disk holds (ASS-398: any project's
 // memory-hold.json, the disk hold of ASS-288), the landed fixes a restart would
 // load (ASS-393), then idleness (ASS-59); then the banner's: the disk low
@@ -67,7 +70,8 @@ export function headerWarnings(state, now = Date.now()) {
   const healing = healingFor(state), account = project?.accountHold ?? null, { human, everyone } = holding(state);
   return [
     project?.credentialsHold && warning('credentials', 'Project blocked by credentials', firstFix?.fix ? `Run ${firstFix.fix}` : 'Fix the credentials the dashboard lists for this project', { chip: true }),
-    project?.gcloudReauthentication && warning('gcloud-login', "run 'gcloud auth login' asap", 'Run gcloud auth login in a terminal', { chip: true }),
+    project?.gcloudReauthentication && gcloudWarning(warning, project.gcloudLogins),
+    ...setupWarnings(warning, project),
     project?.glabReauthentication && warning('glab-login', "run 'glab auth login' asap", 'Run glab auth login in a terminal', { chip: true }),
     project?.backgroundWorkOff && warning('background-work-off', 'Background work off', 'Turn background work back on when you want it', { chip: true, operator: true }),
     state.projects.some(p => p.memoryHold) && warning('out-of-memory', 'Out of memory', 'Free memory on the Mac: no new VM starts until there is enough', { chip: true, scope: 'harness' }),
@@ -79,7 +83,58 @@ export function headerWarnings(state, now = Date.now()) {
     limit && warning('rate-limited', 'Rate limited', `Wait: control sends its ${limit.kinds.join(' and ')} agents nothing until it resets ${resetText(limit['resets-at'], now)}`),
     healing && warning('self-healing', 'Self healing', `Control is fixing ${healing.summary}`),
     human && warning('paused-by-human', 'Paused by human', 'Press space to release it', { operator: true, scope: everyone ? 'harness' : 'project' }),
+    // ASS-460, ASS-457: every project's control down, and this one's waiting for its data (controlTroubles: the red header lines).
+    ...controlTroubles(state, now).filter(t => t.scope === 'harness' || t.project === project?.id).map(t => warning(t.id, t.text, t.todo, { scope: t.scope, ...(t.after ? { after: t.after } : {}) })),
   ].filter(Boolean);
+}
+
+// controlTroubles(state, now) — ASS-460, ASS-457: a red line under the banner
+// for each project whose control is down (app.js controlsDown: crashed and
+// waiting to be started again, given up, or ended by itself; until it is back,
+// app.js controlBack) — every project's, whichever is selected — saying the
+// project, what happens next and its last line (the error, its time cut); and
+// for each control waiting for its data (app.js dataWaiting, the data folder
+// unreadable or a file not parsing). Each { id, project, scope, text, todo,
+// line, after? } also stands as a header warning, so it notifies once per
+// outage (src/notify/): a control down harness-wide, its id the project's, so
+// it is sent once, not once per project; one waiting for its data the
+// project's, once it has waited a minute.
+const DATA_WAIT_NOTIFY_MS = 60e3;
+const clock = ms => new Date(ms).toISOString().slice(11, 19);
+export function controlTroubles(state, now = Date.now()) {
+  const nameOf = id => state.projects.find(p => p.id === id)?.name ?? id;
+  const down = Object.entries(state.controlsDown ?? {}).map(([id, d]) => {
+    const error = String(d.line ?? '').replace(/^\d{4}-\d\d-\d\dT\S+\s+/, '') || `exited with code ${d.code}`;
+    const next = d.restarted ? `started again at ${clock(d.restarted)} UTC`
+      : d.gaveUp ? `crashed ${d.crashes} times in ${GIVE_UP_MINUTES} minutes, not started again: press R on the control screen (c) to start it`
+        : d.restartAt ? `starting again in ${Math.max(0, Math.ceil((d.restartAt - now) / 1000))}s (crash ${d.crashes})`
+          : 'ended by itself, not started again: press R on the control screen (c) to start it';
+    const text = `Control ${nameOf(id)} down: ${ellipsis(error, 60)}`;
+    return { id: `control-down:${id}`, project: id, scope: 'harness', text, todo: next[0].toUpperCase() + next.slice(1), line: `CONTROL DOWN — ${nameOf(id)} — ${next} — last: ${error}` };
+  });
+  const waiting = Object.entries(state.dataWaiting ?? {}).filter(([id]) => !state.controlsDown?.[id]).map(([id, w]) => ({
+    id: 'control-data-wait', project: id, scope: 'project', text: 'Control waiting for its data', after: DATA_WAIT_NOTIFY_MS,
+    todo: `Control ${nameOf(id)} ${w.text}: its ticks are skipped until it reads (is the drive there?)`,
+    line: `CONTROL ${nameOf(id).toUpperCase()} WAITING FOR ITS DATA since ${clock(new Date(w.since).getTime())} UTC — ${w.text}`,
+  }));
+  return [...down, ...waiting];
+}
+const GIVE_UP_MINUTES = 10;
+// gcloudWarning(warning, logins) — the gcloud login chip: run 'gcloud auth
+// login'; ASS-433: for a workstation whose own login expired, with the
+// CLOUDSDK_CONFIG it needs (control/workstation-connection.js loginCommand),
+// each login so when they are more than one.
+function gcloudWarning(warning, logins = []) {
+  const commands = logins.length ? logins.map(l => l.command) : ['gcloud auth login'];
+  return warning('gcloud-login', `run ${commands.map(c => `'${c}'`).join(' and ')} asap`, `Run ${commands.join(', then ')} in a terminal`, { chip: true });
+}
+// setupWarnings(warning, project) — ASS-434: a chip for each of the
+// project's workstations whose last setup (workstation:setup, the live data's
+// setup) failed, saying what failed: control dispatches nothing to it until
+// a setup works.
+function setupWarnings(warning, project) {
+  return Object.entries(project?.workstations ?? {}).filter(([, e]) => e?.setup?.ok === false)
+    .map(([id, e]) => warning(`workstation-setup:${id}`, `Workstation ${id} setup failed`, `Fix workstation ${id}'s setup (nothing is dispatched to it meanwhile): ${e.setup.error ?? 'see control\'s log'}`, { chip: true }));
 }
 // The sprint header's white-on-red boxes (sprintLines): headerWarnings' chips' texts, in its order (ASS-412).
 const warnings = (state, now) => headerWarnings(state, now).filter(w => w.chip).map(w => w.text);
@@ -126,7 +181,7 @@ function compactHeader(state, columns, now) {
   return [
     ...(state.menuHidden ? [] : [...menu(state).map(line => center(line, columns)), '']),
     // Five lines, the info on the third, so all four tile rows hang beside them (besideRight).
-    ...besideRight(['', '', [info, chips, disk].filter(Boolean).join('  '), '', ''], metricTiles(state, now), columns),
+    ...besideRight(['', '', [info, chips, disk].filter(Boolean).join('  '), '', ''], metricTiles(state), columns),
     '',
   ];
 }
@@ -139,6 +194,7 @@ function compactHeader(state, columns, now) {
 export const headerLines = (state, columns, now) => (state.screen === 'S' || state.screen === 'B' ? compactHeader(state, columns, now) : [
   ...banner(holding(state), healingFor(state), limitFor(state.projects[state.project], now), columns, PAUSABLE.has(state.screen), now, state.projects[state.project]?.accountHold ?? null),
   ...diskLines(state.disk, columns),
+  ...controlTroubles(state, now).map(t => center(red(ellipsis(t.line, columns)), columns)),
   ...state.assignments.filter(a => a['health-check'] === true)
     .map(a => center(agentLine(a), columns)),
   '',
@@ -146,7 +202,7 @@ export const headerLines = (state, columns, now) => (state.screen === 'S' || sta
   // A past day is seen as it was captured, at the end of that day (shownAt).
   // The project's name and the warnings are about now, so they show whatever the day.
   ...besideRight(sprintLines(viewedSprint(state), shownAt(state, now), state.focus === 'day',
-    state.projects[state.project], warnings(state, now)), metricTiles(state, now), columns),
+    state.projects[state.project], warnings(state, now)), metricTiles(state), columns),
   '',
 ]);
 
@@ -165,25 +221,63 @@ export const headerLines = (state, columns, now) => (state.screen === 'S' || sta
 // before it. Either ends with the machine's lines and the project's
 // Hindsight (machineLines, ASS-292, ASS-293). The models
 // box, always there for a project, has a "model 🤖xN" line per model its
-// assignments use, most first, then how the project is billed (billingLines,
-// ASS-221), ending with the account.
+// assignments use, most first, then what the project spent (spendLines,
+// ASS-430: moved here from the header's tiles), then how the project is
+// billed (billingLines, ASS-221), ending with the account. ASS-436: then, in
+// vm+workstation or workstation mode, the gcp workstations box
+// (workstationLines). Each box is one entry of `boxes`, so another goes in as
+// one more entry.
 export function platform(state, columns, now) {
   if (state.screen === 'S' || state.screen === 'B') return []; // the flow screens give the diagram the room (ASS-187)
   const project = state.projects[state.project];
   const control = state.controls?.[project?.id];
   const models = Map.groupBy(projectAssignments(state), a => a.model);
   const box = (title, fields) => [title, ...Object.entries(fields).map(([field, value]) => `${field}: ${value}`)];
-  const status = state.draining?.[project?.id] != null ? 'Draining' : state.restart ? 'Restarting' : 'Online';
-  const down = state.controlsDown?.[project?.id];
+  const status = state.draining?.[project?.id] != null ? 'Draining' : state.restart ? 'Restarting' : state.dataWaiting?.[project?.id] ? red('Waiting for its data') : 'Online';
+  // ASS-460: a control started again after a crash is shown running, its outage kept until it is back (app.js controlBack).
+  const down = state.controlsDown?.[project?.id]?.restarted ? null : state.controlsDown?.[project?.id];
+  const restartLine = d => (d.restartAt ? [`restart: in ${Math.max(0, Math.ceil((d.restartAt - now) / 1000))}s (crash ${d.crashes})`] : d.gaveUp ? [red(`restart: given up after ${d.crashes} crashes`), 'press R to start it'] : d.code === 0 ? ['press R to start it'] : []);
   const boxes = [
-    ...(down ? [[red('control DOWN'), `exited: code ${down.code}`, `last: ${ellipsis(down.line, 60)}`, ...machineLines(state.disk, project, state.memoryHealth)]] : []),
+    ...(down ? [[red('control DOWN'), `exited: code ${down.code}`, `last: ${ellipsis(down.line, 60)}`, ...restartLine(down), ...machineLines(state.disk, project, state.memoryHealth)]] : []),
     ...(control && !down ? [[...box(projectAssignments(state).some(a => a.control === true) ? 'control 🤖' : 'control', { status, 'process-id': control.pid, uptime: since(control.startTime, now) }), ...forgeLines(project), ...machineLines(state.disk, project, state.memoryHealth)]] : []),
     ...(project ? [['models', ...[...models]
       .toSorted(([a, x], [b, y]) => y.length - x.length || String(a).localeCompare(String(b)))
-      .map(([model, list]) => `${model} 🤖x${list.length}`), ...billingLines(project, now)]] : []),
+      .map(([model, list]) => `${model} 🤖x${list.length}`), ...spendLines(state, now), ...billingLines(project, now)]] : []),
+    ...workstationBox(state, project),
   ];
   const row = boxRow(boxes, columns);
   return row.length ? [...row, ''] : row;
+}
+
+// workstationBox(state, project) — ASS-436: the "gcp workstations" box, after
+// models, while the project's dev-environments (load.js devEnvironments,
+// ASS-431) run tickets on workstations (usesWorkstations: vm+workstation or
+// workstation mode) and list at least one; none in vm mode, with an empty
+// list or while the setting is wrong (null), so the footer is as before. One
+// line per workstation, in the list's order, "<id> 🤖x<n> <state>" as the
+// models box draws a model and its count: n the project's assignments
+// (projectAssignments, as the models box counts them) on the variation its
+// live data's holder holds (ASS-435: same ticket, case-insensitive, and
+// variation), 0 with no holder; the state workstationState's word from its
+// workstations.json entry (ASS-433/434; 'stopped' with none yet) — running in
+// green, sign in needed and setup failed in red. An id longer than WS_ID is
+// cut to it with an ellipsis, so the box stays narrow beside control and
+// models: the longest line, WS_ID + "🤖x99 sign in needed", fits the footer's
+// 120 columns with both.
+const WS_ID = 20;
+function workstationBox(state, project) {
+  const settings = project?.devEnvironments;
+  if (!settings || !usesWorkstations(settings.mode) || !settings.workstations?.length) return [];
+  const sameKey = (a, b) => String(a ?? '').toUpperCase() === String(b ?? '').toUpperCase();
+  const agents = projectAssignments(state);
+  const line = ({ id }) => {
+    const entry = project.workstations?.[id], holder = entry?.holder;
+    const count = holder ? agents.filter(a => sameKey(a['work-item'], holder.ticket) && a.variation === holder.variation).length : 0;
+    const word = workstationState(entry);
+    const shade = word === 'running' ? green : word === 'sign in needed' || word === 'setup failed' ? red : text => text;
+    return `${ellipsis(String(id), WS_ID)} 🤖x${count} ${shade(word)}`;
+  };
+  return [['gcp workstations', ...settings.workstations.map(line)]];
 }
 
 // forgeLines(project) — ASS-307: in the control (not control DOWN) box, the
@@ -248,6 +342,19 @@ function hindsightLine(project, check) {
   if (port == null) return 'hindsight: none';
   if (check?.port !== port) return 'hindsight: checking';
   return check.healthy ? green(`hindsight: up (port ${port})`) : red(`hindsight: down (port ${port}) since ${timestamp(new Date(check.since))}`);
+}
+
+// spendLines(state, now) — the models box's spend (ASS-430; the header's Day
+// Spend and Sprint Spend tiles before, ASS-216): what the selected project
+// spent on the day on show and over its sprint (the viewed one) through that
+// day (shownAt) — its sprint's and backlog's dispatches, its ticket chats'
+// turns, its chat-screen turns (ASS-271) and its Hindsight's Claude calls
+// (spend.js daySpend, sprintSpend), in dollars to the cent, the total alone.
+function spendLines(state, now) {
+  const project = state.projects[state.project], sprint = viewedSprint(state), at = new Date(shownAt(state, now));
+  const records = spendRecords([...flattenSprint(sprint ?? {}), ...(project?.backlog ?? [])], project?.collaborations, project?.chatSpend, project?.memorySpend ?? []);
+  const dollars = usd => `$${usd.toFixed(2)}`;
+  return [`Day Spend: ${dollars(daySpend(records, at))}`, `Sprint Spend: ${dollars(sprintSpend(records, sprint?.start, at))}`];
 }
 
 // The models box's billing lines (ASS-221), by the project's login as control
@@ -409,12 +516,17 @@ function banner({ human, ai, humanHolds, aiHolds, name, mine, everyone }, healin
 
 // Projects side by side, the selected one in reverse video while the menu has
 // focus and underlined otherwise, each with the count of its assignments
-// ("🤖x3") centered on the line beneath it. ASS-370: a blue ● (markDot, the
-// tickets' blue) just before the name of each project with tickets waiting on
+// ("🤖x3") centered on the line beneath it. ASS-370: a red ● (markDot, the
+// tickets' needs-you red since ASS-430) just before the name of each project with tickets waiting on
 // the operator — operatorNeeded, the Operator Needed Tickets tile's rule, with
 // that project selected on its live sprint (day null), so a past day on show
 // never changes the dots. The dot sits inside the name's width, so the count
-// stays centred under it; with no dots the menu is as before.
+// stays centred under it; with no dots the menu is as before. ASS-438: the dot
+// is MARK_COLORS needed's red, through markDot, never a copied code; markDot
+// ends in a full reset, which also turned the selected project's highlight off
+// after the dot, so the mark is put back after every reset inside the label
+// and the whole label — blank, dot and name — is highlighted, the dot red in
+// it. Only escape codes are added, so the widths and the counts' centring stay.
 function menu(state) {
   const { projects, project, assignments, focus } = state;
   const items = projects.map((p, i) => {
@@ -423,7 +535,8 @@ function menu(state) {
     const count = `🤖x${assignments.filter(a => a.project === p.id).length}`;
     const width = Math.max(visible(name), visible(count));
     const mark = focus === 'menu' ? '\x1b[7m' : '\x1b[4m';
-    return [i === project ? `${mark}${middle(name, width)}\x1b[0m` : middle(name, width), middle(count, width)];
+    const label = middle(name, width);
+    return [i === project ? `${mark}${label.replaceAll('\x1b[0m', `\x1b[0m${mark}`)}\x1b[0m` : label, middle(count, width)];
   });
   // Both lines the same width, so centering keeps each count under its name.
   return [items.map(item => item[0]).join('  '), items.map(item => item[1]).join('  ')];
@@ -455,32 +568,40 @@ function sprintLines(sprint, now, focused, project, warnings) {
 }
 
 // Tiles for the sprint work on show, in order: the tickets waiting on the
-// operator (operatorNeeded), the sprint's alone, never the backlog's (ASS-254), each once whatever its variations — on blue when there are any (ASS-242) — the tickets
-// delivered (any variation in the engine's last state) and their points, and
-// what the project spent (ASS-216) on the day on show and over its sprint
-// through that day: its sprint's and backlog's dispatches, its ticket chats'
-// turns, its chat-screen turns (ASS-271) and its Hindsight's Claude calls
-// (spend.js), in dollars to the cent, the total alone; each a value boxed, as
-// wide as its label or value, with its label beneath.
-function metricTiles(state, now) {
-  const { tickets, done } = sprintTickets(state);
+// operator (operatorNeeded), the sprint's alone, never the backlog's (ASS-254),
+// each once whatever its variations — filled while there are any (ASS-242;
+// neededFill) — then the tickets delivered (any variation in the engine's last
+// state) and their points; each a value boxed, as wide as its label or value,
+// with its label beneath. ASS-430: ticket counts alone — the Day Spend and
+// Sprint Spend tiles (ASS-216) moved to the models box (spendLines).
+function metricTiles(state) {
+  const { tickets, done, steps } = sprintTickets(state);
   const unique = list => [...new Map(list.map(t => [t.key, t])).values()];
   const needed = operatorNeeded(state, tickets).size;
   const delivered = unique(tickets.filter(t => t.step?.sequence === done));
-  const project = state.projects[state.project], sprint = viewedSprint(state), at = new Date(shownAt(state, now));
-  const records = spendRecords([...flattenSprint(sprint ?? {}), ...(project?.backlog ?? [])], project?.collaborations, project?.chatSpend, project?.memorySpend ?? []);
-  const dollars = usd => `$${usd.toFixed(2)}`;
   return [
-    [needed, 'Operator Needed Tickets', needed > 0 && '44;97'],
+    [needed, 'Operator Needed Tickets', needed > 0 && neededFill(steps)],
     [delivered.length, 'Delivered Tickets'],
     [delivered.reduce((sum, t) => sum + (t.points ?? 0), 0), 'Delivered Points'],
-    [dollars(daySpend(records, at)), 'Day Spend'],
-    [dollars(sprintSpend(records, sprint?.start, at)), 'Sprint Spend'],
   ].map(([value, label, fill]) => {
     const width = Math.max(label.length, String(value).length) + 2;
     const inside = middle(String(value), width);
     return [`┌${'─'.repeat(width)}┐`, `│${fill ? color(fill)(inside) : inside}│`, `└${'─'.repeat(width)}┘`, middle(label, width + 2)];
   });
+}
+
+// neededFill(steps) — the Operator Needed Tickets tile's fill (ASS-430; blue,
+// 44;97, before): the red the Blocked for Human state is drawn in, its own
+// `color` ("#rrggbb", as stateColor reads it) among the viewed project's
+// execution state engine's top-level `steps` (sprintTickets'), as a 24-bit
+// background under white text, or black text on a light color, so the count
+// stays readable; a plain red fill (41;97) with no such state or color.
+function neededFill(steps) {
+  const hex = steps.find(s => s.name === 'Blocked for Human')?.color;
+  if (!/^#[0-9a-f]{6}$/i.test(hex ?? '')) return '41;97';
+  const rgb = [1, 3, 5].map(i => parseInt(hex.slice(i, i + 2), 16));
+  const light = 0.299 * rgb[0] + 0.587 * rgb[1] + 0.114 * rgb[2] > 150;
+  return `48;2;${rgb.join(';')};${light ? '30' : '97'}`;
 }
 
 // The most of `tiles` (each four lines), from the first, laid side by side

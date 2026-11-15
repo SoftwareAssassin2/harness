@@ -53,6 +53,15 @@ test('checkGlab: a check that cannot run leaves the flag as it is, logged once',
   assert.equal(f.lines.filter(l => /glab p: glab cannot be run/.test(l)).length, 1, f.lines.join('\n'));
 });
 
+test('ASS-429 AC4: checkGlab leaves the flag as it is when glab could not reach GitLab, logged as a network problem', async () => {
+  const { f } = checking([{ login: 'offline', output: 'dial tcp: lookup gitlab.com: no such host' }]);
+  writeFileSync(flagFile(f), 'false');
+  await checkGlab(f.ctx, f.ctx.load());
+  assert.equal(flag(f), 'false');
+  assert.ok(f.lines.some(l => /^glab p: glab could not reach GitLab, a network problem, not an expired login/.test(l)), f.lines.join('\n'));
+  assert.ok(!f.lines.some(l => /auth login/.test(l)), f.lines.join('\n'));
+});
+
 test('checkGlab: a project with check-for-expired-glab-auth false or absent is never checked', async () => {
   for (const on of [false, null]) {
     const { f, asked } = checking(['expired'], on);
@@ -83,10 +92,10 @@ test('a tick runs the glab check', async () => {
   }
 });
 
-test('glab() asks glab auth status, read-only: exit 0 is live, any other exit expired, no glab unavailable', async () => {
+test('glab() asks glab auth status, read-only: exit 0 is live, a failure read from its output (ASS-429: 401 expired, no such host offline, silence unknown), no glab unavailable', async () => {
   const bin = mkdtempSync(join(tmpdir(), 'glab-'));
   const calls = join(bin, 'calls');
-  writeFileSync(join(bin, 'glab'), `#!/bin/sh\necho "$*" >> '${calls}'\nexit "$(cat '${bin}/exit')"\n`);
+  writeFileSync(join(bin, 'glab'), `#!/bin/sh\necho "$*" >> '${calls}'\ncat '${bin}/stderr' >&2 2>/dev/null\nexit "$(cat '${bin}/exit')"\n`);
   chmodSync(join(bin, 'glab'), 0o755);
   const ctx = createContext({ root: '/nowhere' });
   const path = process.env.PATH;
@@ -95,8 +104,12 @@ test('glab() asks glab auth status, read-only: exit 0 is live, any other exit ex
     writeFileSync(join(bin, 'exit'), '0');
     assert.equal(await ctx.glab(), 'live');
     writeFileSync(join(bin, 'exit'), '1');
-    assert.equal(await ctx.glab(), 'expired');
-    assert.equal(readFileSync(calls, 'utf8'), 'auth status\nauth status\n');
+    assert.deepEqual(await ctx.glab(), { login: 'unknown', output: '' });
+    writeFileSync(join(bin, 'stderr'), 'gitlab.com\n  x gitlab.com: API call failed: GET https://gitlab.com/api/v4/user: 401 {message: 401 Unauthorized}\n');
+    assert.equal((await ctx.glab()).login, 'expired');
+    writeFileSync(join(bin, 'stderr'), 'gitlab.com\n  x gitlab.com: API call failed: GET https://gitlab.com/api/v4/user: dial tcp: lookup gitlab.com: no such host\n');
+    assert.equal((await ctx.glab()).login, 'offline');
+    assert.equal(readFileSync(calls, 'utf8'), 'auth status\n'.repeat(4));
     process.env.PATH = mkdtempSync(join(tmpdir(), 'empty-'));
     assert.equal(await ctx.glab(), 'unavailable');
   } finally { process.env.PATH = path; }

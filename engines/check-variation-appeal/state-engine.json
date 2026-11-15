@@ -2,7 +2,7 @@
     "steps": [
 
         { "id": "assess-appeal", "sequence": 1, "name": "Assess Appeal", "description": "Comparing the ticket's variations on progress and quality",
-            "action": { "type": "prompt", "prompt": "check-variation-appeal", "agent-count": 1, "run-in-dev-container": false },
+            "action": { "type": "prompt", "prompt": "check-variation-appeal", "agent-count": 1, "run-in-dev-container": false, "model": "claude-opus-5-5" },
             "exit-events": [
                 { "condition": { "turn-complete": true }, "move-to-state": "done" }
             ]

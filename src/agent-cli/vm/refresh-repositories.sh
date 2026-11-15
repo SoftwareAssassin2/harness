@@ -82,7 +82,7 @@ trap 'rm -rf "$tmp"' EXIT
 
 # refresh <repo…> — the refresh in the VM; a fetch failing as a network does prints "!transient<TAB><repo><TAB><its error>" (ASS-396).
 refresh() {
-limactl shell --workdir / "$vm" -- bash -s "$@" <<'EOF'
+machine_run --workdir / "$vm" -- bash -s "$@" <<'EOF'
 R="${HARNESS_VM_ROOT-}"   # empty in a VM; tests run this against a folder standing in for its root
 for name in "$@"; do
   d="$R/repos/$name"

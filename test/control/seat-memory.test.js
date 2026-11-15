@@ -24,7 +24,12 @@ const at = (state, sub) => ({ state, 'state-engine': ENGINE, ...(sub ? { 'sub-st
 const BUILDING = at('build', ['grouped-build', 'generate-solution']);
 const PLANNED = at('plan', ['grouped-plan', 'done']);   // a finished plan (ASS-362): no seat, ready for Build
 // A reading of a 100 GiB Mac, so its free percentage is its free GiB.
-const mac = ({ free = 64, pressure = 'normal', vms = {} } = {}) => ({ freePercent: free, pressure, totalBytes: 100 * GIB, vms: new Map(Object.entries(vms)) });
+// ASS-422: with `reclaimable` GiB, `swapouts` and `swapUsed` GiB when given.
+const mac = ({ free = 64, pressure = 'normal', vms = {}, reclaimable, swapouts, swapUsed } = {}) => ({
+  freePercent: free, pressure, totalBytes: 100 * GIB, vms: new Map(Object.entries(vms)),
+  ...(reclaimable != null ? { reclaimableBytes: reclaimable * GIB, reclaimable: { free: 0.5 * GIB, inactive: (reclaimable - 0.5) * GIB, speculative: 0, purgeable: 0 } } : {}),
+  ...(swapouts != null ? { swapouts } : {}), ...(swapUsed != null ? { swapUsedBytes: swapUsed * GIB } : {}),
+});
 
 // p on example-development-grouped, its VMs 4 GiB (the need with none
 // measured: the 4 GiB floor); ABC-3's variations as `variations` gives them
@@ -128,4 +133,44 @@ test('ASS-420 AC1/AC2/AC4: a move into a seat whose VM does not fit waits, said 
   assert.ok(h.f.ctx.memory.seatMemory.starting.has('p ABC-3 D'), 'its VM held back as starting');
   // A move needing no VM (Release) or with the memory unread asks nothing.
   assert.equal(mayMove({ ...h.f.ctx, memory: { ...h.f.ctx.memory, seatMemory: undefined } }, 'steps', state, project, d, 'ABC-3 D plan', 'build'), true);
+});
+
+test('ASS-422 AC2/AC4/AC5: under warn a seat is given when the reclaimable memory covers the need and macOS is not swapping — the hold\'s own verdict; refused short of it or while swapping, memory-wait.json and the Health showing the reclaimable figure and the rule', async () => {
+  const h = seats({ A: [BUILDING, 'Running'], B: [BUILDING, 'Stopped'] });
+  h.f.ctx.memory.vmsUp = new Set(['abc-3-a']);
+  await h.pass();
+  h.write({ A: [BUILDING, 'Running', { 'is-paused': true }], B: [BUILDING, 'Stopped'] });
+  // Warn, 3 GiB reclaimable, no swap in use: short of the 4 GiB needed.
+  h.set({ free: 40, pressure: 'warn', reclaimable: 3, swapouts: 0, swapUsed: 0 });
+  assert.deepEqual(await h.pass(), ['ticket:set-ai-feedback p ABC-3 B Waiting for memory for its VM (need 4.0 GB, 3.0 GB reclaimable, pressure warn) ' + `${MEMORY_HEALTH} its next steps need a VM that is not running, and it does not fit in the Mac's memory (macOS memory pressure warn): a VM needs 4.0 GB (none of its VMs running to measure: the 4.0 GiB floor), and 3.0 GB is reclaimable (free, inactive, speculative and purgeable memory) once the VMs already starting are counted. It holds no seat meanwhile and takes one once there is room. Nothing for you to do.`]);
+  assert.deepEqual(h.plan().memoryWaiting, ['B']);
+  const w = h.record().waiting[0];
+  assert.deepEqual([w['need-bytes'], w['free-bytes'], w['reclaimable-bytes'], w.pressure, w.rule], [4 * GIB, 40 * GIB, 3 * GIB, 'warn', 'warn-short']);
+  assert.match(w.why, /^pressure warn, 3\.0 GiB reclaimable < 4\.0 GiB needed: held \(macOS: pressure warn, 40% free/);
+  assert.ok(h.f.lines.includes('seats ABC-3 B: waits for memory for its VM, holding no seat (need 4.0 GB; pressure warn, 3.0 GiB reclaimable < 4.0 GiB needed: held)'), h.f.lines.join('\n'));
+  // Swapping: plenty reclaimable, but Swapouts grew — refused, the Health rewritten for the rule.
+  h.write({ A: [BUILDING, 'Running', { 'is-paused': true }], B: [BUILDING, 'Stopped', { 'ai-feedback-long': `${MEMORY_HEALTH} …` }] });
+  h.set({ free: 40, pressure: 'warn', reclaimable: 14.2, swapouts: 50, swapUsed: 1 });
+  const calls = await h.pass();
+  assert.match(calls[0], /^ticket:set-ai-feedback p ABC-3 B Waiting for memory for its VM \(need 4\.0 GB, 14\.2 GB reclaimable, macOS swapping\) .*macOS has swapped memory out since its last reading/);
+  assert.equal(h.record().waiting[0].rule, 'warn-swapping');
+  // Swap-outs stopped, plenty reclaimable: B takes the seat.
+  h.set({ free: 40, pressure: 'warn', reclaimable: 14.2, swapouts: 50, swapUsed: 1 });
+  assert.deepEqual(await h.pass(), [`ticket:clear-ai-feedback p ABC-3 B ${MEMORY_HEALTH} …`]);
+  assert.deepEqual(h.plan(), { reserved: ['B'], waiting: [], memoryWaiting: [] });
+  assert.equal(h.record(), null);
+  assert.ok(h.f.ctx.memory.seatMemory.starting.has('p ABC-3 B'), 'its VM starting: held back from the next check');
+});
+
+test('ASS-422 AC4/AC5: a move into a seat under warn asks the same verdict, its refusal said with the rule', async () => {
+  const h = seats({ D: [PLANNED, 'Stopped'] });
+  h.set({ free: 40, pressure: 'warn', reclaimable: 2, swapouts: 0, swapUsed: 0 });
+  await h.pass();
+  let state = h.f.ctx.load(), project = state.projects[0], [d] = project.tickets[0].variations;
+  assert.equal(mayMove(h.f.ctx, 'steps', state, project, d, 'ABC-3 D plan', 'build'), false);
+  assert.deepEqual(h.f.lines.filter(l => /waits for memory/.test(l)), ['steps ABC-3 D plan: waits for memory for its VM to move to build (need 4.0 GB; pressure warn, 2.0 GiB reclaimable < 4.0 GiB needed: held)']);
+  h.set({ free: 40, pressure: 'warn', reclaimable: 9, swapouts: 0, swapUsed: 0 });
+  await h.pass();
+  state = h.f.ctx.load(); project = state.projects[0]; [d] = project.tickets[0].variations;
+  assert.equal(mayMove(h.f.ctx, 'steps', state, project, d, 'ABC-3 D plan', 'build'), true);
 });

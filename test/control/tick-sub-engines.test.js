@@ -51,7 +51,7 @@ test('tick: an exit naming start-sub-engine-at enters the sub-engine there — t
   }
 });
 
-// ASS-124: a ticket handed into a sub-engine part way (ticket:repair-environment) brings what its run starts from.
+// ASS-124: a ticket handed into a sub-engine part way brings what its run starts from (its first caller, ticket:repair-environment, was removed with the ticket health check, ASS-450).
 test('tick: a ticket entered into a sub-engine at a step with an output (its sub-status\'s) starts the run there with it, for the step\'s prompt to read', async () => {
   const f = controlFixture();
   edit(sprintFile(f), s => { s.features[0].variations[0]['harness-status'] = { ...hs('local-testing'), 'sub-status': { state: 'take-screenshots', 'state-engine': 'test', output: { summary: 'S' } } }; s.features[0]['ticket-system-status'] = 'In Progress'; });

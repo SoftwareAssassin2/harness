@@ -29,12 +29,16 @@ function processFixture() {
 }
 // main.js run with the fixture's env and `args`, its stdout lines collected; resolves when it exits. Killed when
 // its test ends, if it has not ended by then: a test that fails part way leaves nothing holding the run open (ASS-109).
+// With `ticks` it also says a line after each tick (main.js's CONTROL_TEST_TICK_LINES, ASS-425): isTick's, counted by
+// ticksIn, so a test waits for ticks to have run rather than for time to pass.
 const children = [];
 afterEach(() => { for (const child of children.splice(0)) child.kill('SIGKILL'); });
 // startControl, its process group added to what is killed when the test ends.
 const supervised = options => { const c = startControl(options); children.push({ kill: () => { try { process.kill(-c.pid, 'SIGKILL'); } catch { /* ended */ } } }); return c; };
-function run(f, args, { input = 'keep' } = {}) {
-  const child = spawn(process.execPath, [MAIN, ...args], { stdio: ['pipe', 'pipe', 'pipe'], env: f.env });
+const isTick = line => / test tick ran$/.test(line);
+const ticksIn = lines => lines.filter(isTick).length;
+function run(f, args, { input = 'keep', ticks = false } = {}) {
+  const child = spawn(process.execPath, [MAIN, ...args], { stdio: ['pipe', 'pipe', 'pipe'], env: ticks ? { ...f.env, CONTROL_TEST_TICK_LINES: '1' } : f.env });
   children.push(child);
   const lines = [], errors = [];
   createInterface({ input: child.stdout }).on('line', line => lines.push(line));
@@ -74,7 +78,7 @@ test('the pidfile is written at start, refuses a second control while it names a
   assert.equal((await second.exit).code, 1);
   assert.match(second.errors.join('\n'), new RegExp(`control: already running as pid ${first.child.pid}`));
   first.child.stdin.end();
-  assert.deepEqual(await first.exit, { code: 0, signal: null });
+  assert.deepEqual(await within(first.exit), { code: 0, signal: null });
   assert.ok(!existsSync(f.pidfile));
   // A pidfile naming a dead process does not block.
   writeFileSync(f.pidfile, `${DEAD}\n`);
@@ -83,22 +87,23 @@ test('the pidfile is written at start, refuses a second control while it names a
 
 test('control keeps ticking, quietly, while its stdin is open and exits 0 soon after it closes, or on SIGTERM', async () => {
   const f = processFixture();
-  const open = run(f, ['--tick-ms', '50']);
+  const open = run(f, ['--tick-ms', '50'], { ticks: true });
   let signalled = null;
   try {
     // The ticks ran: the ticket went as far as it goes without an agent seat. Its move's last line is awaited, not
     // "committed → plan": each line is a write of its own, and under load the next could arrive in the quiet (ASS-267).
     assert.ok(await until(() => open.lines.some(l => / steps ABC-3 A committed → plan$/.test(l)) && open.lines.some(l => / steps ABC-3 ticket system status → In Progress$/.test(l))), open.lines.join('\n'));
-    const logged = open.lines.length;
-    await new Promise(r => setTimeout(r, 500));                      // ten more ticks with nothing to do: alive, and not a line about it
+    // The quiet: what follows the end of the tick that moved it (its tick line: any line of the move comes before it).
+    const quiet = () => { const after = open.lines.slice(open.lines.findIndex(l => / steps ABC-3 ticket system status → In Progress$/.test(l)) + 1); return after.slice(after.findIndex(isTick) + 1); };
+    assert.ok(await until(() => ticksIn(quiet()) >= 10), open.lines.join('\n'));   // ten more ticks with nothing to do, counted, not timed
     assert.ok(alive(open.child.pid));
-    assert.deepEqual(open.lines.slice(logged), []);
+    assert.deepEqual(quiet().filter(l => !isTick(l)), []);           // and not a line about it
     open.child.stdin.end();
     assert.deepEqual(await within(open.exit), { code: 0, signal: null });
-    signalled = run(f, ['--tick-ms', '100']);                              // after the first is gone: the pidfile allows one control
-    assert.ok(await until(() => signalled.lines.length >= 2));
+    signalled = run(f, ['--tick-ms', '100'], { ticks: true });             // after the first is gone: the pidfile allows one control
+    assert.ok(await until(() => ticksIn(signalled.lines) >= 1));           // a tick ran: past its startup, its SIGTERM handler is set
     signalled.child.kill('SIGTERM');
-    assert.deepEqual(await signalled.exit, { code: 0, signal: null });
+    assert.deepEqual(await within(signalled.exit), { code: 0, signal: null });
     assert.ok(!alive(signalled.child.pid));
   } finally {
     open.child.kill('SIGKILL');
@@ -131,16 +136,16 @@ test('control, run for the supervisor, hands each line on with its stream and ti
   const f = processFixture();
   const lines = [];
   let exited = null;
-  const control = supervised({ onLine: line => lines.push(line), onExit: (code, signal) => { exited = { code, signal }; }, env: f.env, args: ['--tick-ms', '100'] });
+  const control = supervised({ onLine: line => lines.push(line), onExit: (code, signal) => { exited = { code, signal }; }, env: { ...f.env, CONTROL_TEST_TICK_LINES: '1' }, args: ['--tick-ms', '100'] });
   try {
     assert.ok(alive(control.pid));
-    assert.ok(await until(() => lines.length >= 3), `got ${lines.length} lines`);
+    assert.ok(await until(() => lines.length >= 3 && lines.some(l => isTick(l.text))), `got ${lines.length} lines`);   // a tick ran: past its startup, its SIGTERM handler is set
     assert.match(lines[0].text, /^\S+ startup control \d+/);
     assert.ok(lines.every(l => l.stream === 'stdout' && l.at instanceof Date));
   } finally {
     control.stop();
   }
-  await control.exited;                                                 // settles once it has ended, after onExit
+  await within(control.exited);                                         // settles once it has ended, after onExit
   assert.deepEqual(exited, { code: 0, signal: null });                  // a clean shutdown on SIGTERM
   assert.ok(await until(() => !alive(control.pid)));
   assert.equal(lines.at(-1).text, 'control exited (code 0)');
@@ -152,8 +157,8 @@ test('every line control prints is appended to its log file, with its time and, 
   const logFile = join(mkdtempSync(join(tmpdir(), 'control-')), 'logs', 'control.log');   // the folder is made if it is missing
   const lines = [];
   let inFile = 0;
-  const first = supervised({ onLine: line => { lines.push(line); inFile = readFileSync(logFile, 'utf8').split('\n').filter(Boolean).length; }, env: f.env, args: ['--tick-ms', '100'], logFile });
-  assert.ok(await until(() => lines.length >= 2));
+  const first = supervised({ onLine: line => { lines.push(line); inFile = readFileSync(logFile, 'utf8').split('\n').filter(Boolean).length; }, env: { ...f.env, CONTROL_TEST_TICK_LINES: '1' }, args: ['--tick-ms', '100'], logFile });
+  assert.ok(await until(() => lines.length >= 2 && lines.some(l => isTick(l.text))));   // a tick ran: past its startup, its SIGTERM handler is set
   assert.equal(inFile, lines.length);                                    // each line is in the file the moment it is handed on
   first.stop();
   assert.ok(await until(() => readFileSync(logFile, 'utf8').includes('control exited')));
@@ -197,11 +202,13 @@ test('control exits with code 75, its agents stopped, when harness:request-resta
     assert.ok(existsSync(join(f.home, 'restart-requested.json')));                           // harness:restarted stamps it, once a new control runs
     assert.ok(!existsSync(f.pidfile));
     // A request naming another control is not this one's: it keeps ticking.
-    const other = run(f, ['--tick-ms', '100']);
+    const other = run(f, ['--tick-ms', '100'], { ticks: true });
     try {
       assert.ok(await until(() => existsSync(f.pidfile)));
       writeFileSync(join(f.home, 'restart-requested.json'), JSON.stringify({ ticket: 'HD-1', since: '2026-10-11T22:00:00Z', 'control-pid': pid }));
-      await new Promise(r => setTimeout(r, 400));
+      const written = other.lines.length;
+      // Three more ticks: the first may have read the request before it was written; the rest read it, and kept ticking.
+      assert.ok(await until(() => ticksIn(other.lines.slice(written)) >= 3), other.lines.join('\n'));
       assert.ok(alive(other.child.pid));
       other.child.stdin.end();
       assert.deepEqual(await within(other.exit), { code: 0, signal: null });
@@ -265,4 +272,128 @@ test('ASS-268 AC2: control\'s startup clean-up records what each stale agent cos
   assert.deepEqual(spend(stale[0]), [20.48, true, 'api', { input: 100, output: 2000, 'cache-read': 300000, 'cache-write': 40000 }, true]);
   assert.deepEqual(spend(stale[1]), [0, false, 'subscription', { input: 1, output: 2, 'cache-read': 3, 'cache-write': 4 }, true]);
   assert.deepEqual(spend(stale[2]), [null, false, null, null, true]);
+});
+
+// ASS-450 AC4: the ticket health check is removed. A run of it an earlier harness left in assignments.json — its
+// check-ticket-health-steps run at state check-ticket-health, and the check-ticket-health-grouped run under it with
+// an agent at inspect-ticket — is ended as control starts, the run under it first, with its agent, each logged;
+// nothing of it is dispatched again. Other runs are left as they were.
+test('ASS-450 AC4: control ends at its start a ticket health check run left from before, the runs under it and its agent, and never dispatches it', async () => {
+  const f = processFixture();
+  writeFileSync(join(f.dir, 'harness.json'), JSON.stringify({ ...f.harness(), 'harness-project': 'p' }));
+  const PARENT = 'aaaaaaaa-0000-4000-8000-000000000001', CHILD = 'bbbbbbbb-0000-4000-8000-000000000002', OTHER = 'cccccccc-0000-4000-8000-000000000003';
+  const file = join(f.dir, 'assignments.json');
+  const data = JSON.parse(readFileSync(file, 'utf8'));
+  data['transient-state-engines'].push(
+    { id: PARENT, project: 'p', 'state-engine': 'example-development/check-ticket-health-steps', state: 'check-ticket-health', parent: { trigger: 'check-ticket-health', 'work-item': 'ABC-3', variation: 'A', 'ticket-project': 'p' }, 'is-done': false, 'structured-output': null },
+    { id: CHILD, project: 'p', 'state-engine': 'check-ticket-health-grouped', state: 'inspect-ticket', parent: { 'transient-state-engine': PARENT, 'state-engine': 'example-development/check-ticket-health-steps', state: 'check-ticket-health' }, 'is-done': false, 'structured-output': null },
+    { id: OTHER, project: 'p', 'state-engine': 'example-development/gap-resolution-steps', state: 'gap-resolution', parent: { trigger: 'gap-resolution', 'work-item': 'ABC-3', variation: 'A' }, 'is-done': false, 'structured-output': null },
+  );
+  writeFileSync(file, JSON.stringify(data));
+  // Its agent's record, as the removed engine and prompt made it (assignments:create checks both, so it is written here).
+  const [agent] = JSON.parse((await f.agent('assignments:create', 'p', 'example-development', 'backlog', 'review-plan', '1', 'false', 'ABC-3', 'A', '-')).stdout);
+  await f.agent('assignments:set-process', agent['agent-name'], String(DEAD), '-');
+  const now = JSON.parse(readFileSync(file, 'utf8'));
+  Object.assign(now.assignments.find(a => a['agent-name'] === agent['agent-name']), { 'state-engine': 'check-ticket-health-grouped', state: 'inspect-ticket', prompt: 'check-ticket-health-grouped', 'transient-state-engine': CHILD });
+  writeFileSync(file, JSON.stringify(now));
+  const { lines, errors, exit } = run(f, ['--once']);
+  assert.deepEqual(await exit, { code: 0, signal: null });
+  const at = text => lines.findIndex(l => l.endsWith(text));
+  const child = at(`startup run check-ticket-health-grouped ${CHILD.slice(0, 8)} ended (a ticket health check: removed, ASS-450)`);
+  const parent = at(`startup run example-development/check-ticket-health-steps ${PARENT.slice(0, 8)} ended (a ticket health check: removed, ASS-450)`);
+  assert.ok(at(`startup removed the stale assignment of ${agent['agent-name']} (pid ${DEAD})`) >= 0, lines.join('\n'));
+  assert.ok(child >= 0 && parent > child, lines.join('\n'));
+  assert.ok(at('startup 2 ticket health check runs ended (removed, ASS-450)') > parent, lines.join('\n'));
+  const after = f.assignments();
+  assert.deepEqual(after['transient-state-engines'].filter(r => [PARENT, CHILD].includes(r.id) || /check-ticket-health/.test(`${r['state-engine']} ${r.state} ${r.parent?.trigger}`)), []);
+  assert.ok(after['transient-state-engines'].some(r => r.id === OTHER), 'another run is left as it was');
+  assert.deepEqual(after.assignments, []);
+  assert.ok(!lines.some(l => / (dispatch|steps) .*check-ticket-health/.test(l)), lines.join('\n'));
+  assert.deepEqual(errors, []);
+});
+
+// ASS-450 AC4: a project's control (--project) ends its own project's leftover ticket health check runs alone.
+test('ASS-450 AC4: endTicketHealthRuns ends only the runs of the project its control is for, and nothing when there are none', async () => {
+  const { endTicketHealthRuns } = await import('../../src/control/triggers.js');
+  const runs = [
+    { id: 'h1', project: 'h', 'state-engine': 'e/check-ticket-health-steps', state: 'check-ticket-health', parent: { trigger: 'check-ticket-health' } },
+    { id: 'h2', project: 'h', 'state-engine': 'create-ticket-grouped', state: 'find', parent: { 'transient-state-engine': 'h3' } },
+    { id: 'h3', project: 'h', 'state-engine': 'check-ticket-health', state: 'create-ticket', parent: { 'transient-state-engine': 'h1' } },
+    { id: 'x1', project: 'x', 'state-engine': 'check-ticket-health-grouped', state: 'inspect-ticket', parent: { 'transient-state-engine': 'gone' } },
+    { id: 'g1', project: 'h', 'state-engine': 'e/check-health-steps', state: 'check-health', parent: { trigger: 'check-health' } },
+  ];
+  const calls = [], said = [];
+  const ctxFor = project => ({ project, load: () => ({ transient: runs, assignments: [] }), cli: async argv => { calls.push(argv); }, log: (phase, text) => said.push(`${phase} ${text}`), attempt: async (_p, _w, fn) => fn() });
+  assert.equal(await endTicketHealthRuns(ctxFor('h')), 3);
+  assert.deepEqual(calls.map(c => c.join(' ')), ['transient-state-engine:remove h2', 'transient-state-engine:remove h3', 'transient-state-engine:remove h1']);
+  calls.length = 0;
+  assert.equal(await endTicketHealthRuns(ctxFor(null)), 4);
+  assert.deepEqual(calls.map(c => c[1]).toSorted(), ['h1', 'h2', 'h3', 'x1']);
+  calls.length = 0; said.length = 0;
+  assert.equal(await endTicketHealthRuns({ ...ctxFor(null), load: () => ({ transient: [runs[4]], assignments: [] }) }), 0);
+  assert.deepEqual([calls, said], [[], []]);
+});
+
+// ASS-460: what control survives, and how it ends when it cannot go on (main.js; CONTROL_TEST_FAULT makes the fault).
+const faulty = (f, fault, args = ['--tick-ms', '50']) => run({ ...f, env: { ...f.env, CONTROL_TEST_FAULT: fault } }, args, { ticks: true });
+test('ASS-460 AC2: a tick that throws is logged with its stack and the next tick runs; an unhandled rejection is logged and control keeps running', async () => {
+  const f = processFixture();
+  const thrown = faulty(f, 'tick');
+  try {
+    assert.ok(await until(() => ticksIn(thrown.lines) >= 3), thrown.lines.join('\n'));
+    const failed = thrown.lines.filter(l => / error the tick failed, control goes on: /.test(l));
+    assert.equal(failed.length, 2, thrown.lines.join('\n'));
+    assert.match(failed[0], / error the tick failed, control goes on: Error: test: the tick failed \| at .*main\.js:\d+/);
+    assert.ok(thrown.lines.some(l => / steps ABC-3 A backlog → committed$/.test(l)), thrown.lines.join('\n'));   // the ticks after it ran
+    thrown.child.stdin.end();
+    assert.deepEqual(await within(thrown.exit), { code: 0, signal: null });
+  } finally { thrown.child.kill('SIGKILL'); }
+  const rejected = faulty(f, 'rejection');
+  try {
+    assert.ok(await until(() => rejected.lines.some(l => / error unhandled rejection, control keeps running: Error: test: rejected with nobody awaiting \| /.test(l))), rejected.lines.join('\n'));
+    const at = ticksIn(rejected.lines);
+    assert.ok(await until(() => ticksIn(rejected.lines) >= at + 2), rejected.lines.join('\n'));
+    rejected.child.stdin.end();
+    assert.deepEqual(await within(rejected.exit), { code: 0, signal: null });
+  } finally { rejected.child.kill('SIGKILL'); }
+});
+
+test('ASS-460 AC2, AC5: an uncaught exception is logged with its stack, and control shuts down — its pidfile removed — and exits with 70 for the dashboard to start it again', async () => {
+  const f = processFixture();
+  const crashed = faulty(f, 'uncaught');
+  try {
+    assert.deepEqual(await within(crashed.exit), { code: 70, signal: null });
+    assert.ok(crashed.lines.some(l => / error uncaught exception: Error: test: thrown outside a tick \| at /.test(l)), crashed.lines.join('\n'));
+    assert.ok(crashed.lines.some(l => / shutdown control exits with code 70 for the dashboard to start it again$/.test(l)), crashed.lines.join('\n'));
+    assert.match(crashed.lines.at(-1), / shutdown control exiting$/);
+    assert.ok(!existsSync(f.pidfile));
+  } finally { crashed.child.kill('SIGKILL'); }
+});
+
+test('ASS-460 AC5: at start, a pidfile naming a dead process, or a live one that is not a control, is removed and said so; one naming a live control still refuses', async () => {
+  const f = processFixture();
+  writeFileSync(f.pidfile, `${DEAD}\n`);
+  const dead = run(f, ['--once']);
+  assert.equal((await within(dead.exit)).code, 0);
+  assert.ok(dead.lines.some(l => l.endsWith(`startup ${f.pidfile} named pid ${DEAD}, which is not running: removed`)), dead.lines.join('\n'));
+  writeFileSync(f.pidfile, `${process.pid}\n`);                          // this test runner: alive, not a control (a reused pid)
+  const reused = run(f, ['--once']);
+  assert.equal((await within(reused.exit)).code, 0);
+  assert.ok(reused.lines.some(l => l.endsWith(`startup ${f.pidfile} named pid ${process.pid}, a process that is not a control: removed`)), reused.lines.join('\n'));
+  assert.ok(!existsSync(f.pidfile));
+});
+
+test('ASS-457 AC2: control whose data stays unreadable past data-unreadable-exit-seconds says why and exits with 69, its pidfile removed', async () => {
+  const f = processFixture();
+  writeFileSync(join(f.dir, 'harness.json'), JSON.stringify({ ...JSON.parse(readFileSync(join(f.dir, 'harness.json'), 'utf8')), 'data-unreadable-exit-seconds': 0 }));
+  const control = run(f, ['--tick-ms', '50'], { ticks: true });
+  try {
+    assert.ok(await until(() => ticksIn(control.lines) >= 1), control.lines.join('\n'));
+    const file = join(f.dir, 'assignments.json');
+    writeFileSync(file, '{"assignments": [');                            // corrupt, and staying so
+    assert.deepEqual(await within(control.exit), { code: 69, signal: null });
+    assert.ok(control.lines.some(l => l.includes(` data waiting: cannot read ${file} (`)), control.lines.join('\n'));
+    assert.ok(control.lines.some(l => / shutdown its data has not read for \d+s, over data-unreadable-exit-seconds \(0s\): .*; control exits with code 69 for the dashboard to start it again$/.test(l)), control.lines.join('\n'));
+    assert.ok(!existsSync(f.pidfile));
+  } finally { control.child.kill('SIGKILL'); }
 });

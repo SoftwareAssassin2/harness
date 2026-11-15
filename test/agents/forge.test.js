@@ -56,21 +56,21 @@ const gitlab = async (answers, value = TOKEN) => {
 
 test('ASS-307 AC1: providerOf — github.com is GitHub, gitlab.com (or any other host: a self-hosted GitLab) GitLab, with the host', () => {
   assert.deepEqual(forge.providerOf('https://github.com/SoftwareAssassin2/harness'), { provider: 'GitHub', host: 'github.com' });
-  assert.deepEqual(forge.providerOf('https://gitlab.com/caselaw-group/api'), { provider: 'GitLab', host: 'gitlab.com' });
+  assert.deepEqual(forge.providerOf('https://gitlab.com/example-group/api'), { provider: 'GitLab', host: 'gitlab.com' });
   assert.deepEqual(forge.providerOf('https://git.example.com/team/app'), { provider: 'GitLab', host: 'git.example.com' });
   assert.throws(() => forge.providerOf('not a url'));                       // its callers guard
 });
 
 test('ASS-307 AC1: repoPath — owner/name, without slashes or .git', () => {
   assert.equal(forge.repoPath('https://github.com/SoftwareAssassin2/harness'), 'SoftwareAssassin2/harness');
-  assert.equal(forge.repoPath('https://gitlab.com/caselaw-group/api.git'), 'caselaw-group/api');
+  assert.equal(forge.repoPath('https://gitlab.com/example-group/api.git'), 'example-group/api');
   assert.equal(forge.repoPath('https://gitlab.com/g/sub/app/'), 'g/sub/app');
 });
 
 test('ASS-307 AC1: commonOwner — the urls\' longest common group/owner path; nested groups g/sub; none, \'\'; one url its own owner; [] \'\'', () => {
-  const caselaw = Array.from({ length: 26 }, (_, i) => `https://gitlab.com/caselaw-group/repo-${i}`);
-  assert.equal(forge.commonOwner(caselaw), 'caselaw-group');
-  assert.equal(forge.commonOwner(['https://gitlab.com/caselaw-group/a', 'https://gitlab.com/caselaw-group/b/c']), 'caselaw-group');
+  const groupRepos = Array.from({ length: 26 }, (_, i) => `https://gitlab.com/example-group/repo-${i}`);
+  assert.equal(forge.commonOwner(groupRepos), 'example-group');
+  assert.equal(forge.commonOwner(['https://gitlab.com/example-group/a', 'https://gitlab.com/example-group/b/c']), 'example-group');
   assert.equal(forge.commonOwner(['https://gitlab.com/g/sub/a', 'https://gitlab.com/g/sub/b']), 'g/sub');
   assert.equal(forge.commonOwner(['https://gitlab.com/one/a', 'https://gitlab.com/two/b']), '');
   assert.equal(forge.commonOwner(['https://github.com/SoftwareAssassin2/harness']), 'SoftwareAssassin2');

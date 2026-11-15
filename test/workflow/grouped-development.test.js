@@ -87,10 +87,8 @@ test('AC1: every step of the current engines is mirrored in its group — action
       assert.deepEqual(working(rest), working(id === 'committed' ? { ...before, 'exit-events': [{ ...before['exit-events'][0], 'move-to-state': 'setup' }] } : before), id);
       assert.deepEqual(action, was, id);
     }
-    // ASS-124: the grouped health check is its own copy (test/workflow/check-ticket-health.test.js); the current engines' stays as it was.
-    // ASS-62: so are its dispatch wrappers, the current ones with memory (test/agent-cli/memory-prompts.test.js).
-    const own = (key, list) => (key === 'check-ticket-health-steps' ? list.map(s => ({ ...s, action: { ...s.action, engine: s.action.engine.replace(/-grouped$/, '') } }))
-      : /^receive-(pair-)?dispatch-prompt$/.test(key) ? list.replace(/-grouped$/, '') : list);
+    // ASS-62: the grouped engines' dispatch wrappers are their own copies, the current ones with memory (test/agent-cli/memory-prompts.test.js).
+    const own = (key, list) => (/^receive-(pair-)?dispatch-prompt$/.test(key) ? list.replace(/-grouped$/, '') : list);
     const asWorking = value => (Array.isArray(value) ? value.map(working) : value);
     for (const key of Object.keys(engines[current]).filter(k => k !== 'steps')) assert.deepEqual(asWorking(own(key, engines[top][key])), asWorking(engines[current][key]), key);
   }
@@ -253,7 +251,7 @@ test('ASS-75: the VM runs from Setup through Review and in Self Healing, and sto
   const beneath = Object.keys(engines).filter(n => n.startsWith('grouped-')).flatMap(n => engines[n].steps.filter(s => s.vm === 'running').map(s => `${n}/${s.id}=${s.vm}`));
   // ASS-365: grouped-merge's agents run in the VM wherever it runs — Build's, or a project Release's where the VM is not otherwise needed.
   // ASS-390: Check First, and Repair Project's own find-where and VM step.
-  assert.deepEqual(beneath.sort(), ['grouped-blocked/add-repository=running', 'grouped-blocked/check-first=running', 'grouped-blocked/count-attempts=running', 'grouped-blocked/find-where-to-repair-project=running', 'grouped-blocked/find-where=running', 'grouped-blocked/own-branch-or-human=running', 'grouped-blocked/own-branch-or-obstacle=running', 'grouped-blocked/plan-obstacle-fix=running', 'grouped-blocked/repair-environment=running', 'grouped-blocked/repair-project=running', 'grouped-blocked/troubleshoot=running', 'grouped-blocked/verify-image=running',
+  assert.deepEqual(beneath.sort(), ['grouped-blocked/add-repository=running', 'grouped-blocked/check-first=running', 'grouped-blocked/count-attempts=running', 'grouped-blocked/find-where-to-repair-project=running', 'grouped-blocked/find-where=running', 'grouped-blocked/own-branch-or-human=running', 'grouped-blocked/own-branch-or-obstacle=running', 'grouped-blocked/plan-obstacle-fix=running', 'grouped-blocked/rebuild-source=running', 'grouped-blocked/repair-environment=running', 'grouped-blocked/repair-project=running', 'grouped-blocked/repair-vm=running', 'grouped-blocked/troubleshoot=running', 'grouped-blocked/verify-image=running',
     'grouped-merge/address-merge-request-feedback=running', 'grouped-merge/code-review=running', 'grouped-merge/security-review=running', 'grouped-release-example/address-merge-request-feedback=running']);
 });
 
@@ -397,7 +395,7 @@ test('ASS-118 AC5: in both grouped engines the order is the MRs\' details and sc
   }
 });
 
-// ASS-314: case-law's Review no longer stops at the Human Review gate. The
+// ASS-314: a client project's Review no longer stops at the Human Review gate. The
 // shared grouped-review has no such step: Risk Assessment's finished turn goes
 // straight on to the AI Token Expense Check, whether or not it flagged the
 // change (the flag was never read by its exits), and nothing in grouped-review
@@ -636,7 +634,7 @@ test('ASS-361 AC3: Await Sequential Merge\'s exit 4 goes to Build\'s own Address
   // ASS-365: exit 5, after them, to Merge the Awaited — given only where merges-awaited is set (below).
   assert.deepEqual(step['exit-events'].map(e => [e.condition, e['move-to-state']]), [[{ 'exit-code': 0 }, 'refresh-before-testing'], [{ 'exit-code': 3 }, 'generate-solution'], [{ 'exit-code': 4 }, 'address-merge-request-feedback'], [{ 'exit-code': 5 }, 'merge-awaited']]);
   assert.deepEqual([address.name, address.action, address['run-location'], address['max-visits'], address['on-max-visits']],
-    ['Address Merge Request Feedback', { type: 'prompt', prompt: 'check-on-merge-request-build-grouped', 'agent-count': 1, 'run-in-dev-container': true }, 'vm', 3, 'blocked']);
+    ['Address Merge Request Feedback', { type: 'prompt', prompt: 'check-on-merge-request-build-grouped', 'agent-count': 1, 'run-in-dev-container': true, model: 'claude-opus-5-5' }, 'vm', 3, 'blocked']);
   assert.deepEqual(address['exit-events'], [{ condition: { 'turn-complete': true }, 'move-to-state': 'await-dependencies' }]);
   // Only the gate sends a run there.
   assert.deepEqual(build.steps.filter(s => (s['exit-events'] ?? []).some(e => e['move-to-state'] === 'address-merge-request-feedback')).map(s => s.id), ['await-dependencies']);

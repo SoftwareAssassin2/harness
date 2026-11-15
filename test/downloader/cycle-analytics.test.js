@@ -82,13 +82,14 @@ test('ASS-406 AC1-AC4: a first read takes every ticket with its changelog (a tru
   const before = Date.now();
   const calls = await cycle(r, fetchFn, lines);
   assert.deepEqual(calls, ['ticket:sync', 'analytics:sync-tickets', 'analytics:sync-sprints', 'project:set-last-data-download']);
-  assert.deepEqual(jqls, ['project = "PROJ" AND issuetype not in subTaskIssueTypes() ORDER BY created ASC']);
+  assert.deepEqual(jqls, ['project = "PROJ" ORDER BY created ASC']);
   assert.ok(paths.includes('/rest/agile/1.0/board/12/sprint'));
   const tickets = JSON.parse(readFileSync(r.file('tickets.json'), 'utf8'));
   assert.ok(Date.parse(tickets['fetched-through']) >= before - 1000);
+  assert.equal(tickets['includes-subtasks'], true);
   assert.deepEqual(Object.keys(tickets.tickets), ['PROJ-1', 'PROJ-2']);
   assert.deepEqual(tickets.tickets['PROJ-1'], {
-    key: 'PROJ-1', title: 'Title PROJ-1', type: 'Bug', created: '2026-10-01T09:00:00.000Z', points: 2, assignee: null, status: 'Done', sprints: [41],
+    key: 'PROJ-1', title: 'Title PROJ-1', type: 'Bug', created: '2026-10-01T09:00:00.000Z', points: 2, assignee: null, status: 'Done', 'status-category': null, sprints: [41],
     'status-changes': [
       { at: '2026-10-02T10:00:00.000Z', from: 'To Do', to: 'In Progress', by: { id: 'acc-ada', name: 'Ada Example' } },
       { at: '2026-10-03T10:00:00.000Z', from: 'In Progress', to: 'Done', by: { id: 'acc-ada', name: 'Ada Example' } },
@@ -150,4 +151,27 @@ test('ASS-406 AC5: a read that fails is logged once until it changes, the files 
   fail = true;
   await cycle(r, fetchFn, lines);
   assert.equal(lines.filter(l => /tickets could not be read/.test(l)).length, 2);
+});
+
+test('ASS-440 AC1: a tickets.json read before sub-tasks were (no includes-subtasks) is read whole once, its sub-tasks added and its other data kept; later reads are incremental again', async () => {
+  const r = root();
+  mkdirSync(join(r.project, 'analytics'));
+  const old = { key: 'PROJ-9', title: 'Gone from Jira', type: 'Story', created: '2026-09-01T09:00:00.000Z', points: 1, assignee: null, status: 'Done', sprints: [], 'status-changes': [], 'assignee-changes': [] };
+  writeFileSync(r.file('tickets.json'), JSON.stringify({ 'fetched-through': new Date(Date.now() - 60_000).toISOString(), tickets: { 'PROJ-9': old } }));
+  const sub = { ...issue('PROJ-3', 'Closed', [history('2026-11-02T10:00:00.000+0000', [statusItem('Open', 'Closed')])]) };
+  sub.fields = { ...sub.fields, issuetype: { name: 'Sub-task', subtask: true }, parent: { key: 'PROJ-1' }, status: { name: 'Closed', statusCategory: { key: 'done' } } };
+  const { fetchFn, jqls } = fakeFetch(u => (u.pathname === '/rest/api/3/search/jql' ? { issues: [issue('PROJ-1', 'To Do'), sub], isLast: true } : SPRINTS));
+  const lines = [];
+  await cycle(r, fetchFn, lines);
+  assert.deepEqual(jqls, ['project = "PROJ" ORDER BY created ASC']);   // whole, though fetched-through was a minute ago
+  assert.ok(lines.some(l => /analytics: 2 tickets read, all of them \(once, for the sub-tasks\)/.test(l)), lines.join('\n'));
+  const file = JSON.parse(readFileSync(r.file('tickets.json'), 'utf8'));
+  assert.equal(file['includes-subtasks'], true);
+  assert.deepEqual(Object.keys(file.tickets).sort(), ['PROJ-1', 'PROJ-3', 'PROJ-9']);
+  assert.deepEqual(file.tickets['PROJ-9'], old);   // not read again: kept as it was
+  assert.deepEqual([file.tickets['PROJ-3'].subtask, file.tickets['PROJ-3'].parent, file.tickets['PROJ-3']['status-category']], [true, 'PROJ-1', 'done']);
+  // The marker stays: the next read is incremental, and keeps it.
+  await cycle(r, fetchFn);
+  assert.match(jqls[1], /AND updated >= "-\d+m"/);
+  assert.equal(JSON.parse(readFileSync(r.file('tickets.json'), 'utf8'))['includes-subtasks'], true);
 });

@@ -110,25 +110,31 @@ test('ASS-217 AC4: null caps never hold an API dispatch, however much was spent'
 
 test('ASS-217 AC5: a cap reached while an agent runs on the API key shuts it down gracefully, then kills it after the delay; its step is dispatched again on the subscription once that resets, and the cap hold is cleared under the cap', async () => {
   const f = dual();
-  const resetsAt = inAnHour();
+  // One clock, control's, set by the test (ASS-425): it moves only when the test moves it.
+  let clock = Date.now();
+  f.ctx.now = () => new Date(clock);
+  const resetsAt = clock + 3600e3;
   caps(f, 1, null);
   hold(f, ['claude'], resetsAt);
   turnsNeverEnd(f);
   await tick(f.ctx);
   const [record] = at(f, 'plan');
   assert.equal(record?.['payment-method'], 'api', f.lines.join('\n'));
+  const live = f.ctx.agents.get(record['agent-name']);
   spent(f, 1);                              // the cap is reached
   await tick(f.ctx);
-  assert.equal(at(f, 'plan')[0]?.status, 'Shutting Down', f.lines.join('\n'));
+  const asked = at(f, 'plan')[0];
+  assert.equal(asked?.status, 'Shutting Down', f.lines.join('\n'));
   assert.ok(f.lines.includes(`agents ${record['agent-name']} asked to shut down`), f.lines.join('\n'));
-  f.ctx.now = () => new Date(Date.now() + 2000);   // past the fixture's 1s delay
+  clock = Date.parse(asked['shut-down-requested']) + 2000;   // past the fixture's 1s delay since it was asked (agent:shut-down stamps the Mac's time)
   await tick(f.ctx);
   assert.ok(f.lines.some(l => l.startsWith(`agents ${record['agent-name']} killed after the shut-down delay`)), f.lines.join('\n'));
+  assert.ok(await until(() => live.exited !== null), 'the killed agent has exited');
   // Still capped and still limited: it waits.
   await tick(f.ctx);
   assert.deepEqual(at(f, 'plan'), [], f.lines.join('\n'));
   // The subscription resets: dispatched there.
-  f.ctx.now = () => new Date(resetsAt + 1000);
+  clock = resetsAt + 1000;
   await tick(f.ctx);
   assert.equal(at(f, 'plan')[0]?.['payment-method'], 'subscription', f.lines.join('\n'));
   // Under the cap again (a new day's spend), the hold is cleared.

@@ -529,3 +529,18 @@ test('ASS-277: given a project\'s own engines folder, the validator finds the en
   // The example project's own engines validate as its own.
   for (const name of readdirSync(EXAMPLE_ENGINES)) assert.deepEqual(validateStateEngine(JSON.parse(readFileSync(join(EXAMPLE_ENGINES, name, 'state-engine.json'), 'utf8')), ROOT, name, EXAMPLE_ENGINES), [], name);
 });
+
+// ASS-450 AC3: the ticket health check is removed; an engine still declaring its keys — as the family and
+// software-assassin engines under data/ did, sampling into check-ticket-health-grouped — validates as it would
+// without them: the keys ignored, never an error, though the engine they name is gone.
+test('ASS-450 AC3: check-ticket-health-sample-every and check-ticket-health-steps are ignored by the validator, the engine they run gone', () => {
+  assert.ok(!existsSync(join(ROOT, 'engines', 'check-ticket-health-grouped')) && !existsSync(join(ROOT, 'engines', 'check-ticket-health')));
+  const name = 'harness-development-grouped';
+  const real = JSON.parse(readFileSync(join(engineDir(name), 'state-engine.json'), 'utf8'));
+  const old = { ...real, 'check-ticket-health-sample-every': 5,
+    'check-ticket-health-steps': [{ id: 'check-ticket-health', sequence: 1, name: 'Check Ticket Health', action: { type: 'state-engine', engine: 'check-ticket-health-grouped' }, 'exit-events': [{ condition: { 'is-done': true } }] }] };
+  assert.deepEqual(validateStateEngine(old, ROOT, name, EXAMPLE_ENGINES), []);
+  assert.deepEqual(validateStateEngine(real, ROOT, name, EXAMPLE_ENGINES), []);
+  // A broken value of a removed key is no error either: the key is not read.
+  assert.deepEqual(errorsFor(engine([step('a', 1, { 'is-done': true })], { 'check-ticket-health-sample-every': 'often', 'check-ticket-health-steps': 'none' })), []);
+});

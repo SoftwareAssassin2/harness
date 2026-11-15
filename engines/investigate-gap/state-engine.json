@@ -18,7 +18,7 @@
         },
 
         { "id": "investigate", "sequence": 3, "name": "Investigate Gap", "description": "Working out which step the ticket belongs in and moving it there",
-            "action": { "type": "prompt", "prompt": "investigate-gap", "agent-count": 1, "run-in-dev-container": false },
+            "action": { "type": "prompt", "prompt": "investigate-gap", "agent-count": 1, "run-in-dev-container": false, "model": "claude-opus-5-5" },
             "exit-events": [
                 { "condition": { "turn-complete": true }, "move-to-state": "done" }
             ]

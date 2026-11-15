@@ -112,3 +112,17 @@ test('ticket:set-demo-plan: a .lock file beside demo-plan-<V>.json', async () =>
   await cli(dir, JSON.stringify(BROWSER), 'ticket:set-demo-plan', 'p', 'ABC-5', 'A');
   assert.ok(readdirSync(folder).some(f => f === 'demo-plan-A.json.lock'), 'the lock sits beside the file');
 });
+
+// ASS-428 AC1: the plan from a file path given as the 4th argument, for a confined host agent.
+test('ASS-428 AC1: ticket:set-demo-plan <project> <ticket> <variation> <file> records the file\'s plan verbatim, nothing on stdin; a missing file writes nothing', async () => {
+  const { dir, folder } = projects();
+  const staged = join(dir, 'demo.json');
+  writeFileSync(staged, JSON.stringify(NONE));
+  const r = await cli(dir, '', 'ticket:set-demo-plan', 'p', 'ABC-5', 'A', staged);
+  assert.equal(r.code, 0, r.stderr);
+  assert.equal(readFileSync(join(folder, 'demo-plan-A.json'), 'utf8'), JSON.stringify(NONE));
+  const missing = await cli(dir, JSON.stringify(NONE), 'ticket:set-demo-plan', 'p', 'ABC-5', 'B', '/no/such/demo.json');
+  assert.equal(missing.code, 1);
+  assert.match(missing.stderr, /ticket:set-demo-plan: no file \/no\/such\/demo\.json/);
+  assert.ok(!existsSync(join(folder, 'demo-plan-B.json')));
+});

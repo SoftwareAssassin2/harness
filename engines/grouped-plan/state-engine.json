@@ -12,7 +12,8 @@
                 "type": "prompt",
                 "prompt": "enrich-ac-grouped",
                 "agent-count": 1,
-                "run-in-dev-container": false
+                "run-in-dev-container": false,
+                "model": "claude-opus-5-5"
             },
             "exit-events": [
                 {
@@ -46,7 +47,8 @@
                 "type": "prompt",
                 "prompt": "root-cause-analysis-grouped",
                 "agent-count": 1,
-                "run-in-dev-container": true
+                "run-in-dev-container": true,
+                "model": "claude-opus-5-5"
             },
             "exit-events": [
                 {
@@ -98,7 +100,8 @@
                 "type": "prompt",
                 "prompt": "review-root-cause-analysis-grouped",
                 "agent-count": 1,
-                "run-in-dev-container": false
+                "run-in-dev-container": false,
+                "model": "claude-sonnet-5"
             },
             "exit-events": [
                 {
@@ -254,7 +257,8 @@
                 "type": "prompt",
                 "prompt": "write-execution-plan-grouped",
                 "agent-count": 1,
-                "run-in-dev-container": false
+                "run-in-dev-container": false,
+                "model": "claude-opus-5-5"
             },
             "exit-events": [
                 {
@@ -359,7 +363,8 @@
                 "type": "prompt",
                 "prompt": "write-test-plan-grouped",
                 "agent-count": 1,
-                "run-in-dev-container": false
+                "run-in-dev-container": false,
+                "model": "claude-opus-5-5"
             },
             "exit-events": [
                 {
@@ -411,7 +416,8 @@
                 "type": "prompt",
                 "prompt": "enrich-automated-test-data-grouped",
                 "agent-count": 1,
-                "run-in-dev-container": false
+                "run-in-dev-container": false,
+                "model": "claude-opus-5-5"
             },
             "exit-events": [
                 {
@@ -439,7 +445,8 @@
                 "type": "prompt",
                 "prompt": "review-plan-grouped",
                 "agent-count": 1,
-                "run-in-dev-container": false
+                "run-in-dev-container": false,
+                "model": "claude-sonnet-5"
             },
             "exit-events": [
                 {

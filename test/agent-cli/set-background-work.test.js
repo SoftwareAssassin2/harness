@@ -1,5 +1,5 @@
 // project:set-background-work (ASS-127 AC1): a project's background work —
-// its check-health, check-variation-appeal and check-ticket-health runs —
+// its check-health, check-memory, check-variation-appeal and self-healing runs —
 // switched off for a test run, or on again: project.json's background-work
 // (absent is on), the rest of the file left as it was.
 import { test } from 'node:test';

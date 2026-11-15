@@ -9,7 +9,8 @@
                 "type": "prompt",
                 "prompt": "groom",
                 "agent-count": 1,
-                "run-in-dev-container": false
+                "run-in-dev-container": false,
+                "model": "claude-opus-5-5"
             },
             "exit-events": [
                 {
@@ -88,7 +89,8 @@
                 "type": "prompt",
                 "prompt": "find-dependencies",
                 "agent-count": 1,
-                "run-in-dev-container": false
+                "run-in-dev-container": false,
+                "model": "claude-opus-5-5"
             },
             "exit-events": [
                 {
@@ -108,7 +110,8 @@
                 "type": "prompt",
                 "prompt": "estimate-with-split",
                 "agent-count": 1,
-                "run-in-dev-container": false
+                "run-in-dev-container": false,
+                "model": "claude-opus-5-5"
             },
             "exit-events": [
                 {
@@ -274,7 +277,8 @@
                 "type": "prompt",
                 "prompt": "split-ticket",
                 "agent-count": 1,
-                "run-in-dev-container": false
+                "run-in-dev-container": false,
+                "model": "claude-opus-5-5"
             },
             "exit-events": [
                 {

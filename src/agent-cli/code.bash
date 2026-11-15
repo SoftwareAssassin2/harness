@@ -11,7 +11,7 @@
 #   repo_url <workspace>                          # origin's URL as https://host/group/project
 #   repo_path <workspace>                         # group/project, for glab --repo
 #   build_of <command> <project> <ticket-key> <variation>   # the variation's build object, as JSON
-#   vm_of <command> <project> <ticket-key> <variation>      # the name of the variation's VM (ASS-74); nothing when it has none
+#   vm_of <command> <project> <ticket-key> <variation>      # the variation's VM (ASS-74), as machine.bash names a machine (ASS-432); nothing when it has none
 #   set_build <command> <project> <ticket-key> <variation> '<json object>'   # merged into the variation's build
 #   ticket_field <command> <project> <ticket-key> <field>   # a field of the ticket (title, url, …)
 #   ticket_reference <command> <project> <ticket-key>       # [KEY](url) for a web url; else, an off-board ticket's file:// or none, KEY: title (ASS-86)
@@ -27,7 +27,7 @@
 # PROJECTS_DIR overrides the projects folder, used by tests. Each fails,
 # naming <command>, when the project or its workspace is missing.
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/sprint.bash"
-source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/lima-home.bash"
+source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/machine.bash"
 
 workspace_of() {
   local command="$1" project="$2" folder
@@ -77,7 +77,7 @@ variation_field() {
     || { echo "$command: no $ticket variation $variation in $project's active sprint" >&2; return 1; }
 }
 build_of() { variation_field '.build // {}' "$@"; }
-vm_of() { variation_field '.vm.name // ""' "$@" | jq -r .; }
+vm_of() { variation_field "$machine_of" "$@" | jq -r .; }
 
 set_build() {
   local command="$1" project="$2" ticket="$3" variation="$4" fields="$5"
@@ -151,13 +151,14 @@ glab_run() {
 # around it keeps its input. Returns the command's status; 125 when the
 # container is missing, stopped, unreachable or does not mount the folder.
 # Given <vm> (a variation's, ASS-74), it runs in that VM instead, <folder> a
-# folder there, through limactl shell (its LIMA_HOME lima-home.bash's,
+# folder there, through the machine layer (machine.bash machine_run,
+# ASS-432; for a Lima VM, limactl shell under lima-home.bash's LIMA_HOME,
 # ASS-273): the VM holds the project's dependencies.
 IN_PROJECT_SHIM='f="$(mktemp)"; trap '"'"'rm -f "$f"'"'"' EXIT; cat > "$f"; [ -s "$f" ] && export NPM_CONFIG_USERCONFIG="$f"; bash -c "$1"; s=$?; rm -f "$f"; exit $s'
 in_project() {
   local command="$1" project="$2" folder="$3" run="$4" vm="${5:-}" container state inside input=/dev/null k v
   local envs=()
-  if [[ -n "$vm" ]]; then LIMA_HOME="$(lima_home)" limactl shell --workdir "$folder" "$vm" -- bash -c "$run" < /dev/null; return; fi
+  if [[ -n "$vm" ]]; then machine_run --workdir "$folder" "$vm" -- bash -c "$run" < /dev/null; return; fi
   container="$(jq -r '."dev-container" // empty' "$projects/$project/project.json")"
   [[ -n "$container" ]] || { (cd "$folder" && bash -c "$run") < /dev/null; return; }
   state="$(docker inspect -f '{{.State.Running}} {{json .Mounts}}' "$container" 2>&1)" || { echo "$command: the dev container $container is unavailable: $state" >&2; return 125; }

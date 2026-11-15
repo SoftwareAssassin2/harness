@@ -6,6 +6,9 @@
 //
 // A ticket-system status means only what the engine steps paired with it
 // (`paired-ticket-system-status`) say: no status name is ever compared here.
+// A sub-task (ASS-440: `subtask: true` in tickets.json) counts only in
+// Sub-tasks/day; its status, when no engine step pairs it, falls back on Jira's
+// status category (`status-category`: new, indeterminate or done).
 // Pure: the caller reads the files and passes them in, with "now".
 
 const RANK = { planning: 0, 'in-progress': 1, qa: 2, done: 3 };
@@ -15,6 +18,7 @@ const DASH = '–';
 // The P screen's columns in order: each cell key and its heading.
 export const COLUMNS = [
   { key: 'ticketsPerDay', title: 'Tickets/day' },
+  { key: 'subTasksPerDay', title: 'Sub-tasks/day' },
   { key: 'pointsPerDay', title: 'Pts/day' },
   { key: 'mrsPerDay', title: 'MRs/day' },
   { key: 'firstPass', title: 'First pass' },
@@ -143,6 +147,29 @@ export function ticketFacts(ticket, categories) {
   return { done, qa, inProgress, sentBack };
 }
 
+// jiraCategories(tickets) — { [status]: Jira status category } from the
+// tickets' current statuses and their recorded `status-category` (ASS-440):
+// the changelog names a status but never its category, so a status a sub-task
+// moved through is known by any ticket now in it, sub-tasks first.
+export function jiraCategories(tickets) {
+  const all = Object.values(tickets?.tickets ?? {}).filter(t => t && t.status && t['status-category']);
+  const known = {};
+  for (const t of [...all.filter(t => t.subtask), ...all.filter(t => !t.subtask)]) if (!Object.hasOwn(known, t.status)) known[t.status] = t['status-category'];
+  return known;
+}
+
+// subTaskDone(ticket, categories, jira) — the moment (ms) of a sub-task's
+// first change into a done status, or null (ASS-440 AC3): a status the
+// engines pair is done when they say so; one they don't, when its Jira status
+// category is done — the sub-task's own when it is still in that status, else
+// jira's (jiraCategories).
+export function subTaskDone(ticket, categories, jira) {
+  const isDone = status => (Object.hasOwn(categories, status) ? categories[status] === 'done'
+    : (status === ticket.status && ticket['status-category'] ? ticket['status-category'] : jira[status]) === 'done');
+  const at = (ticket['status-changes'] ?? []).filter(c => c.to != null && isDone(c.to)).map(c => Date.parse(c.at)).filter(t => !Number.isNaN(t));
+  return at.length ? Math.min(...at) : null;
+}
+
 const memberName = m => m['ticket-system-name'] ?? m['git-name'] ?? m['git-username'] ?? m['ticket-system-id'] ?? '?';
 
 // performance({ tickets, sprints, mergeRequests, team, engines, span, now,
@@ -157,12 +184,13 @@ const memberName = m => m['ticket-system-name'] ?? m['git-name'] ?? m['git-usern
 //   timeZone       the zone whose calendar days make the span (default UTC)
 //   includeIdle    also give a row to developers with nothing in the span or now
 // Returns { span: { start, end, days, label, sprint }, categories, rows: [ {
-// member: { id, name, gitUsername }, cells: { ticketsPerDay, pointsPerDay,
+// member: { id, name, gitUsername }, cells: { ticketsPerDay, subTasksPerDay, pointsPerDay,
 // mrsPerDay, firstPass, devTime, testTime, inProgressNow, mainLayer } } ],
 // newMembers: [ { name, role, firstSeen } ], unknownAuthors: [ { username,
 // name, mrs } ] }. Rows are team members with role developer (AC3), those with
-// tickets done, merge requests merged or work in progress now unless
-// includeIdle, most tickets done first, then by name.
+// tickets or sub-tasks done, merge requests merged or work in progress now
+// unless includeIdle, most tickets done first, then by name. Sub-tasks
+// (subtask: true) count only in subTasksPerDay (ASS-440).
 export function performance({ tickets, sprints, mergeRequests, team, engines, span: given, now = Date.now(), timeZone = 'UTC', includeIdle = false }) {
   const categories = statusCategories(engines);
   const span = workOutSpan(given, sprints, now, timeZone);
@@ -174,11 +202,19 @@ export function performance({ tickets, sprints, mergeRequests, team, engines, sp
   const known = new Set(members.map(m => m['git-username']).filter(Boolean));
 
   const tallies = new Map(developers.map(m => [m, {
-    done: 0, points: 0, unpointed: 0, viaQa: 0, firstPass: 0, dev: [], test: [], planning: 0, inProgress: 0, repos: new Map(),
+    done: 0, subTasks: 0, points: 0, unpointed: 0, viaQa: 0, firstPass: 0, dev: [], test: [], planning: 0, inProgress: 0, repos: new Map(),
   }]));
 
   const sprintId = activeSprint(sprints)?.id;
+  const jira = jiraCategories(tickets);
   for (const ticket of Object.values(tickets?.tickets ?? {})) {
+    // A sub-task moved to done in the span, credited to its assignee just before (ASS-440).
+    if (ticket.subtask) {
+      const done = subTaskDone(ticket, categories, jira);
+      const developer = done != null && inSpan(done) ? byTicketId.get(assigneeBefore(ticket, done)?.id) : null;
+      if (developer) tallies.get(developer).subTasks++;
+      continue;
+    }
     // In progress now: the active sprint's tickets, by current assignee.
     const current = categories[ticket.status];
     const holder = byTicketId.get(ticket.assignee?.id);
@@ -223,10 +259,11 @@ export function performance({ tickets, sprints, mergeRequests, team, engines, sp
       .map(([repo, n]) => `${repoName(repo)} ${percent(n, mrs)} (${n})`);
     return {
       member: { id: m['ticket-system-id'] ?? null, name: memberName(m), gitUsername: m['git-username'] ?? null },
-      idle: !t.done && !mrs && !(t.planning + t.inProgress),
+      idle: !t.done && !t.subTasks && !mrs && !(t.planning + t.inProgress),
       done: t.done,
       cells: {
         ticketsPerDay: rate(t.done, days, [['tickets', t.done], ['days', days]]),
+        subTasksPerDay: rate(t.subTasks, days, [['sub-tasks', t.subTasks], ['days', days]]),
         pointsPerDay: rate(t.points, days, [['points', formatNumber(t.points)], ['days', days], ['unpointed', t.unpointed]]),
         mrsPerDay: rate(mrs, days, [['MRs', mrs], ['days', days]]),
         firstPass: t.viaQa

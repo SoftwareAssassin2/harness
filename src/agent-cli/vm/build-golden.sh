@@ -24,8 +24,9 @@ set -euo pipefail
 #   ci-checks.json the merge-request CI checks ci-checks:verify runs in a ticket's
 #                  VM (ASS-249); not an input of the image either (ASS-250)
 # Around them run the harness's shared steps (golden-image/ beside this file):
-# git.sh, desktop.sh (ASS-76), registry.sh, a restart (for group changes and
-# desktop.sh's kernel), repositories.sh (a clone
+# git.sh, desktop.sh (ASS-76), memory.sh (ASS-421: the kernel zeroes freed
+# pages, init_on_free=1), registry.sh, a restart (for group changes,
+# desktop.sh's kernel and memory.sh's command line), repositories.sh (a clone
 # of each repository at /repos/<basename>), images.sh, finish.sh.
 #
 # The image is tagged with the sha256 of its inputs, recorded in
@@ -146,6 +147,7 @@ step provision in_vm "$folder/provision.sh" </dev/null
 [[ ${#tools[@]} -eq 0 ]] || step tools limactl shell --workdir / "$build" -- bash -c 'f=0; for t; do command -v "$t" || { echo "$t is not on PATH"; f=1; }; done; exit $f' tools "${tools[@]}" </dev/null
 step git in_vm "$shared/git.sh" </dev/null
 step desktop in_vm "$shared/desktop.sh" </dev/null
+step memory in_vm "$shared/memory.sh" </dev/null
 [[ -z "$hosts_toml" ]] || printf '%s\n' "$hosts_toml" | step registry in_vm "$shared/registry.sh" "$upstream"
 step stop limactl stop "$build"
 step start limactl start --tty=false "$build" 7>&-

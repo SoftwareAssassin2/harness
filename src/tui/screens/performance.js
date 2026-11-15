@@ -3,10 +3,11 @@
 // from/to span set by hand — as src/analytics/performance.js (ASS-410) works it
 // out from the project's analytics files, team.json and engines. A boxed grid,
 // a row per developer, each cell its value over the labelled figures behind it;
-// the operator's own row highlighted. Pure, as app.js is: opening the screen
-// asks main.js for the files (performanceLoad, load.js loadAnalytics), which
-// hands them back through analyticsLoaded, so reading them never holds up a
-// draw or any other screen.
+// the operator's own row highlighted. Its columns are COLUMNS' (Sub-tasks/day,
+// ASS-440, right after Tickets/day), each as wide as its widest line. Pure,
+// as app.js is: opening the screen asks main.js for the files
+// (performanceLoad, load.js loadAnalytics), which hands them back through
+// analyticsLoaded, so reading them never holds up a draw or any other screen.
 import { performance, COLUMNS, cellLines, activeSprint, dateIn } from '../../analytics/performance.js';
 import { visible, pad, wrap } from '../text.js';
 import { thumb } from '../table.js';
@@ -148,7 +149,7 @@ function layout(state, size) {
   const result = worked(state, loaded.data, size);
   const head = [result.header, keys, third];   // third: the form's keys or a message, else the blank line over the grid
   const notice = noticeLines(result, columns);
-  if (!result.rows.length) return { head: [...head, 'No developer moved a ticket to Done, merged a merge request or has work in progress in this span.'], grid: null, notice, height: 0, last: 0 };
+  if (!result.rows.length) return { head: [...head, 'No developer moved a ticket or sub-task to Done, merged a merge request or has work in progress in this span.'], grid: null, notice, height: 0, last: 0 };
   const table = grid(result.rows, loaded.data.accountId ?? OPERATOR_ID);
   const bottom = below(state) + Math.max(1, platform(state, columns, now).length);
   const free = rows - headerLines(state, columns, now).length - bottom - head.length - table.head.length - 1 - (notice.length ? notice.length + 1 : 0);

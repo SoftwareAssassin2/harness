@@ -25,27 +25,7 @@
             ]
         }
     ],
-    "check-ticket-health-sample-every": 5,
     "ready-tickets-join-sprint-at": "committed",
-    "check-ticket-health-steps": [
-        {
-            "id": "check-ticket-health",
-            "sequence": 1,
-            "name": "Check Ticket Health",
-            "description": "Check on the health of the ticketing system",
-            "action": {
-                "type": "state-engine",
-                "engine": "check-ticket-health-grouped"
-            },
-            "exit-events": [
-                {
-                    "condition": {
-                        "is-done": true
-                    }
-                }
-            ]
-        }
-    ],
     "check-memory-interval-seconds": 86400,
     "check-memory-steps": [
         {

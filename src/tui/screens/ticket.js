@@ -10,7 +10,7 @@ import { reviewLines, splitProposalLines, ticketScreenshots, ticketDocuments } f
 import { stateOf, enginesOf } from '../status.js';
 import { scrollBox, scrollLast } from '../table.js';
 import { visible, wrap } from '../text.js';
-import { ticketLines, overlapsOf, workedByHand, refinementHistory, humanGate, gateLines, stateCounts, statesColumn, pendingChange, quickLines, stripLines, needsYou, defaultTab, gateWaits, tabWidth, panelWidth, ticketTabs, tabsOf, RETURN_STEPS } from '../ticket.js';
+import { ticketLines, overlapsOf, workedByHand, vmHeld, refinementHistory, humanGate, gateLines, stateCounts, statesColumn, pendingChange, quickLines, stripLines, needsYou, defaultTab, gateWaits, tabWidth, panelWidth, ticketTabs, tabsOf, RETURN_STEPS, blockedOf, blockedLines, gateTab, tabNumber } from '../ticket.js';
 import { featureOn } from '../features.js';
 import { below, headerLines, platform } from './frame.js';
 import { chatBox, viewLog } from './log.js';
@@ -48,7 +48,8 @@ export function editAnswer(state, key) {
 // question and the first choice selected, on the tab openTicket picks;
 // closing it clears the ticket and its chat.
 export const OPENED_TICKET = {
-  ticketScroll: 0, ticketStatesScroll: null, ticketHistoryScroll: 0, ticketQuestionsScroll: 0, ticketActionsScroll: null,
+  ticketScroll: 0, ticketMergesScroll: 0, ticketStatesScroll: null, ticketHistoryScroll: 0, ticketQuestionsScroll: 0, ticketActionsScroll: null,
+  ticketBlockedScroll: 0, ticketBlockedChoice: 0,   // the Blocked tab (ASS-439): its scroll, from its top, and its choice
   ticketQuestionSelected: 0, ticketChoice: 0, ticketTab: 'chat', ticketMessage: '', message: '',
 };
 const CLOSED_TICKET = { ticket: null, ...OPENED_TICKET, ticketChatLog: null, ticketChatScroll: null, ticketChatMessage: '' };
@@ -103,6 +104,9 @@ const gateStepsOf = (engines, name, steps, depth = 0, above = [name]) => steps
 // blocked state (see blockedStep) unless it is there, setting its manual
 // priority (see editPriority) and the states its variation is gated on leaving
 // (see editGates, over `gateSteps`: the steps it can leave, see gateStepsOf).
+// At a blocked step (ASS-439) `blocked` is what the Blocked tab explains
+// (blockedOf) and the step's own choices are that tab's `blockedChoices`, no
+// longer among the Actions tab's `choices` (gateTab), what was recorded at it with them.
 // `missing` in place of it all for a ticket no longer in the sprint.
 function sprintTicketParts(state) {
   const back = 'the sprint';
@@ -123,8 +127,12 @@ function sprintTicketParts(state) {
   // Every ticket an overlap could be stored on — sprint, backlog and the sprint tickets' backlog
   // entries — so overlapsOf shows one stored on the other side too (ASS-196).
   const pool = [...tickets, ...backlogTickets(state), ...(state.projects[state.project]?.backlogOfSprint ?? [])];
+  const blockedInfo = blockedOf(t, steps, { engines, runs: state.transientEngines ?? [], hold: state.projects[state.project]?.credentialsHold ?? null, project: state.projects[state.project]?.id });
+  const onBlocked = gateTab(gate, tabsOf(false, Boolean(blockedInfo))) === 'blocked';
+  const recorded = gate && review?.state === gate.step.id ? review : null;
   return {
     back, t, steps, gate, demo: plan?.demo === true ? plan : null,
+    blocked: blockedInfo, blockedChoices: onBlocked ? gate?.choices ?? [] : [], blockedRecorded: onBlocked ? recorded : null,
     review: reviewing ? width => reviewLines(state.projects[state.project]?.reviews?.[t.key], { variation: t.variation.name, mrs: t.variation['merge-request'], demo: plan, width }) : null,
     status: statusText(t, steps),
     stepName: id => steps.find(s => s.id === id)?.name ?? id,
@@ -137,13 +145,14 @@ function sprintTicketParts(state) {
     agents: ticketAgents(liveAssignments(state), t).map(a => a['agent-name']),
     current: stateOf(t.variation),
     counts: stateCounts(t.variation, steps),
-    recorded: gate && review?.state === gate.step.id ? review : null,
+    recorded: onBlocked ? null : recorded,
     gateSteps: gateStepsOf(engines, engineName, steps),
     choices: [
-      ...(gate?.choices ?? []), ...(plan?.demo === true ? [{ decision: 'Demo', leadsTo: 'the VM\'s desktop', form: 'demo' }] : []),
+      ...(onBlocked ? [] : gate?.choices ?? []), ...(plan?.demo === true ? [{ decision: 'Demo', leadsTo: 'the VM\'s desktop', form: 'demo' }] : []),
       ...block, { decision: 'Set manual priority', form: 'priority' },
       ...(t.variation.name ? [{ decision: 'Gate when leaving states', form: 'gates' }] : []),
       ...handBack(state, t),
+      ...releaseVm(state, t),
       ...(t.variation.name ? [paused
         ? { decision: 'Unpause this ticket', decide: ['ticket:set-paused', state.projects[state.project].id, t.key, t.variation.name, 'false'] }
         : { decision: 'Pause this ticket', decide: ['ticket:set-paused', state.projects[state.project].id, t.key, t.variation.name, 'true'] }] : []),
@@ -155,6 +164,10 @@ function sprintTicketParts(state) {
 // Hand back to control (ASS-166), offered on a ticket worked by hand, sprint
 // or backlog: ticket:set-manual off clears its worked-manually.
 const handBack = (state, t) => (workedByHand(t) ? [{ decision: 'Hand back to control', decide: ['ticket:set-manual', state.projects[state.project].id, t.key, 'off'] }] : []);
+
+// Release its VM (ASS-427 AC7), offered on a variation whose VM the operator
+// holds running: vm:hold off, its step's rules applying to it again.
+const releaseVm = (state, t) => (vmHeld(t.variation) ? [{ decision: 'Release its VM (stop holding it running)', decide: ['vm:hold', state.projects[state.project].id, t.key, t.variation.name, 'off'] }] : []);
 
 // Delete ticket (ASS-104): ticket:delete, a soft delete, offered on a ticket
 // — sprint or backlog, Jira's or off-board — unless its work has merged (a
@@ -217,7 +230,7 @@ function backlogTicketParts(state) {
     overlaps: overlapsOf(t, pool),
     agents: projectAssignments(state).filter(a => a['work-item'] === found.key).map(a => a['agent-name']),
     current: at, counts: null,
-    recorded: null, gateSteps: [],
+    recorded: null, gateSteps: [], blocked: null, blockedChoices: [],
     choices: [...(gate?.choices ?? []), { decision: 'Set manual priority', form: 'priority' }, ...handBack(state, found), ...deleteChoice(state, found.key, (found.variations ?? []).filter(v => !v['is-deleted']))],
   };
 }
@@ -226,11 +239,16 @@ function backlogTicketParts(state) {
 // (ticketTab, TABS) left of the quick-details panel (quickLines: where the
 // ticket stands, what needs the operator — needsYou — never focused or
 // scrolled), each tab keeping its own place —
+//   Blocked (ASS-439, second, only while the variation is at a blocked step):
+//     why it is blocked and, at Blocked for Human, its ways out (blockedLines),
+//     chosen and recorded as on Actions;
 //   Actions: the human actions (ticketActions), with below them what the
 //     decision is about: at Human Review the review (ASS-118), at a backlog
 //     ticket's split decision the split proposal (ASS-252), with a pending
 //     requirements change the current and new descriptions (pendingChange);
 //   Details: every field of the ticket (ticketLines);
+//   Merge requests (ASS-437): the variation's branch and worktree and its
+//     merge requests, opened, planned or closed unopened (ticketLines' merges);
 //   History: its states (statesColumn — a sprint ticket's execution-engine
 //     steps with their visits and dispatches, stateCounts, its quarantine
 //     states after; a backlog ticket's refinement steps), the one it stands on
@@ -259,7 +277,13 @@ function runningOn(state, t) {
   return { ticket: sum(on), variation: sum(on.filter(a => a.variation === t.variation?.name)) };
 }
 const STATES_WIDTH = 28;   // the History tab's states pane, borders included — at most half the tabs on a narrow screen
-const ticketParts = state => (state.ticket.backlog ? backlogTicketParts(state) : sprintTicketParts(state));
+// A ticket's parts with the tabs it shows (shownTabs) and the tab its gate's choices are on (gateTab).
+function ticketParts(state) {
+  const parts = state.ticket.backlog ? backlogTicketParts(state) : sprintTicketParts(state);
+  if (parts.missing) return parts;
+  const tabs = shownTabs(state, parts);
+  return { ...parts, tabs, gateOn: gateTab(parts.gate, tabs) };
+}
 const openQuestions = state => ticketQuestions(state).filter(isOpenQuestion).length;
 function ticketView(state, size) {
   const { columns = 0, rows = Infinity, now = 0 } = size;
@@ -267,14 +291,27 @@ function ticketView(state, size) {
   const boxHeight = Math.max(9, rows - headerLines(state, columns, now).length - bottom - 2);
   const parts = ticketParts(state);
   if (parts.missing) return { head: [`esc returns to ${parts.back}`, ''], list: [parts.missing], width: columns, boxHeight, height: boxHeight - 2 };
-  const { t, steps, choices, gateSteps } = parts;
+  const { t, steps, choices, gateSteps, tabs } = parts;
   const side = panelWidth(columns);
-  const tab = state.ticketTab, height = boxHeight - 2 - (side ? 0 : 3), width = tabWidth(columns), text = width - 4, statesWidth = Math.min(STATES_WIDTH, Math.floor(width / 2));
+  // The Blocked tab once the ticket has left its blocked step: Actions in its place.
+  const tab = state.ticketTab === 'blocked' && !parts.blocked ? 'actions' : state.ticketTab, height = boxHeight - 2 - (side ? 0 : 3), width = tabWidth(columns), text = width - 4, statesWidth = Math.min(STATES_WIDTH, Math.floor(width / 2));
   const centre = (lines, at, content) => clamp(at - Math.floor(content / 2), 0, Math.max(0, lines.length - content));
   const spend = chatSpend(state.projects[state.project]?.collaborations, t.key);
   const running = runningOn(state, t);
-  let head = [ticketKeys(state, parts.back), ''], panes, paged;
-  if (tab === 'actions') {
+  let head = [ticketKeys(state, parts, tab), ''], panes, paged;
+  if (tab === 'blocked') {
+    // The Blocked tab (ASS-439): why it is blocked and, at Blocked for Human, the ways out (blockedLines),
+    // chosen as on Actions; from its top until a choice is moved, then keeping the choice in view.
+    const [hint, lines, at] = formLines(state, parts, blockedLines(parts.blocked, {
+      width: text, now: now || new Date(), steps, choices: parts.blockedChoices, selected: state.ticketBlockedChoice, focused: true,
+      recorded: parts.blockedRecorded, past: state.day != null, message: state.ticketMessage,
+    }), text);
+    head = hint ?? head;
+    const marked = lines.findIndex(line => line.includes('▸'));
+    const scroll = at != null ? centre(lines, at, height) : state.ticketBlockedScroll ?? clamp(marked - height + 3, 0, Math.max(0, lines.length - height));
+    panes = [{ lines, scroll }];
+    paged = { field: 'ticketBlockedScroll', content: height };
+  } else if (tab === 'actions') {
     const [hint, actions, at] = ticketActions(state, parts, text);
     head = hint;
     const rule = title => `── ${title} ${'─'.repeat(Math.max(0, text - visible(title) - 4))}`;
@@ -287,14 +324,15 @@ function ticketView(state, size) {
     const scroll = at == null && state.ticketActionsScroll != null ? state.ticketActionsScroll : centre(lines, at ?? Math.max(0, lines.findIndex(line => line.includes('▸'))), height);
     panes = [{ lines, scroll }];
     paged = { field: 'ticketActionsScroll', content: height };
-  } else if (tab === 'details' || tab === 'history') {
-    const { details, history, starts } = ticketLines(t, {
+  } else if (tab === 'details' || tab === 'merges' || tab === 'history') {
+    const { details, merges, history, starts } = ticketLines(t, {
       status: parts.status, stepName: parts.stepName, gateName: parts.gateName, prompted: parts.prompted, agents: parts.agents,
-      columns: tab === 'details' ? text : width - statesWidth - 3, steps, chatSpend: spend, spendLimit: spendLimit(t, state.projects[state.project]?.spendLimit ?? null), refinement: parts.refinement,
+      columns: tab === 'history' ? width - statesWidth - 3 : text, steps, chatSpend: spend, spendLimit: spendLimit(t, state.projects[state.project]?.spendLimit ?? null), refinement: parts.refinement,
       running: running.variation, ticketRunning: running.ticket,
       overlaps: parts.overlaps,
     });
     if (tab === 'details') panes = [{ lines: details, scroll: state.ticketScroll }];
+    else if (tab === 'merges') panes = [{ lines: merges, scroll: state.ticketMergesScroll ?? 0 }];
     else {
       const states = statesColumn(steps, { current: parts.current, counts: parts.counts, width: statesWidth - 4 });
       panes = [
@@ -330,14 +368,14 @@ function ticketView(state, size) {
   const project = state.projects[state.project];
   const screenshots = ticketScreenshots(t, project?.dir && join(project.dir, 'work', t.key, 'screenshots'), Object.values(project?.reviews?.[t.key]?.screenshots ?? {}).flat());
   const documents = ticketDocuments(t, project?.reviews?.[t.key]);   // ASS-261: read with the reviews, nothing read here
-  const facts = { status: parts.status, agents: parts.agents, needs: needsYou(parts.gate, open), chatSpend: spend, running: running.variation, documents, screenshots };
-  const panel = side ? quickLines(t, { ...facts, now: now ?? new Date(), width: side - 4 }) : stripLines(t, { ...facts, width: columns });
+  const facts = { status: parts.status, agents: parts.agents, needs: needsYou(parts.gate, open, tabs), chatSpend: spend, running: running.variation, documents, screenshots };
+  const panel = side ? quickLines(t, { ...facts, now: now ?? new Date(), width: side - 4, tabs }) : stripLines(t, { ...facts, width: columns });
   return {
-    head, boxHeight, gateSteps,
+    head, boxHeight, gateSteps, tab, tabs,
     pane: { ...main, content: height - (main.head?.length ?? 0) - (main.foot?.length ?? 0) },
     paged: paged && { ...paged, lines: panes[0].lines, scroll: panes[0].scroll },
-    panel: { t, choices, gate: parts.gate },
-    lines: ticketTabs({ tab, panes, panel, columns, height, badges: { gate: gateWaits(parts.gate), open }, tabs: shownTabs(state) }),
+    panel: { t, choices, gate: parts.gate, blockedChoices: parts.blockedChoices },
+    lines: ticketTabs({ tab, panes, panel, columns, height, badges: { gate: gateWaits(parts.gate), open, gateOn: parts.gateOn }, tabs }),
   };
 }
 
@@ -346,7 +384,8 @@ function ticketView(state, size) {
 // under them, or in their place the states the variation is gated on leaving,
 // each checked off; `at` the line to keep in view while one is being typed or
 // checked.
-function ticketActions(state, { t, choices, gate, recorded, gateSteps, back, demo }, width) {
+function ticketActions(state, parts, width) {
+  const { t, choices, gate, recorded, gateSteps, demo, tabs } = parts;
   if (state.gatesDraft != null) {
     const { ids, at } = state.gatesDraft;
     const above = [...wrap('Gate this ticket when it leaves each state checked: it waits there, once its work is done, for you to approve the move on.', width), ''];
@@ -356,16 +395,30 @@ function ticketActions(state, { t, choices, gate, recorded, gateSteps, back, dem
     });
     return [['↑/↓ move   space checks or unchecks   enter saves   esc cancels', ''], [...above, ...rows], above.length + at];
   }
-  const lines = gateLines({
-    title: gate?.title, choices, selected: state.ticketChoice, focused: true, past: state.day != null,
-    recorded, held: gate?.held, message: state.ticketMessage, width,
-  });
+  const lines = [
+    // While the Blocked tab shows why it is blocked and its ways out (ASS-439 AC5).
+    ...(parts.blocked ? [`Blocked: see tab ${tabNumber(tabs, 'blocked')}`, ''] : []),
+    ...gateLines({
+      title: gate?.title, choices, selected: state.ticketChoice, focused: true, past: state.day != null,
+      recorded, held: gate?.held, message: state.ticketMessage, width,
+    }),
+  ];
   if (state.ticketConfirm) lines.push('', ...wrap(`${state.ticketConfirm.decision} y/n`, width).map(red));
   if (demo) lines.push(...demoLines(demo, state.demos[`${t.key}.${t.variation.name}`], width));
   if (state.priorityDraft != null) {
     lines.push('', `Manual priority: ${state.priorityDraft}█`);
     return [['type a whole number from 1   enter saves it, empty clears it   esc cancels', ''], lines, lines.length - 1];
   }
+  return formLines(state, parts, lines, width, 'actions');
+}
+
+// formLines(state, parts, lines, width, tab) — under a tab's choices
+// (Actions', or Blocked's, ASS-439), what recording one asks: the reason
+// being typed, the step a rejection returns to — [the
+// keys' hint (null: the tab's own), the lines, the line to keep in view (null: none)].
+function formLines(state, parts, choiceLines, width, tab = 'blocked') {
+  const lines = [...choiceLines];
+  if (tab === 'blocked' && state.ticketConfirm) lines.push('', ...wrap(`${state.ticketConfirm.decision} y/n`, width).map(red));
   if (state.reasonDraft != null) {
     lines.push('', `Reason: ${state.reasonDraft}█`);
     return [['type why it is rejected   enter rejects it   esc cancels', ''], lines, lines.length - 1];
@@ -374,7 +427,7 @@ function ticketActions(state, { t, choices, gate, recorded, gateSteps, back, dem
     lines.push('', 'Return to:', ...RETURN_STEPS.map(([, name], i) => `${i === state.returnDraft.at ? '▸' : ' '} ${name}`));
     return [['↑/↓ choose the step it goes back to   enter rejects it   esc cancels', ''], lines, lines.length - RETURN_STEPS.length + state.returnDraft.at];
   }
-  return [[ticketKeys(state, back), ''], lines, null];
+  return [tab === 'blocked' ? null : [ticketKeys(state, parts, tab), ''], lines, null];
 }
 
 // demoLines(plan, run, width) — under the human actions at Human Review
@@ -402,12 +455,15 @@ function demoLines(plan, run, width) {
 const ANSWER_HINT = 'type   tab next field   enter saves   esc cancels';
 // What the keys do on each of a ticket screen's tabs (ASS-184 AC3).
 const TICKET_HINTS = {
-  actions: '↑/↓ choose   enter records the choice   PgUp/PgDn scroll', details: '↑/↓ scroll the details', history: '↑/↓ entry by entry   PgUp/PgDn scroll the states',
+  actions: '↑/↓ choose   enter records the choice   PgUp/PgDn scroll', details: '↑/↓ scroll the details', merges: '↑/↓ scroll the merge requests', history: '↑/↓ entry by entry   PgUp/PgDn scroll the states',
   questions: '↑/↓ choose a question   enter answers it   PgUp/PgDn scroll', chat: 'type a message, enter sends it   ←/→ move the cursor   ↑/↓ scroll the chat',
 };
-// The tabs shown (ASS-262): Chat only with its flag, ticket-chat-tab, on.
-const shownTabs = state => tabsOf(featureOn(state, 'ticket-chat-tab'));
-const ticketKeys = (state, back) => `esc returns to ${back}   ${state.ticketTab === 'chat' ? 'tab switches tabs' : `tab or 1-${shownTabs(state).length} switch tabs`}   ${state.draft != null ? ANSWER_HINT : TICKET_HINTS[state.ticketTab]}`;
+// The Blocked tab's (ASS-439 AC2): at Blocked for Human its ways out are chosen; at Blocked it only scrolls.
+const BLOCKED_HINTS = { human: '↑/↓ choose how to resolve the block   enter records the choice   PgUp/PgDn scroll', ai: '↑/↓ scroll why it is blocked' };
+// The tabs shown (ASS-262): Chat only with its flag, ticket-chat-tab, on; Blocked while the variation is at a blocked step (ASS-439).
+const shownTabs = (state, parts) => tabsOf(featureOn(state, 'ticket-chat-tab'), Boolean(parts?.blocked));
+const ticketKeys = (state, parts, tab = state.ticketTab) => `esc returns to ${parts.back}   ${tab === 'chat' ? 'tab switches tabs' : `tab or 1-${parts.tabs.length} switch tabs`}   ${state.draft != null ? ANSWER_HINT
+  : tab === 'blocked' ? BLOCKED_HINTS[parts.blocked?.human ? 'human' : 'ai'] : TICKET_HINTS[tab]}`;
 
 // Opening a ticket's screen: its chat asked for (ticketChatOpen, for main.js to start or catch up), shown afresh —
 // only with the Chat tab shown (ASS-262): without it, no chat is started or briefed.
@@ -416,8 +472,8 @@ const openChat = (state, key) => ({ ticketChatOpen: { project: state.projects[st
 export function openTicket(state, ticket) {
   const chat = featureOn(state, 'ticket-chat-tab');
   const opened = { ...state, ...(chat ? openChat(state, ticket.key) : {}), ...OPENED_TICKET, ticket };
-  const { gate } = ticketParts(opened);
-  return { ...opened, ticketTab: defaultTab(gate, openQuestions(opened), chat) };
+  const { gate, blocked } = ticketParts(opened);
+  return { ...opened, ticketTab: defaultTab(gate, openQuestions(opened), chat, Boolean(blocked)) };
 }
 
 // openRequested(state, { project, key }) — a click on an Operator Needed
@@ -443,37 +499,48 @@ export function openRequested(state, { project, key }) {
 }
 
 // A key on the ticket screen: escape returns to the dashboard or the backlog;
-// tab opens the next tab (shownTabs), shift-tab the one before, and 1–5 (1–4
-// without Chat, ASS-262) a tab by its number (ASS-184 AC3: not while typing — the chat's keys are in
+// tab opens the next tab (shownTabs), shift-tab the one before, and 1–6 (1–5
+// without Chat, ASS-262; one more with Blocked, ASS-439) a tab by its number (ASS-184 AC3: not while typing — the chat's keys are in
 // viewTicketChat, the forms' their own). ↑/↓ do the open tab's job: on
 // Actions they move the choice, and enter asks for it to be recorded as
 // `decide`, the agent-cli command and its arguments — or, for a choice with a
 // form, opens it; for one with a confirm (Block this ticket), asks first
 // (ticketConfirm) — not on a past day: the only tab an action is taken on. On
 // Questions they choose one, the tab scrolling to keep it in view, and enter
-// opens the answer form (editAnswer) on it. On Details they scroll, and on
+// opens the answer form (editAnswer) on it. On Blocked (ASS-439) at Blocked for Human they move
+// its choice and enter records it as on Actions; at Blocked they scroll it.
+// On Details and Merge requests they scroll, and on
 // History step entry by entry (ASS-145), no further than its lines go.
 // PgUp/PgDn page the open tab's `paged` pane (ASS-185 AC3) — nothing on
-// Details or Chat.
-const TICKET_SCROLLS = { details: 'ticketScroll', history: 'ticketHistoryScroll' };
+// Details, Merge requests or Chat.
+const TICKET_SCROLLS = { details: 'ticketScroll', merges: 'ticketMergesScroll', history: 'ticketHistoryScroll', blocked: 'ticketBlockedScroll' };
+// The choice selected on the tab open: the Blocked tab's among its own (ASS-439 AC4), else the Actions tab's.
+const chosen = (state, panel) => (state.ticketTab === 'blocked' ? panel?.blockedChoices?.[state.ticketBlockedChoice] : panel?.choices[state.ticketChoice]);
+// deselected(state, panel, choice, gate) — once a gate's `choice` is recorded, nothing left selected (ASS-131): the
+// Blocked tab's choice when it was made there (ASS-439), else the Actions tab's; `gate` says it was a gate's already.
+const deselected = (state, panel, choice, gate = false) => (state.ticketTab === 'blocked' ? { ticketBlockedChoice: -1 }
+  : gate || panel.gate?.choices.includes(choice) ? { ticketChoice: -1 } : { ticketChoice: state.ticketChoice });
 // A choice names its whole command (decide), or one run at its step (at: a gate's, its detailed step) or the variation's state.
 const decideOf = (state, t, choice) => choice.decide ?? [choice.command, state.projects[state.project].id, t.key, t.variation.name, choice.at ?? stateOf(t.variation), ...choice.args];
 export function viewTicket(state, key, size) {
   if (key.name === 'escape') return { ...state, ...CLOSED_TICKET };
-  const { pane, panel, paged } = ticketView(state, size);
+  const { pane, panel, paged, tabs, tab } = ticketView(state, size);
   if (!panel) return state;
+  if (tab !== state.ticketTab) state = { ...state, ticketTab: tab };   // the Blocked tab gone: on Actions
   const paging = { pageup: -1, pagedown: 1 }[key.name];
   if (paging) {
     if (!paged) return state;
     const scroll = clamp(paged.scroll + paging * Math.max(1, paged.content), 0, Math.max(0, paged.lines.length - paged.content));
     return scroll === state[paged.field] ? state : { ...state, [paged.field]: scroll };
   }
-  const ids = shownTabs(state).map(([id]) => id);
+  const ids = tabs.map(([id]) => id);
   if (key.name === 'tab') return { ...state, ticketTab: ids[(ids.indexOf(state.ticketTab) + (key.shift ? -1 : 1) + ids.length) % ids.length] };
   if (/^[1-9]$/.test(key.sequence ?? '') && Number(key.sequence) <= ids.length && !key.ctrl) return { ...state, ticketTab: ids[Number(key.sequence) - 1] };
   const onActions = state.ticketTab === 'actions';
-  if (key.name === 'return' && onActions) {
-    const choice = panel.choices[state.ticketChoice];
+  // The Blocked tab's ways out are chosen as the Actions tab's choices are (ASS-439 AC4): the same keys, confirmation and record.
+  const choosing = state.ticketTab === 'blocked' && panel.blockedChoices.length > 0;
+  if (key.name === 'return' && (onActions || choosing)) {
+    const choice = chosen(state, panel);
     if (!choice || state.day) return state;
     const { t } = panel;
     if (choice.form === 'priority') return { ...state, priorityDraft: String(t['manual-priority'] ?? ''), ticketMessage: '' };
@@ -487,7 +554,7 @@ export function viewTicket(state, key, size) {
     if (choice.confirm) return { ...state, ticketConfirm: { decision: choice.confirm, decide: decideOf(state, t, choice), closes: choice.closes === true }, ticketMessage: '' };
     // A gate's choice recorded, nothing is left selected (ASS-131): the gate's
     // choices go once control moves the ticket on, and what slides into their place must not be under the cursor.
-    return { ...state, decide: decideOf(state, t, choice), ticketMessage: '', ticketChoice: panel.gate?.choices.includes(choice) ? -1 : state.ticketChoice };
+    return { ...state, decide: decideOf(state, t, choice), ticketMessage: '', ...deselected(state, panel, choice) };
   }
   if (key.name === 'return' && state.ticketTab === 'questions') {
     const question = ticketQuestions(state)[state.ticketQuestionSelected];
@@ -499,6 +566,10 @@ export function viewTicket(state, key, size) {
   if (onActions) {
     const ticketChoice = clamp(state.ticketChoice + step, 0, Math.max(0, panel.choices.length - 1));
     return ticketChoice === state.ticketChoice ? state : { ...state, ticketChoice, ticketActionsScroll: null };   // the choice back in view
+  }
+  if (choosing) {
+    const ticketBlockedChoice = clamp(state.ticketBlockedChoice + step, 0, panel.blockedChoices.length - 1);
+    return ticketBlockedChoice === state.ticketBlockedChoice ? state : { ...state, ticketBlockedChoice, ticketBlockedScroll: null };   // the choice in view
   }
   if (state.ticketTab === 'questions') {
     const ticketQuestionSelected = clamp(state.ticketQuestionSelected + step, 0, Math.max(0, ticketQuestions(state).length - 1));
@@ -555,10 +626,10 @@ export function editReason(state, key, size) {
   if (key.name === 'return' || key.name === 'enter') {
     if (!draft.trim()) return state;
     const { panel } = ticketView(state, size);
-    const choice = panel?.choices[state.ticketChoice];
+    const choice = chosen(state, panel);
     if (!choice) return { ...state, reasonDraft: null };
     if (choice.returnSteps) return { ...state, reasonDraft: null, returnDraft: { reason: draft.trim(), at: 0 } };
-    return { ...state, reasonDraft: null, ticketMessage: '', ticketChoice: -1, decide: [...decideOf(state, panel.t, choice), draft.trim()] };   // a gate's choice: nothing left selected (ASS-131)
+    return { ...state, reasonDraft: null, ticketMessage: '', ...deselected(state, panel, choice, true), decide: [...decideOf(state, panel.t, choice), draft.trim()] };   // a gate's choice: nothing left selected (ASS-131)
   }
   const text = key.sequence ?? '';
   return [...text].length === 1 && text >= ' ' && text !== '\x7f' ? { ...state, reasonDraft: draft + text } : state;
@@ -575,9 +646,9 @@ export function editReturn(state, key, size) {
   if (step) return { ...state, returnDraft: { ...draft, at: clamp(draft.at + step, 0, RETURN_STEPS.length - 1) } };
   if (key.name !== 'return' && key.name !== 'enter') return state;
   const { panel } = ticketView(state, size);
-  const choice = panel?.choices[state.ticketChoice];
+  const choice = chosen(state, panel);
   if (!choice) return { ...state, returnDraft: null };
-  return { ...state, returnDraft: null, ticketMessage: '', ticketChoice: -1, decide: [...decideOf(state, panel.t, choice), draft.reason, RETURN_STEPS[draft.at][0]] };
+  return { ...state, returnDraft: null, ticketMessage: '', ...deselected(state, panel, choice, true), decide: [...decideOf(state, panel.t, choice), draft.reason, RETURN_STEPS[draft.at][0]] };
 }
 
 // A key while the states a variation is gated on leaving are set (see

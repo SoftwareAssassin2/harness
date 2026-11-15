@@ -153,3 +153,23 @@ test('ASS-353 AC1: automated-tests:record refuses a run command reusing a docker
   assert.equal((await cli(dir, fresh, 'automated-tests:record', 'p', 'ABC-5', 'A')).code, 0);
   assert.equal(readFileSync(file(folder, 'A'), 'utf8'), fresh);
 });
+
+// ASS-428 AC1: the list from a file path given as the 4th argument, for a confined host agent (Repair the Environment on the Host).
+test('ASS-428 AC1: automated-tests:record <project> <ticket> <variation> <file> records the file\'s list verbatim, nothing on stdin; a missing file or invalid content writes nothing', async () => {
+  const { dir, folder } = projects();
+  const list = '[{"list":"bats --count t","run":"bats t"}]';
+  const staged = join(dir, 'tests.json');
+  writeFileSync(staged, list);
+  const r = await cli(dir, '', 'automated-tests:record', 'p', 'ABC-5', 'A', staged);
+  assert.equal(r.code, 0, r.stderr);
+  assert.equal(readFileSync(file(folder, 'A'), 'utf8'), list);
+  const missing = await cli(dir, list, 'automated-tests:record', 'p', 'ABC-5', 'B', '/no/such/tests.json');
+  assert.equal(missing.code, 1);
+  assert.match(missing.stderr, /automated-tests:record: no file \/no\/such\/tests\.json/);
+  writeFileSync(staged, '{"not": "a list"}');
+  const bad = await cli(dir, '', 'automated-tests:record', 'p', 'ABC-5', 'B', staged);
+  assert.equal(bad.code, 1);
+  assert.ok(bad.stderr.includes(`${staged} must be []`), bad.stderr);
+  assert.ok(!existsSync(file(folder, 'B')));
+  assert.match((await cli(dir, '', 'automated-tests:record', 'p', 'ABC-5', 'A', staged, 'extra')).stderr, /usage: automated-tests:record .*\[<file>\]/);
+});

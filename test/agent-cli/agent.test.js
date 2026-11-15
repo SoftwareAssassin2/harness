@@ -99,7 +99,7 @@ test('agent:dispatch gives a run\'s work without a ticket its root run\'s folder
   assert.match(f.inbox('Daredevil')[0], new RegExp(`\\nFirst read ${join(f.dir, 'projects', 'p', 'work', 'ABC-3')}/\\.\nBuild ABC-3 .* Keep \\{assignment\\} literal\\.$`));
 });
 
-test('agent:dispatch of a run about another project\'s ticket (ticket-project=<project>, control\'s sampleHealth) gives {ticket-folder} as that project\'s, making no folder under its own and writing no ticket.json (ASS-204)', async () => {
+test('agent:dispatch of a run about another project\'s ticket (ticket-project=<project>, as the removed ticket health check made) gives {ticket-folder} as that project\'s, making no folder under its own and writing no ticket.json (ASS-204)', async () => {
   const f = fixture();
   const file = join(f.dir, 'assignments.json');
   const data = JSON.parse(readFileSync(file, 'utf8'));

@@ -1,13 +1,15 @@
 // Phases 4–6: the state engine runs control starts of its own accord — on a
-// gap between a ticket's statuses, on a timer, on a sample of state changes.
+// gap between a ticket's statuses, on a timer. (ASS-450: none on a sample of
+// state changes; the ticket health check is removed, endTicketHealthRuns.)
 // At most one run of each kind goes at a time per
-// project — per ticket for gap resolution, ticket health and appeal (plan.js
+// project — per ticket for gap resolution and appeal (plan.js
 // triggerAllowed); such runs count toward max-agents, never max-tickets-in-progress.
 import { pairedStatus, waitsOnHuman, stepOf, isHumanStep, isDoneStep, isHeld, isManual, answersGap } from './engine.js';
 import { triggerAllowed } from './plan.js';
-import { firstStepId, isPaused, BACKGROUND, backgroundOff, weeklyHeld, found, moveTicket } from './moves.js';
+import { firstStepId, isPaused, BACKGROUND, backgroundOff, weeklyHeld, found, moveTicket, endRun } from './moves.js';
 import { rankBacklog } from './rank.js';
-import { isHarnessProject } from './harness-project.js';
+import { sessionSpend } from './finish.js';
+import { expiredLogins } from './workstation-connection.js';
 
 // A run of the engine's `<kind>-steps` list started for `parent`, when the
 // list exists and no such run is going — and, for background work, the
@@ -87,23 +89,37 @@ export async function fireTimers(ctx, state) {
   }
 }
 
-// sampleHealth(ctx, state) — health is the harness project's to check
-// (harness.json harness-project): every check-ticket-health-sample-every'th
-// state change of any project (its engine's setting; moves.js hands each
-// over) starts its check-ticket-health-steps, a run of the harness project,
-// with { trigger: "check-ticket-health", work-item, variation,
-// ticket-project } — the ticket's own project; none for a ticket worked by
-// hand (isManual, ASS-166). Without a harness project, or
-// one whose engine samples nothing, the changes are dropped.
-export async function sampleHealth(ctx, state) {
-  const harness = (state.allProjects ?? state.projects).find(p => isHarnessProject(state.harness, p.id));
-  const every = harness?.engine?.['check-ticket-health-sample-every'];
-  for (const sample of ctx.memory.health.splice(0)) {
-    const count = (ctx.memory.changes.get('all') ?? 0) + 1;
-    ctx.memory.changes.set('all', count);
-    if (!(every > 0) || count % every !== 0 || isManual(found(state, sample).ticket)) continue;
-    if (await startTrigger(ctx, state, 'health', harness, 'check-ticket-health', { 'work-item': sample['work-item'], variation: sample.variation, 'ticket-project': sample.project })) state = ctx.load();
+// endTicketHealthRuns(ctx) — ASS-450: the ticket health check is removed; a
+// run of it left in assignments.json by an earlier harness — one at state
+// check-ticket-health (a check-ticket-health-steps run, its trigger
+// check-ticket-health) or of engine check-ticket-health or
+// check-ticket-health-grouped — is ended with the runs under it, the
+// deepest first (moves.js endRun, transient-state-engine:remove), each
+// logged, and any agent still recorded on one removed with what it cost
+// (assignments:remove; at control's start, main.js, its process has
+// already been stopped). Called once as control starts, for its project's
+// runs alone with --project: none is ever dispatched again.
+const HEALTH_ENGINES = ['check-ticket-health', 'check-ticket-health-grouped'];
+const isTicketHealthRun = r => r.state === 'check-ticket-health' || r.parent?.trigger === 'check-ticket-health'
+  || HEALTH_ENGINES.includes(r['state-engine']) || /\/check-ticket-health-steps$/.test(r['state-engine'] ?? '');
+export async function endTicketHealthRuns(ctx) {
+  const state = ctx.load();
+  const byId = new Map(state.transient.map(r => [r.id, r]));
+  const chain = r => { const up = []; for (let x = r, seen = new Set(); x && !seen.has(x.id); x = byId.get(x.parent?.['transient-state-engine'])) { seen.add(x.id); up.push(x); } return up; };
+  const runs = state.transient.filter(r => (!ctx.project || r.project === ctx.project) && chain(r).some(isTicketHealthRun))
+    .map(r => ({ run: r, depth: chain(r).length })).sort((a, b) => b.depth - a.depth).map(({ run }) => run);
+  if (!runs.length) return 0;
+  const ids = new Set(runs.map(r => r.id));
+  for (const record of state.assignments.filter(a => ids.has(a['transient-state-engine']))) {
+    await ctx.attempt('startup', record['agent-name'], async () => {
+      await ctx.cli(['assignments:remove', record['agent-name'], ...sessionSpend(ctx, record)]);
+      ctx.log('startup', `removed ${record['agent-name']}, the agent of a ticket health check run (removed, ASS-450)`);
+    });
   }
+  let ended = 0;
+  for (const run of runs) await ctx.attempt('startup', `run ${run.id}`, async () => { await endRun(ctx, 'startup', run, 'a ticket health check: removed, ASS-450'); ended++; });
+  ctx.log('startup', `${ended} ticket health check run${ended === 1 ? '' : 's'} ended (removed, ASS-450)`);
+  return ended;
 }
 
 // refineBacklog(ctx, state) — per project with a backlog refinement engine
@@ -148,12 +164,25 @@ export async function refineBacklog(ctx, state) {
 // loginCheck(tool) — a control phase that, for each project with
 // check-for-expired-<tool>-auth, asks every LOGIN_EVERY whether the user's
 // <tool> login — the one <tool> auth login renews — is live (ctx[tool]:
-// 'live', 'expired', or 'unavailable' when the tool cannot run), kept as the
-// project's <tool>-requires-reauthentication file (loadState's
-// <tool>RequiresReauthentication, ASS-58) for the dashboard's warning;
-// written and logged when it changes. One that cannot run leaves the flag as
-// it is, logged once until it runs again. Each tool keeps its own clock.
+// 'live', 'unavailable' when the tool cannot run, or a failure read from its
+// output, login.js: { login: 'expired' | 'offline' | 'unknown', output }; a
+// bare string is taken as the login), kept as the project's
+// <tool>-requires-reauthentication file (loadState's
+// <tool>RequiresReauthentication, ASS-58) for the dashboard's warning and
+// the credentials hold (credentials.js); written and logged when it changes.
+// One that cannot run leaves the flag as it is, logged once until it runs
+// again. ASS-429: so does one that only could not reach the tool's server —
+// an offline or asleep Mac — logged once per streak as a network problem,
+// never as an expiry, so it neither holds the project for credentials nor
+// says to run '<tool> auth login'; a failure the tool does not explain is
+// logged with its output (login.js shown: trimmed, tokens redacted) each
+// time that changes and counted as expired, as before, so a new kind of
+// expiry is never missed. Each tool keeps its own clock. ASS-433: the flag
+// is gcloud's for the project's workstations too (workstations.js), so a
+// live Mac login leaves it set while a workstation's last connect found its
+// own login (its gcloud-config) expired.
 const LOGIN_EVERY = 2 * 60e3;
+const SERVER = { gcloud: 'Google', glab: 'GitLab' };
 const loginCheck = tool => async function (ctx, state) {
   const now = ctx.now().getTime();
   const last = (ctx.memory[tool] ??= new Map());
@@ -161,13 +190,19 @@ const loginCheck = tool => async function (ctx, state) {
     if (project.json[`check-for-expired-${tool}-auth`] !== true) continue;
     const seen = last.get(project.id);
     if (seen && now - seen.at < LOGIN_EVERY) continue;
-    const login = await ctx[tool]();
-    last.set(project.id, { at: now, login });
+    const answer = await ctx[tool]();
+    const { login, output = '' } = typeof answer === 'string' ? { login: answer } : answer;
+    last.set(project.id, { at: now, login, output });
     if (login === 'unavailable') {
       if (seen?.login !== 'unavailable') ctx.log(tool, `${project.id}: ${tool} cannot be run; the warning stays as it is`);
       continue;
     }
-    const expired = login === 'expired';
+    if (login === 'offline') {
+      if (seen?.login !== 'offline') ctx.log(tool, `${project.id}: ${tool} could not reach ${SERVER[tool] ?? 'its server'}, a network problem, not an expired login; the warning stays as it is${output ? ` (${output})` : ''}`);
+      continue;
+    }
+    if (login === 'unknown' && (seen?.login !== 'unknown' || seen.output !== output)) ctx.log(tool, `${project.id}: ${tool} failed for a reason it does not say is an expiry or a network problem; counted as expired: ${output || '(no output)'}`);
+    const expired = login !== 'live' || (tool === 'gcloud' && expiredLogins(project.devEnvironments, project.workstations).length > 0);
     if (project[`${tool}RequiresReauthentication`] === expired) continue;
     await ctx.attempt(tool, project.id, async () => {
       await ctx.cli([`project:set-${tool}-reauthentication`, project.id, String(expired)]);

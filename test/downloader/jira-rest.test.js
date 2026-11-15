@@ -33,7 +33,7 @@ const issue = (key, histories, total = histories.length, extra = {}) => ({
   changelog: { startAt: 0, maxResults: histories.length, total, histories },
 });
 
-test('ASS-406 AC1: a first read searches every ticket of the project (sub-tasks left out, no updated clause) with its changelog, page by page, with basic auth', async () => {
+test('ASS-406 AC1, ASS-440 AC1: a first read searches every ticket of the project (sub-tasks included, no updated clause) with its changelog, page by page, with basic auth', async () => {
   const { asked, fetchFn } = fakeFetch(u => (u.searchParams.get('nextPageToken') === 'p2'
     ? { issues: [issue('PROJ-2', [])], isLast: true }
     : { issues: [issue('PROJ-1', [])], nextPageToken: 'p2', isLast: false }));
@@ -41,10 +41,10 @@ test('ASS-406 AC1: a first read searches every ticket of the project (sub-tasks 
   assert.deepEqual(tickets.map(t => t.key), ['PROJ-1', 'PROJ-2']);
   assert.equal(asked.length, 2);
   assert.equal(asked[0].path, '/rest/api/3/search/jql');
-  assert.equal(asked[0].params.jql, 'project = "PROJ" AND issuetype not in subTaskIssueTypes() ORDER BY created ASC');
+  assert.equal(asked[0].params.jql, 'project = "PROJ" ORDER BY created ASC');
   assert.equal(asked[0].params.expand, 'changelog');
   assert.equal(asked[0].params.maxResults, '100');
-  assert.equal(asked[0].params.fields, 'summary,status,assignee,issuetype,created,customfield_10028,customfield_10020');
+  assert.equal(asked[0].params.fields, 'summary,status,assignee,issuetype,parent,created,customfield_10028,customfield_10020');
   assert.equal(asked[0].params.nextPageToken, undefined);
   assert.equal(asked[1].params.nextPageToken, 'p2');
   assert.equal(asked[0].headers.Authorization, `Basic ${Buffer.from('ada@example.com:secret-token').toString('base64')}`);
@@ -54,7 +54,7 @@ test('ASS-406 AC1: with since, only tickets updated in the minutes since then, r
   const { asked, fetchFn } = fakeFetch(() => ({ issues: [], isLast: true }));
   const now = Date.parse('2026-11-12T12:00:00Z');
   await fetchAnalyticsTickets({ ...AUTH, projectKey: 'PROJ', since: '2026-11-12T11:30:30Z', now }, fetchFn);
-  assert.equal(asked[0].params.jql, 'project = "PROJ" AND issuetype not in subTaskIssueTypes() AND updated >= "-30m" ORDER BY created ASC');
+  assert.equal(asked[0].params.jql, 'project = "PROJ" AND updated >= "-30m" ORDER BY created ASC');
   // An unreadable since is a first read.
   await fetchAnalyticsTickets({ ...AUTH, projectKey: 'PROJ', since: 'never', now }, fetchFn);
   assert.doesNotMatch(asked[1].params.jql, /updated/);
@@ -87,7 +87,7 @@ test('ASS-406 AC2: a ticket maps to key, title, type, created, points, assignee,
     history('2026-10-03T10:00:00.000+0000', ada, assignee(ada, null)),
   ], 3, { customfield_10028: null, assignee: null }), 'customfield_10028', 'customfield_10020');
   assert.deepEqual(t, {
-    key: 'PROJ-7', title: 'Title PROJ-7', type: 'Story', created: '2026-10-01T09:00:00.000Z', points: null, assignee: null, status: 'In Progress', sprints: [41, 42],
+    key: 'PROJ-7', title: 'Title PROJ-7', type: 'Story', created: '2026-10-01T09:00:00.000Z', points: null, assignee: null, status: 'In Progress', 'status-category': null, sprints: [41, 42],
     'status-changes': [{ at: '2026-10-05T15:00:00.000Z', from: 'In Progress', to: 'Done', by: null }],
     'assignee-changes': [
       { at: '2026-10-02T10:00:00.000Z', from: null, to: { id: 'acc-ada', name: 'Ada Example' } },
@@ -99,6 +99,28 @@ test('ASS-406 AC2: a ticket maps to key, title, type, created, points, assignee,
   assert.equal(u.points, 5);
   assert.deepEqual(u.sprints, []);
   assert.deepEqual(u['status-changes'], [{ at: '2026-10-02T10:00:00.000Z', from: null, to: null, by: { id: 'acc-ada', name: 'Ada Example' } }]);
+});
+
+// ASS-440 AC1: sub-tasks, as Jira's REST API gives them.
+const SUBTASK = { name: 'Sub-task', subtask: true, hierarchyLevel: -1 };
+const statusOf = (name, key) => ({ name, statusCategory: { id: { new: 2, indeterminate: 4, done: 3 }[key], key, name: key } });
+
+test('ASS-440 AC1: a sub-task maps with subtask: true, its parent\'s key and its status\'s Jira category; a ticket with its category only', async () => {
+  const { fetchFn } = fakeFetch(() => ({ isLast: true, issues: [
+    issue('PROJ-1', [], 0, { status: statusOf('In Progress', 'indeterminate'), parent: { id: '9', key: 'PROJ-EPIC', fields: { summary: 'An epic' } } }),
+    issue('PROJ-2', [history('2026-10-02T10:00:00.000+0000', ada, status('Open', 'Closed'))], 1,
+      { issuetype: SUBTASK, status: statusOf('Closed', 'done'), parent: { id: '10', key: 'PROJ-1', fields: { summary: 'Title PROJ-1' } }, customfield_10028: null }),
+    issue('PROJ-3', [], 0, { issuetype: SUBTASK, status: statusOf('Open', 'new'), parent: { key: 'PROJ-1' } }),
+  ] }));
+  const [story, closed, open] = await fetchAnalyticsTickets({ ...AUTH, projectKey: 'PROJ', storyPointsField: 'customfield_10028' }, fetchFn);
+  assert.deepEqual([story['status-category'], 'subtask' in story, 'parent' in story], ['indeterminate', false, false]);   // a story's parent (its epic) is not kept
+  assert.deepEqual(closed, {
+    key: 'PROJ-2', title: 'Title PROJ-2', type: 'Sub-task', created: '2026-10-01T09:00:00.000Z', points: null, assignee: { id: 'acc-ada', name: 'Ada Example' },
+    status: 'Closed', 'status-category': 'done', subtask: true, parent: 'PROJ-1', sprints: [41, 42],
+    'status-changes': [{ at: '2026-10-02T10:00:00.000Z', from: 'Open', to: 'Closed', by: { id: 'acc-ada', name: 'Ada Example' } }],
+    'assignee-changes': [],
+  });
+  assert.deepEqual([open.subtask, open.parent, open['status-category']], [true, 'PROJ-1', 'new']);
 });
 
 test('ASS-406 AC3: the board\'s sprints of every state, page by page, in start order with the undated last', async () => {

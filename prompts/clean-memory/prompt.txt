@@ -6,7 +6,7 @@ Ticket: `{ticket}`. A ticket named there was deleted or its change reverted, so 
 2. Check each against what you can observe now: the code at {project-code-folder}, the project's data at {project-folder} (project.json, the sprint, the backlog), the tickets it names.
 3. A memory no longer true: when you know what is true now, retain the corrected fact under the same document_id (it replaces the old one), with the source the memory instructions above give; else delete_document it. A duplicate of another: delete_document it. A secret, credential, token, account email or other personal information: delete_document it, whatever else holds.
 4. Leave be what still holds, and what you cannot check.
-5. Write {ticket-folder}/memory-cleanup.md (through `{agent-sh} work:write {project} <folder> - memory-cleanup.md`, <folder> the last part of {ticket-folder}, the whole file on stdin): each memory corrected or removed, why, and what you observed.
+5. Write {ticket-folder}/memory-cleanup.md (through `{agent-sh} work:write {project} <folder> - memory-cleanup.md <report-file>`, <folder> the last part of {ticket-folder}, <report-file> the absolute path of a temp file of your own, unique to this run, holding the whole file, a bare call: never a pipe, redirect or heredoc into agent.sh): each memory corrected or removed, why, and what you observed.
 
 Change no other file and no ticket.
 

@@ -116,11 +116,11 @@ test('ASS-360 AC1: the sprint grid\'s Status cell no longer says "waits on …" 
   assert.match(tickets[at + 1], /^↳ AWAITING ABC-2 \(unassigned\)$/);
 });
 
-test('ASS-326 AC2: at a narrow width the grid fits, Health and Agents show their headers in full, and Status re-wraps narrower with all its text shown, none cut with "…"', () => {
-  for (const columns of [180, 170, 160]) {   // 160: about as narrow as Ticket's floor (ASS-207) lets this grid get (180 with ASS-355, 150 before it; ASS-360 took AWAITING off the Ticket cell's first line)
+test('ASS-326 AC2, ASS-437 AC7: at a narrow width the grid fits, Agents shows its header in full (no Health column), and Status re-wraps narrower with all its text shown, none cut with "…"', () => {
+  for (const columns of [151, 141, 131]) {   // 131: about as narrow as Ticket's floor (ASS-207) lets this grid get (180 with ASS-355, 150 before it; ASS-360 took AWAITING off the Ticket cell's first line; 22 fewer since ASS-437 took the Build, MR and Health columns; 7 fewer since ASS-454 took the Priority column, 11 cells, for the Ticket cell's 4-cell priority)
     const lines = grid(columns);
     for (const l of lines) assert.equal(visible(l), columns, `${columns}: ${l}`);
-    assert.match(lines[1], /│ Health │ Agents │$/, `${columns}: ${lines[1]}`);
+    assert.match(lines[1], /│ Assignee │ Agents │$/, `${columns}: ${lines[1]}`);
     const status = statusOf(lines);
     // All the text is there, wrapped: at Status's header width (6) a key may split, never drop.
     assert.equal(status.join('').replace(/\s/g, ''), `Committedignores${IGNORED.join(',').replace(/\s/g, '')}`, `${columns}:\n${status.join('\n')}`);
@@ -129,7 +129,7 @@ test('ASS-326 AC2: at a narrow width the grid fits, Health and Agents show their
   }
   // Narrower than at 300: Status gave up width.
   const width = lines => { const h = lines[1], at = h.indexOf(' Status '); return h.indexOf('│', at) - h.lastIndexOf('│', at) - 3; };
-  assert.ok(width(grid(160)) < width(grid(300)), `${width(grid(160))} < ${width(grid(300))}`);
+  assert.ok(width(grid(131)) < width(grid(300)), `${width(grid(131))} < ${width(grid(300))}`);
 });
 
 test('ASS-326 AC2: boxTable lays a function cell out at its column\'s width — wide for its natural width, narrower when it shrinks', () => {

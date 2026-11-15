@@ -8,7 +8,7 @@ set -euo pipefail
 # 90. Control reads it every tick (ASS-232, moves.js weeklyLimit): while the
 # project's last claude-usage.json weekly reading is at or above it, before
 # that week resets, none of its grooming or background work (check-health,
-# check-memory, check-variation-appeal, check-ticket-health, self-healing) is
+# check-memory, check-variation-appeal, self-healing) is
 # dispatched on the subscription: a project with an API key beside it runs
 # that work on the key (ASS-327, held by the API caps and rate limit as any
 # API dispatch), one without holds it; its sprint work goes on.

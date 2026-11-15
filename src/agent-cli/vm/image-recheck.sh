@@ -1,24 +1,24 @@
 #!/usr/bin/env bash
-# Description: Verify Repair Image's repair — the golden image current, the ticket's VM cloned from it, the blocked step's failing check passing there — vm:image-recheck <project> <ticket-key> <variation>; prints JSON.
+# Description: Verify Blocked's VM or image repair on the ticket's fixed VM — the blocked step's failing check passing there, the image's state logged — vm:image-recheck <project> <ticket-key> <variation>; prints JSON.
 set -euo pipefail
 
-# ASS-392 AC4: grouped-blocked's Verify the Repaired Image, after Repair
-# Image says it fixed the block. Done only when the failing check passes on
-# a VM from the repaired image, so, in order:
-#   1. golden-<project> is current (golden.bash golden_status): not being
-#      built, and built from its definition as it is now — an edit of the
-#      definition not yet built, or a build that failed, is no repair;
-#   2. the variation's VM, when it has one, is a clone of that image: its
-#      label's generation (vm.bash generation_of) is golden-<project>'s — an
-#      older clone does not have the repair (vm:recreate puts it on the new one);
-#   3. the blocked step's failing check passes there: ticket:recheck-block,
-#      as Check First runs it, logged as this step.
+# ASS-392 AC4, ASS-427 AC6: grouped-blocked's Verify the Repaired Image,
+# after Repair the VM (its fix made in the ticket's VM, the same fix written
+# into its source) or Repair Image says it fixed the block. It verifies the
+# ticket on its fixed VM: the blocked step's failing check passes there
+# (ticket:recheck-block, as Check First runs it, logged as this step) — the
+# ticket's VM need not be a clone of the newest golden image, nor the image
+# current: a rebuild started for the fix is checked by its own build (its
+# tools check), its result logged on the ticket by vm:golden-followup, never
+# waited on here. What the image and the VM are is logged with the outcome:
+# golden-<project>'s status (current, building, or not built from its
+# definition as it is now) and generation, and the VM's own generation.
 # Exits, printing JSON (record-script-output keeps it on the run):
-#   0  all three: the run is done, the ticket resumes — recheck-block's JSON
-#      plus image-verified: true;
-#   2  1 and 2 hold, but the harness has no check to re-run (the step blocked
-#      is an agent's, or one that makes a VM: recheck-block's rechecked
-#      false) — Repair Image's own run of it on the new VM stands;
+#   0  the check passes: the run is done, the ticket resumes — recheck-block's
+#      JSON plus image-verified: true;
+#   2  the harness has no check to re-run (the step blocked is an agent's, or
+#      one that makes a VM: recheck-block's rechecked false) — the repair's
+#      own run of it on the fixed VM stands;
 #   3  not verified: { image-verified: false, ai-feedback-short,
 #      ai-feedback-long } — Blocked for Human with what was tried;
 #   1  bad arguments, an unknown ticket, variation or project (the step's
@@ -43,29 +43,29 @@ unverified() {
 }
 
 status="$(golden_status "$project" | jq -r .status)"
-[[ "$status" != building ]] || unverified "Repair Image: $golden is still being built" "$golden is still being built, so the repair cannot be checked on it yet. Have AI Try Again once it has finished."
-[[ "$status" == current ]] || unverified "Repair Image: $golden is not built from its current definition" "$golden is not current: its definition changed since its last build, or its last build failed (see data/projects/$project/golden-image-build.log). The repair is not in an image any VM can be cloned from."
-current="$(generation_of "$(limactl list "$golden" --format '{{.Dir}}' 2>/dev/null)")"
+current="$(generation_of "$(lima_list "$golden" --format '{{.Dir}}' 2>/dev/null)")"
 vm="$(jq -r --arg key "$key" --arg name "$variation" 'first((.features, .bugs, .spikes) // [] | .[] | select(.key | ascii_downcase == ($key | ascii_downcase)))
   | first(.variations // [] | .[] | select(.name == $name and (.["is-deleted"] | not))) | .vm.name // empty' "$(sprint_file "$command" "$project")")"
-if [[ -n "$vm" ]] && limactl list "$vm" --format '{{.Status}}' >/dev/null 2>&1; then
-  mine="$(generation_of "$(limactl list "$vm" --format '{{.Dir}}')")"
-  [[ -n "$current" && "$mine" == "$current" ]] \
-    || unverified "Repair Image: $vm is not a clone of the repaired $golden" "$vm was cloned from an older $golden (generation ${mine:-unknown}, the image's ${current:-unknown}): it does not have the repair. vm:recreate $project $key $variation puts the ticket on a VM from the current image."
-fi
+mine=""
+[[ -z "$vm" ]] || ! machine_status "$vm" >/dev/null 2>&1 || mine="$(generation_of "$(lima_list "$vm" --format '{{.Dir}}')")"
+case "$status" in
+  current) image="$golden current (generation ${current:-unknown})" ;;
+  building) image="$golden being rebuilt (its build checks itself; its result is logged here when it ends)" ;;
+  *) image="$golden not built from its definition as it is now (generation ${current:-unknown}: a rebuild with the fix is followed by vm:golden-followup)" ;;
+esac
 
 code=0
-out="$(RECHECK_STEP="$title" RECHECK_NEXT_PASS="The ticket resumes." RECHECK_NEXT_FAIL="Blocked for Human." RECHECK_NEXT_NONE="Repair Image's run of the failing check stands." "$agent" ticket:recheck-block "$project" "$key" "$variation")" || code=$?
-on="${vm:-no VM yet}, $golden generation ${current:-unknown}"
+out="$(RECHECK_STEP="$title" RECHECK_NEXT_PASS="The ticket resumes." RECHECK_NEXT_FAIL="Blocked for Human." RECHECK_NEXT_NONE="The repair's own run of the failing check stands." "$agent" ticket:recheck-block "$project" "$key" "$variation")" || code=$?
+on="${vm:-no VM yet}${mine:+, a clone of generation $mine}; $image"
 if [[ $code -eq 0 ]]; then
-  blocked_log "$project" "$key" "$variation" "$title" "Verified: the failing check passes on a VM from the repaired image ($on)."
+  blocked_log "$project" "$key" "$variation" "$title" "Verified: the failing check passes on the ticket's fixed VM ($on)."
   jq -c '. + { "image-verified": true }' <<< "$out"
   exit 0
 fi
 if [[ $code -eq 3 && "$(jq -r '.rechecked' <<< "$out" 2>/dev/null)" == false ]]; then
-  blocked_log "$project" "$key" "$variation" "$title" "The image is current and the VM its clone ($on); the harness has no check of its own to re-run ($(jq -r '.["recheck-why"]' <<< "$out")): Repair Image's run of the failing check on it stands."
+  blocked_log "$project" "$key" "$variation" "$title" "The harness has no check of its own to re-run ($(jq -r '.["recheck-why"]' <<< "$out")): the repair's own run of the failing check on the fixed VM stands ($on)."
   jq -c '. + { "image-verified": true }' <<< "$out"
   exit 2
 fi
-[[ $code -eq 3 ]] || unverified "Repair Image: the failing check could not be re-run" "The image is current and the VM its clone ($on), but ticket:recheck-block failed (exit $code), so the repair is not shown to work."
-unverified "Repair Image: the failing check still fails on a VM from the repaired image" "The image is current and the VM its clone ($on), but the blocked step's check still fails there: \`$(jq -r '.recheck.command' <<< "$out")\` exit $(jq -r '.recheck.exit' <<< "$out"). Its last lines: $(jq -r '.recheck.output // ""' <<< "$out")"
+[[ $code -eq 3 ]] || unverified "Repair: the failing check could not be re-run" "ticket:recheck-block failed (exit $code) on the ticket's VM ($on), so the repair is not shown to work."
+unverified "Repair: the failing check still fails on the ticket's fixed VM" "The blocked step's check still fails on the ticket's VM after the repair ($on): \`$(jq -r '.recheck.command' <<< "$out")\` exit $(jq -r '.recheck.exit' <<< "$out"). Its last lines: $(jq -r '.recheck.output // ""' <<< "$out")"

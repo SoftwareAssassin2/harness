@@ -41,18 +41,18 @@ plan="$("$agent" ticket:demo-plan "$project" "$key" "$variation")"
 vm="$(recorded_vm vm:demo "$project" "$key" "$variation")"
 
 lock_vms vm:demo "$project"
-[[ "$(limactl list "$vm" --format '{{.Status}} {{.Config.Video.Display}}' 2>/dev/null)" != "Running none" ]] \
-  || limactl stop "$vm" >/dev/null 2>&1 || { echo "vm:demo: $vm would not stop to start with a display" >&2; exit 1; }
+[[ "$(lima_list "$vm" --format '{{.Status}} {{.Config.Video.Display}}' 2>/dev/null)" != "Running none" ]] \
+  || machine_stop "$vm" >/dev/null 2>&1 || { echo "vm:demo: $vm would not stop to start with a display" >&2; exit 1; }
 ip="$(VM_LOCK_HELD=1 "$agent" vm:start "$project" "$key" "$variation" --display | jq -r .ip)"
 unlock_vms
 
 # in_vm <command> — runs it with bash in the VM's /repos/, its output (both streams) printed once it ends.
 in_vm() {
-  limactl shell --workdir /repos "$vm" -- bash -c 'log="$(mktemp)"; bash -c "$1" >"$log" 2>&1 </dev/null; s=$?; cat "$log"; rm -f "$log"; exit $s' - "$1" </dev/null 2>&1
+  machine_run --workdir /repos "$vm" -- bash -c 'log="$(mktemp)"; bash -c "$1" >"$log" 2>&1 </dev/null; s=$?; cat "$log"; rm -f "$log"; exit $s' - "$1" </dev/null 2>&1
 }
 
 # running — fails the demo, blocking nothing, once the VM has stopped: its window closed on the Mac, which stops it.
-running() { [[ "$(limactl list "$vm" --format '{{.Status}}' 2>/dev/null)" == Running ]] || { echo "vm:demo: $vm stopped during the demo (its window closed?); nothing is blocked: Demo again" >&2; exit 1; }; }
+running() { [[ "$(machine_status "$vm" 2>/dev/null)" == Running ]] || { echo "vm:demo: $vm stopped during the demo (its window closed?); nothing is blocked: Demo again" >&2; exit 1; }; }
 
 # block <short> <long> — the ticket to the blocked state, <long> its reason; fails (unless the VM stopped: running).
 block() {
@@ -82,6 +82,6 @@ until out="$(in_vm "$check")"; do
 done
 
 mapfile -t view < <(jq -r '.view | .with, (.address // empty), (.commands // [] | .[])' <<<"$plan")
-limactl shell --workdir / "$vm" -- bash -s "${view[@]}" < "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/in-vm/demo-desktop.sh" \
+machine_run --workdir / "$vm" -- bash -s "${view[@]}" < "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/in-vm/demo-desktop.sh" \
   || { echo "vm:demo: $vm is ready, but its desktop and ${view[0]} would not open" >&2; exit 1; }
 jq -c --arg n "$vm" --arg ip "$ip" '{ name: $n, ip: $ip, view, "look-at": .["look-at"] }' <<<"$plan"

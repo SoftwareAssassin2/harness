@@ -783,17 +783,6 @@ test('waitsOnHuman, given the engines: at a human step inside a sub-engine, or g
   assert.equal(waitsOnHuman(engine, at([['e', 'test'], ['test', 'ask']])), false);
 });
 
-// ASS-107 AC4 (operator, 2026-10-24): the ticket health check classifies and routes as Blocked and self-healing do.
-test('the real check-ticket-health engine: an unhealthy ticket is classified, each issue its own exit to its ticket, raised where problemOf (fixTicketIn) says for the sampled ticket\'s project', () => {
-  const health = JSON.parse(readFileSync(join(engineDir('check-ticket-health'), 'state-engine.json'), 'utf8'));
-  const after = (id, output) => nextState(stepOf(health, id), health, { turnComplete: true, structuredOutput: output })?.to;
-  assert.equal(after('inspect-ticket', { 'is-healthy': true }), 'done');
-  assert.equal(after('inspect-ticket', { 'is-healthy': false }), 'classify');
-  assert.equal(stepOf(health, 'classify').action.prompt, 'classify-issue');
-  for (const issue of ['harness', 'project', 'environment']) assert.equal(after('classify', { issue }), 'create-ticket', issue);
-  assert.equal(nextState(stepOf(health, 'create-ticket'), health, { subEngineDone: true })?.to, 'done');
-});
-
 test('evaluateCondition (ASS-248): open-questions counts the blocking ones alone — unflagged ones among them — and all-questions-accepted asks only them be accepted; Assumed is closed', () => {
   const flagged = (...qs) => ({ questions: () => qs.map(([status, blocking]) => ({ status, ...(blocking == null ? {} : { blocking }) })) });
   assert.equal(evaluateCondition({ 'open-questions': false }, flagged(['Asked', false], ['Answer Rejected', false])), true);   // non-blocking never holds

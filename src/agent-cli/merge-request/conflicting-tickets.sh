@@ -12,7 +12,8 @@ set -euo pipefail
 #
 # The conflicted checkout is found cwd-first — a host agent runs the command in
 # it — else in the variation's VM, every repository in /repos/ through
-# `limactl shell --workdir /repos/`, the verify-success.sh pattern: a call
+# `machine_run --workdir /repos/` (limactl shell for a Lima VM, ASS-432),
+# the verify-success.sh pattern: a call
 # forwarded from a VM (generate-solution-grouped) arrives on the Mac with cwd
 # the ticket folder, so the VM's git state is only reachable that way. A second
 # checkout also mid-rebase is named but not reported. Mid-rebase is
@@ -75,7 +76,7 @@ done
 vm="$(vm_of "$command" "$project" "$2" "$variation" 2> /dev/null || true)"
 host_out="" vm_out=""
 git rev-parse --is-inside-work-tree > /dev/null 2>&1 && host_out="$(bash -c "$SHIM")" || true
-[[ -n "$vm" ]] && vm_out="$(LIMA_HOME="$(lima_home)" limactl shell --workdir /repos/ "$vm" -- bash -c "$SHIM" < /dev/null || true)" || true
+[[ -n "$vm" ]] && vm_out="$(machine_run --workdir /repos/ "$vm" -- bash -c "$SHIM" < /dev/null || true)" || true
 
 if grep -q '^CHECKOUT' <<< "$host_out"; then chosen="$host_out"; vmj=null
 elif grep -q '^CHECKOUT' <<< "$vm_out"; then chosen="$vm_out"; vmj="$(jq -nc --arg v "$vm" '$v')"

@@ -49,8 +49,9 @@ golden_definition() {
 
 # golden_files <dir> <tag> — "<sha256>  <tag>/<path>" for each file under dir, dotfiles (.DS_Store) and
 # vm:test-repos' tests.json and run-test.sh, and ci-checks:verify's ci-checks.json, aside: they test the
-# image or a ticket's work, and are not in it.
-golden_files() { (cd "$1" && find . -type f ! -name '.*' ! -name tests.json ! -name run-test.sh ! -name ci-checks.json -print0 | LC_ALL=C sort -z | xargs -0 shasum -a 256 | sed "s|  \./|  $2/|"); }
+# image or a ticket's work, and are not in it; so is workstation-tools.sh, which installs the tools on a
+# GCP workstation instead (workstation:setup, ASS-434), never in a VM.
+golden_files() { (cd "$1" && find . -type f ! -name '.*' ! -name tests.json ! -name run-test.sh ! -name ci-checks.json ! -name workstation-tools.sh -print0 | LC_ALL=C sort -z | xargs -0 shasum -a 256 | sed "s|  \./|  $2/|"); }
 
 golden_inputs() { golden_files "$folder" definition; golden_files "$shared" shared; printf 'repository %s\n' "${repos[@]}"; printf '%s\n' "$hosts_toml"; }
 

@@ -46,6 +46,20 @@ set -euo pipefail
 #  6. Its vzNAT address (lima0), printed: { name, ip, credential-kind }
 #     (null when it declares neither).
 # Fails, naming the step, when the VM is missing or any step but 5 fails.
+#
+# ASS-435: a variation whose recorded machine is on a GCP workstation
+# (vm:create placed it there) is readied there instead
+# (workstation-variation.bash wsv_start): the workstation connected and set
+# up when it is not (workstation:connect, workstation:setup) and held by the
+# variation; vm:credentials into the setup's runtime folder (its kind and
+# stamps recorded on the live data's holder, not vms.json); a fresh
+# forwarder token there (agent-token beside setup's agent-url, the
+# forwarder on the workstation's loopback), its hash and binding in
+# vm-tokens.json under the machine's name; the ticket's read-only copy
+# brought up to date; each image of images.txt by tag pulled through the
+# project's zot on the workstation's loopback and tagged as named. agent.sh
+# is the setup's, no display, no IP: { name: <workstation id>, ip: null,
+# credential-kind }.
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../vm.bash"
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../registry/registry.bash"
 
@@ -53,16 +67,22 @@ source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../registry/registry.bas
 display=none; [[ $# -eq 3 ]] || display=vz
 project="$1" key="$(tr '[:lower:]' '[:upper:]' <<< "$2")" variation="$3"
 variation_exists vm:start "$project" "$key" "$variation"
+recorded="$(recorded_vm vm:start "$project" "$key" "$variation" 2>/dev/null || true)"
+if [[ "$recorded" == workstation:* ]]; then
+  [[ "$display" == none ]] || { echo "vm:start: $key $variation runs on a workstation, which has no display" >&2; exit 1; }
+  wsv_start "$project" "$key" "$variation" "$recorded"
+  exit
+fi
 vm="$(vm_name "$key" "$variation")"
-status="$(limactl list "$vm" --format '{{.Status}}' 2>/dev/null)" || { echo "vm:start: no VM $vm; vm:create makes it" >&2; exit 1; }
+status="$(machine_status "$vm" 2>/dev/null)" || { echo "vm:start: no VM $vm; vm:create makes it" >&2; exit 1; }
 forwarder="$(jq -r '.["forwarder-port"] // empty' "$harness_file")"
 [[ "$forwarder" =~ ^[0-9]+$ ]] || { echo "vm:start: harness.json has no forwarder-port" >&2; exit 1; }
 zot="$(jq -r '.registry.port // empty' "$projects/$project/project.json")"
 memory="$(jq -r '.hindsight.port // empty' "$projects/$project/project.json")"
 
 lock_vms vm:start "$project"
-status="$(limactl list "$vm" --format '{{.Status}}' 2>/dev/null)" || { echo "vm:start: no VM $vm; vm:create makes it" >&2; exit 1; }
-[[ "$status" == Running ]] || start_sandboxed vm:start "$vm" "$display" "$forwarder" $zot $memory
+status="$(machine_status "$vm" 2>/dev/null)" || { echo "vm:start: no VM $vm; vm:create makes it" >&2; exit 1; }
+[[ "$status" == Running ]] || machine_start vm:start "$vm" "$display" "$forwarder" $zot $memory
 record_vm "$project" "$vm" "$key" "$variation" Running
 unlock_vms
 
@@ -79,7 +99,7 @@ binding="$(jq -nc --arg p "$project" --arg k "$key" --arg v "$variation" --arg f
 mkdir -p "$(dirname "$tokens_file")"
 (umask 077; update_json --create "$tokens_file" --arg vm "$vm" --argjson b "$binding" '.[$vm] = $b')   # made 0600 when missing
 { printf '%s\n%s\n' "$token" "http://host.lima.internal:$forwarder/run"; cat "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/in-vm/agent.sh"; } \
-  | limactl shell "$vm" -- bash -c 'set -e; R="${HARNESS_VM_ROOT-}"; umask 077; IFS= read -r t; IFS= read -r u
+  | machine_run "$vm" -- bash -c 'set -e; R="${HARNESS_VM_ROOT-}"; umask 077; IFS= read -r t; IFS= read -r u
       printf "%s\n" "$t" > "$R/run/harness/agent-token"; printf "%s\n" "$u" > "$R/run/harness/agent-url"
       sudo tee "$R/usr/local/bin/agent.sh" >/dev/null; sudo chmod 0755 "$R/usr/local/bin/agent.sh"' \
   || { echo "vm:start: could not give $vm its forwarder token and agent.sh" >&2; exit 1; }
@@ -92,11 +112,11 @@ if [[ -n "$zot" && -n "$folder" && -f "$folder/images.txt" ]]; then
     [[ "$image" =~ $pushable ]] || continue
     curl -fsI -o /dev/null --max-time 10 -H 'Accept: application/vnd.oci.image.index.v1+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.docker.distribution.manifest.v2+json' \
       "http://127.0.0.1:$zot/v2/$local_namespace/${BASH_REMATCH[1]}/manifests/${BASH_REMATCH[2]}" || continue
-    limactl shell "$vm" -- docker pull -q "$image" </dev/null >/dev/null \
+    machine_run "$vm" -- docker pull -q "$image" </dev/null >/dev/null \
       || echo "vm:start: could not pull $image, pushed to $project's registry, in $vm; it keeps the image it has" >&2
   done < "$folder/images.txt"
 fi
 
-ip="$(limactl shell "$vm" -- ip -4 -o addr show lima0 | sed -nE 's/.* inet ([0-9.]+)\/.*/\1/p' | head -n 1)"
+ip="$(machine_run "$vm" -- ip -4 -o addr show lima0 | sed -nE 's/.* inet ([0-9.]+)\/.*/\1/p' | head -n 1)"
 [[ -n "$ip" ]] || { echo "vm:start: $vm has no vzNAT address (lima0)" >&2; exit 1; }
 jq -nc --arg n "$vm" --arg ip "$ip" --arg k "$kind" '{ name: $n, ip: $ip, "credential-kind": (if $k == "" then null else $k end) }'

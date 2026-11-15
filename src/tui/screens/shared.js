@@ -3,7 +3,7 @@
 import { sinceResolution, visitsInto, statusOf, changePath, isOpenQuestion, blocksTicket, markOff, switchOff, isHeld, isBlockedState, waitsOnHuman, isDoneStep } from '../../control/engine.js';
 import { rankBacklog, flattenSprint } from '../../control/rank.js';
 import { dependencyHold, dependencyRows } from '../../control/dependencies.js';
-import { seatsOf } from '../../control/plan.js';
+import { seatsOf, inMotion } from '../../control/plan.js';
 import { switchedOffStepErrors } from '../../workflow/validate.js';
 import { stateOf, levelChanges, enginesOf, refinementSteps as refinementStepsOf } from '../status.js';
 import { lastStart } from '../table.js';
@@ -116,33 +116,42 @@ export function ticketMarks(state, tickets = sprintTickets(state).tickets) {
   return { needed, assumed };
 }
 // One small mark (a text glyph, never an emoji) before the title of a ticket:
-// blue for one in `needed` (operatorNeeded), whatever the kinds it waits for
-// (ASS-242); else dim grey, the same glyph, for one in `assumed` — going on
-// with an assumption, never red, yellow or orange (ASS-248). markKind names
-// which (null for none); markDot draws a glyph in its color. The backlog
-// screen's is ● with a blank after it (needMark); the sprint screen's, its c5,
-// ⦿ (sprintMark, ASS-259), red for a ticket with a pending requirements change
-// to accept or reject (ASS-78), whatever else it waits on.
-const MARK_COLORS = { needed: '34', assumed: '2;90', change: '31' };   // color(…) codes, written out: color is defined below
+// red for one in `needed` (operatorNeeded), whatever the kinds it waits for
+// (ASS-242; blue before ASS-430); else dim grey, the same glyph, for one in
+// `assumed` — going on with an assumption, never red, yellow or orange
+// (ASS-248). markKind names which (null for none); markDot draws a glyph in
+// its color. The backlog screen's is ● with a blank after it (needMark); the
+// sprint screen's, its c5, ⦿ (sprintMark, ASS-259), blue for a ticket with a
+// pending requirements change to accept or reject (ASS-78; red before
+// ASS-430, the two swapped so what needs the operator stands out), whatever
+// else it waits on.
+const MARK_COLORS = { needed: '31', assumed: '2;90', change: '34' };   // color(…) codes, written out: color is defined below
 const markKind = ({ needed, assumed = new Set() }, key) => (needed.has(key) ? 'needed' : assumed.has(key) ? 'assumed' : null);
 export const markDot = (glyph, kind) => `\x1b[${MARK_COLORS[kind]}m${glyph}\x1b[0m`;
 export const needMark = (marks, key) => (markKind(marks, key) ? `${markDot('●', markKind(marks, key))} ` : '');
 // The sprint row's one-cell glyphs (ASS-259): each East Asian Width N with no
 // Emoji property, so every terminal draws it one cell wide — no emoji, no
-// Ambiguous-width █ or ●, nothing needing VS16. The ticket screen, backlog and
-// agent tiles keep ICONS.
-export const GLYPHS = { step: '▮', features: '✦', bugs: '✘', spikes: '⌕', hand: '☛', fast: '↯', mark: '⦿', agent: '⚉' };
+// Ambiguous-width ●, nothing needing VS16 — bar the step mark: █ (U+2588,
+// ASS-453; ▮ from ASS-259 until then), a solid swatch of the step's color. █ is
+// East Asian Width A (ambiguous): text.js visible counts it one cell, which
+// relies on the terminal drawing ambiguous-width characters narrow — the
+// default outside CJK locales; one set to draw them wide would push that row's
+// columns one cell right. The ticket screen, backlog and agent tiles keep ICONS.
+// agent and script (ASS-456; ⚉, one cell, before it) are the exception: 🤖 and
+// 💻, the progress bar's and the S floor's own, emoji two cells wide (text.js
+// visible counts them so), like the seat column's 💺, in one two-cell column.
+export const GLYPHS = { step: '█', features: '✦', bugs: '✘', spikes: '⌕', hand: '☛', fast: '↯', mark: '⦿', agent: '🤖', script: '💻' };
 export const sprintMark = (marks, t) => {
   const kind = t['pending-requirements-change'] ? 'change' : markKind(marks, t.key);
   return kind ? markDot(GLYPHS.mark, kind) : '';
 };
 // What the marks mean, for the ? menu (ASS-248): the sprint's ⦿ in its three
-// colors (the backlog's ● in its two), ⚉ and the row's other glyphs (ASS-259).
+// colors (the backlog's ● in its two), 🤖 and 💻 (ASS-456; ⚉ before) and the row's other glyphs (ASS-259).
 export const MARK_LEGEND = [
   `${markDot(GLYPHS.mark, 'needed')} needs you — counted on Operator Needed if a sprint ticket (backlog: ${markDot('●', 'needed')})`,
   `${markDot(GLYPHS.mark, 'assumed')} going on with an assumption — not counted (backlog: ${markDot('●', 'assumed')})`,
   `${markDot(GLYPHS.mark, 'change')} a requirements change waits to be accepted or rejected`,
-  `${GLYPHS.agent} an agent is working on it`,
+  `${GLYPHS.agent} agents are working on it  ${GLYPHS.script} a script is running on it`,
   `${GLYPHS.features} feature  ${GLYPHS.bugs} bug  ${GLYPHS.spikes} spike  ${GLYPHS.hand} worked by hand  ${GLYPHS.fast} fast-tracked`,
 ];
 
@@ -300,16 +309,42 @@ export function sprintTickets(state) {
 // are (liveAssignments). The one thing control knows that the dashboard does
 // not is its running agents' spend so far (ASS-270), so spending limits count
 // the recorded spend alone.
-export function seatHolders(state) {
+export const seatHolders = state => seatPlan(state).holders;
+
+// seatPlan(state) — the selected project's seats as seatHolders asks the planner (seatsOf): `holders`, the
+// "<key> <variation>" holding an in-progress or a planning seat (seatHolders'), `progress` and `planning` those of
+// each kind, and `free`, { progress, planning }, the empty seats of each kind (ASS-451: freeSeats). A past day
+// (or no project): nobody, none free — seats are live state.
+export function seatPlan(state) {
   const selected = state.projects[state.project];
-  if (state.day || !selected) return new Set();
+  if (state.day || !selected) return { holders: new Set(), progress: [], planning: [], free: { progress: 0, planning: 0 } };
   const projects = state.projects.map(p => planProject(state, p));
   const plan = {
     projects, allProjects: projects, assignments: state.assignments ?? [], harness: selected.limits?.harness ?? {}, running: {},
     engines: enginesOf(state.workflows.filter(w => w.project == null)),
   };
   const seats = seatsOf(plan, projects[state.project]);
-  return new Set([...seats['in-progress'], ...seats['in-planning']]);
+  // Every other project's seats, counted against harness.json's limits as planFor counts them (inMotion: its
+  // reservedElsewhere and planningElsewhere).
+  const elsewhere = inMotion(projects.filter(p => p.id !== projects[state.project].id), plan.engines, plan);
+  return { holders: new Set([...seats['in-progress'], ...seats['in-planning']]), progress: seats['in-progress'], planning: seats['in-planning'], free: freeSeats(seats, elsewhere) };
+}
+
+// freeSeats(seats, elsewhere) — { progress, planning }: of seatsOf's answer, the empty seats of each kind (ASS-451),
+// as many as the planner would still grant (planDispatch's `free`: a slot must fit both limits): project.json's
+// limit less the seats of that kind the project holds now, and harness.json's — every project together — less those
+// and the ones the other projects hold (`elsewhere`, inMotion's { progress, planning }, planFor's reservedElsewhere
+// and planningElsewhere); the smaller when both are set, either alone when only it is; 0 for no limit, or none left
+// (at or over the limits).
+const SEAT_LIMITS = { progress: ['max-tickets-in-progress', 'in-progress'], planning: ['max-tickets-in-planning', 'in-planning'] };
+const limitOf = n => (n != null && Number.isFinite(Number(n)) ? Number(n) : null);
+export function freeSeats(seats, elsewhere = {}) {
+  const free = (kind, [limit, held]) => {
+    const own = limitOf(seats.limits?.project?.[limit]), all = limitOf(seats.limits?.harness?.[limit]);
+    const caps = [own, all == null ? null : all - (elsewhere[kind] ?? 0)].filter(n => n != null);
+    return caps.length ? Math.max(0, Math.min(...caps) - (seats[held]?.length ?? 0)) : 0;
+  };
+  return { progress: free('progress', SEAT_LIMITS.progress), planning: free('planning', SEAT_LIMITS.planning) };
 }
 
 // planProject(state, p) — a dashboard project as control's loadState lists it,

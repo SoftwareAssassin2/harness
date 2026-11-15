@@ -223,3 +223,19 @@ test('ASS-413\'s off-board operator, credited on every ticket, is added and link
   const { team } = run({ tickets: tickets(t), mergeRequests: mrs(mr('ada-example', 'Ada Example')) });
   assert.deepEqual(team.members.map(m => [m['ticket-system-id'], m['git-username'], m.role, m['matched-by']]), [['operator', 'ada-example', 'developer', 'name']]);
 });
+
+test('ASS-440: sub-tasks never change a role or add a credited member, but their keys link a git author', () => {
+  const own = ticket('PROJ-5', { assignee: LIN, moves: [[2, 'Working', LIN], [3, 'Finished', LIN]], assigns: [[1, null, LIN]] });
+  const checked = n => ticket(`PROJ-${n}`, { assignee: LIN, moves: [[2, 'Working', ADA], [3, 'Checking', ADA], [4, 'Finished', LIN]], assigns: [[1, null, ADA], [3, ADA, LIN]] });
+  const sub = (key, who, extra = {}) => ({ ...ticket(key, { assignee: who, moves: [[2, 'Working', who], [3, 'Finished', who]], ...extra }), type: 'Sub-task', subtask: true, parent: 'PROJ-5', 'status-category': 'done' });
+  const before = run({ tickets: tickets(own, checked(6), checked(7)) });
+  // Lin closing sub-tasks would halve her share out of QA; Alan, who only does sub-tasks, would be credited.
+  const alan = { id: 'm1', name: 'Alan Example' };
+  const subs = [sub('PROJ-51', LIN), sub('PROJ-52', LIN), sub('PROJ-53', LIN), sub('PROJ-54', alan), sub('PROJ-55', alan), sub('PROJ-56', alan)];
+  const after = run({ tickets: tickets(own, checked(6), checked(7), ...subs),
+    mergeRequests: mrs(mr('am', 'A. M.', { branch: 'PROJ-54' }), mr('am', 'A. M.', { branch: 'PROJ-55' }), mr('am', 'A. M.', { branch: 'PROJ-56' })) });
+  assert.equal(byId(after.team, 'q1').role, 'qa');
+  assert.deepEqual(before.team.members.map(m => [m['ticket-system-id'], m.role]), after.team.members.filter(m => m['ticket-system-id'] !== 'm1').map(m => [m['ticket-system-id'], m.role]));
+  // Alan is on the team only through his merge requests, linked by the sub-tasks' keys he holds.
+  assert.deepEqual([byUser(after.team, 'am')['ticket-system-id'], byUser(after.team, 'am')['matched-by']], ['m1', 'ticket-keys']);
+});

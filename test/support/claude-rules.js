@@ -37,3 +37,38 @@ export function bashWriteAllowed(settings, path, { cwd, tmp }) {
   const allowed = [cwd, tmp, ...(fs.allowWrite ?? []), ...editPaths(settings.permissions?.allow)].filter(Boolean);
   return !denied.some(p => under(path, p)) && allowed.some(p => under(path, p));
 }
+
+// Bash (sandbox, excludedCommands): a command line runs outside the sandbox
+// only when an excludedCommands pattern covers it — the whole command, or
+// `<start> *`: that start, then a space and anything — and it is one bare
+// command: no pipe, redirect, heredoc, `&&`, `||`, `;`, `&`, `$(…)`,
+// backquote or second line outside quotes. That is what the harness has seen
+// (ASS-182, ASS-298, ASS-428: ABC-1770's `agent.sh vm:golden-write …
+// < provision.sh` and its `work:append` ran sandboxed and their writes under
+// data/ failed with EPERM, while bare agent.sh calls wrote there). Claude
+// Code's own matcher is not run here: this states the rule the harness's
+// prompts follow.
+const OPERATOR = /[|&;<>`\n]|\$\(/;
+// bare(line) — the line is one simple command: no operator outside quotes, no substitution in double quotes either.
+export function bare(line) {
+  let quote = null;
+  for (let i = 0; i < line.length; i++) {
+    const c = line[i];
+    if (quote === "'") { if (c === quote) quote = null; continue; }
+    if (quote === '"') {   // substitution still runs inside double quotes
+      if (c === '"') quote = null; else if (c === '\\') i++; else if (c === '`' || (c === '$' && line[i + 1] === '(')) return false;
+      continue;
+    }
+    if (c === "'" || c === '"') { quote = c; continue; }
+    if (c === '\\') { i++; continue; }
+    if (OPERATOR.test(c) || (c === '$' && line[i + 1] === '(')) return false;
+  }
+  return quote === null;
+}
+
+// runsUnsandboxed(settings, line) — whether the sandbox lets the command line run outside it.
+export function runsUnsandboxed(settings, line) {
+  const command = line.trim();
+  if (!bare(command)) return false;
+  return (settings.sandbox?.excludedCommands ?? []).some(p => (p.endsWith(' *') ? command.startsWith(p.slice(0, -1)) : command === p));
+}

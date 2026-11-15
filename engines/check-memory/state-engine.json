@@ -2,7 +2,7 @@
     "steps": [
 
         { "id": "clean-memory", "sequence": 1, "name": "Clean Memory", "description": "Checking the project's memory against the project as it stands now, removing what no longer holds",
-            "action": { "type": "prompt", "prompt": "clean-memory", "agent-count": 1, "run-in-dev-container": false },
+            "action": { "type": "prompt", "prompt": "clean-memory", "agent-count": 1, "run-in-dev-container": false, "model": "claude-opus-5-5" },
             "exit-events": [
                 { "condition": { "turn-complete": true }, "move-to-state": "done" }
             ]

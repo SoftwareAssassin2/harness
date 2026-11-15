@@ -112,7 +112,7 @@ test('transient-state-engine:change-state of a run inside a ticket step\'s run r
   const data = f.assignments();
   data['transient-state-engines'].push(
     run('inner-1', { 'transient-state-engine': TEST_ENGINE, 'state-engine': 'test', state: 'test' }),
-    { id: 'trigger-1', project: 'p', 'state-engine': 'example-development/check-health-steps', state: 'check-health', parent: { trigger: 'check-ticket-health', 'work-item': 'ABC-3', variation: 'B' }, 'is-done': false },
+    { id: 'trigger-1', project: 'p', 'state-engine': 'example-development/check-health-steps', state: 'check-health', parent: { trigger: 'check-health', 'work-item': 'ABC-3', variation: 'B' }, 'is-done': false },
     run('inner-2', { 'transient-state-engine': 'trigger-1', 'state-engine': 'example-development/check-health-steps', state: 'check-health' }),
   );
   writeFileSync(file, JSON.stringify(data));

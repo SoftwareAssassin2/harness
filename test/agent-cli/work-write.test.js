@@ -193,3 +193,27 @@ test('ASS-298 AC1: the file form refuses, writing nothing, a missing file, a dir
   assert.match(six.stderr, /usage: work:write/);
   assert.deepEqual(readdirSync(folder).filter(f => !f.endsWith('.lock')), [], 'nothing written');
 });
+
+// ASS-428 AC1: work:append takes the entry from an optional 5th argument too, as work:write does (ASS-298): a
+// confined host agent stages the change log entry in temp and passes its path, the call a bare one.
+test('ASS-428 AC1: work:append <project> <ticket> <variation|-> <name> <file> appends the file\'s content, nothing on stdin; stdin still works; a missing or empty file, or a 6th argument, adds nothing', async () => {
+  const { dir, folder } = projects();
+  const entry = join(dir, 'entry.md');
+  writeFileSync(entry, '- found: bats missing');
+  const r = await cli(dir, '', 'work:append', 'p', 'ABC-5', 'A', 'change-log.md', entry);
+  assert.equal(r.code, 0, r.stderr);
+  assert.equal((await cli(dir, '- and stdin still\n', 'work:append', 'p', 'ABC-5', 'A', 'change-log.md')).code, 0);
+  assert.equal(readFileSync(join(folder, 'change-log-A.md'), 'utf8'), '- found: bats missing\n- and stdin still\n');
+  const missing = await cli(dir, 'ignored\n', 'work:append', 'p', 'ABC-5', 'A', 'change-log.md', '/no/such/entry.md');
+  assert.equal(missing.code, 1);
+  assert.match(missing.stderr, /work:append: no file \/no\/such\/entry\.md/);
+  const empty = join(dir, 'empty.md');
+  writeFileSync(empty, '');
+  const nothing = await cli(dir, '', 'work:append', 'p', 'ABC-5', 'A', 'change-log.md', empty);
+  assert.equal(nothing.code, 1);
+  assert.ok(nothing.stderr.includes(`nothing on ${empty}`), nothing.stderr);
+  const six = await cli(dir, '', 'work:append', 'p', 'ABC-5', 'A', 'change-log.md', entry, 'extra');
+  assert.equal(six.code, 1);
+  assert.match(six.stderr, /usage: work:append .*\[<file>\]/);
+  assert.equal(readFileSync(join(folder, 'change-log-A.md'), 'utf8'), '- found: bats missing\n- and stdin still\n', 'nothing more added');
+});

@@ -14,4 +14,4 @@ source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../vm.bash"
 [[ $# -eq 3 ]] || { echo "usage: vm:setup-complete <project> <ticket-key> <variation>" >&2; exit 1; }
 variation_exists vm:setup-complete "$@"
 vm="$(running_vm vm:setup-complete "$@" 2>/dev/null)" || exit 1
-limactl shell --workdir / "$vm" -- bash -c 'test -e "${HARNESS_VM_ROOT-}$1"' - "$setup_marker"
+machine_run --workdir / "$vm" -- bash -c 'test -e "${HARNESS_VM_ROOT-}$1"' - "$setup_marker"

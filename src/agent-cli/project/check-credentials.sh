@@ -16,7 +16,12 @@ set -euo pipefail
 #     `<tool> auth status --hostname <host>`; skipped with GH_DISABLED=1 /
 #     GLAB_DISABLED=1 (code.bash's switches, the tests'); one that does not
 #     answer within CREDENTIALS_CHECK_TIMEOUT seconds (default 20) is left
-#     unknown, not a problem: an offline Mac holds nothing;
+#     unknown, not a problem: an offline Mac holds nothing. Nor does one
+#     that fails at once only because the host could not be reached (ASS-429:
+#     glab and gh print Go's network errors — no such host, dial tcp,
+#     connection refused or reset, a timeout, a 502/503/504 — and exit 1, as
+#     control's probe reads them, src/control/login.js), unless it also says
+#     the login is gone (401, unauthorized, invalid token, not logged in);
 #   - the gcloud and glab logins control already probes for a project with
 #     check-for-expired-<tool>-auth (triggers.js loginCheck): its
 #     <tool>-requires-reauthentication file reads `true`;
@@ -45,6 +50,10 @@ limit="${CREDENTIALS_CHECK_TIMEOUT:-20}"
 problems=()
 problem() { problems+=("$(jq -cn --arg c "$1" --arg p "$2" --arg f "$3" '{ credential: $c, problem: $p, fix: $f }')"); }
 timed() { perl -e 'alarm shift; exec @ARGV' "$limit" "$@"; }
+# A forge login check's output: the host could not be reached (NETWORK), or
+# the login is gone (LOST), as src/control/login.js's glab patterns (ASS-429).
+NETWORK='no such host|dial tcp|connection refused|connection reset|network is unreachable|i/o timeout|timeout|timed out|(^|[^0-9])50[234]([^0-9]|$)|bad gateway|service unavailable|gateway time-?out'
+LOST='(^|[^0-9])401([^0-9]|$)|unauthori[sz]ed|invalid[_ ]token|token (has )?(expired|been revoked|was revoked)|not (been )?authenticated|have been authenticated|not logged in|no token'
 
 # The keychain items its VM credentials declare.
 declared="$HOME/.harness/vm-credentials.json"
@@ -79,8 +88,9 @@ while IFS= read -r url; do
   asked[$tool/$host]=1
   [[ "$tool" == gh && "${GH_DISABLED:-}" == 1 || "$tool" == glab && "${GLAB_DISABLED:-}" == 1 ]] && continue
   status=0
-  timed "$tool" auth status --hostname "$host" >/dev/null 2>&1 || status=$?
+  said="$(timed "$tool" auth status --hostname "$host" 2>&1)" || status=$?
   [[ $status -eq 0 || $status -eq 142 ]] && continue   # 142: no answer in time, unknown
+  if grep -Eqi "$NETWORK" <<< "$said" && ! grep -Eqi "$LOST" <<< "$said"; then continue; fi   # ASS-429: unreachable, unknown
   problem "the $tool login ($host)" "$tool is not authenticated on $host" "$tool auth login --hostname $host"
 done < <(jq -r '.repositories[]?.url // empty' "$json")
 

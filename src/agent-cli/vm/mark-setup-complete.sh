@@ -15,10 +15,10 @@ source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../vm.bash"
 
 [[ $# -eq 3 ]] || { echo "usage: vm:mark-setup-complete <project> <ticket-key> <variation>" >&2; exit 1; }
 vm="$(running_vm vm:mark-setup-complete "$@")"
-missing="$(limactl shell --workdir / "$vm" -- bash -c 'R="${HARNESS_VM_ROOT-}"
+missing="$(machine_run --workdir / "$vm" -- bash -c 'R="${HARNESS_VM_ROOT-}"
   command -v claude >/dev/null || echo "claude (command -v claude)"
   for f in /run/harness/agent-url /run/harness/env; do [ -s "$R$f" ] || echo "$f"; done')" \
   || { echo "vm:mark-setup-complete: could not probe $vm" >&2; exit 1; }
 [[ -z "$missing" ]] || { echo "vm:mark-setup-complete: $vm cannot run an agent: missing $(paste -sd, - <<< "$missing" | sed 's/,/, /g'); Setup stays incomplete" >&2; exit 1; }
-limactl shell --workdir / "$vm" -- bash -c 'touch "${HARNESS_VM_ROOT-}$1"' - "$setup_marker" \
+machine_run --workdir / "$vm" -- bash -c 'touch "${HARNESS_VM_ROOT-}$1"' - "$setup_marker" \
   || { echo "vm:mark-setup-complete: could not write $setup_marker in $vm" >&2; exit 1; }

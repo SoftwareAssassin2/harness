@@ -224,3 +224,101 @@ test('the result lists git authors in the span missing from team.json, and membe
   assert.deepEqual(result.unknownAuthors, [{ username: 'newcomer', name: 'newcomer', mrs: 2 }]);
   assert.deepEqual(result.newMembers, [{ name: 'Grace', role: 'developer', firstSeen: '2026-11-03' }]);
 });
+
+// ASS-440: sub-tasks in tickets.json (subtask: true, parent, status-category).
+// A sub-task from [at, to] moves, as ticket() makes a ticket, its current status's Jira category given.
+const subTask = (key, parent, category, opts) => ({ ...ticket(key, opts), type: 'Sub-task', subtask: true, parent, 'status-category': category });
+// A fixture touching every existing figure: done tickets via QA and not, sent back, points, in progress now, MRs.
+const FIGURES = [
+  ticket('PROJ-1', { moves: [[day(2), 'Working'], [day(3), 'Checking'], [day(4), 'Finished']], assigns: [[day(2, 1), null, ADA], [day(3, 11), ADA, LIN]], assignee: LIN, points: 3 }),
+  ticket('PROJ-2', { moves: [[day(2), 'Working'], [day(3), 'Checking'], [day(3, 12), 'Working'], [day(3, 14), 'Checking'], [day(4), 'Finished']], assignee: ADA, points: 2 }),
+  ticket('PROJ-3', { moves: [[day(2), 'Working'], [day(4), 'Finished']], assignee: GRACE }),
+  ticket('PROJ-4', { assignee: ADA, status: 'Working' }),
+  ticket('PROJ-5', { assignee: GRACE, status: 'Ready' }),
+];
+const FIGURE_MRS = mrs(mr('group/app', 1, 'ada', day(3)), mr('group/api', 2, 'grace', day(4)));
+
+test('ASS-440 AC2: every existing figure is the same with sub-tasks in the data, whatever their statuses', () => {
+  const before = run({ tickets: tickets(...FIGURES), mergeRequests: FIGURE_MRS });
+  const after = run({ mergeRequests: FIGURE_MRS, tickets: tickets(...FIGURES,
+    // Paired statuses through QA and done, in the active sprint, in progress now: none of it counts as a ticket.
+    subTask('PROJ-1a', 'PROJ-1', 'done', { moves: [[day(2), 'Working'], [day(3), 'Checking'], [day(4), 'Finished']], assignee: ADA, points: 5 }),
+    subTask('PROJ-1b', 'PROJ-1', 'indeterminate', { assignee: ADA, status: 'Working' }),
+    subTask('PROJ-1c', 'PROJ-1', 'new', { assignee: GRACE, status: 'Ready' }),
+    // An unpaired status, Jira category done.
+    subTask('PROJ-3a', 'PROJ-3', 'done', { moves: [[day(2), 'Doing'], [day(3), 'Closed']], assignee: GRACE, points: 1 }),
+  ) });
+  assert.deepEqual(after.rows.map(r => r.member.name), before.rows.map(r => r.member.name));
+  for (const [i, row] of before.rows.entries()) {
+    for (const { key } of COLUMNS.filter(c => c.key !== 'subTasksPerDay')) {
+      assert.deepEqual(after.rows[i].cells[key], row.cells[key], `${row.member.name} ${key}`);
+    }
+  }
+  // The fixture's figures, pinned.
+  const ada = rowOf(after, 'Ada').cells, grace = rowOf(after, 'Grace').cells;
+  assert.deepEqual(cellLines(ada.ticketsPerDay), ['0.5', 'tickets: 2', 'days: 4']);
+  assert.deepEqual(cellLines(ada.pointsPerDay), ['1.25', 'points: 5', 'days: 4', 'unpointed: 0']);
+  assert.deepEqual(cellLines(ada.firstPass), ['50%', 'first pass: 1', 'done via QA: 2']);
+  assert.deepEqual(cellLines(ada.devTime), ['1.0 d', 'tickets: 2', 'range: 1.0–1.0 d']);
+  assert.deepEqual(cellLines(ada.testTime), ['1.0 d', 'tickets: 2', 'range: 1.0–1.0 d']);
+  assert.deepEqual(cellLines(ada.inProgressNow), ['1', 'planning: 0', 'in progress: 1']);
+  assert.deepEqual(cellLines(ada.mainLayer), ['app 100% (1)', 'MRs: 1']);
+  assert.deepEqual(cellLines(grace.ticketsPerDay), ['0.25', 'tickets: 1', 'days: 4']);
+  assert.deepEqual(cellLines(grace.inProgressNow), ['1', 'planning: 1', 'in progress: 0']);
+  // And the new column has them.
+  assert.deepEqual(cellLines(ada.subTasksPerDay), ['0.25', 'sub-tasks: 1', 'days: 4']);
+  assert.deepEqual(cellLines(grace.subTasksPerDay), ['0.25', 'sub-tasks: 1', 'days: 4']);
+});
+
+test('ASS-440 AC3: Sub-tasks/day comes right after Tickets/day', () => {
+  assert.deepEqual(COLUMNS.slice(0, 3).map(c => c.title), ['Tickets/day', 'Sub-tasks/day', 'Pts/day']);
+});
+
+test('ASS-440 AC3: a sub-task counts when it first moves to done in the span — by the engines when its status is paired, else by Jira status category done', () => {
+  const result = run({ tickets: tickets(
+    // Paired: Finished is done by the engines.
+    subTask('PROJ-1a', 'PROJ-1', 'done', { moves: [[day(2), 'Working'], [day(3), 'Finished']], assignee: ADA }),
+    // Unpaired: Closed is done by its own Jira category (this sub-task's current status).
+    subTask('PROJ-1b', 'PROJ-1', 'done', { moves: [[day(2), 'Doing'], [day(4), 'Closed']], assignee: ADA }),
+    // Unpaired, moved on since: Closed's category is learnt from the other sub-tasks' current statuses.
+    subTask('PROJ-1c', 'PROJ-1', 'new', { moves: [[day(2), 'Doing'], [day(3), 'Closed'], [day(4, 12), 'Open']], assignee: ADA }),
+    // Paired status that Jira calls done but the engines call in-progress: not done.
+    subTask('PROJ-1d', 'PROJ-1', 'done', { moves: [[day(3), 'Reviewing']], assignee: ADA }),
+    // Unpaired and not done in Jira: not done.
+    subTask('PROJ-1e', 'PROJ-1', 'indeterminate', { moves: [[day(3), 'Doing']], assignee: ADA }),
+    // Its first done move was before the span: out.
+    subTask('PROJ-1f', 'PROJ-1', 'done', { moves: [['2026-10-30T10:00:00Z', 'Closed'], [day(3), 'Doing'], [day(4), 'Closed']], assignee: ADA }),
+  ) });
+  assert.deepEqual(cellLines(rowOf(result, 'Ada').cells.subTasksPerDay), ['0.75', 'sub-tasks: 3', 'days: 4']);
+  assert.equal(rowOf(result, 'Ada').cells.subTasksPerDay.number, 0.75);
+  assert.deepEqual(cellLines(rowOf(result, 'Ada').cells.ticketsPerDay), ['0', 'tickets: 0', 'days: 4']);
+});
+
+test('ASS-440 AC3: a sub-task is credited to its assignee just before it moved to done (assigneeBefore), even through a QA status', () => {
+  const result = run({ tickets: tickets(
+    // Ada did it, handed to Grace (a developer) for checking just before done: Grace held it at done.
+    subTask('PROJ-1a', 'PROJ-1', 'done', { moves: [[day(2), 'Working'], [day(3), 'Checking'], [day(4), 'Closed']],
+      assigns: [[day(2, 1), null, ADA], [day(3, 11), ADA, GRACE]], assignee: GRACE }),
+    // Reassigned after done: still Ada's.
+    subTask('PROJ-1b', 'PROJ-1', 'done', { moves: [[day(3), 'Closed']], assigns: [[day(2), null, ADA], [day(4), ADA, LIN]], assignee: LIN }),
+    // Held by a qa member at done: nobody's row.
+    subTask('PROJ-1c', 'PROJ-1', 'done', { moves: [[day(3), 'Closed']], assignee: LIN }),
+  ) });
+  assert.deepEqual(cellLines(rowOf(result, 'Ada').cells.subTasksPerDay), ['0.25', 'sub-tasks: 1', 'days: 4']);
+  assert.deepEqual(cellLines(rowOf(result, 'Grace').cells.subTasksPerDay), ['0.25', 'sub-tasks: 1', 'days: 4']);
+  assert.equal(rowOf(result, 'Lin'), undefined);
+});
+
+test('ASS-440 AC3/AC4: "–" with no days to divide by; a developer with only sub-tasks done gets a row, after those with tickets done', () => {
+  const data = tickets(
+    ticket('PROJ-1', { moves: [[day(4), 'Finished']], assignee: GRACE }),
+    subTask('PROJ-1a', 'PROJ-1', 'done', { moves: [[day(3), 'Closed']], assignee: ADA }),
+    subTask('PROJ-1b', 'PROJ-1', 'done', { moves: [[day(3), 'Closed']], assignee: ADA }),
+  );
+  const result = run({ tickets: data });
+  assert.deepEqual(result.rows.map(r => r.member.name), ['Grace', 'Ada']);
+  assert.deepEqual(cellLines(rowOf(result, 'Grace').cells.subTasksPerDay), ['0', 'sub-tasks: 0', 'days: 4']);
+  const none = run({ tickets: data, span: { start: '2026-11-05', end: '2026-11-04' }, includeIdle: true });
+  assert.deepEqual(cellLines(rowOf(none, 'Ada').cells.subTasksPerDay), ['–', 'sub-tasks: 0', 'days: 0']);
+  assert.equal(rowOf(none, 'Ada').cells.subTasksPerDay.number, null);
+});

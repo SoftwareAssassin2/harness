@@ -5,7 +5,9 @@
 // assignments:set-process (the session id is recorded in finish.js once the
 // process has said it). None for a variation its dependencies hold (ASS-355).
 import { existsSync, readFileSync, mkdirSync, appendFileSync } from 'node:fs';
+import { readKept } from './read.js';
 import { join, dirname, resolve } from 'node:path';
+import { homedir } from 'node:os';
 import { stepOf, engineSteps, resolveTarget, isActive, isManual } from './engine.js';
 import { enginesFor, heldKinds, payWith } from './state.js';
 import { planFor, grooming, refinementDue, seatsOf } from './plan.js';
@@ -20,7 +22,9 @@ import { sessionDir } from '../agents/session.js';
 import { found, contextOf, ticketPath, isPaused, levelChanges, moveTicket, moveRun, mayMove, firstStepId, backgroundProject, weeklyLimit } from './moves.js';
 import { problemOf, ticketOf, blockHistory, questionsOf } from './facts.js';
 import { failed, waiting, held, ticketKey, runKey } from './backoff.js';
-import { runsInVm, vmOf, REPOS, TICKET_FOLDER } from './vm.js';
+import { runsInVm, vmOf } from './vm.js';
+import { machineOf, machinePaths, onWorkstation } from './machine.js';
+import { syncTicketCopy } from './machine-workstation.js';
 import { awaitsVm, credentialKindOf, NEVER_UP, neverUp, vmUpCeilingMs } from './vm-lifecycle.js';
 import { awaitsDependencies } from './dependencies.js';
 import { repositoryName, nextRepository, visitOf } from './repositories.js';
@@ -59,7 +63,7 @@ function hasPendingTool(event) {
 export function outputSchema(promptsDir, prompt) {
   const file = join(promptsDir, prompt, 'prompt.json');
   if (!existsSync(file)) return undefined;
-  const output = JSON.parse(readFileSync(file, 'utf8')).output;
+  const output = readKept(file).output;   // ASS-458: a prompt.json a merge is rewriting is its last good parse
   return output && typeof output === 'object' && Object.keys(output).length ? output : undefined;
 }
 
@@ -107,9 +111,23 @@ export function whereText(ctx, folder, container, containerFolder, repository) {
 // confinedWhereText(folder, code) — the {where} of a confined host agent's
 // prompt (ASS-108): where it runs, that the project's code is to read, and
 // (ASS-182) that it writes only temp — the harness's data only through
-// agent.sh, never piped (confinement.js: a piped command line runs sandboxed).
+// agent.sh, as a bare command line, its content by file (ASS-428: the
+// sandbox's agent.sh exclusion, confinement.js, matches only a bare call; a
+// pipe, redirect or heredoc runs it sandboxed and its write under data/ is
+// refused), and a write refused all the same named in its output's
+// sandbox-refused (withSandboxRefused).
 export const confinedWhereText = (folder, code) =>
-  `Where you are: ${folder}, the harness's folder for this project, on the host. The project's code is ${code}: read it, never write it. You may write only temp; Claude Code refuses any other write. Change the harness's data — this folder, a ticket's folder, the backlog and sprints — only through the agent.sh commands you are given, the content on stdin from a heredoc (<<'EOF') or a temp file (< file): never pipe into or out of an agent.sh command that writes, or it runs sandboxed and its write is refused.`;
+  `Where you are: ${folder}, the harness's folder for this project, on the host. The project's code is ${code}: read it, never write it. You may write only temp; Claude Code refuses any other write. Change the harness's data — this folder, a ticket's folder, the backlog and sprints — only through the agent.sh commands you are given, each run as a bare command line: agent.sh and its arguments, nothing else on the line. Give a command its content by file, never on stdin: write it first to a temp file of your own, unique to this run, in a call of its own (your Write tool, or one Bash call that does nothing else), then pass that file's absolute path as the command's file argument (in place of "-", or last). Never a pipe, redirect, heredoc, &&, ; or $(…) on an agent.sh line: it then runs sandboxed, and its write is refused ("Operation not permitted"). Should an agent.sh write be refused all the same, say so: name each such command in sandbox-refused in your final JSON (work:append, say), not a vague "writes are blocked".`;
+
+// withSandboxRefused(schema) — a confined host agent's output schema (ASS-428
+// AC4) with sandbox-refused: the agent.sh commands whose write the sandbox
+// refused, which control turns into the variation's health, "sandbox refused
+// <command>" (facts.js sandboxRefusedFeedback). A prompt with no schema keeps
+// none; one that names it already is left as it is.
+export function withSandboxRefused(schema) {
+  if (!schema || schema.properties?.['sandbox-refused']) return schema;
+  return { ...schema, properties: { ...schema.properties, 'sandbox-refused': { type: 'array', items: { type: 'string' }, description: 'Only when the sandbox refused an agent.sh write ("Operation not permitted"): each such command, as named (work:append, vm:golden-write); left out otherwise' } } };
+}
 
 // vmWhereText(project, vm, repository) — the {where} of a run-location: vm
 // step's prompt (ASS-74): the agent is in the variation's own VM, in /repos/,
@@ -124,28 +142,33 @@ export const confinedWhereText = (folder, code) =>
 // merge requests read and edited through agent.sh merge-request:*; last,
 // project.json's "vm-full-checks", how to run the full checks there (ASS-229),
 // when it has one. Throws when the project declares no such repository.
+// ASS-435: on a GCP workstation (`vm` a workstation's machine) the same, its
+// paths its variation folder's (machine.js machinePaths: <folder>/repos/,
+// <folder>/ticket, the ticket's read-only copy) and the agent told it is on
+// the workstation, in that folder.
 const repoName = r => repositoryName(r.url);
 export function vmWhereText(project, vm, repository) {
-  const all = project.json.repositories ?? [];
-  const ticket = [`The ticket's folder is ${TICKET_FOLDER}, read-only: read the ticket's files there; write them only through agent.sh, the content on stdin. agent.sh, on your PATH, runs the harness commands you are given, for this ticket and variation only. The forge token in your environment is for git and package installs only. Read and update merge requests only through agent.sh merge-request:view, merge-request:update, merge-request:upload-image, merge-request:reply and merge-request:resolve; never call a forge or Jira API yourself. Run every other command here, in the VM.`, project.json['vm-full-checks']].filter(Boolean);
+  const all = project.json.repositories ?? [], { repos: REPOS, ticket: TICKET_FOLDER, kind, where } = machinePaths(vm);
+  const ticket = [`The ticket's folder is ${TICKET_FOLDER}, read-only: read the ticket's files there; write them only through agent.sh, the content on stdin. agent.sh, on your PATH, runs the harness commands you are given, for this ticket and variation only. The forge token in your environment is for git and package installs only. Read and update merge requests only through agent.sh merge-request:view, merge-request:update, merge-request:upload-image, merge-request:reply and merge-request:resolve; never call a forge or Jira API yourself. Run every other command here, ${kind === 'VM' ? 'in the VM' : 'on the workstation, in this folder'}.`, project.json['vm-full-checks']].filter(Boolean);
   if (repository) {
     const r = all.find(x => repoName(x) === repository);
     if (!r) throw new Error(`${project.id} declares no repository ${repository} (project.json repositories)`);
-    return [`Where you are: in this ticket variation's own VM, ${vm}. You are in ${REPOS}${repository}/, the checkout of ${repository} (${r.url}); this step works in that repository alone. ${repository}: ${r.description ?? 'no description'}`, ...ticket].join('\n');
+    return [`Where you are: ${where}. You are in ${REPOS}${repository}/, the checkout of ${repository} (${r.url}); this step works in that repository alone. ${repository}: ${r.description ?? 'no description'}`, ...ticket].join('\n');
   }
   const repos = all.map(r => `- ${repoName(r)} (${r.url}), in ${REPOS}${repoName(r)}/: ${r.description ?? 'no description'}`);
-  return [`Where you are: in this ticket variation's own VM, ${vm}. You are in ${REPOS}, which holds a checkout of each of the project's repositories:`, ...repos, ...ticket].join('\n');
+  return [`Where you are: ${where}. You are in ${REPOS}, which holds a checkout of each of the project's repositories:`, ...repos, ...ticket].join('\n');
 }
 
-// vmFolder(repository) — where an agent in the VM starts: /repos/<repo>/ for a step in one repository (ASS-119), else /repos/.
-const vmFolder = repository => (repository ? `${REPOS}${repository}/` : REPOS);
+// vmFolder(vm, repository) — where an agent in the VM starts: /repos/<repo>/ for a step in one repository (ASS-119), else /repos/
+// (a workstation's: its variation folder's repos/, ASS-435).
+const vmFolder = (vm, repository) => { const { repos } = machinePaths(vm); return repository ? `${repos}${repository}/` : repos; };
 
 // codeFolder(project, vm, folder, repository) — the {project-code-folder} of
 // a prompt (ASS-106), the project's code for the ticket: in its VM, each
 // repository's checkout, /repos/<repo>/ — or the one `repository`'s, for a
 // step in one (ASS-119); on the host, the agent's folder — its worktree or
 // the workspace (agentFolder).
-export const codeFolder = (project, vm, folder, repository) => (!vm ? folder : repository ? vmFolder(repository) : (project.json.repositories ?? []).map(r => `${REPOS}${repoName(r)}/`).join(', ') || REPOS);
+export const codeFolder = (project, vm, folder, repository) => (!vm ? folder : repository ? vmFolder(vm, repository) : (project.json.repositories ?? []).map(r => `${vmFolder(vm)}${repoName(r)}/`).join(', ') || vmFolder(vm));
 
 // vmFor(state, project, step, key, variation) — the VM a step of the ticket
 // variation runs in: null for a step on the host; else the variation's VM's
@@ -154,6 +177,18 @@ function vmFor(state, project, step, key, variation) {
   if (!runsInVm(step)) return null;
   const found = project.tickets.find(t => t.key === key)?.variations?.find(v => v.name === variation && !v['is-deleted']);
   return vmOf(found, `${key} ${variation} ${step.id}`);
+}
+
+// ticketFolderOf(ctx, machine) — the ticket folder on the Mac a workstation
+// machine's forwarder binding names (vm:start wrote it, ASS-435: the one
+// agent.sh writes, and the forwarder runs its calls in); throws without one,
+// so the dispatch is held and tried again as any failing one is.
+function ticketFolderOf(ctx, machine) {
+  const file = join(ctx.env.HARNESS_HOME ?? join(homedir(), '.harness'), 'vm-tokens.json');
+  let folder;
+  try { folder = JSON.parse(readFileSync(file, 'utf8'))[machine]?.['ticket-folder']; } catch { /* none */ }
+  if (!folder) throw new Error(`${machine} has no forwarder binding in ${file}: vm:start has not readied it`);
+  return folder;
 }
 
 // The agent for one record started: agent:dispatch queues its prompt (into
@@ -178,7 +213,8 @@ function vmFor(state, project, step, key, variation) {
 // from its VM's vms.json row, null when it records none; a host agent's from
 // its account's authMethod) }.
 // ticketProjectOf(state, runId) — the project of the ticket a run is about,
-// named by it or a parent run (parent.ticket-project, see sampleHealth); null
+// named by it or a parent run (parent.ticket-project: the removed ticket
+// health check's way, ASS-450, which no run control starts now sets); null
 // when none is.
 function ticketProjectOf(state, runId) {
   for (let r = state.transient.find(t => t.id === runId), seen = new Set(); r && !seen.has(r.id); r = state.transient.find(t => t.id === r.parent?.['transient-state-engine'])) {
@@ -254,8 +290,8 @@ async function hostKind(ctx, project) {
   return kind;
 }
 
-// The name of the VM a ticket variation of the project records, or undefined.
-const vmNameOf = (project, key, variation) => project.tickets.find(t => t.key === key)?.variations?.find(v => v.name === variation)?.vm?.name;
+// The machine a ticket variation of the project records (its VM's name, or a workstation's machine, ASS-435), or undefined.
+const vmNameOf = (project, key, variation) => machineOf(project.tickets.find(t => t.key === key)?.variations?.find(v => v.name === variation));
 
 // paymentFor(ctx, limited, project, step, key, variation, weekly) — how the
 // candidate's agent pays (ASS-217), or null while it waits. Where the project
@@ -303,7 +339,8 @@ export const worksOnCode = (step, variation, record) =>
 // left out — the step runs without memory, never held for it (AC5) — and the
 // agent's session log (in `dir`) says so first, as control's log does.
 async function memoryFor(ctx, project, vm, dir) {
-  const mcpConfig = memoryMcpConfig(project, { vm: Boolean(vm) });
+  // A VM reaches Hindsight at host.lima.internal; a workstation at 127.0.0.1, its connection's reverse forward (ASS-435 AC5).
+  const mcpConfig = memoryMcpConfig(project, { vm: Boolean(vm) && !onWorkstation(vm) });
   if (!mcpConfig || await memoryAnswers(memoryPort(project))) return mcpConfig;
   const note = `memory unavailable: ${project.id}'s Hindsight is not answering on 127.0.0.1:${memoryPort(project)}; this step runs without memory`;
   mkdirSync(dir, { recursive: true });
@@ -317,7 +354,7 @@ async function startFor(ctx, state, project, record, vm, repository, step, payme
   const account = await recordAccount(ctx, project, name, payment);
   const { variation } = found(state, record);
   const container = record['working-in-dev-container'] === true ? project.json['dev-container'] : undefined;
-  const { folder: codeAt, containerFolder } = vm ? { folder: vmFolder(repository), containerFolder: null } : agentFolder(ctx, project, variation, container);
+  const { folder: codeAt, containerFolder } = vm ? { folder: vmFolder(vm, repository), containerFolder: null } : agentFolder(ctx, project, variation, container);
   // Confined, it runs in the harness's folder for the project; the code it reads stays codeAt.
   const confined = !vm && !worksOnCode(step, variation, record) ? confineHostAgent({ root: ctx.root, data: dirname(ctx.paths.agents), project: project.id }) : null;
   const folder = confined?.cwd ?? codeAt;
@@ -327,19 +364,21 @@ async function startFor(ctx, state, project, record, vm, repository, step, payme
   const inbox = join(sessionDir(dirname(ctx.paths.agents), name, record['start-time']), 'inbox.jsonl');
   if (existsSync(inbox)) ctx.log(PHASE, `${name}: an earlier session's inbox is cleared by agent:dispatch`);
   const mcpConfig = await memoryFor(ctx, project, vm, dirname(inbox));
-  // A harness run about another project's ticket (sampleHealth) tells its agent that project — and its limits and seat holders (ASS-240: plan.js seatsOf).
+  // A harness run about another project's ticket (parent.ticket-project) tells its agent that project — and its limits and seat holders (ASS-240: plan.js seatsOf).
   const about = ticketProjectOf(state, record['transient-state-engine']), aboutProject = (state.allProjects ?? state.projects).find(p => p.id === about);
   const aboutArgs = about ? [`ticket-project=${about}`, `ticket-project-folder=${join(ctx.paths.projects, about)}`, `seats=${aboutProject ? JSON.stringify(seatsOf(state, aboutProject)) : '-'}`] : [];
   const dir = configDir(ctx, project, payment);
   // In a VM its ticket folder is the mount and agent.sh the VM's own: what the prompt's commands run.
-  const vmArgs = vm ? [`ticket-folder=${TICKET_FOLDER}`, 'agent-sh=agent.sh'] : [];
+  // On a workstation (ASS-435) the ticket's read-only copy, brought up to date first (AC4), and the setup's agent.sh.
+  const vmArgs = vm ? [`ticket-folder=${machinePaths(vm).ticket}`, 'agent-sh=agent.sh'] : [];
+  if (onWorkstation(vm)) await syncTicketCopy(vm.slice('workstation:'.length), ticketFolderOf(ctx, vm), { env: ctx.env });
   await ctx.cli(['agent:dispatch', name, `folder=${folder}`, `where=${vm ? vmWhereText(project, vm, repository) : confined ? confinedWhereText(folder, codeAt) : whereText(ctx, folder, container, containerFolder, repository)}`, `project-code-folder=${codeFolder(project, vm, codeAt, repository)}`, ...vmArgs, ...aboutArgs]);
   const live = { name, project: project.id, record, repository, startedAt: ctx.now(), result: null, exited: null, cost: 0, tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, sessionRecorded: false, rateLimit: null, pending: null, pendingThisTurn: false,
     vm: vm ?? null, payment, kind: payment ? (payment === 'api' ? 'anthropic' : 'claude') : vm ? credentialKindOf(ctx, project.id, vm) : kindOfAccount(account) };
   live.agent = startAgent({
     name, root: dirname(ctx.paths.agents), cwd: folder, vm: vm ?? undefined, model: record.model,
     command: vm && payment ? ['env', '-u', UNSET[payment], ...(ctx.command ?? CLAUDE)] : ctx.command,
-    jsonSchema: outputSchema(ctx.paths.prompts, record.prompt), mcpConfig,
+    jsonSchema: confined ? withSandboxRefused(outputSchema(ctx.paths.prompts, record.prompt)) : outputSchema(ctx.paths.prompts, record.prompt), mcpConfig,
     startTime: record['start-time'], confinedBy: confined?.settings,
     usage: { prices: state.harness['model-prices'] ?? {}, windows: mergedWindows(state.harness, state.contextWindows) },
     // limactl shell passes no environment into the VM: its own (vm:credentials) is the agent's there.
@@ -373,25 +412,30 @@ async function startFor(ctx, state, project, record, vm, repository, step, payme
   });
   ctx.agents.set(name, live);
   await ctx.cli(['assignments:set-process', name, String(live.agent.pid), '-']);
-  ctx.log(PHASE, `${name} (${record.model}) on ${record['work-item'] ?? record['state-engine']}${record.variation ? ` ${record.variation}` : ''} ${record.state}, pid ${live.agent.pid}, in ${folder}${container ? ` (${container}:${containerFolder})` : ''}${vm ? ` (VM ${vm})` : ''}${repository ? ` for ${repository}` : ''}${payment ? ` on the ${payment === 'api' ? 'API key' : 'subscription'}` : ''}`);
+  ctx.log(PHASE, `${name} (${record.model}) on ${record['work-item'] ?? record['state-engine']}${record.variation ? ` ${record.variation}` : ''} ${record.state}, pid ${live.agent.pid}, in ${folder}${container ? ` (${container}:${containerFolder})` : ''}${vm ? (onWorkstation(vm) ? ` (workstation ${onWorkstation(vm).id})` : ` (VM ${vm})`) : ''}${repository ? ` for ${repository}` : ''}${payment ? ` on the ${payment === 'api' ? 'API key' : 'subscription'}` : ''}`);
 }
 
 // assignments:create with the arguments, the records it printed — every
-// agent on the step's model when it names one (modelFor, ASS-399), else
-// assignments:create's round robin.
+// agent on the step's model when it names one (modelFor, ASS-399, ASS-452),
+// the round robin and last-model-used left alone; else assignments:create's
+// round robin.
 const create = async (ctx, args, step, harness) => {
   const model = modelFor(step, harness);
   return JSON.parse(await ctx.cli(['assignments:create', ...(model ? ['--model', model] : []), ...args]));
 };
 
 // modelFor(step, harness) — the model a prompt step's agents run on when its
-// action names one (ASS-399): "stronger" is harness.json's stronger-model,
-// else its first Claude model (the list runs strongest first) — grouped-plan's
-// Write Execution Plan on a Stronger Model, its last re-plan before the
-// operator is asked. Undefined when the action names none (or harness.json
-// has no Claude model): the round robin picks.
+// action names one: a model by name (ASS-452: one of harness.json's claude
+// models, validate.js checks) is that model; "stronger" (ASS-399) is
+// harness.json's stronger-model, else its first Claude model (the list runs
+// strongest first) — grouped-plan's Write Execution Plan on a Stronger Model,
+// its last re-plan before the operator is asked. Undefined when the action
+// names none (or, for "stronger", harness.json has no Claude model): the
+// round robin picks.
 export function modelFor(step, harness = {}) {
-  if (step?.action?.model !== 'stronger') return undefined;
+  const model = step?.action?.model;
+  if (typeof model !== 'string' || model === '') return undefined;
+  if (model !== 'stronger') return model;
   const claude = (harness['agentic-command-line-interfaces'] ?? []).find(c => c.name === 'claude')?.models ?? [];
   return harness['stronger-model'] || claude[0];
 }

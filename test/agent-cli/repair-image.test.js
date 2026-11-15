@@ -71,7 +71,7 @@ test('ASS-392 AC2: vm:golden-write replaces one file of the golden-image folder 
   const write = (path, content) => outcome(run('bash', ['-c', `printf '%s' "$1" | "$2" vm:golden-write p "$3"`, '-', content, AGENT, path], { env: s.env }));
   const ok = await write('provision.sh', '#!/bin/bash\nsudo apt-get install -y jq\n');
   assert.equal(ok.code, 0, ok.stderr);
-  assert.deepEqual(ok.out, { project: 'p', file: 'provision.sh', bytes: 39 });
+  assert.deepEqual(ok.out, { project: 'p', file: 'provision.sh', bytes: 39, queued: false });
   assert.equal(readFileSync(join(s.folder, 'provision.sh'), 'utf8'), '#!/bin/bash\nsudo apt-get install -y jq\n');
   assert.equal(statSync(join(s.folder, 'provision.sh')).mode & 0o777, 0o755, 'its mode kept');
   assert.equal((await write('images.txt', 'registry.example.com/app:1@sha256:abc\n')).code, 0, 'a new file of the definition');
@@ -87,11 +87,41 @@ test('ASS-392 AC2: vm:golden-write replaces one file of the golden-image folder 
   assert.ok(!existsSync(join(other, 'provision.sh')), 'nothing written through the symlink');
   assert.match((await write('warm.sh', '')).stderr, /nothing on stdin/);
   assert.ok(!existsSync(join(s.folder, 'warm.sh')));
+  // ASS-427 AC3: while a build runs the definition is not touched — the write is queued, for vm:golden-followup once it ends.
   s.building();
   const during = await write('provision.sh', 'echo changed\n');
-  assert.equal(during.code, 1);
-  assert.match(during.stderr, /golden-p is being built now/);
+  assert.equal(during.code, 0, during.stderr);
+  assert.deepEqual(during.out, { project: 'p', file: 'provision.sh', bytes: 13, queued: true });
+  assert.match(during.stderr, /golden-p is being built now and reads its definition: provision\.sh is queued/);
   assert.match(readFileSync(join(s.folder, 'provision.sh'), 'utf8'), /apt-get install -y jq/, 'unchanged while it builds');
+  const queued = s.at('projects', 'p', 'golden-queue', 'provision.sh');
+  assert.equal(readFileSync(queued, 'utf8'), 'echo changed\n');
+  assert.equal(statSync(queued).mode & 0o777, 0o755, 'the live file\'s mode');
+  rmSync(s.at('projects', 'p', 'golden-build-run.json'));
+  assert.equal((await write('provision.sh', 'echo changed again\n')).out.queued, false, 'no build: written');
+  assert.ok(!existsSync(queued), 'the queued copy it started from dropped');
+});
+
+// ASS-428 AC1: the content from a file path given as the 3rd argument, for the confined Repair Image agent, whose
+// `vm:golden-write … < file` ran sandboxed and failed (ABC-1770); stdin unchanged.
+test('ASS-428 AC1: vm:golden-write <project> <path> <file> writes the file\'s content, nothing on stdin, its mode kept; a missing or empty file writes nothing', async () => {
+  const s = await setup();
+  const staged = s.at('provision.staged');
+  writeFileSync(staged, '#!/bin/bash\nsudo apt-get install -y bats\n');
+  const ok = await outcome(s.agent('vm:golden-write', 'p', 'provision.sh', staged));
+  assert.equal(ok.code, 0, ok.stderr);
+  assert.deepEqual(ok.out, { project: 'p', file: 'provision.sh', bytes: 41, queued: false });
+  assert.equal(readFileSync(join(s.folder, 'provision.sh'), 'utf8'), '#!/bin/bash\nsudo apt-get install -y bats\n');
+  assert.equal(statSync(join(s.folder, 'provision.sh')).mode & 0o777, 0o755, 'its mode kept');
+  const missing = await outcome(s.agent('vm:golden-write', 'p', 'warm.sh', '/no/such/warm.sh'));
+  assert.equal(missing.code, 1);
+  assert.match(missing.stderr, /vm:golden-write: no file \/no\/such\/warm\.sh: nothing written/);
+  writeFileSync(staged, '');
+  const empty = await outcome(s.agent('vm:golden-write', 'p', 'warm.sh', staged));
+  assert.equal(empty.code, 1);
+  assert.ok(empty.stderr.includes(`nothing on ${staged}`), empty.stderr);
+  assert.ok(!existsSync(join(s.folder, 'warm.sh')));
+  assert.match((await outcome(s.agent('vm:golden-write', 'p', 'warm.sh', staged, 'extra'))).stderr, /usage: vm:golden-write .*\[<file>\]/);
 });
 
 test('ASS-392 AC2: vm:recreate puts a set-up VM on the current golden image — its pushed branch checked out again, Setup marked complete again, logged — but refuses, deleting nothing, while a golden build runs or while the VM holds work no remote has', async () => {
@@ -134,27 +164,25 @@ test('ASS-392 AC2: vm:recreate puts a set-up VM on the current golden image — 
   assert.match(s.log(), /vm:recreate: abc-3-a recreated from golden-p \(generation g2\), its repositories put back on their branches and its Setup marked complete again\./);
 });
 
-test('ASS-392 AC4: vm:image-recheck — not verified (exit 3, ai-feedback for the operator) while golden-p builds, when it is not built from its current definition, or when the ticket\'s VM is an older clone; image current and VM its clone, the harness has no check to re-run: exit 2, Repair Image\'s run stands', async () => {
+test('ASS-427 AC6: vm:image-recheck verifies the ticket on its fixed VM — an older clone, an image not current or one being rebuilt no longer fail it; the image\'s state and the VM\'s generation logged; no check of the harness\'s to re-run: exit 2, the repair\'s own run stands', async () => {
   const s = await setup();
   await s.agent('vm:create', 'p', 'ABC-3', 'A');
   const recheck = () => outcome(s.agent('vm:image-recheck', 'p', 'ABC-3', 'A'));
   const ok = await recheck();
   assert.equal(ok.code, 2, ok.stderr);
   assert.deepEqual([ok.out['image-verified'], ok.out.rechecked], [true, false]);
-  assert.match(s.log(), /Blocked, Verify the Repaired Image\nNot re-checked: its state changes do not say which step it was blocked at\. Repair Image's run of the failing check stands\./);
-  assert.match(s.log(), /the harness has no check of its own to re-run/);
+  assert.match(s.log(), /Blocked, Verify the Repaired Image\nNot re-checked: its state changes do not say which step it was blocked at\. The repair's own run of the failing check stands\./);
+  assert.match(s.log(), /The harness has no check of its own to re-run [^\n]*: the repair's own run of the failing check on the fixed VM stands \(abc-3-a, a clone of generation g2; golden-p current \(generation g2\)\)\./);
   s.label('abc-3-a', { project: 'p', hash: 'x', 'built-at': '2026-11-01T08:00:00Z', generation: 'g1' });
-  const old = await recheck();
-  assert.equal(old.code, 3);
-  assert.match(old.out['ai-feedback-short'], /abc-3-a is not a clone of the repaired golden-p/);
-  assert.match(old.out['ai-feedback-long'], /vm:recreate p ABC-3 A/);
+  assert.equal((await recheck()).code, 2, 'an older clone: its fix is in it, not in the image');
+  assert.match(s.log(), /abc-3-a, a clone of generation g1; golden-p current/);
   writeFileSync(join(s.folder, 'provision.sh'), '#!/bin/bash\necho changed\n');
-  const stale = await recheck();
-  assert.equal(stale.code, 3);
-  assert.match(stale.out['ai-feedback-short'], /golden-p is not built from its current definition/);
+  assert.equal((await recheck()).code, 2, 'the definition changed since its build');
+  assert.match(s.log(), /golden-p not built from its definition as it is now/);
   s.building();
-  assert.match((await recheck()).out['ai-feedback-short'], /golden-p is still being built/);
-  assert.match(s.log(), /Not verified: golden-p is still being built/);
+  assert.equal((await recheck()).code, 2, 'a rebuild running');
+  assert.match(s.log(), /golden-p being rebuilt \(its build checks itself; its result is logged here when it ends\)/);
+  assert.doesNotMatch(s.log(), /Not verified/);
 });
 
 test('ASS-392 AC4: vm:image-recheck re-runs the blocked step\'s check on the VM from the repaired image — passing, exit 0 and verified; still failing, exit 3 for the operator with its last lines', async () => {
@@ -182,10 +210,10 @@ test('ASS-392 AC4: vm:image-recheck re-runs the blocked step\'s check on the VM 
     if (code === 0) {
       assert.deepEqual([r.out['image-verified'], r.out['recheck-passed'], r.out.recheck.at], [true, true, 'build/check']);
       assert.match(s.log(), /Blocked, Verify the Repaired Image\nPassed on re-check; nothing to fix\. Re-ran `\.\/agent\.sh ticket:set-paused p ABC-3 A false` \(the step build\/check, where it was blocked\): exit 0\. The ticket resumes\./);
-      assert.match(s.log(), /Verified: the failing check passes on a VM from the repaired image \(abc-3-a, golden-p generation g2\)\./);
+      assert.match(s.log(), /Verified: the failing check passes on the ticket's fixed VM \(abc-3-a, a clone of generation g2; golden-p current \(generation g2\)\)\./);
     } else {
       assert.equal(r.out['image-verified'], false);
-      assert.match(r.out['ai-feedback-short'], /the failing check still fails on a VM from the repaired image/);
+      assert.match(r.out['ai-feedback-short'], /the failing check still fails on the ticket's fixed VM/);
       assert.match(r.out['ai-feedback-long'], /`\.\/agent\.sh ticket:set-paused p ABC-3 Z false` exit 1/);
       assert.match(s.log(), /still fails \(exit 1\)\. Blocked for Human\./);
     }

@@ -44,6 +44,12 @@ const ALLOWED = {
   'src/agent-cli/ticket/sync-jira-comments.sh': { '"$dir/jira-comments.json"': 'noclobber create when missing, then update_json' },
   'src/agent-cli/project/set-last-data-download.sh': { '"$file.$$"': 'temp beside, renamed over' },
   'src/agent-cli/reauthentication.bash': { '"$file.$$"': 'temp beside, renamed over' },
+  'src/agent-cli/workstation/on-workstation/setup.sh': {   // ASS-434
+    '"$tmp"': 'runs on a GCP workstation: a temp file beside the target in ~/harness, renamed over it',
+    '"$R/ready"': 'runs on a GCP workstation: its runtime folder\'s marker, not the harness\'s data',
+  },
+  'src/agent-cli/workstation.bash': { '"$log"': 'the workstation SSH master\'s own output log (ASS-433), one writer under the workstation\'s lock' },
+  'src/agent-cli/workstation-variation.bash': { '"$HARNESS_RUNTIME/agent-token"': 'runs on a GCP workstation (ASS-435): its runtime folder\'s forwarder token, as vm:start writes a VM\'s' },
   'src/agent-cli/registry/refresh-credentials.sh': { '"$file.$$"': 'temp beside, renamed over' },
   'src/agent-cli/registry/up.sh': {
     '"$1.$$"': 'temp beside, renamed over',
@@ -87,6 +93,7 @@ const ALLOWED = {
   'src/agent-cli/vm/credentials.sh': {
     '"$h/agent-token"': 'inside the VM, not the harness\'s data (ASS-215: kept across its rm -rf)',
     '"$h/agent-url"': 'inside the VM, not the harness\'s data (ASS-215: kept across its rm -rf)',
+    '"$h/env"': 'on a GCP workstation (ASS-435): its runtime folder\'s credentials, not the harness\'s data',
   },
   'src/agent-cli/vm/in-vm/demo-desktop.sh': { '"$R$rc"': 'runs inside the VM' },
   // ASS-392: a temp file beside the definition file, its mode then set, renamed over it (replace_file would reset the mode).

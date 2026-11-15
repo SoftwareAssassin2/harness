@@ -59,7 +59,7 @@ test('ASS-295 AC2, AC3: with the API spend line showing, every screen\'s body is
 test('ASS-295 AC2: the sprint screen shows the icon key under the grid in full with the API spend line showing', () => {
   const out = render(base, size).map(strip);
   assert.ok(out.some(l => /API \$12\.34 this month/.test(l)));
-  assert.match(out.join('\n'), /▮ step {2}✦ feature .* paused/);
+  assert.match(out.join('\n'), /█ step {2}✦ feature [\s\S]* paused/);
 });
 
 test('ASS-295 AC1: keys move the sprint grid\'s selection against the rows drawn at the size\'s now', () => {
@@ -68,5 +68,5 @@ test('ASS-295 AC1: keys move the sprint grid\'s selection against the rows drawn
   for (let i = 0; i < 40; i++) state = handleKey(state, { name: 'down' }, size);
   const out = render(state, size);
   assert.ok(out.some(l => l.includes('\x1b[7m') && /ABC-40/.test(strip(l))));
-  assert.match(out.map(strip).join('\n'), /▮ step {2}✦ feature .* paused/);
+  assert.match(out.map(strip).join('\n'), /█ step {2}✦ feature [\s\S]* paused/);
 });

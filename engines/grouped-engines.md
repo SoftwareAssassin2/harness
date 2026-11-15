@@ -318,7 +318,7 @@ Execution Plan on a Stronger Model: the same `write-execution-plan-grouped`
 prompt, its action `"model": "stronger"`, so control dispatches it with
 `assignments:create --model <model>` — harness.json's `stronger-model`, else
 the first (strongest) model in its Claude models list (`dispatch.js`
-`modelFor`; every other step keeps the round robin). The prompt reads
+`modelFor`; every other step runs on the model its action names, below). The prompt reads
 `plan-objections-<variation>.md` whenever it exists, the earlier re-plans too:
 every objection so far, summed up once each under the plan's "## Objections"
 with how the draft resolves it. Write Test Plan, Enrich Automated Test Data
@@ -629,6 +629,31 @@ with check-on-master's feedback after no evidence. A failure on the latest
 master still raises the project bug, and an environment or harness issue
 never reaches the check.
 
+A merged merge request is still the ticket's own code (ASS-423). Once the
+ticket's merge requests merge — QA puts a released ticket On Hold, say — the
+VM's checkout shows nothing of them, so when the failing file is not the
+branch's, `ticket:own-branch-fix` reads each of the ticket's Merged merge
+requests for the failing repository on its forge (merge-requests.bash
+`mr_files`: GitLab's `…/merge_requests/<iid>/diffs`, else `…/changes`;
+GitHub's `…/pulls/<n>/files`); a file one of them added or changed (a
+rename's old name too) is the ticket's own, `own-branch-source: merged`.
+Then, when none of the ticket's merge requests for that repository is still
+open or to be created (every one Merged or Closed), it plans a new one
+(merge-requests.bash `plan_new_merge_request`, through
+`ticket:set-merge-request-plan`): the next unused id, branch
+`change/<KEY>-<id>`, based on the merged one's base, its contents saying
+what to fix and why; the output's `merge-request-planned` names it. The `##
+Own-branch fix` section says the fix goes in that new merge request, names
+it, and says not to reopen or push to the merged branches; Generate Solution
+builds and opens it as any planned one, skipping the merged ones as ever. One
+still open keeps the fix, nothing planned. Troubleshoot and Classify are told
+that a defect in a file the ticket's merge requests added or changed is
+`own-branch: true`, merged or not. A block from QA resumes at Build (Generate
+Solution's group), its Jira status that step's pairing, and goes through
+Build, Release and QA again; the return is a fix attempt as above. A file in
+no merge request of the ticket, or a merged one the forge will not show, is
+not shown: the paths above, unchanged.
+
 Blocked checks first (ASS-390 AC4). After counting its attempts and before
 any agent is dispatched, Check First (`check-first`, `ticket:recheck-block`,
 on the host, the VM kept running) re-runs the check the ticket failed: the
@@ -801,6 +826,80 @@ the check cannot see this credential: Explain the Unseen Credential
 reasoning and its `human-action` as the ai-feedback, logs it, and the ticket
 goes to Blocked for Human.
 
+A VM problem is fixed in the ticket's VM at once and in its source in the
+background (ASS-427). The pattern, the operator's (2026-11-14): fix the
+ticket's VM directly to unblock the ticket, then make the same change to the
+VM's source — the golden image definition, or the harness's VM setup — so no
+later VM has the problem. A golden rebuild never disturbs a ticket using its
+VM (vm:build-golden builds `golden-<p>-build` beside the image and takes the
+VM lock only for the swap), so the source fix never holds the ticket.
+- Classify's `vm` outcome is a problem in the ticket's VM that can be fixed
+  in place there and that every VM made the same way would have: a tool or
+  package the golden image lacks (ABC-1770: `bats`, which the static-policy
+  gate execs), a cache or container image it should carry, a file the
+  harness writes into each VM as it starts (`vm:credentials`:
+  `/run/harness/npmrc`, gitconfig, env) missing an entry because its
+  declaration lacks it — the credential itself valid (ABC-897: a project
+  declared no gitlab `npm-registries`, so pnpm reached `@example`
+  anonymously, 401). That is no `credentials` issue any more: the credentials
+  hold is for a secret missing or failing. `image` is now only what cannot
+  be fixed in place. Repair Environment, finding a fix every VM from the
+  image would need, fixes nothing and says `vm-source: true`, which sends it
+  to the same repair.
+- Repair the VM and Its Source (`repair-vm`, prompt
+  `repair-vm-on-host-grouped`, a host step confined as Repair Image is, its
+  VM kept running) makes the smallest fix in the ticket's VM through `vm:run
+  <p> <ticket> <variation> <script file>` (the agent's script run in that VM
+  alone, as its user, through `limactl shell -- bash -s`; it waits for the VM
+  to come up, exits with the script's exit, 3 with no VM; script and exit
+  logged) and re-runs the failing check there. Then the same change in the
+  source: the definition through `vm:golden-write` (the file path its last
+  argument), and, for a missing tool, `vm:golden-add-tool <p> <tool>` — the
+  tool added to project.json's `golden-image.tools`, so a build without it
+  fails its tools check; or a non-secret VM-setup declaration through
+  `vm:credentials-declare <p> <ticket> <variation> npm-registry <@scope>
+  <gitlab-project-id>`, which adds the scope to the project's gitlab
+  `npm-registries` in `~/.harness/vm-credentials.json` (under its lock, its
+  mode kept; added only — a scope declared with another id, or a project
+  declaring no gitlab credential, is refused, exit 3) and writes the ticket's
+  VM's `/run/harness` files again at once (`vm:credentials`): the VM fix and
+  the source fix in one, no rebuild needed. A secret — a token, a keychain
+  item, its service name — stays the operator's. Fixed: Rebuild the Source
+  in the Background, then Verify. Not fixable in place (`in-place: false`:
+  the Lima template — cpus, memory, disk —, kernel settings, the image's
+  build, no VM yet): today's path, Await the Golden Build, Repair Image,
+  Verify, the ticket waiting. Not fixed: Blocked for Human with what it
+  tried.
+- Rebuild the Source in the Background (`rebuild-source`, `vm:golden-followup
+  <p> <ticket> <variation>`, run once, whatever it exits on to Verify)
+  records the ticket as waiting on a rebuild (`golden-followup.json`) and,
+  when no build runs and the image is not current with its definition,
+  starts it (`vm:build-golden-start`, detached, never waited on); the image
+  current (a VM-setup fix), there is nothing to build, and the ticket's
+  change log says so. One build per project at a time (AC3): while a build
+  runs, `vm:golden-write` no longer refuses — it queues the file in
+  `data/projects/<p>/golden-queue/` (`queued: true`; an agent reads a queued
+  copy first, and a write while no build runs drops it), and control's
+  golden follow-up (golden-followup.js, phase 2, once a minute while a file
+  is queued or a ticket followed) runs `vm:golden-followup <p>`: once the
+  build has ended it writes the queue into the definition, starts the
+  rebuild, and logs each ended build's result on the tickets it fixed —
+  rebuilt, its checks (the tools check among them) passed, or failed, its
+  exit and logs. A start the disk hold refuses waits for the next minute.
+- Verify the Repaired Image (`vm:image-recheck`) now verifies the ticket on
+  its fixed VM (AC6): the blocked step's check passing there. The ticket's
+  VM need not be a clone of the newest image, nor the image current; the
+  image's state (current, being rebuilt, not built from its definition) and
+  the VM's generation are logged with the outcome. This holds on the
+  rebuild path too, where Repair Image recreates the VM before it.
+- The run's history says "its VM fixed in place (…), its source (…) fixed for
+  later VMs, verified on its VM" (facts.js blockHistory), and no fix ticket
+  is raised for a `vm` issue. None of the new commands is allowed through the
+  forwarder.
+- When the repair could not apply a fix, the operator (or Claude acting for
+  them) can: `vm:hold <p> <ticket> <variation> on [<note>]` keeps the VM
+  running at Blocked for Human, paused or worked by hand (see VMs by state).
+
 Requirements Changed (ASS-79) is a top-level detour like Blocked, in these
 engines and `harness-development-v2`: `requirements-changed` runs
 `grouped-requirements-changed`. The operator's Take new (`ticket:take-new`,
@@ -822,14 +921,15 @@ exists. Blocked during the detour hands the variation back to its group,
 not to the detour. It sets no ticket-system pairing: the ticket keeps the
 status it had.
 
-The ticket health check `harness-development-grouped` samples with is
-`check-ticket-health-grouped` (ASS-124; the current engines keep
-`check-ticket-health`). A harness or project issue it finds raises its fix
-ticket; an environment issue raises none: ticket:repair-environment hands
-the sampled ticket to its own Blocked at Blocked's repair step, what the
-check found its run's {problem} — resumed once repaired, else Blocked for
-Human. A ticket whose engine's Blocked makes no repair goes straight to
-Blocked for Human, saying what was found and what to do.
+The ticket health check (`check-ticket-health-grouped`, ASS-124, and the
+flat engines' `check-ticket-health`, run on a sample of state changes) is
+removed (ASS-450): it found nothing Blocked, the merge request checks and
+the step scripts had not, and when it fell behind it started dozens of
+agents at once. Blocked and Blocked for Human, and the project health check
+(`check-health`, `check-health-v2`), are as they were. An engine that still
+declares `check-ticket-health-sample-every` or `check-ticket-health-steps`
+runs as before, the keys ignored (control logs them once as obsolete), and
+a run of the check an earlier harness left is ended as control starts.
 
 ## How it reads
 
@@ -917,6 +1017,73 @@ Blocked for Human, saying what was found and what to do.
   a file under `{ticket-folder}`, `{project-folder}` or `data/` without an
   `{agent-sh}` command.
 
+## Each AI step's model (ASS-452)
+
+A prompt step's `action.model` names the model its agents run on: one of
+harness.json's claude models (`agentic-command-line-interfaces`, `claude`),
+or `"stronger"` (ASS-399, above). Control dispatches every agent of the step
+on exactly that model (`dispatch.js` `modelFor`, `assignments:create --model
+<model>`), the round robin and `last-model-used` left as they were; a step
+that names none still takes the round robin's next model (restricted by its
+prompt's `supported-models`, as before). `validate.js` rejects any other
+value, naming the step and the allowed models, and a model the step's
+prompt's prompt.json `supported-models` leaves out (when it lists any). The
+dashboard's agents keep showing each agent's actual model, its record's —
+the step's configured one when it names one.
+
+The rule every prompt step in `engines/` follows: `"model":
+"claude-opus-5-5"` (Opus 5.5), except the review steps — those whose prompt
+is `code-review`, `code-review-grouped`, `security-review`,
+`security-review-grouped`, `review-plan`, `review-plan-grouped`,
+`review-root-cause-analysis`, `review-root-cause-analysis-grouped` or
+`review-work` — which name `"model": "claude-sonnet-5"` (Sonnet 5); and
+`grouped-plan`'s Write Execution Plan on a Stronger Model keeps
+`"model": "stronger"`. A project's own engines under
+`data/projects/<project>/engines/` are the operator's: they follow the rule
+by hand, or rotate while they name none.
+
+## Host agents give agent.sh its content by file (ASS-428)
+
+The rule: a host agent passes content to agent.sh by file, never by
+redirect, pipe or heredoc. It writes the content first to a temp file of its
+own, unique to its run, in a call of its own (its Write tool, or a Bash call
+that does nothing else), then runs the agent.sh command as a bare command
+line with that file's absolute path as the command's file argument.
+
+Why: a confined host agent (`src/agents/confinement.js`, every host step not
+on a ticket's code: Blocked's Troubleshoot on the Host, Classify and Repair
+the Image, grooming, health checks) runs under
+`data/projects/<project>/host-agent-settings.json`, whose
+`sandbox.filesystem.denyWrite` holds the harness's `data/` folder. agent.sh
+writes there only because `<harness>/agent.sh *` is one of the sandbox's
+`excludedCommands`, and that exclusion matches only a bare call: agent.sh and
+its arguments, nothing else on the line. A call with `< file`, `<<'EOF'`, a
+pipe, `&&`, `;` or `$(…)` runs sandboxed, and every write it makes under
+`data/` fails with "Operation not permitted" (ABC-1770's `vm:golden-write …
+< provision.sh` failed at mktemp; its `work:append` failed on the change
+log's lock). The agents' `{where}` (`dispatch.js confinedWhereText`) and each
+host prompt's call say so.
+
+Every command a host agent is told to give content takes it from a file path
+as well as stdin, stdin unchanged when the path is left off: a trailing
+optional `<file>` for `work:write`, `work:append`, `ticket:set-requirements`,
+`automated-tests:record`, `ticket:set-demo-plan`, `vm:golden-write` and
+`merge-request:create-fix`; a path in place of `-` for
+`ticket:set-acceptance-criteria` (its 3-argument form),
+`ticket:set-merge-request-plan`, `ticket:add-merge-request`,
+`ticket:propose-split` and `ticket:post-comment`. A VM agent keeps giving
+stdin through the forwarder: `forwarder-allowlist.json` caps each
+trailing-file command's arguments (`max-args`) and requires `-` where a path
+could stand in its place, so no path reaches the Mac from a VM.
+
+A write refused all the same is named, not left vague: a confined agent's
+output schema gains `sandbox-refused` (`dispatch.js withSandboxRefused`), the
+commands refused, and control makes it the variation's health,
+`ai-feedback-short` "sandbox refused <command>" (`facts.js
+sandboxRefusedFeedback`, set by `finish.js` when the agent finishes and by
+`steps.js` when its Blocked run ends). `test/agents/host-agent-sandbox.test.js`
+runs each command both ways under the generated settings.
+
 ## VMs by state, and the disk limit (ASS-75)
 
 - **Running and stopping.** A step's `vm` says whether the variation's VM runs
@@ -937,7 +1104,7 @@ Blocked for Human, saying what was found and what to do.
   mid-step (ASS-349). Control matches the VMs to this once per
   loop (`src/control/vm-lifecycle.js`), so a move by hand in the TUI is
   followed; `move_to` and the TUI do nothing of their own.
-- **Only while a step works in it (ASS-418).** A case-law VM holds its full
+- **Only while a step works in it (ASS-418).** A client project's VM holds its full
   configured memory (about 10 GB) while it runs, so a ticket only waiting
   holds none: every step whose work does not run in the VM says
   `"vm": "stopped"`, overriding its group's `running` (the deepest setting
@@ -1004,14 +1171,31 @@ Blocked for Human, saying what was found and what to do.
   matched to their Lima instances — plus harness.json's
   `memory-free-margin-gib` (2), at least `memory-need-floor-gib` (4) and at
   most the VM's configured `memory:`; with none running, the floor.
-  (`memory-free-hold-gib`, when set, is the need instead.) The VM is held
-  while the pressure is warn or critical, or macOS's free memory is below the
-  need; under normal pressure with room nothing is held. A held VM's
+  (`memory-free-hold-gib`, when set, is the need instead.) Which rule
+  decides depends on the pressure (ASS-422, `memoryVerdict`): under
+  **normal** pressure the VM is held while macOS's free memory is below the
+  need, and with room nothing is held; under **critical** pressure it is
+  always held; under **warn** pressure — which reflects how full macOS's
+  compressor is rather than exhaustion, and is near-constant with several
+  VMs running — it starts when the memory macOS can reclaim without swapping
+  covers the need and macOS has not swapped since the previous reading, and
+  is held otherwise. The reclaimable memory is `vm_stat`'s free + inactive +
+  speculative + purgeable pages times its page size (read from its header,
+  not assumed); swapping is `vm_stat`'s `Swapouts` grown since the previous
+  reading. With no previous reading to compare (control just started) it is
+  held, unless `sysctl vm.swapusage` shows no swap in use, and the next
+  reading 10 seconds later decides. Under warn, the VMs the hold let start
+  under the same reading are counted against the reclaimable memory. The
+  log, the Health and the records say which rule decided, e.g. `pressure
+  warn, 14.2 GiB reclaimable ≥ 6.6 GiB needed, no swap-outs since the last
+  reading: started` or `pressure warn, swapping (120 swap-outs since the
+  last reading): held`. A held VM's
   variation waits as for a slot — its steps not judged, no failure counted —
   and holds no planning or in-progress seat meanwhile (`plan.js`
   `memoryHeld`). The hold is logged under `hold` with macOS's
   figures, the need and how it was estimated, and the VM held, and recorded
-  in the project's `memory-hold.json` (the header's "Out of memory" flag).
+  in the project's `memory-hold.json` (the header's "Out of memory" flag;
+  with `reclaimable-bytes`, `swapouts`, `swapping` and the `rule`, ASS-422).
   It lifts by itself once there is room; the held variations take a seat
   again in rank order, no step re-run and no visit spent.
 - **A seat only when its VM fits (ASS-420).** Before control gives a
@@ -1020,13 +1204,20 @@ Blocked for Human, saying what was found and what to do.
   coming round to one already at a seat-taking step — whose next steps need
   a VM that is not running (its step's `vm` is `running`), it checks the VM
   fits (`src/control/seat-memory.js`, a phase each tick before the VM
-  lifecycle): macOS pressure normal, and free memory at least the need
-  (`host-memory.js` `vmNeed`) on top of the VMs already starting for seats
-  so given. One that does not fit takes no seat: it waits as for a slot —
+  lifecycle) by the memory hold's own verdict over the same reading
+  (ASS-422: `host-memory.js` `memoryVerdict`, so a seat is never given to a
+  VM the hold would then refuse, nor refused one it would start) — free
+  memory under normal pressure, reclaimable memory and no swapping under
+  warn, never under critical — at least the need (`host-memory.js`
+  `vmNeed`) on top of the VMs already starting for seats so given. One that
+  does not fit takes no seat: it waits as for a slot —
   its VM not started, no move, no ticket-system status change, no visit
   spent — listed in the project's `memory-wait.json` (`plan.js`
-  `memoryWaiting`: no 💺 on the dashboard), its Health `Waiting for memory
-  for its VM (need X GB, Y GB free)`, cleared once it gets its seat. Seats
+  `memoryWaiting`: no 💺 on the dashboard; with the free and reclaimable
+  figures and the rule that refused it, ASS-422), its Health `Waiting for
+  memory for its VM (need X GB, Y GB free)` — under warn `(need X GB, Y GB
+  reclaimable, pressure warn)`, or `macOS swapping` — cleared once it gets
+  its seat. Seats
   go in rank order, and one that does not fit does not block a lower-ranked
   one that does (its VM already up, say); a variation whose VM is running,
   or whose next steps need none, takes its seat as before. It is weighed
@@ -1034,6 +1225,21 @@ Blocked for Human, saying what was found and what to do.
   replaces ASS-404's rule that, while the hold was on, a freed seat went
   only to a variation whose VM was up; the memory hold stays the safety net
   on VM starts.
+- **What a running VM costs (ASS-421, findings in
+  `docs/ASS-421-vm-memory.md`).** A vz VM can't give memory back to the Mac:
+  Lima (2.2 and 2.3) attaches Apple's balloon device but never sets its
+  target, has no template key or command for it, and the device offers no
+  free page reporting. Dropping the guest's page cache alone frees nothing on
+  the Mac. So every golden image's kernel boots with `init_on_free=1` (the
+  shared `memory.sh` step, an input of every image): freed guest pages are
+  zero, and macOS compresses a zero page to almost nothing. The saving shows
+  in macOS's free memory and pressure, not in a VM's footprint (which counts
+  a compressed page whole), so the need above is unchanged and more VMs fit
+  under it. The cost is that each VM start touches its whole `memory:` once,
+  as zero pages. No cache drop between steps: a VM between steps that need
+  none is stopped (`"vm": "stopped"`, ASS-418), which frees it all. A
+  client project's build and test run peaks at about 8 GiB (ASS-141), so its 10 GiB
+  stays; the other projects keep 4 GiB.
 - **Released (ASS-325).** A step may instead say `released`: the variation's
   VM is deleted as soon as it gets there, so its disk goes back to the
   project's VM disk budget at once rather than when a new VM is short of
@@ -1075,6 +1281,10 @@ Blocked for Human, saying what was found and what to do.
   after `vm-up-ceiling-seconds` in harness.json (default 1800: 30 minutes)
   sends its variation to Blocked, or to Blocked for Human from Blocked. The
   variation's ai-feedback names the VM and says it never came up.
+- **On a workstation instead (ASS-435).** A variation placed on a GCP
+  workstation (below, "A ticket variation on a GCP workstation") has no VM:
+  none of this section's starts, stops, deletes or memory holds apply to it;
+  control keeps its workstation connected and its folder readied instead.
 - **The inventory.** `data/projects/<p>/vms.json` (untracked) holds each VM of the
   project: ticket, variation, state, disk bytes, last accessed (started or
   stopped). `vm:inventory <p>` reconciles it with `limactl list` and the sprint
@@ -1095,6 +1305,218 @@ Blocked for Human, saying what was found and what to do.
   needed again is recreated from the golden image (`vm:create`, by Setup or by
   control), and the variation's `vm.recreated-at` says so: work that lived
   only on the old disk is lost.
+- **Held for the operator (ASS-427 AC7).** Control stops a VM wherever its
+  step does not say `vm: running` — Blocked for Human, a paused ticket, one
+  worked by hand — so a VM the operator started there to fix something by
+  hand was stopped again within seconds. `vm:hold <p> <ticket> <variation>
+  on [<note>]` writes the variation's `vm-hold` ({ by, since, note }) and the
+  lifecycle keeps its VM running whatever else says not, as it does one an
+  assignment is on, and starts (or recreates) it when it is not running, by
+  the disk and memory rules of any start; `vm:hold … off` removes it, and its
+  step's rules apply again (stopped, where they say so). Each is logged in
+  the variation's change log, and control logs the hold once as it begins
+  ("held running for the operator (…)") and once as it is released. The TUI
+  shows "VM held" on the ticket (its details and its panel) and offers
+  "Release its VM" there.
+
+## A GCP workstation's connection (ASS-433)
+
+A project whose `dev-environments` lists workstations (ASS-431) reaches each
+one over a single long-lived SSH connection: every new connection through
+Google's workstation tunnel needs a live Google token, an open one does not,
+and the operator's gcloud login lapses after about 16 hours. The commands
+(`src/agent-cli/workstation/*.sh`, `src/agent-cli/workstation.bash`):
+
+- **`workstation:connect <project> <id>`** — under the workstation's lock
+  (two connects never race: the second finds the first's connection), starts
+  it when it is stopped (`gcloud workstations start`, about 80 seconds; one
+  stopping or starting is waited for) under its `gcloud-config`'s
+  `CLOUDSDK_CONFIG`, then opens one OpenSSH master: `gcloud workstations ssh
+  <id> … --ssh-flag=-M --ssh-flag="-S <socket>" --ssh-flag=-N` with
+  `ExitOnForwardFailure=yes` and a `-R 127.0.0.1:<port>:127.0.0.1:<port>` for
+  harness.json's `forwarder-port`, project.json's `hindsight.port` and
+  `registry.port`: the forwarder, Hindsight and zot appear at the same ports
+  on the workstation's loopback alone, and nothing new listens on the Mac.
+  The socket is `~/.harness/workstations/<project>-<id>.sock` (0700 folder);
+  the master runs in a session of its own, so it outlives the command and
+  control. `gcloud workstations ssh` rather than `start-tcp-tunnel` as a
+  ProxyCommand: start-tcp-tunnel has no stdin mode, only a local port, so it
+  would be a second process; gcloud's ssh is tunnel and master in one.
+  Prints the live data entry with `started`.
+- **`workstation:status <project> <id> [--connection]`** — whether the
+  connection answers (its master, and a `true` run over it within 20
+  seconds) and, without `--connection`, the workstation's state from
+  `gcloud workstations describe`.
+- **`workstation:ssh <project> <id> [--] <argv…>`** — argv run on the
+  workstation over the connection (stdin, output and exit code passed
+  through; 255 when none is open: it never opens one of its own). Bash code
+  calls `workstation_ssh <project> <id> <argv…>` (or `workstation_rsh` for
+  `rsync -e`); control's `src/control/workstation-connection.js sshArgv(env,
+  project, id, argv)` gives the same `ssh -S <socket> -o ControlMaster=no -o
+  BatchMode=yes -o ProxyCommand=false workstation-<id> -- <quoted argv>`,
+  which the workstation machine backend (ASS-435) spawns.
+- **`workstation:disconnect <project> <id>`** — the master ended; the
+  workstation is left to stop itself (30 minutes with no SSH session).
+
+Live data, never project.json: `data/projects/<project>/workstations.json`,
+`{ "<id>": { state, state-at, connected, connected-at, checked-at,
+disconnected-at, started-at, forwards, last-error: { at, kind, message } |
+null } }`, kind `expired`, `offline` or `unknown` as `src/control/login.js`
+reads gcloud's output (ASS-429), the message with any token redacted.
+
+Control (`src/control/workstations.js`, beside the VMs in phase 3) keeps a
+workstation connected while something needs it: an agent of a ticket
+variation that holds it (its `vm` `{ kind: workstation, name: <id> }`) at
+work, that variation at a step with `vm: running` and not held, or a
+`vm:hold` on it. It checks the connection every minute
+(`workstation:status --connection`; gcloud's ssh sends no keepalives) and
+reconnects one that dropped, or whose workstation stopped (starting it),
+logging each. Once nothing has needed it for harness.json's
+`workstation-idle-disconnect-seconds` (300) it disconnects, and it closes
+the connections it opened as it exits. A failed connect is retried after
+the usual backoff. One that failed because the workstation's gcloud login
+needs reauthentication sets the project's `gcloud-requires-reauthentication`
+(a network failure never does), logs and shows in the TUI the login to run —
+`CLOUDSDK_CONFIG=~/.config/example/gcloud gcloud auth login` — is retried
+every 2 minutes at most, and clears the flag once a connect works; nothing
+is dispatched to the workstation meanwhile (`workstationUsable`).
+
+## A GCP workstation's setup (ASS-434)
+
+Workstations are reused, never built, so a setup script stands in for the
+golden image: **`workstation:setup <project> <id>`**
+(`src/agent-cli/workstation/setup.sh`) runs
+`src/agent-cli/workstation/on-workstation/setup.sh` on the workstation over
+its open connection, as its user. Only `/home` survives a Cloud Workstation's
+restart, so everything goes under `~/harness`, and only what is missing is
+installed (a rerun with nothing missing writes nothing):
+
+- `~/harness/bin` — first on PATH in the harness's sessions: `agent.sh` (a
+  wrapper running `~/harness/lib/agent.sh`, the VM's `in-vm/agent.sh`, with
+  `AGENT_FORWARDER_URL` from the runtime folder's `agent-url` and
+  `AGENT_TOKEN_FILE` its `agent-token`), and `jq` (its static release) and
+  `claude` (claude.ai's installer run with `HOME=~/harness/tools/claude`)
+  when the workstation had none.
+- `~/harness/env` — what the harness's sessions source (ASS-435): PATH with
+  `~/harness/bin` first, `HARNESS_RUNTIME`, `DISABLE_AUTOUPDATER=1`, and the
+  runtime folder's `env` (the credentials) when there is one. The owner's
+  shell files, git identity, SSH keys and `~/workspaces` are never touched.
+- `~/harness/setup.json` — `{ version, boot-id, runtime }` of the last setup
+  that completed.
+- The runtime folder, `/dev/shm/harness-<uid>` (`/tmp/…` without a writable
+  `/dev/shm`), 0700, the workstation's `/run/harness`: `agent-url`
+  (`http://127.0.0.1:<forwarder-port>/run`, the connection's reverse
+  forward), and ASS-435's `agent-token` and credentials. Emptied whenever the
+  workstation has started since the last setup (its boot id changed), never
+  otherwise.
+
+git, curl and base64 are checked (the workstation config's image must have
+them), Docker is checked (`docker info`; it is the config's to give), and each
+of project.json's `golden-image.tools` must be on PATH: the missing ones are
+handed to the project's optional `golden-image/workstation-tools.sh` (run in
+`~/harness/tools` with `HARNESS_BIN` and `HARNESS_TOOLS` set and the tools as
+arguments, to install them under `$HOME`; not an input of the golden image),
+then checked again. Anything missing or unusable fails setup, each named.
+
+The setup's version is the sha256 of the two scripts, `agent.sh`,
+`workstation-tools.sh`, the forwarder URL and the tools list
+(`workstation:setup <project> <id> --version` prints it without a
+connection). It is recorded on the workstation (`setup.json`) and in the live
+data, `workstations.json`'s `setup`: `{ ok, version, checked-at, set-up-at,
+home, runtime, did, failed: [{ what, why }], error }`.
+
+Control (`src/control/workstations.js`) runs it after every connect and
+whenever the version it asks at each minute's check differs from the live
+data's. `workstationUsable` — what ASS-435's placement asks — wants the setup
+ok and checked since the connection opened, so nothing is dispatched to a
+workstation before it is set up. A failed setup is logged naming what
+failed, retried after the usual backoff (at once when the version changes),
+and shown in the TUI as a `Workstation <id> setup failed` chip; VMs carry on
+meanwhile in `vm+workstation` mode.
+
+## A ticket variation on a GCP workstation (ASS-435)
+
+In `workstation` and `vm+workstation` modes (ASS-431) a ticket variation's
+agents run on one of its project's workstations instead of a VM of its own,
+everything else as in a VM.
+
+- **Placement.** Setup's Create VM (`vm:create`) places a variation that has
+  no machine yet: in list order, the first workstation that is free — no
+  holder, or one whose variation is no longer in flight (Done, set aside,
+  gone from the sprint, at a step that needs no machine, released: its
+  folder removed first, as `make_room` deletes a VM) — whose gcloud login is
+  live; connected (started when stopped) and set up first when it is not,
+  and passed over when that fails. In `vm+workstation` mode a variation
+  gets a VM only when no workstation is free; in `workstation` mode it waits
+  (below). One variation per workstation, recorded in the live data
+  (`workstations.json`'s `holder`, `{ ticket, variation, folder, since,
+  boot-id, started-at, credential-kind, credential-stamps }`, claimed under
+  the project's pool lock, `workstations-pool.lock`) and on the variation
+  by `ticket:set-vm … --kind workstation --folder <folder>`: `vm { name:
+  <id>, kind: workstation, project, folder, created-at }`. A variation stays
+  where it started: one recording a VM keeps its VM, one recording a
+  workstation goes back to it (waiting while another holds it). It keeps the
+  workstation until it is Done or its machine is reclaimed; control frees it
+  (`workstation:release`) once its holder gives it up (Done, set aside, gone
+  from the sprint, a `vm: released` step) with no assignment on it.
+- **The folder.** `~/harness/<KEY>-<variation>` on the workstation, never
+  the owner's `~/workspaces`, stands in for the VM's root: `repos/` (each
+  repository cloned and checked out once, `vm:create`'s
+  `.vm-create-checked-out` marker; Setup's `.setup-complete` marker there),
+  `ticket/` (the ticket folder's read-only copy; `mnt/ticket` links to it)
+  and `run/harness` (a link to the setup's runtime folder). The machine
+  layer (`machine-workstation.bash`, `machine-workstation.js`) names it
+  `workstation:<project>:<id>:<folder>` and runs each command there over the
+  workstation's connection with `HARNESS_VM_ROOT` the folder, its workdir
+  mapped (`/` the folder, `/repos…`, `/run/harness…` and `/mnt/ticket…` under
+  it) and `~/harness/env` sourced; a marker works as in a VM, so `stop()`
+  ends an agent there. So Check Setup Complete, Mark Setup Complete, Refresh
+  the Reference Repositories and the other in-machine scripts run unchanged.
+- **Readied as a VM is.** `vm:start` (by `vm:create`, and by control) on a
+  workstation: `vm:credentials` sends the same contents over the connection
+  into the runtime folder (`env`, its paths the runtime folder's —
+  `GIT_CONFIG_GLOBAL=<runtime>/gitconfig` and so on — `gitconfig`, `npmrc`;
+  no git identity declared, the gitconfig includes the owner's
+  `~/.gitconfig`), a fresh forwarder token goes to `agent-token` and its hash
+  and binding to `vm-tokens.json` under the machine's name, the ticket's copy
+  is brought up to date, and each image of `images.txt` by tag is pulled
+  through the project's zot at `127.0.0.1:<registry.port>` (the
+  connection's forward) and tagged as named. Its credential kind is recorded
+  on the holder, its stamps by `vm:credentials`, and control refreshes them
+  as a VM's (another kind declared, a keychain item saved again) once idle.
+- **Agents.** Dispatched over the connection (`ssh -S <socket> …
+  workstation-<id>`) in the folder's `repos/`, under a marker; told where
+  they are (`on the GCP workstation <id>, in this ticket variation's own
+  folder there`), `{ticket-folder}` the copy, their memory at
+  `127.0.0.1:<hindsight.port>` (the forward; a VM's is
+  `host.lima.internal`). The ticket copy is pushed as each agent starts, and
+  the forwarder pushes it again after every call it runs for a workstation
+  binding, before the call returns, so an agent reads its own writes; its
+  calls are authorized against their binding exactly as a VM's.
+- **Waiting (AC7).** A step that needs the machine, and an agent, waits while
+  the variation's machine is not up there (`workstation-machines.js
+  machineUp`: connected, login live, set up, held by the variation, readied
+  since the workstation last started) — with no 2-minute judging and no
+  ceiling: control reconnects, sets up and readies it again (`vm:create`
+  after a restart emptied the runtime folder, or after the folder was
+  released), and the variation's Health says why it waits (not connected,
+  the login to renew, the setup failed, held by another). An unplaced
+  variation in `workstation` mode waits so at Setup, Create VM not run,
+  while no workstation is free. A workstation's agents take none of the
+  Mac's memory: no memory hold or seat check for them.
+- **Release (AC6).** `workstation:release <project> <id> [--force]` removes
+  the holder's folder, the containers working in it or mounting it, and the
+  credentials and token in the runtime folder; nothing else of the
+  workstation's or the owner's.
+- **Isolation.** None of a VM's: no macOS sandbox or pf rules, and agents act
+  as the workstation's user — on the test workstation with the operator's
+  own git identity and GitLab key where the project declares none (accepted,
+  2026-11-14).
+
+For ASS-436's footer: a workstation's agents are the assignments on its
+holder's variation (`workstations.json`'s `holder` ticket and variation),
+and its state `workstation-machines.js workstationState(entry)`: `running`,
+`stopped`, `connecting`, `sign in needed` or `setup failed`.
 
 ## A finished plan holds no seat (ASS-362)
 
@@ -1346,6 +1768,64 @@ fake glab and gh. Automated Testing and Local Testing run in each repository's
 checkout as Generate Solution left it, the last branch it built there: two
 merge requests in one repository with no depends-on between them are not
 both tested.
+
+### A merge request planned after Write Execution Plan (ASS-424)
+
+The rule, shared with ASS-423's Blocked path: a merged merge request does not
+end the ticket's work in its repository. When the ticket needs another change
+there, the harness plans and opens a new merge request; it never reopens,
+pushes to or retargets a merged branch, and it does not ask the operator.
+
+Who may plan one after Write Execution Plan: Generate Solution, Build's and
+Release's Address Merge Request Feedback, and Generate Automated Tests
+(`-grouped` prompts), each only for a repository where the ticket has no
+merge request Open or Not Created. They call `ticket:add-merge-request
+{project} {ticket} {variation} -` (forwarder-allowed), stdin `{ repository,
+contents, step, why, "needed-by": [ids] }`. It plans through
+`plan_new_merge_request` (`merge-requests.bash`, the helper ASS-423 shares):
+the next id never used, `change/<KEY>-<id>`, depends-on none, base the
+repository's last merged one's, written by `ticket:set-merge-request-plan`.
+The row gets `planned-by: { step, why, at }` (kept by later replans); each
+`needed-by` one not Merged or Closed gets the new id in its depends-on; and
+an `## Merge request <id> added` section in `execution-plan-<V>.md` says
+which step added it and why. A repository with one Open or Not Created
+already is refused (exit 3, naming it): the change goes on that one, so no
+step plans a second for the same repository. Write Execution Plan plans as
+before; the Blocked repair steps open their fix merge requests through
+`merge-request:create-fix`. A question to the operator is only for a change
+outside the ticket's scope.
+
+Control takes one so planned like any other. Generate Solution builds it
+from the latest `origin/<base>` and records it with `merge-request:create`
+(Generate Automated Tests only plans it). While it is Not Created, Await
+Sequential Merge sends the ticket back to Generate Solution (exit 3), with or
+without a dependent, asking no forge — unlike an ASS-354 leftover without
+`planned-by`, which is still no wait. Created, it has Code Review and Security
+Review with the rest, and, when `needed-by` made another depend on it, it is
+what Await Sequential Merge waits for — the merge loop where merges-awaited
+is set — so the ticket does not leave Build until it merges. In Release,
+`merge-request:check` counts it, Not Created, as the reason `not-created`
+(`"not-created": [ids]`, `"needs-build": true`) and `merged` false, so
+Release cannot finish without it.
+
+Release's own Address Merge Request Feedback only plans it: created there it
+would skip Build's Code Review and Security Review. A project Release engine
+with Team Code Review takes it back to Build with an exit on that step,
+before its needs-attention exit: `{ "all": [{ "exit-code": 0 }, {
+"script-output": { "needs-build": true } }] }` → `rebuild`, which ends
+Release at `rebuild`, into Build at Generate Solution. A client project's
+`grouped-release-example` (under `data/`) has it; the harness's, family's and
+software-assassin's Release engines merge at once with no Team Code Review,
+so they need none. A Release engine with Team Code Review but without the
+exit keeps sending the group to Address Merge Request Feedback, which leaves
+it and says so — a round that changes nothing on Open ones goes uncounted
+(ASS-388), else its max-visits ends at Blocked; moving the ticket back to In
+Progress on the ticket system takes it to Build there too.
+
+Blocked's own-branch fix (ASS-423) marks the merge request it plans the same
+way — `planned-by: { step: "Blocked", why, at }` — so control holds it to the
+same rules: Build sends the ticket back to Generate Solution until it is
+built, and Release cannot finish without it.
 
 ## Explain the Change and Human Review (ASS-118)
 

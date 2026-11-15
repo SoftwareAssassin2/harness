@@ -1,8 +1,10 @@
 // The memory hold (ASS-398, reworked by ASS-404): before control starts or
 // creates a VM it reads the Mac's memory (ctx.hostMemory — replaced here, never
 // the real Mac's: macOS's free percentage and pressure level, and each Lima
-// VM's physical footprint, compressed pages included: ASS-419) and holds the VM while macOS reports warn or critical
-// pressure, or free memory below what a VM of the project needs — the largest
+// VM's physical footprint, compressed pages included: ASS-419) and holds the VM
+// under critical pressure, under warn unless the memory macOS can reclaim
+// without swapping covers the need and it is not swapping (ASS-422), or under
+// normal pressure free memory below what a VM of the project needs — the largest
 // use of its running VMs plus memory-free-margin-gib, between
 // memory-need-floor-gib and its configured memory (its golden image
 // template.yaml), the floor with none running; or harness.json's
@@ -23,7 +25,7 @@ import { createContext } from '../../src/control/tick.js';
 import { planFor } from '../../src/control/plan.js';
 import { mayMove } from '../../src/control/moves.js';
 import { seatMemory } from '../../src/control/seat-memory.js';
-import { parseSysctl, parseVzProcesses, parseFootprint, matchInstances, parseMemory, vmMemoryBytes, memoryNeed, vmNeed, memoryVerdict, MEMORY_READ_EVERY } from '../../src/control/host-memory.js';
+import { parseSysctl, parseVmStat, parseVzProcesses, parseFootprint, matchInstances, parseMemory, vmMemoryBytes, memoryNeed, vmNeed, memoryVerdict, memoryShort, MEMORY_READ_EVERY } from '../../src/control/host-memory.js';
 import { fakeVm } from '../support/fake-vm.js';
 import { engineDir, engineNames } from '../support/engine-walk.js';
 
@@ -32,8 +34,14 @@ const ENGINE = 'example-development-grouped';
 const at = (state, sub) => ({ state, 'state-engine': ENGINE, ...(sub ? { 'sub-status': { state: sub[1], 'state-engine': sub[0] } } : {}) });
 const BUILDING = at('build', ['grouped-build', 'generate-solution']);
 const PLANNING = at('plan', ['grouped-plan', 'enrich-ac']);
-// A reading of a 100 GiB Mac, so its free percentage is its free GiB.
-const mac = ({ free = 64, pressure = 'normal', vms = {} } = {}) => ({ freePercent: free, pressure, totalBytes: 100 * GIB, vms: new Map(Object.entries(vms)) });
+// A reading of a 100 GiB Mac, so its free percentage is its free GiB; ASS-422:
+// with `reclaimable` GiB (vm_stat's, all inactive but 0.5 free), `swapouts`
+// and `swapUsed` GiB when given.
+const mac = ({ free = 64, pressure = 'normal', vms = {}, reclaimable, swapouts, swapUsed } = {}) => ({
+  freePercent: free, pressure, totalBytes: 100 * GIB, vms: new Map(Object.entries(vms)),
+  ...(reclaimable != null ? { reclaimableBytes: reclaimable * GIB, reclaimable: { free: 0.5 * GIB, inactive: (reclaimable - 0.5) * GIB, speculative: 0, purgeable: 0 }, pageSize: 16384 } : {}),
+  ...(swapouts != null ? { swapouts } : {}), ...(swapUsed != null ? { swapUsedBytes: swapUsed * GIB } : {}),
+});
 
 // p on example-development-grouped with a golden image whose template.yaml
 // gives its VMs `memory`; ABC-3's variations as `variations` gives them
@@ -179,9 +187,10 @@ test('ASS-404 AC2: held under warn or critical pressure, or free memory below th
   const need = { bytes: 5 * GIB, why: '' };
   assert.equal(memoryVerdict(mac({ free: 16 }), need).short, false);
   assert.equal(memoryVerdict(mac({ free: 5 }), need).short, false, 'exactly the need is room');
-  assert.deepEqual(memoryVerdict(mac({ free: 40, pressure: 'warn' }), need), { short: true, why: 'memory pressure warn (macOS: pressure warn, 40% free, 40.0 of 100.0 GiB)' });
+  assert.equal(memoryVerdict(mac({ free: 40, pressure: 'warn' }), need).short, true, 'ASS-422: under warn, held when the reclaimable memory is not read');
+  assert.equal(memoryVerdict(mac({ free: 40, pressure: 'warn' }), need).rule, 'warn-unread');
   assert.equal(memoryVerdict(mac({ free: 40, pressure: 'critical' }), need).short, true);
-  assert.deepEqual(memoryVerdict(mac({ free: 4 }), need), { short: true, why: '4.0 GiB free, below the 5.0 GiB a VM needs (macOS: pressure normal, 4% free, 4.0 of 100.0 GiB)' });
+  assert.deepEqual((({ short, why }) => ({ short, why }))(memoryVerdict(mac({ free: 4 }), need)), { short: true, why: '4.0 GiB free, below the 5.0 GiB a VM needs (macOS: pressure normal, 4% free, 4.0 of 100.0 GiB)' });
 });
 
 test('ASS-404 AC5: control reads the Mac\'s memory, off with HOST_MEMORY_DISABLED=1 (the test fixtures\' env)', () => {
@@ -205,13 +214,13 @@ test('ASS-398 AC1/AC3, ASS-404 AC2/AC4: under warn pressure no VM is started or 
   });
   h.set({ free: 30, pressure: 'warn', vms: { 'abc-3-e': 3 * GIB } });
   assert.deepEqual(await h.pass(), ['vm:stop p abc-3-e']);
-  assert.deepEqual(h.holds(), ['hold Out of memory: memory pressure warn (macOS: pressure warn, 30% free, 30.0 of 100.0 GiB); a p VM needs 4.0 GiB (the largest of its 1 running VM, 3.0 GiB footprint (compressed pages included), plus a 2 GiB margin, capped at its configured 4.0 GiB): abc-3-a (ABC-3 A) not started — no p VM starts or is created until macOS reports normal pressure and that much free; its variation waits as for a slot, holding no seat, no failure counted']);
+  assert.deepEqual(h.holds(), ['hold Out of memory: pressure warn, reclaimable memory not read: held (macOS: pressure warn, 30% free, 30.0 of 100.0 GiB); a p VM needs 4.0 GiB (the largest of its 1 running VM, 3.0 GiB footprint (compressed pages included), plus a 2 GiB margin, capped at its configured 4.0 GiB): abc-3-a (ABC-3 A) not started — no p VM starts or is created until macOS reports normal pressure and that much free, or warn pressure with that much reclaimable and no swapping; its variation waits as for a slot, holding no seat, no failure counted']);
   assert.ok(h.f.lines.includes('vm p abc-3-a: not started: out of memory; waits as for a slot'), h.f.lines.join('\n'));
   assert.ok(h.f.lines.includes('vm p abc-3-b: not recreated: out of memory; waits as for a slot'), h.f.lines.join('\n'));
   assert.equal(h.f.ctx.memory.vms.get('p').held.size, 0, 'no failure counted, no backoff');
   assert.deepEqual(h.record(), {
-    since: '2026-11-12T10:00:00Z', pressure: 'warn', 'free-percent': 30, 'free-bytes': 30 * GIB, 'total-bytes': 100 * GIB,
-    'need-bytes': 4 * GIB, 'need-why': 'the largest of its 1 running VM, 3.0 GiB footprint (compressed pages included), plus a 2 GiB margin, capped at its configured 4.0 GiB', 'need-measure': 'footprint', why: 'memory pressure warn (macOS: pressure warn, 30% free, 30.0 of 100.0 GiB)',
+    since: '2026-11-12T10:00:00Z', pressure: 'warn', 'free-percent': 30, 'free-bytes': 30 * GIB, 'total-bytes': 100 * GIB, 'reclaimable-bytes': null, swapouts: null, swapping: null, rule: 'warn-unread',
+    'need-bytes': 4 * GIB, 'need-why': 'the largest of its 1 running VM, 3.0 GiB footprint (compressed pages included), plus a 2 GiB margin, capped at its configured 4.0 GiB', 'need-measure': 'footprint', why: 'pressure warn, reclaimable memory not read: held (macOS: pressure warn, 30% free, 30.0 of 100.0 GiB)',
     vm: 'abc-3-a', held: [{ vm: 'abc-3-a', key: 'ABC-3', variation: 'A', state: 'build' }, { vm: 'abc-3-b', key: 'ABC-3', variation: 'B', state: 'build' }],
   });
   // Its steps wait as for a slot: not judged, past VM_WAIT too.
@@ -332,4 +341,155 @@ test('ASS-398 AC1, ASS-404 AC3: a script step that creates a VM (vm:create) wait
   assert.ok(f.lines.some(l => /^hold memory back: pressure normal, 8\.0 GiB free/.test(l)), f.lines.join('\n'));
   assert.ok(f.lines.some(l => /^script .*vm:create p ABC-4 A$/.test(l)), f.lines.join('\n'));
   assert.ok(!existsSync(record));
+});
+
+// ASS-422: under warn pressure a VM starts when the memory macOS can reclaim
+// without swapping (vm_stat's free + inactive + speculative + purgeable)
+// covers its need and macOS has not swapped since the previous reading;
+// critical always holds; normal as before.
+const VM_STAT = `Mach Virtual Memory Statistics: (page size of 16384 bytes)
+Pages free:                                    20124.
+Pages active:                                 862180.
+Pages inactive:                               848338.
+Pages speculative:                             13404.
+Pages throttled:                                   0.
+Pages wired down:                             187678.
+Pages purgeable:                                 161.
+"Translation faults":                      560654949.
+Pages purged:                                1785313.
+File-backed pages:                            519131.
+Anonymous pages:                             1204791.
+Pages stored in compressor:                  2070934.
+Pages occupied by compressor:                1169270.
+Pageouts:                                     146894.
+Swapins:                                           0.
+Swapouts:                                         17.
+`;
+
+test('ASS-422 AC1/AC6: vm_stat\'s page size read from its header, each reclaimable counter (free, inactive, speculative, purgeable) and Swapouts; sysctl\'s swap use', () => {
+  const v = parseVmStat(VM_STAT);
+  assert.equal(v.pageSize, 16384);
+  assert.deepEqual(v.pages, { free: 20124, inactive: 848338, speculative: 13404, purgeable: 161 });
+  assert.deepEqual(v.reclaimable, { free: 20124 * 16384, inactive: 848338 * 16384, speculative: 13404 * 16384, purgeable: 161 * 16384 });
+  assert.equal(v.reclaimableBytes, (20124 + 848338 + 13404 + 161) * 16384);
+  assert.equal(v.swapouts, 17);
+  // The page size is read, not assumed: an Intel Mac's 4096.
+  assert.equal(parseVmStat(VM_STAT.replace('16384 bytes', '4096 bytes')).reclaimableBytes, (20124 + 848338 + 13404 + 161) * 4096);
+  assert.equal(parseVmStat(VM_STAT.replace(/^Swapouts:.*$/m, '')).swapouts, null, 'Swapouts not listed: not known');
+  assert.throws(() => parseVmStat(VM_STAT.replace(/\(page size of \d+ bytes\)/, '')), /vm_stat: no page size/);
+  for (const label of ['Pages free', 'Pages inactive', 'Pages speculative', 'Pages purgeable']) assert.throws(() => parseVmStat(VM_STAT.replace(new RegExp(`^${label}:.*$`, 'm'), '')), new RegExp(`vm_stat: no "${label}"`));
+  const sysctl = 'kern.memorystatus_level: 49\nkern.memorystatus_vm_pressure_level: 2\nhw.memsize: 51539607552\nvm.swapusage: total = 2048.00M  used = 1536.50M  free = 511.50M  (encrypted)\n';
+  assert.deepEqual(parseSysctl(sysctl), { freePercent: 49, pressure: 'warn', totalBytes: 48 * GIB, swapUsedBytes: 1536.5 * 2 ** 20 });
+  assert.equal(parseSysctl(sysctl.replace('1536.50M', '0.00M')).swapUsedBytes, 0);
+});
+
+test('ASS-422 AC2/AC3/AC5: the verdict — warn with reclaimable memory at least the need (on top of the VMs starting) and no swapping starts; short of it, swapping, or swapping not known holds; critical always holds; normal by free memory as ASS-404', () => {
+  const need = { bytes: 6.6 * GIB, why: '' };
+  // 2026-11-13: 0.2 GiB free by vm_stat, 11.3 inactive, no swap-outs, macOS at 49% and warn.
+  const warn = { ...mac({ free: 49, pressure: 'warn', reclaimable: 14.2 }), swapping: false, swapNote: 'no swap-outs since the last reading' };
+  assert.deepEqual(memoryVerdict(warn, need), {
+    short: false, rule: 'warn-reclaimable', room: 14.2 * GIB, figure: 'reclaimable',
+    brief: 'pressure warn, 14.2 GiB reclaimable ≥ 6.6 GiB needed, no swap-outs since the last reading: started',
+    why: 'pressure warn, 14.2 GiB reclaimable ≥ 6.6 GiB needed, no swap-outs since the last reading: started (macOS: pressure warn, 49% free, 49.0 of 100.0 GiB; reclaimable 14.2 GiB: 0.5 free + 13.7 inactive + 0.0 speculative + 0.0 purgeable)',
+  });
+  assert.equal(memoryVerdict({ ...warn, reclaimableBytes: 6.6 * GIB }, need).short, false, 'exactly the need is room');
+  assert.deepEqual([memoryVerdict(warn, need, 8 * GIB).short, memoryVerdict(warn, need, 8 * GIB).brief], [true, 'pressure warn, 6.2 GiB reclaimable once the 8.0 GiB for the VMs already starting is counted < 6.6 GiB needed: held']);
+  const short = memoryVerdict({ ...warn, reclaimableBytes: 5 * GIB }, need);
+  assert.deepEqual([short.short, short.rule, short.brief], [true, 'warn-short', 'pressure warn, 5.0 GiB reclaimable < 6.6 GiB needed: held']);
+  const swapping = memoryVerdict({ ...warn, swapping: true, swapoutsSince: 120 }, need);
+  assert.deepEqual([swapping.short, swapping.rule, swapping.brief], [true, 'warn-swapping', 'pressure warn, swapping (120 swap-outs since the last reading): held']);
+  const unknown = memoryVerdict({ ...warn, swapping: null }, need);
+  assert.deepEqual([unknown.short, unknown.rule], [true, 'warn-swap-unknown']);
+  assert.equal(memoryVerdict({ ...warn, reclaimableBytes: null, vmStatError: 'vm_stat: no page size' }, need).brief, 'pressure warn, reclaimable memory not read (vm_stat: no page size): held');
+  // Critical: held, whatever is free or reclaimable.
+  assert.deepEqual(memoryVerdict({ ...warn, pressure: 'critical', freePercent: 90 }, need).why, 'memory pressure critical (macOS: pressure critical, 90% free, 90.0 of 100.0 GiB)');
+  assert.equal(memoryVerdict({ ...warn, pressure: 'critical', reclaimableBytes: 80 * GIB }, need).short, true);
+  // Normal: by free memory only, the reclaimable memory not counted — ASS-404's words.
+  assert.deepEqual(memoryVerdict({ ...mac({ free: 5, reclaimable: 40 }), swapping: false }, need).why, '5.0 GiB free, below the 6.6 GiB a VM needs (macOS: pressure normal, 5% free, 5.0 of 100.0 GiB)');
+  assert.equal(memoryVerdict({ ...mac({ free: 7, swapouts: 9 }), swapping: true }, need).short, false, 'normal: swapping not asked about, as before');
+  assert.equal(memoryVerdict(mac({ free: 7 }), need).why, 'pressure normal, 7.0 GiB free (7% of 100.0 GiB), at or above the 6.6 GiB a VM needs');
+});
+
+test('ASS-422 AC2/AC5: under warn a VM starts with the reclaimable memory covering its need, said with the rule; held short of it or while macOS swaps (Swapouts grown since the previous reading); with no previous reading held till the next one decides, unless no swap is in use; memory-hold.json records reclaimable-bytes', async () => {
+  // Control's first reading: Swapouts 0 but swap in use, no earlier reading to compare — held.
+  const h = holding({ A: [BUILDING, 'Stopped'], B: [BUILDING, 'Running'] }, { memory: '8GiB' });
+  h.set({ free: 47, pressure: 'warn', reclaimable: 14.2, swapouts: 0, swapUsed: 1, vms: { 'abc-3-b': 4.6 * GIB } });
+  assert.deepEqual(await h.pass(), []);
+  assert.match(h.holds()[0], /^hold Out of memory: pressure warn, swap-outs not known yet \(no earlier reading to compare\): held \(macOS: pressure warn, 47% free, 47\.0 of 100\.0 GiB; reclaimable 14\.2 GiB: 0\.5 free \+ 13\.7 inactive \+ 0\.0 speculative \+ 0\.0 purgeable\); a p VM needs 6\.6 GiB/);
+  assert.deepEqual([h.record()['reclaimable-bytes'], h.record().swapouts, h.record().swapping, h.record().rule], [14.2 * GIB, 0, null, 'warn-swap-unknown']);
+  // The next reading, Swapouts unchanged: the reclaimable 14.2 GiB covers the 6.6 needed — started, the hold lifted, said with the rule.
+  h.later(MEMORY_READ_EVERY);
+  assert.deepEqual(await h.pass(), ['vm:start p ABC-3 A']);
+  assert.ok(h.holds().some(l => l.startsWith('hold memory back: pressure warn, 14.2 GiB reclaimable ≥ 6.6 GiB needed, no swap-outs since the last reading: started (macOS: pressure warn')), h.holds().join('\n'));
+  assert.equal(h.record(), null);
+  assert.ok(h.holds().some(l => l.startsWith('hold p abc-3-a (ABC-3 A): pressure warn, 14.2 GiB reclaimable ≥ 6.6 GiB needed, no swap-outs since the last reading: started')), h.holds().join('\n'));
+
+  // Swapping: Swapouts grown since the previous reading — held, though reclaimable memory covers the need.
+  const s = holding({ A: [BUILDING, 'Stopped'] }, { memory: '4GiB' });
+  s.set({ free: 47, pressure: 'warn', reclaimable: 14.2, swapouts: 100, swapUsed: 1 });
+  await s.pass();
+  s.set({ free: 47, pressure: 'warn', reclaimable: 14.2, swapouts: 220, swapUsed: 1 });
+  s.later(MEMORY_READ_EVERY);
+  assert.deepEqual(await s.pass(), []);
+  assert.equal(s.record().rule, 'warn-swapping');
+  assert.match(s.record().why, /^pressure warn, swapping \(120 swap-outs since the last reading\): held/);
+  // It stops: the next reading with Swapouts unchanged starts it.
+  s.later(MEMORY_READ_EVERY);
+  assert.deepEqual(await s.pass(), ['vm:start p ABC-3 A']);
+
+  // No swap in use: no swap-out since, so the first reading decides; short of reclaimable memory, held.
+  const n = holding({ A: [BUILDING, 'Stopped'] }, { memory: '8GiB' });
+  n.set({ free: 47, pressure: 'warn', reclaimable: 3, swapouts: 0, swapUsed: 0 });
+  assert.deepEqual(await n.pass(), []);
+  assert.match(n.holds()[0], /^hold Out of memory: pressure warn, 3\.0 GiB reclaimable < 4\.0 GiB needed: held /);
+  assert.equal(n.record()['reclaimable-bytes'], 3 * GIB);
+  n.set({ free: 47, pressure: 'warn', reclaimable: 5, swapouts: 0, swapUsed: 0 });
+  n.later(MEMORY_READ_EVERY);
+  assert.deepEqual(await n.pass(), ['vm:start p ABC-3 A'], 'no swap in use: started on the reclaimable memory');
+});
+
+test('ASS-422 AC2: under warn the VMs the hold let start under the same reading are counted against the reclaimable memory; under normal pressure not, as before', async () => {
+  const h = holding({ A: [BUILDING, 'Stopped'], B: [BUILDING, 'Stopped'], C: [BUILDING, 'Stopped'] }, { memory: '4GiB' });
+  h.set({ free: 47, pressure: 'warn', reclaimable: 9, swapouts: 0, swapUsed: 0 });
+  const state = h.f.ctx.load(), project = state.projects[0];
+  assert.equal(await memoryShort(h.f.ctx, state, project, 'abc-3-a'), false);
+  assert.equal(await memoryShort(h.f.ctx, state, project, 'abc-3-a'), false, 'the same VM asked again: not counted twice');
+  assert.equal(await memoryShort(h.f.ctx, state, project, 'abc-3-b'), false, '9 less 4 for A covers 4');
+  assert.equal(await memoryShort(h.f.ctx, state, project, 'abc-3-c'), true, '9 less 8 for A and B does not');
+  h.later(MEMORY_READ_EVERY);
+  assert.equal(await memoryShort(h.f.ctx, state, project, 'abc-3-c'), false, 'a new reading: what it shows counts, the started forgotten');
+  // Normal: ASS-404's rule, the starts not counted.
+  const n = holding({ A: [BUILDING, 'Stopped'], B: [BUILDING, 'Stopped'] }, { memory: '4GiB' });
+  n.set({ free: 5 });
+  const ns = n.f.ctx.load();
+  assert.equal(await memoryShort(n.f.ctx, ns, ns.projects[0], 'abc-3-a'), false);
+  assert.equal(await memoryShort(n.f.ctx, ns, ns.projects[0], 'abc-3-b'), false);
+});
+
+test('ASS-422 AC4/AC6: the seat check and the VM start agree on each case — warn with enough reclaimable, warn short of it, warn while swapping, critical, normal with and without room', async () => {
+  const PLANNED = at('plan', ['grouped-plan', 'done']);
+  const cases = [
+    ['warn, enough reclaimable', { free: 30, pressure: 'warn', reclaimable: 14.2, swapouts: 5, swapUsed: 1 }, { swapouts: 5 }, true],
+    ['warn, short of reclaimable', { free: 30, pressure: 'warn', reclaimable: 3, swapouts: 5, swapUsed: 1 }, { swapouts: 5 }, false],
+    ['warn, swapping', { free: 30, pressure: 'warn', reclaimable: 14.2, swapouts: 9, swapUsed: 1 }, { swapouts: 5 }, false],
+    ['warn, swap-outs not known', { free: 30, pressure: 'warn', reclaimable: 14.2, swapouts: 5, swapUsed: 1 }, null, false],
+    ['warn, reclaimable not read', { free: 30, pressure: 'warn' }, { swapouts: 5 }, false],
+    ['critical', { free: 60, pressure: 'critical', reclaimable: 40, swapouts: 5, swapUsed: 0 }, { swapouts: 5 }, false],
+    ['normal, room', { free: 8, reclaimable: 1 }, null, true],
+    ['normal, short', { free: 3, reclaimable: 40 }, null, false],
+  ];
+  for (const [name, reading, before, starts] of cases) {
+    const h = holding({ A: [BUILDING, 'Stopped'], D: [PLANNED, 'Stopped'] });
+    if (before) {   // a previous reading, for the swap-outs since
+      h.set({ ...reading, swapouts: before.swapouts });
+      await vmNeed(h.f.ctx, h.f.ctx.load(), h.f.ctx.load().projects[0]);
+      h.later(MEMORY_READ_EVERY);
+    }
+    h.set(reading);
+    const state = h.f.ctx.load(), project = state.projects[0], d = project.tickets[0].variations.find(v => v.name === 'D');
+    await seatMemory(h.f.ctx, state);
+    const seated = mayMove(h.f.ctx, 'steps', state, project, d, 'ABC-3 D plan', 'build');
+    const started = (await h.pass()).includes('vm:start p ABC-3 A');
+    assert.deepEqual([name, seated, started], [name, starts, starts]);
+  }
 });

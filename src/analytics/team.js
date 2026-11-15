@@ -67,6 +67,9 @@ export const memberName = m => m['ticket-system-name'] ?? m['git-name'] ?? m['gi
 //   holder     ticket key → the id holding it: its credited developer, else its current assignee
 //   moves      id → its status changes; qaMoves id → those out of a QA status (AC4)
 //   authors    git username → { name (its latest merge request's), mrs: [ { branch, title } ] }
+// A sub-task (subtask: true, ASS-440) gives names and, held by its current
+// assignee, a key merge requests can name; never a credit or a move, so the
+// roles are what the tickets alone made them.
 export function facts({ tickets, mergeRequests, engines }) {
   const categories = statusCategories(engines);
   const people = new Map(), seenAt = new Map();
@@ -81,13 +84,13 @@ export function facts({ tickets, mergeRequests, engines }) {
     for (const c of assigneeChanges) { see(c.from, at(c.at)); see(c.to, at(c.at)); }
     for (const c of statusChanges) {
       see(c.by, at(c.at));
-      if (!c.by?.id) continue;
+      if (!c.by?.id || ticket.subtask) continue;
       moves.set(c.by.id, (moves.get(c.by.id) ?? 0) + 1);
       if (categories[c.from] === 'qa') qaMoves.set(c.by.id, (qaMoves.get(c.by.id) ?? 0) + 1);
     }
     // The current assignee is the latest word on its name.
     see(ticket.assignee, Math.max(at(ticket.created), ...[...statusChanges, ...assigneeChanges].map(c => at(c.at))));
-    const { done, qa } = ticketFacts(ticket, categories);
+    const { done, qa } = ticket.subtask ? { done: null } : ticketFacts(ticket, categories);
     const developer = done == null ? null : assigneeBefore(ticket, qa ?? done);
     if (developer?.id) credited.add(developer.id);
     const held = developer?.id ?? ticket.assignee?.id;

@@ -5,7 +5,8 @@
 // then agent:kill once agent-graceful-shut-down-delay-in-seconds has passed
 // and they are still alive.
 import { isPaused, releaseWorkspace, found } from './moves.js';
-import { TICKET_FOLDER, runsInVm } from './vm.js';
+import { runsInVm } from './vm.js';
+import { machineOf, machinePaths } from './machine.js';
 import { stepOf, engineSteps } from './engine.js';
 import { isHarnessProject } from './harness-project.js';
 import { loadCollaborations, loadChatSpend, loadMemorySpend, enginesFor } from './state.js';
@@ -131,8 +132,8 @@ async function superviseOne(ctx, state, record, now, delay, capped, over) {
       // An agent on a step in its variation's VM is told the VM's ticket folder and agent.sh, as its dispatch was (ASS-181):
       // by the step's run-location (ASS-182), as dispatch.js vmFor decides, not by the variation having a VM.
       const step = stepOf(engineSteps(enginesFor(state, record.project), record['state-engine'] ?? ''), record.state);
-      const inVm = runsInVm(step) && Boolean(found(state, record).variation?.vm?.name);
-      await ctx.cli(['agent:shut-down', name, ...(inVm ? [`ticket-folder=${TICKET_FOLDER}`, 'agent-sh=agent.sh'] : [])]);
+      const machine = runsInVm(step) ? machineOf(found(state, record).variation) : undefined;   // ASS-435: a workstation's ticket copy, if there
+      await ctx.cli(['agent:shut-down', name, ...(machine ? [`ticket-folder=${machinePaths(machine).ticket}`, 'agent-sh=agent.sh'] : [])]);
       ctx.log(PHASE, `${name} asked to shut down${over ? ` (${record['work-item']} is at its spending limit: ${spendText(over.spend, over.limit)})` : ''}`);
     }
     return;

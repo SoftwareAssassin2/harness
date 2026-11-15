@@ -79,6 +79,14 @@ this repo.
    never deleted. A restart (a fix asking the harness to load new code)
    leaves the VMs running.
 
+   A control that crashes is started again by the dashboard after 5 s, 30 s,
+   2 min, then every 5 min; after 5 crashes in 10 minutes it stays down until
+   you press `R` on the control screen. Either way the header shows it in red
+   and you get one notification. A control that cannot read its data (the
+   drive dropped out, a file caught half-written) skips its ticks and waits,
+   its running agents left alone, for up to `data-unreadable-exit-seconds`
+   (in `data/harness.json`, 300 by default) before it exits.
+
 `/install` does its file work through a command you can also run yourself:
 
 ```sh
@@ -141,6 +149,79 @@ selects that project.
   Restart to load …) notify once, not once per project.
 - `"operator-needed-notifications": false` turns these off for that project
   too.
+
+## Where a project's tickets run: VMs and GCP workstations
+
+By default each ticket variation runs in a Lima VM of its own. A project can
+instead say, in its `data/projects/<project>/project.json`, that its tickets
+run on existing GCP Cloud Workstations, reached over SSH (the harness reuses
+them, it never creates them):
+
+```json
+"dev-environments": {
+  "mode": "vm+workstation",
+  "workstations": [
+    {
+      "id": "ada-dev",
+      "gcp-project": "example-gcp-project",
+      "region": "us-central1",
+      "cluster": "example-workstations",
+      "config": "example-config",
+      "gcloud-config": "~/.config/example/gcloud"
+    }
+  ]
+}
+```
+
+- `mode`: `vm` (VMs only, as without `dev-environments`; the default when
+  missing), `workstation` (workstations only) or `vm+workstation`
+  (a free workstation first, a VM only when none is free).
+- `workstations`: the pool, each with its workstation `id`, `gcp-project`,
+  `region`, `cluster` and `config`, and optionally `gcloud-config`, the
+  `CLOUDSDK_CONFIG` folder of the gcloud login that reaches it (a leading `~`
+  or `$HOME` is expanded). Required, with at least one, in `workstation` and
+  `vm+workstation` modes.
+
+Control logs an error naming the field, and uses neither, when the mode is
+unknown, a workstation mode lists no workstations, a workstation misses a
+field or two share an id. Which ticket holds a workstation and whether it is
+running are live data, never kept in `project.json`. Commands read these
+settings through `src/agent-cli/dev-environments.bash`, control and the
+dashboard through `src/control/dev-environments.js`.
+
+Control reaches a workstation over one SSH connection it keeps open while
+the workstation is needed, starting the workstation when it is stopped:
+`./agent.sh workstation:connect <project> <id>`, `workstation:status`,
+`workstation:ssh` and `workstation:disconnect` do the same by hand (see
+`engines/grouped-engines.md`, "A GCP workstation's connection"). The
+forwarder, the project's Hindsight and its zot appear on the workstation's
+own localhost at their usual ports. When the workstation's gcloud login has
+lapsed the dashboard says `run 'CLOUDSDK_CONFIG=~/.config/example/gcloud
+gcloud auth login' asap`; run it, and control connects again within two
+minutes.
+
+Once connected, control sets the workstation up for the harness's agents —
+`./agent.sh workstation:setup <project> <id>` does it by hand — installing
+what is missing under `~/harness` only (agent.sh, jq, the Claude Code CLI)
+and checking git, curl, Docker and the project's `golden-image.tools`. A
+tool the workstation lacks is installed by the project's optional
+`golden-image/workstation-tools.sh`, given the missing tools' names and
+`HARNESS_BIN` to put them in. Until setup succeeds nothing is dispatched to
+the workstation and the dashboard shows `Workstation <id> setup failed` (see
+`engines/grouped-engines.md`, "A GCP workstation's setup").
+
+In those modes Setup's Create VM places each ticket variation on a free
+workstation (one variation per workstation; a VM only when none is free in
+`vm+workstation` mode, a wait in `workstation` mode) and readies its own
+folder there, `~/harness/<KEY>-<variation>`: the repositories, a read-only
+copy of the ticket folder kept up to date, the credentials and forwarder
+token in the setup's runtime folder. Its agents run there over the
+connection; it keeps the workstation until it is Done, when control removes
+the folder (`./agent.sh workstation:release <project> <id>` does it by hand).
+While the workstation cannot be used the ticket waits and its Health says
+why. Agents there act as the workstation's user: on the test workstation,
+with the owner's git identity and GitLab key (see
+`engines/grouped-engines.md`, "A ticket variation on a GCP workstation").
 
 ## Exporting a project
 

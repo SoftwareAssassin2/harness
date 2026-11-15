@@ -173,7 +173,7 @@ test('firstStepId, levelChanges, contextOf, isPaused, found: the small readings 
   assert.deepEqual(levelChanges({ 'state-changes': [{ 'from-state': 'a', 'to-state': 'x' }, sub] }), [{ 'from-state': 'a', 'to-state': 'x' }]);
   assert.deepEqual(levelChanges({}), []);
   const transient = [
-    { id: 'top', parent: { trigger: 'check-ticket-health', 'work-item': 'T-1', variation: 'A' } },
+    { id: 'top', parent: { trigger: 'gap-resolution', 'work-item': 'T-1', variation: 'A' } },
     { id: 'child', parent: { 'transient-state-engine': 'top', 'state-engine': 'e', state: 's' } },
     { id: 'alone', parent: { trigger: 'self-healing' } },
     { id: 'loop', parent: { 'transient-state-engine': 'loop' } },
@@ -198,15 +198,15 @@ test('firstStepId, levelChanges, contextOf, isPaused, found: the small readings 
   assert.equal(isPaused(ai, 'q', undefined, undefined, 'heal'), false);
   assert.equal(isPaused(ai, 'q', undefined, undefined, 'hc'), false);
   assert.equal(isPaused(ai, 'q', undefined, undefined, 'other'), true);
-  // ASS-127: a project's background work off holds its background runs and the runs under them — a ticket
-  // health check by the project it runs on, not the ticket's — and nothing else.
+  // ASS-127: a project's background work off holds its background runs and the runs under them — by the project
+  // it runs on — and nothing else. ASS-450: a leftover ticket health check run is no background work now (none is
+  // ever dispatched again: control ends it at its start, triggers.js endTicketHealthRuns).
   const runs = [{ id: 'hc', project: 'h', parent: { trigger: 'check-health' } }, { id: 'sub', project: 'h', parent: { 'transient-state-engine': 'hc' } },
-    { id: 'th', project: 'h', parent: { trigger: 'check-ticket-health', 'work-item': 'T-1', variation: 'B', 'ticket-project': 'p' } },
     { id: 'gap', project: 'h', parent: { trigger: 'gap-resolution', 'work-item': 'T-1', variation: 'B' } }, { id: 'step', project: 'h', parent: { 'work-item': 'T-1', variation: 'B', state: 'blocked' } }];
   const off = id => ({ ...state, transient: runs, projects: [...state.projects, { id: 'h', json: { 'background-work': false }, tickets: [] }].map(p => p.id === id ? p : { ...p, json: {} }) });
-  for (const id of ['hc', 'sub', 'th']) assert.equal(isPaused(off('h'), 'h', undefined, undefined, id), true, id);
+  for (const id of ['hc', 'sub']) assert.equal(isPaused(off('h'), 'h', undefined, undefined, id), true, id);
   for (const id of ['gap', 'step']) assert.equal(isPaused(off('h'), 'h', undefined, undefined, id), false, id);
-  assert.equal(isPaused(off('p'), 'h', undefined, undefined, 'th'), false, 'the ticket\'s project\'s switch is not the one');
+  assert.equal(isPaused(off('p'), 'h', undefined, undefined, 'hc'), false, 'another project\'s switch is not the one');
   assert.equal(isPaused({ ...off('h'), allProjects: [{ id: 'h', json: {} }] }, 'h', undefined, undefined, 'hc'), false, 'read from every project, a control for one');
   assert.equal(found(state, { project: 'p', 'work-item': 'T-1', variation: 'C' }).variation, undefined);   // deleted is as good as missing
   assert.equal(found(state, { project: 'x', 'work-item': 'T-1', variation: 'A' }).project, undefined);
@@ -334,7 +334,7 @@ test('problemOf: a classified issue says where its fix ticket goes — a harness
   assert.deepEqual(said('example', 'project'), ['Classified: a project issue — R', 'Raise the fix ticket in: project example — its own ticket system']);
   assert.deepEqual(said('example', 'environment'), ['Classified: an environment issue — R', 'Raise the fix ticket in: project harness — the harness project\'s backlog']);
   for (const issue of ['harness', 'project']) assert.deepEqual(said('harness', issue)[1], 'Raise the fix ticket in: project harness — the harness project\'s backlog', issue);
-  // Unclassified (an older analysis, a ticket-health check), or no harness project named: the prompt goes by cause-in, as before.
+  // Unclassified (an older analysis), or no harness project named: the prompt goes by cause-in, as before.
   assert.deepEqual(said('example', undefined), []);
   assert.deepEqual(problemOf(blocked('example', 'harness'), [], { harness: {} }).split('\n').filter(l => /^Raise/.test(l)), []);
 });
@@ -377,7 +377,7 @@ test('problemOf: a Blocked run\'s prompts get the ticket\'s block history after 
   assert.equal(problemOf({ ...run, 'structured-output': null }, [], { history: '' }), '-');
 });
 
-test('problemOf: a project issue found by a harness run about another project\'s ticket (a ticket health check) goes to that ticket\'s project', () => {
-  const run = { id: 'h', project: 'harness', parent: { trigger: 'check-ticket-health', 'work-item': 'EX-1' }, 'structured-output': { summary: 'S', issue: 'project', reasoning: 'R' } };
+test('problemOf: a project issue found by a harness run about another project\'s ticket (context.project) goes to that ticket\'s project', () => {
+  const run = { id: 'h', project: 'harness', parent: { 'work-item': 'EX-1' }, 'structured-output': { summary: 'S', issue: 'project', reasoning: 'R' } };
   assert.match(problemOf(run, [], { harness: { 'harness-project': 'harness' }, project: 'example' }), /^Raise the fix ticket in: project example — its own ticket system$/m);
 });

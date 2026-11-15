@@ -4,11 +4,10 @@
 #   vm_name <ticket-key> <variation>          # <key>-<variation>, lower case: ass-74-a
 #   ticket_folder <command> <project> <key>   # the ticket's folder on the Mac, absolute, made if missing
 #   variation_exists <command> <project> <key> <variation>   # fails, naming <command>, when the active sprint has no such variation
-#   recorded_vm <command> <project> <key> <variation>  # the VM recorded on the variation (ticket:set-vm); fails, naming why, without one
-#   running_vm <command> <project> <key> <variation>   # that VM when it is running; fails, naming why, else
+#   recorded_vm <command> <project> <key> <variation>  # the VM recorded on the variation (ticket:set-vm), as machine.bash names a machine; fails, naming why, without one
+#   running_vm <command> <project> <key> <variation>   # that VM when it is running (machine_status); fails, naming why, else
 #   $setup_marker                             # the file in a VM whose Setup finished (ASS-68: vm:mark-setup-complete, vm:setup-complete)
 #   free_port                                 # a TCP port free on the Mac's loopback now: a clone's ssh.localPort
-#   start_sandboxed <command> <vm> <display> <port…>   # limactl start, its video.display <display> (none or vz), its host agent let reach the Mac's loopback only at <port…> and the VM's ssh port
 #
 # A project's VMs and their disk (ASS-75):
 #   lock_vms <command> <project>              # the project's VM lock (descriptor 8) until unlock_vms or exit: every start, stop, clone and delete
@@ -35,10 +34,16 @@
 # $agent is the repo's agent.sh; $harness_file data/harness.json (HARNESS_FILE
 # overrides it); $tokens_file where vm:start keeps each VM's forwarder token,
 # hashed, and its binding: $HARNESS_HOME/vm-tokens.json (~/.harness by default).
+# Everything run in, copied to, started, stopped or asked of a variation's VM
+# goes through the machine layer (machine.bash, ASS-432: machine_run,
+# machine_status, machine_start, …); what stays here is Lima's own — the
+# inventory of instances and their disks, and deleting one (lima_list,
+# limactl delete).
 here_vm="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
 source "$here_vm/sprint.bash"
 source "$here_vm/ticket-system.bash"
 source "$here_vm/lima-home.bash"
+source "$here_vm/machine.bash"
 source "$here_vm/disk.bash"
 LIMA_HOME="$(lima_home)"; export LIMA_HOME
 agent="$here_vm/../../agent.sh"
@@ -67,7 +72,7 @@ recorded_vm() {
   variation_exists "$@" || return 1
   file="$(sprint_file "$1" "$2")" || return 1
   vm="$(jq -r --arg key "$3" --arg name "$4" 'first((.features, .bugs, .spikes) // [] | .[] | select(.key | ascii_downcase == ($key | ascii_downcase)))
-    | first(.variations // [] | .[] | select(.name == $name and (.["is-deleted"] | not))) | .vm.name // empty' "$file")"
+    | first(.variations // [] | .[] | select(.name == $name and (.["is-deleted"] | not))) | '"$machine_of" "$file")"
   [[ -n "$vm" ]] || { echo "$1: $3 $4 has no VM: vm:create it first" >&2; return 1; }
   echo "$vm"
 }
@@ -75,28 +80,11 @@ recorded_vm() {
 running_vm() {
   local vm
   vm="$(recorded_vm "$@")" || return 1
-  [[ "$(limactl list "$vm" --format '{{.Status}}' 2>/dev/null)" == Running ]] || { echo "$1: $vm is not running" >&2; return 1; }
+  [[ "$(machine_status "$vm" 2>/dev/null)" == Running ]] || { echo "$1: $vm is not running" >&2; return 1; }
   echo "$vm"
 }
 
 free_port() { node -e 'const s = require("net").createServer().listen(0, "127.0.0.1", () => { console.log(s.address().port); s.close(); })'; }
-
-# The sandbox vm:start explains (step 1): the VM must have an ssh port of its
-# own (ssh.localPort, pinned when it was cloned) for the profile to allow.
-start_sandboxed() {
-  local command="$1" vm="$2" display="$3" ssh port allowed="" profile; shift 3
-  [[ "$(limactl list "$vm" --format '{{.Config.Video.Display}}')" == "$display" ]] \
-    || limactl edit --tty=false "$vm" --set ".video.display = \"$display\"" >/dev/null 2>&1 || { echo "$command: could not set $vm's video.display to $display" >&2; return 1; }
-  ssh="$(limactl list "$vm" --format '{{.SSHLocalPort}}')"
-  [[ "$ssh" =~ ^[1-9][0-9]*$ ]] || { echo "$command: $vm has no ssh port of its own (ssh.localPort); vm:create pins one" >&2; return 1; }
-  for port in "$@" "$ssh"; do allowed+=" (remote ip \"localhost:$port\")"; done
-  profile="(version 1)
-(allow default)
-(deny network-outbound (remote ip \"*:*\"))
-(allow network-outbound$allowed)"
-  # Its host agent outlives this shell: started without the VM lock's descriptor (lock_vms), or it would hold the lock.
-  sandbox-exec -p "$profile" limactl start --tty=false "$vm" >/dev/null 2>&1 8>&- || { echo "$command: $vm would not start (see $LIMA_HOME/$vm/ha.stderr.log)" >&2; return 1; }
-}
 
 # The inventory: data/projects/<project>/vms.json (untracked), one entry per VM of
 # the project's — { "<vm>": { ticket, variation, state, disk-bytes,
@@ -227,7 +215,7 @@ measure_disks() {
 # accessed_at <instance folder> — when its disk (else the folder) was last written.
 accessed_at() { date -u -r "$( [[ -f "$1/disk" ]] && echo "$1/disk" || echo "$1")" +%Y-%m-%dT%H:%M:%SZ; }
 
-golden_bytes() { disk_bytes "$(limactl list "golden-$1" --format '{{.Dir}}' 2>/dev/null)" 2; }
+golden_bytes() { disk_bytes "$(lima_list "golden-$1" --format '{{.Dir}}' 2>/dev/null)" 2; }
 
 # built_at <instance folder> — the built-at of the golden image label in it, empty without one.
 built_at() { jq -r '.["built-at"] // empty' "$1/golden-image.json" 2>/dev/null || true; }
@@ -264,7 +252,7 @@ reconcile_vms() {
   file="$(vms_file "$project")"
   sysctl -n kern.bootsessionuuid >/dev/null 2>&1 || blind=true
   limit="$(vm_disk_limit "$command" "$project")" || return 1
-  listing="$({ limactl list --format $'{{.Name}}\t{{.Status}}\t{{.Dir}}' 2>/dev/null || true; } \
+  listing="$({ lima_list --format $'{{.Name}}\t{{.Status}}\t{{.Dir}}' 2>/dev/null || true; } \
     | jq -Rn '[inputs | split("\t") | select(length == 3) | { key: .[0], value: { status: .[1], dir: .[2] } }] | from_entries')"
   sprint="$(sprint_file "$command" "$project" 2>/dev/null)"; [[ -f "$sprint" ]] || sprint=/dev/null   # none: $s[0] is null
   recorded="$(jq -nc --slurpfile s "$sprint" '[$s[0] | (.features, .bugs, .spikes) // [] | .[] | .key as $k | .variations // [] | .[] | select(.vm.name) | { key: .vm.name, value: { ticket: $k, variation: .name } }] | from_entries')"
@@ -512,3 +500,4 @@ reclaim_all() {
   jq -n --argjson d "$deleted" --argjson dry "$( [[ -n "$dry" ]] && echo true || echo false)" --argjson w "$warn" --argjson b "$before" --argjson f "$free" \
     '{ "dry-run": $dry, "warn-bytes": $w, "free-bytes-before": $b, "free-bytes": $f, deleted: $d, short: ($f < $w) }'
 }
+source "$here_vm/workstation-variation.bash"

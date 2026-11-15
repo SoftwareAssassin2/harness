@@ -10,16 +10,18 @@ import { rankSprint, rankBacklog } from './rank.js';
 import { planFor, slotKind } from './plan.js';
 import { waitsForSeat } from './fast-track.js';
 import { fillArgs } from './placeholders.js';
-import { ticketFacts, ticketValues, runValues, parseOutput, cameFrom } from './facts.js';
+import { ticketFacts, ticketValues, runValues, parseOutput, cameFrom, sandboxRefusedFeedback } from './facts.js';
 import { firstStepId, levelChanges, contextOf, ticketPath, found, moveTicket, moveRun, endRun, isPaused, mayMove, gated, SKIPPED, NO_CHOICE, TIMER } from './moves.js';
 import { failed, waiting, held as heldFor, ticketKey, runKey, cleared, BLOCK_AFTER, FAILED_STARTS } from './backoff.js';
 import { runsInVm, vmOf } from './vm.js';
+import { machineOf } from './machine.js';
 import { awaitsVm, NEVER_UP, neverUp, vmUpCeilingMs } from './vm-lifecycle.js';
 import { awaitsDependencies } from './dependencies.js';
 import { overSpent, spendText, runningOn } from './spend.js';
 import { readSession } from '../agents/session.js';
 import { diskHeld, makesDisk } from './disk.js';
 import { memoryShort, startsVm } from './host-memory.js';
+import { needsMacMemory } from './workstation-machines.js';
 import { credentialsHeld } from './credentials.js';
 
 const PHASE = 'steps';
@@ -89,6 +91,9 @@ function diskWaits(ctx, state, step, who) {
 // with it, so it holds no seat while it waits (plan.js).
 async function memoryWaits(ctx, state, project, step, who, held = null) {
   if (!startsVm(step.action?.command)) return false;
+  // ASS-435: a variation whose machine is, or is to be, a workstation's takes none of the Mac's memory.
+  const variation = held && project.tickets.find(t => t.key === held.key)?.variations?.find(v => v.name === held.variation);
+  if (variation && !needsMacMemory(ctx, state, project, variation)) return false;
   if (!await memoryShort(ctx, state, project, null, held)) { ctx.memory.warned.delete(`memory/${who}`); return false; }
   warnOnce(ctx, `memory/${who}`, `${who}: waits: out of memory`);
   return true;
@@ -272,7 +277,7 @@ async function runVariation(ctx, state, project, key, name) {
     const vmWait = awaitsVm(ctx, state, project, variation, who);
     if (vmWait === NEVER_UP) await neverUp(ctx, PHASE, at, variation.vm.name, vmUpCeilingMs(state));   // ASS-387: its start pending past the ceiling: Blocked
     if (vmWait) return;   // its VM still starting (ASS-133), or its start still queued (ASS-387)
-    const facts = ticketFacts(ctx, project, ticket, variation, undefined, runsInVm(step) ? variation.vm?.name : undefined);
+    const facts = ticketFacts(ctx, project, ticket, variation, undefined, runsInVm(step) ? machineOf(variation) : undefined);
     const changes = levelChanges(variation);
     switch (step.action?.type) {
       case 'none': {
@@ -362,8 +367,10 @@ async function runVariation(ctx, state, project, key, name) {
           : `${who}: ${cleared}; resume-at ${resume} not taken (${whyNotResume(engine, next.to, resume) ?? 'its return could not be told'}), resumes at ${next.to}`);
         // Why it went there, when the run says (ai-feedback-short/-long in its output; ASS-75: Create VM's
         // out-of-disk reason, for Blocked for Human): the variation's health, set after the move, which clears it.
-        const why = run['structured-output'];
-        if (typeof why?.['ai-feedback-short'] === 'string') await ctx.cli(['ticket:set-ai-feedback', project.id, key, name, why['ai-feedback-short'], String(why['ai-feedback-long'] ?? '')]);
+        // ASS-428 AC4: a run whose last agent says the sandbox refused its agent.sh write (sandbox-refused): "sandbox refused <command>" first, its own reason kept in the long text.
+        const why = run['structured-output'], refused = sandboxRefusedFeedback(why);
+        if (refused) await ctx.cli(['ticket:set-ai-feedback', project.id, key, name, refused.short, [refused.long, why['ai-feedback-short'], why['ai-feedback-long']].filter(t => typeof t === 'string' && t).join('\n')]);
+        else if (typeof why?.['ai-feedback-short'] === 'string') await ctx.cli(['ticket:set-ai-feedback', project.id, key, name, why['ai-feedback-short'], String(why['ai-feedback-long'] ?? '')]);
         await endRun(ctx, PHASE, run);
         break;
       }
@@ -423,7 +430,7 @@ async function runTransient(ctx, state, id) {
     const vmWait = awaitsVm(ctx, state, project, variation, who);
     if (vmWait === NEVER_UP) await neverUp(ctx, PHASE, place, variation.vm.name, vmUpCeilingMs(state));   // ASS-387
     if (vmWait) return;   // its ticket's VM still starting (ASS-133), or its start still queued (ASS-387)
-    const facts = { ...(ticket && variation ? ticketFacts(ctx, project, ticket, variation, undefined, runsInVm(step) ? variation.vm?.name : undefined) : {}), structuredOutput: run['structured-output'], agentNeedsWork: true };
+    const facts = { ...(ticket && variation ? ticketFacts(ctx, project, ticket, variation, undefined, runsInVm(step) ? machineOf(variation) : undefined) : {}), structuredOutput: run['structured-output'], agentNeedsWork: true };
     // Its steps' visits are the run's own (ASS-66): counted over its moves, none from an earlier run or its parent.
     const changes = run['state-changes'] ?? [];
     const settle = async (next, output, cause) => {

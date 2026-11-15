@@ -22,7 +22,7 @@ const backlogRows = state => backlogTickets(state)
 // The backlog grid's rows (backlogRows) — ticket (type icon, key: title), priority
 // (backlogPriority), points, refinement, assignee, the agents on it — and its body height. A
 // ticket worked by hand (ASS-166) has ✋ before its key and who since when after its refinement;
-// one waiting on the operator (operatorNeeded) a blue ● (needMark, ASS-242), one going on with an assumption alone a dim grey one (ASS-248).
+// one waiting on the operator (operatorNeeded) a red ● (needMark, ASS-242; blue before ASS-430), one going on with an assumption alone a dim grey one (ASS-248).
 function backlogLayout(state, { columns = 0, rows = Infinity, now = 0 }) {
   const bottom = below(state) + Math.max(1, platform(state, columns, now).length);
   const free = rows - headerLines(state, columns, now).length - bottom;

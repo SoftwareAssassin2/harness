@@ -39,7 +39,7 @@ export function controlFixture() {
   write(at('engines', 'example-development', 'state-engine.json'), {
     ...engine, 'ask-for-status-update-given-none-was-provided-for-seconds': 600,
     // As the real engine shapes it: one step, finished by its is-done exit. Step ids are unique across an engine's lists.
-    'check-health-steps': [{ id: 'check-health', sequence: 1, action: { type: 'state-engine', engine: 'investigate-gap' }, 'exit-events': [{ condition: { 'is-done': true } }] }], 'check-health-interval-seconds': 3600, 'check-variation-appeal-interval-seconds': 3600, 'check-ticket-health-sample-every': 100,
+    'check-health-steps': [{ id: 'check-health', sequence: 1, action: { type: 'state-engine', engine: 'investigate-gap' }, 'exit-events': [{ condition: { 'is-done': true } }] }], 'check-health-interval-seconds': 3600, 'check-variation-appeal-interval-seconds': 3600,
     'gap-resolution-steps': [{ id: 'gap-resolution', sequence: 1, action: { type: 'state-engine', engine: 'investigate-gap' }, 'exit-events': [{ condition: { 'is-done': true } }] }],
     steps: [
       { id: 'blocked', sequence: 0, 'is-blocked-state': true, 'paired-ticket-system-status': 'Blocked', action: { type: 'human' } },

@@ -20,7 +20,7 @@ const script = (bin, name, body) => { writeFileSync(join(bin, name), `#!/usr/bin
 // A Mac: HOME with ~/.harness/vm-credentials.json (`declaration`), a keychain
 // folder (a file per service present), project p (`project` its project.json),
 // fakes for security (44 for a missing item), gh and glab (failing while
-// <dir>/<tool>-out exists), each call logged.
+// <dir>/<tool>-out exists, printing it on stderr), each call logged.
 function mac({ declaration = { p: { claude: { 'keychain-service': 'Claude Token (Test)' }, gitlab: { 'keychain-service': 'GitLab PAT (Test)', host: 'gitlab.example.com' }, git: { 'user-name': 'Ada Example', 'user-email': 'ada@example.com' } } }, keychain = ['Claude Token (Test)', 'GitLab PAT (Test)'], project = { name: 'P', repositories: [{ url: 'https://gitlab.example.com/acme/shop.git' }] } } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'creds-'));
   const home = join(dir, 'home'), kc = join(dir, 'keychain'), bin = join(dir, 'bin'), projects = join(dir, 'projects');
@@ -31,7 +31,7 @@ function mac({ declaration = { p: { claude: { 'keychain-service': 'Claude Token 
   script(bin, 'security', `printf '%s\\n' "$*" >> "${dir}/calls"
 [[ "$1 $2" == "find-generic-password -s" && $# -eq 3 ]] || { echo "unexpected security call: $*" >&2; exit 2; }
 [[ -e "${kc}/$3" ]] || exit 44`);
-  for (const tool of ['gh', 'glab']) script(bin, tool, `printf '%s\\n' "${tool} $*" >> "${dir}/calls"; [[ ! -e "${dir}/${tool}-out" ]]`);
+  for (const tool of ['gh', 'glab']) script(bin, tool, `printf '%s\\n' "${tool} $*" >> "${dir}/calls"; [[ ! -e "${dir}/${tool}-out" ]] || { cat "${dir}/${tool}-out" >&2; exit 1; }`);
   const env = { ...process.env, HOME: home, PATH: `${bin}:${process.env.PATH}`, PROJECTS_DIR: projects, GH_DISABLED: '', GLAB_DISABLED: '' };
   const cli = async (...args) => JSON.parse((await run(AGENT, args, { env })).stdout);
   const record = join(projects, 'p', 'credentials-hold.json');
@@ -88,6 +88,16 @@ test('ASS-395 AC1: the gcloud login control found expired, the wrong Claude acco
   const none = mac({ declaration: { other: {} }, project: { name: 'P' } });
   assert.deepEqual(await none.cli('project:check-credentials', 'p'), { held: false, since: null, problems: [] });
   assert.equal(none.calls(), '');
+});
+
+test('ASS-429 AC4: a forge login check that fails only because the host could not be reached holds nothing; one that also says the login is gone is a problem', async () => {
+  const m = mac();
+  writeFileSync(join(m.dir, 'glab-out'), 'gitlab.example.com\n  x gitlab.example.com: API call failed: GET https://gitlab.example.com/api/v4/user: dial tcp: lookup gitlab.example.com: no such host\n');
+  assert.deepEqual(await m.cli('project:check-credentials', 'p'), { held: false, since: null, problems: [] });
+  writeFileSync(join(m.dir, 'glab-out'), 'GET https://gitlab.example.com/api/v4/user: 503 Service Unavailable\n');
+  assert.deepEqual((await m.cli('project:check-credentials', 'p')).problems, []);
+  writeFileSync(join(m.dir, 'glab-out'), 'x gitlab.example.com: API call failed: GET https://gitlab.example.com/api/v4/user: 401 {message: 401 Unauthorized}\n');
+  assert.deepEqual((await m.cli('project:check-credentials', 'p')).problems.map(p => p.credential), ['the glab login (gitlab.example.com)']);
 });
 
 test('ASS-395: both commands refuse a bad project or usage', async () => {

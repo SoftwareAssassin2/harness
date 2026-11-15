@@ -395,7 +395,7 @@ test('every prompt that has an agent ask a question has it use question:ask, nev
 const PER_VARIATION = ['root-cause-analysis', 'execution-plan', 'test-plan', 'requirements-change', 'explanation', 'change-log', 'code-review', 'security-review',
   'risk-assessment', 'token-expense-check', 'test-results', 'steps-to-test', 'plan-review', 'root-cause-analysis-review', 'review-work'];
 const BARE = new RegExp(`(?<![\\w-])(${PER_VARIATION.join('|')})\\.md`, 'g');
-const COMMAND = /`\{agent-sh\} work:(write|append) \{project\} \{ticket\} (\{variation\}|-) [a-z0-9-]+\.md`/g;
+const COMMAND = /`\{agent-sh\} work:(write|append) \{project\} \{ticket\} (\{variation\}|-) [a-z0-9-]+\.md( <[a-z-]+-file>)?`/g;   // ASS-428: a host prompt's call ends in its staged file
 const sentText = p => ['prompt.txt', 'prompt.json'].filter(f => existsSync(join(ROOT, 'prompts', p, f))).map(f => readFileSync(join(ROOT, 'prompts', p, f), 'utf8')).join('\n');
 
 test('ASS-181 AC4: no prompt names a converted report by its bare name — only as the <name> work:write or work:append takes', () => {
@@ -419,12 +419,14 @@ test('ASS-181 AC3: every report a prompt writes goes through work:write or work:
     ...Object.fromEntries(['apply-fix', 'generate-solution', 'generate-solution-grouped', 'generate-automated-tests-grouped', 'repair-environment-grouped', 'repair-environment-on-host-grouped',
       'repair-project-grouped', 'repair-project-on-host-grouped', 'classify-issue-grouped',   // ASS-390 AC3: every Blocked prompt logs
       'repair-image-on-host-grouped',   // ASS-392 AC4
+      'repair-vm-on-host-grouped',   // ASS-427
       'troubleshoot-block', 'troubleshoot-block-grouped', 'troubleshoot-block-on-host-grouped', 'unblock', 'update-documentation', 'update-documentation-grouped', 'shut-down'].map(p => [p, ['append', 'change-log']])),
   };
   for (const [p, [command, name]] of Object.entries(writes)) {
-    assert.ok(text(p).includes(`{ticket-folder}/${name}-{variation}.md (through \`{agent-sh} work:${command} {project} {ticket} {variation} ${name}.md\``), `${p}: work:${command} ${name}`);
+    const call = `{ticket-folder}/${name}-{variation}.md (through \`{agent-sh} work:${command} {project} {ticket} {variation} ${name}.md`;
+    assert.ok(text(p).includes(`${call}\``) || text(p).includes(`${call} <entry-file>\``), `${p}: work:${command} ${name}`);   // ASS-428: a host prompt's, with its staged file
   }
-  assert.ok(text('estimate').includes('`{agent-sh} work:write {project} {ticket} - estimate.md`'), 'estimate: the ticket\'s own');
+  assert.ok(text('estimate').includes('`{agent-sh} work:write {project} {ticket} - estimate.md <estimate-file>`'), 'estimate: the ticket\'s own, by a staged file\'s path (ASS-428: grooming runs confined on the host)');
   const direct = new RegExp(`(?:[Ww]rite|[Aa]ppend|Add an entry to|Note in)[^.(\\n]*?\\{ticket-folder\\}/(?:${PER_VARIATION.join('|')})-\\{variation\\}\\.md(?! \\(through)`, 'g');
   assert.deepEqual(prompts.flatMap(p => [...sentText(p).matchAll(direct)].map(m => `${p}: ${m[0]}`)), []);
 });
@@ -877,4 +879,28 @@ test('ASS-397 AC1, AC3: the AC-writing prompts and review-plan-grouped carry {ac
   for (const name of ['enrich-ac-grouped', 'revise-acceptance-criteria', 'groom', 'split-ticket', 'create-ticket-grouped', 'review-plan-grouped'])
     assert.match(text(name), /\n\n\{acceptance-criteria-rule\}\n\n/, name);
   for (const flat of ['enrich-ac', 'review-plan']) assert.doesNotMatch(text(flat), /acceptance-criteria-rule/, flat);
+});
+
+// ASS-424: a build step that needs a change in a repository where the ticket has no Open merge request plans a
+// new one (ticket:add-merge-request) rather than asking the operator; Release's Address Merge Request Feedback only
+// plans it (created there it would skip Build's reviews). The flat engines' prompts are unchanged.
+test('ASS-424 AC1/AC3/AC4: Generate Solution, both Address Merge Request Feedback prompts and Generate Automated Tests plan a new merge request where the ticket has none Open, never asking the operator, never touching a merged branch', () => {
+  const said = name => readFileSync(join(ROOT, 'prompts', name, 'prompt.txt'), 'utf8');
+  for (const name of ['generate-solution-grouped', 'check-on-merge-request-build-grouped', 'check-on-merge-request-grouped', 'generate-automated-tests-grouped']) {
+    const t = said(name);
+    assert.match(t, /\{agent-sh\} ticket:add-merge-request \{project\} \{ticket\} \{variation\} -/, name);
+    assert.match(t, /every one Merged or Closed — .*plan a new one yourself, never asking the operator/s, name);
+    assert.match(t, /ticket:set-merge-request-plan \(the next id never used on the ticket/, name);
+    assert.match(t, /notes in execution-plan-\{variation\}\.md who added it and why/, name);
+    assert.match(t, /already has one Open or Not Created in that repository, the (change|test) goes on that one/, name);
+    assert.match(t, /Ask the operator only when the (change|test) is outside the ticket's scope/, name);
+  }
+  for (const name of ['generate-solution-grouped', 'check-on-merge-request-build-grouped']) {
+    assert.match(said(name), /latest origin\/<base>/, name);
+    assert.match(said(name), /merge-request:create|step 2 b–e/, name);
+    assert.match(said(name), /Never reopen, push to or retarget a merged branch/, name);
+  }
+  assert.match(said('check-on-merge-request-grouped'), /Don't build or create it here/);
+  assert.match(said('generate-automated-tests-grouped'), /Only plan it/);
+  for (const flat of ['generate-solution', 'check-on-merge-request', 'generate-automated-tests']) assert.doesNotMatch(said(flat), /add-merge-request/, flat);
 });

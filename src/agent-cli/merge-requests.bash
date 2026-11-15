@@ -12,6 +12,9 @@
 #   mr_view / mr_default_branch / mr_find_open / mr_changes / mr_open / mr_retarget / mr_ready / mr_auto_merge
 #       each <command> <index> …: one forge call for MRS[<index>]
 #   mr_rerun <command> <index>                  # its failed pipeline started again (ASS-346)
+#   plan_new_merge_request <command> <project> <ticket-key> <variation> <repository-url> <contents>
+#                                               # a new planned merge request for <repository-url>: prints { id, repository, branch, base } (ASS-423)
+#   mr_files <command> <index>                 # each path its diff on the forge touches (a rename's both names), one per line (ASS-423)
 #   mr_approvals_left <command> <index> <view>  # approvals it still needs: a number, "unknown" (GitHub: review required), else 0 (ASS-359)
 #   mr_failed_jobs <command> <index> <view>     # its failed pipeline's job names (GitHub: failed checks'), a JSON array (ASS-359)
 #   mr_review_comments <command> <index> <project>   # its plain review comments not yet answered, a JSON array [{ id, author, body, created }] (ASS-361)
@@ -36,7 +39,8 @@
 # its API (glab api --hostname), never from a checkout, since glab otherwise
 # takes its host from the cwd's remotes; the worktree's own with glab mr, as
 # before. gh_run and glab_run say what they would run when disabled.
-source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/code.bash"
+here_mrs="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
+source "$here_mrs/code.bash"
 
 # MR_ROW — jq defs for writing a row inside the ticket's lock (ASS-177), never
 # by an index from a read taken before it: same_mr($m) — this row is $m (its
@@ -271,6 +275,59 @@ mr_changes() {
     # GitLab shows a pushed branch a moment after the push: wait for it, up to 30 seconds.
     for _ in $(seq 1 15); do lab "$command" "$url" "/repository/branches/$(enc "$branch")" >/dev/null 2>&1 && break; sleep 2; done
     lab "$command" "$url" "/repository/compare?from=$(enc "$base")&to=$(enc "$branch")" | jq -e '.diffs | length'
+  fi
+}
+
+# plan_new_merge_request <command> <project> <ticket-key> <variation>
+# <repository-url> <contents> — a new merge request planned on the variation
+# for <repository-url> (one of project.json's repositories), for code of the
+# ticket's that must change once its merge requests there have merged or
+# closed (ASS-423: a merged one does not end the ticket's ownership of its
+# code; never reopened or pushed to). Its id is the next never used (one more
+# than the highest planned: ids are never reused, rows never dropped), its
+# branch change/<KEY>-<id> (change/<KEY>.<variation>-<id> for a variation
+# other than A, as ticket:set-merge-request-plan names it), depends-on none,
+# status Not Created; its base the last merged one's base in that repository,
+# recorded now (else none: merge-request:check sets the repository's default
+# branch), so it is built from the latest origin/<base>. Written through
+# ticket:set-merge-request-plan, so its checks hold. Prints { id, repository,
+# branch, base } (base null when none). Fails, planning nothing, when the
+# plan is refused (a repository not the project's, an unknown variation).
+plan_new_merge_request() {
+  local command="$1" project="$2" key="$3" variation="$4" url="$5" contents="$6" mrs id base branch
+  mrs="$(variation_field '.["merge-request"] // []' "$command" "$project" "$key" "$variation")" || return 1
+  id="$(jq -r '[.[].id | numbers] | (max // 0) + 1' <<< "$mrs")"
+  base="$(jq -r --arg u "$url" 'def bare: (. // "") | sub("\\.git$"; "") | sub("/$"; "");
+    last(.[] | select(.id != null and .status == "Merged" and (.repository | bare) == ($u | bare)) | .base // empty) // empty' <<< "$mrs")"
+  branch="change/$(ticket_slug "$key" "$variation")-$id"
+  jq -nc --argjson id "$id" --arg repo "$url" --arg contents "$contents" '[{ id: $id, repository: $repo, contents: $contents, "depends-on": [] }]' \
+    | "$here_mrs/ticket/set-merge-request-plan.sh" "$project" "$key" "$variation" - >/dev/null \
+    || { echo "$command: no new merge request could be planned for $url" >&2; return 1; }
+  if [[ -n "$base" ]]; then
+    update_whole_ticket "$command" "$project" "$key" --arg name "$variation" --argjson id "$id" --arg base "$base" '
+      .variations |= map(if .name != $name or .["is-deleted"] then . else .["merge-request"] |= map(if .id == $id then .base = $base else . end) end)' || return 1
+  fi
+  jq -nc --argjson id "$id" --arg repo "$url" --arg branch "$branch" --arg base "$base" '{ id: $id, repository: $repo, branch: $branch, base: (if $base == "" then null else $base end) }'
+}
+
+# mr_files <command> <index> — each path the merge request's diff on its
+# forge touches, one per line, a rename's old and new names both (ASS-423:
+# ticket:own-branch-fix reads a merged one's, which the VM's checkout no
+# longer shows once it merged). GitLab: GET …/merge_requests/<iid>/diffs,
+# every page (its older …/changes when that is refused); GitHub: GET
+# …/pulls/<n>/files, every page. Fails when the forge will not say.
+mr_files() {
+  local command="$1" url iid planned out
+  IFS=$'\t' read -r url iid planned < <(mr_at "$2")
+  [[ "$iid" =~ ^[0-9]+$ ]] || { echo "$command: $(mr_name "$2") has no key on its forge" >&2; return 1; }
+  if on_github "$url"; then
+    out="$(gh_run "$command" api "repos/$(path_of "$url")/pulls/$iid/files?per_page=100" --paginate)" || return 1
+    jq -re '.[]? | .filename, (.previous_filename // empty)' <<< "$out" | sort -u
+  else
+    if ! out="$(lab "$command" "$url" "/merge_requests/$iid/diffs?per_page=100" --paginate 2>/dev/null)" || ! jq -e 'type == "array"' <<< "$out" >/dev/null 2>&1; then
+      out="$(lab "$command" "$url" "/merge_requests/$iid/changes" | jq -c '.changes // empty')" || return 1
+    fi
+    jq -re '.[]? | .new_path, .old_path | select(. != null)' <<< "$out" | sort -u
   fi
 }
 

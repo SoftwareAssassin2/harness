@@ -11,7 +11,8 @@
                 "type": "prompt",
                 "prompt": "explain-the-change",
                 "agent-count": 1,
-                "run-in-dev-container": false
+                "run-in-dev-container": false,
+                "model": "claude-opus-5-5"
             },
             "exit-events": [
                 {
@@ -62,7 +63,8 @@
                 "type": "prompt",
                 "prompt": "risk-assessment-grouped",
                 "agent-count": 1,
-                "run-in-dev-container": false
+                "run-in-dev-container": false,
+                "model": "claude-opus-5-5"
             },
             "exit-events": [
                 {
@@ -120,7 +122,8 @@
                 "type": "prompt",
                 "prompt": "check-if-ticket-will-spend-tokens-grouped",
                 "agent-count": 1,
-                "run-in-dev-container": false
+                "run-in-dev-container": false,
+                "model": "claude-opus-5-5"
             },
             "exit-events": [
                 {

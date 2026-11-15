@@ -71,6 +71,11 @@ set -euo pipefail
 #      With more than one variation in play none is merged early: 2 or 4 as
 #      without the flag, and the feedback says why, even for a dependency
 #      that only waits to merge. Without MERGES_AWAITED, never 5;
+#      (3, ASS-424) also, before anything else and asking no forge, while a
+#      merge request a build step planned mid-build (ticket:add-merge-request:
+#      its row has planned-by) is Not Created, whether or not another depends
+#      on it: prints { waiting: [], "not-created": [{ id, repository,
+#      planned-by }] }, the operator told which;
 #   1  any other failure — the ticket or variation missing, a forge call
 #      failing — matching no exit, so the step tries again.
 #
@@ -131,6 +136,18 @@ record_feedback() {
 MRS="$(variation_field '.["merge-request"] // []' "$command" "$project" "$key" "$variation")"
 # None waiting, as recorded or once read from the forge: any feedback of this step's cleared, exit 0.
 none_waiting() { record_feedback null "" ""; echo '{"waiting":[]}'; exit 0; }
+# One a build step planned mid-build (ASS-424, ticket:add-merge-request: planned-by) and not yet created: back to
+# Generate Solution (exit 3) whether or not another depends on it, asking no forge — the ticket needs it, and
+# nothing but Generate Solution builds it. The operator told which (once, as any needs), the execution plan noted.
+unbuilt="$(jq -c '[.[] | select(.["planned-by"] != null and .status == "Not Created") | { id, repository, "planned-by" }]' <<< "$MRS")"
+if [[ "$unbuilt" != '[]' ]]; then
+  said="$(jq -r 'map("MR \(.id) (\(.repository // "" | rtrimstr(".git") | sub("^[a-z]+://[^/]+/"; "")))") | join(", ")' <<< "$unbuilt")"
+  record_feedback "$(jq -c 'map({ id, key: null, needs: ["not-created"] })' <<< "$unbuilt")" "Never created: $said; back to Generate Solution" \
+    "$(jq -r 'map("MR \(.id) was planned mid-build by \(.["planned-by"].step // "a build step") (\(.["planned-by"].why // "no reason given")) and never created.") | join(" ")' <<< "$unbuilt") The ticket goes back to Generate Solution to build it."
+  jq -c '{ waiting: [], "not-created": . }' <<< "$unbuilt"
+  plan_note "$project" "$key" "$variation" "$said planned mid-build and never created: back to Generate Solution to build it and record it (merge-request:create)."
+  exit 3
+fi
 waiting="$(jq -c "$WAITING" <<< "$MRS")"
 [[ "$waiting" != '[]' ]] || none_waiting
 refresh_merge_requests "$command" "$project" "$key" "$variation"

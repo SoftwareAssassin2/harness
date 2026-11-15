@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
-# Description: Record a ticket variation's automated tests, the JSON list on stdin — automated-tests:record <project> <ticket-key> <variation>.
+# Description: Record a ticket variation's automated tests — automated-tests:record <project> <ticket-key> <variation> [<file>], the JSON list stdin's or <file>'s.
 set -euo pipefail
 
 # Generate Automated Tests records the tests it wrote (ASS-180) into the
 # ticket's folder, data/projects/<project>/work/<KEY>/automated-tests-<variation>.json,
-# a WORK_MANAGED file work:write will not touch. Stdin, one JSON value, must
+# a WORK_MANAGED file work:write will not touch. Stdin — or, given <file>
+# (ASS-428: a confined host agent can't pipe or redirect into agent.sh without
+# re-sandboxing it, so it stages the JSON in a temp file of its own and passes
+# the path, the call a bare one), that file — one JSON value, must
 # be [] (manual-only, ASS-49) or a list of { "list": "<command>", "run":
 # "<command>" }, each a string — the shape automated-tests.bash checks — and
 # optionally "reproduces": true or false (ASS-227: red on master by design, see
@@ -20,12 +23,18 @@ set -euo pipefail
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../work.bash"
 
 command=automated-tests:record
-[[ $# -eq 3 ]] || { echo "usage: $command <project> <ticket-key> <variation> < json" >&2; exit 1; }
+[[ $# -eq 3 || $# -eq 4 ]] || { echo "usage: $command <project> <ticket-key> <variation> [<file>] < json" >&2; exit 1; }
 file="$(work_path "$command" "$1" "$2" "$3" "automated-tests-$3.json")"
+from=stdin
+if [[ $# -eq 4 ]]; then
+  from="$4"
+  [[ -f "$from" ]] || { echo "$command: no file $from: $(basename "$file") left as it was" >&2; exit 1; }
+  exec < "$from"
+fi
 
 input="$(cat; echo x)"; input="${input%x}"
 printf '%s' "$input" | jq -se 'length == 1 and (.[0] | type == "array" and all(.[]; type == "object" and (.list | type) == "string" and (.run | type) == "string" and ((.reproduces // false) | type) == "boolean"))' >/dev/null 2>&1 \
-  || { echo "$command: stdin must be [] or a list of { \"list\": \"<command>\", \"run\": \"<command>\" }, each a string, with an optional boolean \"reproduces\": $(basename "$file") left as it was" >&2; exit 1; }
+  || { echo "$command: $from must be [] or a list of { \"list\": \"<command>\", \"run\": \"<command>\" }, each a string, with an optional boolean \"reproduces\": $(basename "$file") left as it was" >&2; exit 1; }
 
 reusing="$(printf '%s' "$input" | node "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/compose-reset.js")" \
   || { echo "$command: could not check the run commands' docker compose stacks: $(basename "$file") left as it was" >&2; exit 1; }

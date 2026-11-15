@@ -17,5 +17,5 @@ entry="$(reconcile_vms vm:stop "$project" | jq -r --arg n "$vm" 'first(.vms[] | 
 [[ -n "$entry" ]] || { echo "vm:stop: $vm is not one of $project's VMs" >&2; exit 1; }
 IFS=$'\t' read -r state key variation <<<"$entry"
 [[ "$state" == Running ]] || exit 0
-limactl stop "$vm" >/dev/null 2>&1 || { echo "vm:stop: $vm would not stop (see $LIMA_HOME/$vm/ha.stderr.log)" >&2; exit 1; }
+machine_stop "$vm" >/dev/null 2>&1 || { echo "vm:stop: $vm would not stop (see $LIMA_HOME/$vm/ha.stderr.log)" >&2; exit 1; }
 record_vm "$project" "$vm" "$key" "$variation" Stopped

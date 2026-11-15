@@ -1,8 +1,8 @@
 // The dashboard's shut-down (Q): everything it started stopped, and nothing
 // of the harness left running — on a quit its VMs too (ASS-417).
-import { execFile } from 'node:child_process';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { machineStatuses, stopMachine } from '../control/machine.js';
 
 // shutDown({ children, agentPids, timeoutMs, alive, kill, log }) — stop()s
 // every child ({ name, pid, stop, exited: a promise settled once it has
@@ -54,12 +54,12 @@ export function ender(options, exit) {
   return end;
 }
 
-// ASS-417: the harness's VMs stopped on a quit.
-// limactl(args, env, options) — its run, settled (never rejected) with { error, stdout }.
-// list and stop -f get LIMACTL_LIMIT, not the graceful stop's time limit.
+// ASS-417: the harness's VMs stopped on a quit, through the machine layer
+// (control/machine.js, ASS-432: limactl list and stop for a VM).
+// settled(promise) — { error } when it rejects, {} when it resolves.
+// The list and a stop -f get LIMACTL_LIMIT, not the graceful stop's time limit.
 const LIMACTL_LIMIT = 30000;
-const limactl = (args, env, options = {}) => new Promise(resolve =>
-  execFile('limactl', args, { env, killSignal: 'SIGKILL', ...options }, (error, stdout) => resolve({ error, stdout })));
+const settled = promise => promise.then(() => ({}), error => ({ error }));
 
 // vmStopper({ env, timeoutMs, log, counted }) — { run, force }: run() stops
 // every Running Lima instance under env's LIMA_HOME (env must carry it:
@@ -76,19 +76,19 @@ export function vmStopper({ env, timeoutMs = 60000, log, counted = () => {} }) {
   const stopOne = async name => {
     const graceful = new AbortController();
     stopping.add(graceful);
-    const r = forced ? { error: { forced: true } } : await limactl(['stop', name], env, { timeout: timeoutMs, signal: graceful.signal });
+    const r = forced ? { error: { forced: true } } : await settled(stopMachine(name, { env, killSignal: 'SIGKILL', timeout: timeoutMs, signal: graceful.signal }));
     stopping.delete(graceful);
     if (!r.error) return log(`VM ${name} stopped`);
     const why = forced ? 'Q pressed again' : r.error.killed ? `not stopped after ${timeoutMs / 1000} s` : `limactl stop failed: ${r.error.message.trim()}`;
-    const f = await limactl(['stop', '-f', name], env, { timeout: LIMACTL_LIMIT });
+    const f = await settled(stopMachine(name, { force: true, env, killSignal: 'SIGKILL', timeout: LIMACTL_LIMIT }));
     log(f.error ? `VM ${name} would not stop (${why}), and limactl stop -f failed: ${f.error.message.trim()}` : `VM ${name} force-stopped (${why})`);
   };
   return {
     async run() {
       if (!env.LIMA_HOME || !existsSync(env.LIMA_HOME)) return;
-      const { error, stdout } = await limactl(['list', '--format', '{{.Name}}\t{{.Status}}'], env, { timeout: LIMACTL_LIMIT });
-      if (error) return log(`limactl list failed, so no VM was stopped: ${error.message.trim()}`);
-      const names = stdout.split('\n').map(line => line.split('\t')).filter(([name, status]) => name && status === 'Running').map(([name]) => name);
+      let status;
+      try { status = await machineStatuses({ env, killSignal: 'SIGKILL', timeout: LIMACTL_LIMIT }); } catch (error) { return log(`limactl list failed, so no VM was stopped: ${error.message.trim()}`); }
+      const names = [...status].filter(([name, s]) => name && s === 'Running').map(([name]) => name);
       if (!names.length) return;
       let left = names.length;
       log(`stopping ${left} VM${left === 1 ? '' : 's'} under ${env.LIMA_HOME}: ${names.join(', ')}`);

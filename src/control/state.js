@@ -8,10 +8,18 @@ import { flattenSprint, isLiveBacklogEntry } from './rank.js';
 import { dataDir } from '../data-folder.js';
 import { switchOff, blocksTicket } from './engine.js';
 import { switchedOffStepErrors } from '../workflow/validate.js';
+import { obsoleteKeysOf, withoutObsolete } from '../workflow/obsolete.js';
+import { devEnvironments, devEnvironmentsErrors } from './dev-environments.js';
+import { loadWorkstations } from './workstation-connection.js';
+import { readJson, readJsonOnce } from './read.js';
 
-const readJson = file => JSON.parse(readFileSync(file, 'utf8'));
+// readJson (read.js, ASS-460): a read that fails because the drive dropped or
+// the file was caught empty or half-written is tried again a couple of times
+// first; readJsonOnce, the plain read, for a file whose absence is ordinary and
+// handled where it is read (disk-space.json, memory-spend.json).
+export { readJson };
 // readDiskSpace(file) — disk-space.json (ASS-288), or null without it or caught half-written.
-export const readDiskSpace = file => { try { return readJson(file); } catch { return null; } };
+export const readDiskSpace = file => { try { return readJsonOnce(file); } catch { return null; } };
 
 // requiresReauthentication(projectDir, tool) — whether the project's
 // <tool>-requires-reauthentication file (gcloud, glab; written by
@@ -55,7 +63,7 @@ export const loadChatSpend = (dir, read = readJson) => (existsSync(join(dir, 'ch
 // (ASS-269), from its folder `dir`: memory-spend.json's records, written by
 // memory:record-spend; [] with none, or unreadable. Control sums them against
 // the project's API caps, the dashboard into its spend tiles.
-export function loadMemorySpend(dir, read = readJson) {
+export function loadMemorySpend(dir, read = readJsonOnce) {
   try { return read(join(dir, 'memory-spend.json'))?.records ?? []; } catch { return []; }
 }
 
@@ -107,11 +115,33 @@ export const paths = (root, env = process.env) => ({
 // ignores a deleted one as though it were gone.
 const live = t => t['is-deleted'] !== true;
 
-// readEngines(dir) — { [name]: its state-engine.json } for each
-// <dir>/<name>/state-engine.json; {} when there is no such folder.
-export const readEngines = dir => (!existsSync(dir) ? {} : Object.fromEntries(readdirSync(dir)
+// readEngines(dir, obsolete, stale) — { [name]: its state-engine.json } for each
+// <dir>/<name>/state-engine.json; {} when there is no such folder. ASS-450:
+// each without the obsolete keys it declares (src/workflow/obsolete.js: the
+// removed ticket health check's), each such engine pushed onto `obsolete` as
+// { file, keys }, for control to say once. ASS-460: an engine that still
+// fails to read once readJson has tried again (a merge rewriting engines/ in
+// place, a file caught empty) is its last good copy, read earlier in this
+// process (lastGoodEngines, by file), pushed onto `stale` as { file, error }
+// for control to say once per failure streak; one never read well throws, as before.
+const lastGoodEngines = new Map();
+export const readEngines = (dir, obsolete = [], stale = []) => (!existsSync(dir) ? {} : Object.fromEntries(readdirSync(dir)
   .filter(name => existsSync(join(dir, name, 'state-engine.json')))
-  .map(name => [name, readJson(join(dir, name, 'state-engine.json'))])));
+  .map(name => {
+    const file = join(dir, name, 'state-engine.json');
+    let engine;
+    try {
+      engine = readJson(file);
+      lastGoodEngines.set(file, engine);
+    } catch (error) {
+      if (!lastGoodEngines.has(file)) throw error;
+      engine = lastGoodEngines.get(file);
+      stale.push({ file, error: error.message });
+    }
+    const keys = obsoleteKeysOf(engine);
+    if (keys.length) obsolete.push({ file, keys });
+    return [name, withoutObsolete(engine)];
+  })));
 
 // loadState(paths) — everything as it is now: { harness, assignments (the
 // records), transient (the state engine runs), pauses, selfHealing, engines
@@ -133,13 +163,22 @@ export const readEngines = dir => (!existsSync(dir) ? {} : Object.fromEntries(re
 // { <credential kind>: { since, type, resets-at }, … } (ASS-215) — or null, ASS-94), claudeUsage (its
 // claude-usage.json — { email, session: { percent, resets-at }, weekly: { percent, resets-at } | null, as-of } — or
 // null, ASS-47), credentialsHold (its credentials-hold.json — { since, problems } — or null, ASS-395), memoryHold (its
-// memory-hold.json — control's hold on its new VMs for want of memory, the variations held — or null, ASS-404), memoryWait (ASS-420: its memory-wait.json — the variations refused a seat for want of memory for their VMs — or null) }, in folder order, contextWindows (the learned
+// memory-hold.json — control's hold on its new VMs for want of memory, the variations held — or null, ASS-404), memoryWait (ASS-420: its memory-wait.json — the variations refused a seat for want of memory for their VMs — or null),
+// devEnvironmentsErrors (ASS-431: what is wrong with its dev-environments, each naming the field; [] for none,
+// as for a project without one) and devEnvironments (its { mode, workstations }: dev-environments.js; null while
+// it is wrong), workstations (ASS-433: its workstations.json — each workstation's state, connection and last
+// connect error, workstation-connection.js loadWorkstations — or {}) }, in folder order, contextWindows (the learned
 // context-windows.json — { <model>: tokens } — or {}, ASS-190) and diskSpace
 // (disk-space.json — { level, free-bytes, … }, ASS-288 — or null; one caught
-// half-written reads as null, the next tick reading it again).
+// half-written reads as null, the next tick reading it again), and
+// obsoleteEngineKeys (ASS-450: each engine read that declares keys the
+// harness no longer reads, { file, keys }, those keys dropped: readEngines),
+// and staleEngines (ASS-460: each engine that failed to read and stands at its
+// last good copy, { file, error }: readEngines).
 export function loadState(paths) {
   const data = readJson(paths.assignments);
-  const engines = readEngines(paths.engines);
+  const obsolete = [], stale = [];
+  const engines = readEngines(paths.engines, obsolete, stale);
   const projects = readdirSync(paths.projects).toSorted()
     .filter(id => existsSync(join(paths.projects, id, 'project.json')))
     .map(id => {
@@ -164,14 +203,17 @@ export function loadState(paths) {
       let memoryWait = null;
       try { memoryWait = existsSync(join(dir, 'memory-wait.json')) ? readJson(join(dir, 'memory-wait.json')) : null; } catch { /* half-written: the next load reads it */ }
       // The engines it runs on: its own folder's over engines/'s (ASS-276).
-      const seen = { ...engines, ...readEngines(join(dir, 'engines')) };
+      const seen = { ...engines, ...readEngines(join(dir, 'engines'), obsolete, stale) };
       // Its switched-off-steps (ASS-209): each valid entry's step switched off in its own engines; a bad one left on, its errors kept.
       const switchedOff = [].concat(json['switched-off-steps'] ?? []);
       const switchedOffErrors = switchedOff.flatMap(e => switchedOffStepErrors(e, seen));
       const own = switchOff(seen, switchedOff.filter(e => !switchedOffStepErrors(e, seen).length));
       const refinementName = refinementOf(own[engineName]);
+      // Where its tickets run (ASS-431): refused, its errors kept, while its dev-environments is wrong.
+      const devErrors = devEnvironmentsErrors(json);
       return { id, json, engineName, engines: own, switchedOffErrors, engine: own[engineName], refinementName, refinement: own[refinementName], sprintFile, sprint, tickets, backlog, asking: openBlocking(dir, [...tickets, ...backlog]), outside: loadOutside(dir),
-        gcloudRequiresReauthentication: requiresReauthentication(dir, 'gcloud'), glabRequiresReauthentication: requiresReauthentication(dir, 'glab'), rateLimit, claudeUsage, credentialsHold, memoryHold, memoryWait };
+        gcloudRequiresReauthentication: requiresReauthentication(dir, 'gcloud'), glabRequiresReauthentication: requiresReauthentication(dir, 'glab'), rateLimit, claudeUsage, credentialsHold, memoryHold, memoryWait,
+        devEnvironmentsErrors: devErrors, devEnvironments: devErrors.length ? null : devEnvironments(json), workstations: loadWorkstations(dir) };
     });
   return {
     harness: readJson(paths.harness),
@@ -183,6 +225,8 @@ export function loadState(paths) {
     projects,
     contextWindows: existsSync(paths.contextWindows) ? readJson(paths.contextWindows) : {},
     diskSpace: readDiskSpace(paths.diskSpace),
+    obsoleteEngineKeys: obsolete,
+    staleEngines: stale,
   };
 }
 

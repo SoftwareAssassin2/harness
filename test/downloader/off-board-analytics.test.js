@@ -13,7 +13,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { runCycle } from '../../src/downloader/cycle.js';
 import * as offBoard from '../../src/downloader/off-board.js';
-import { performance } from '../../src/analytics/performance.js';
+import { performance, cellLines } from '../../src/analytics/performance.js';
 
 const REPO = join(import.meta.dirname, '..', '..');
 const AGENT = join(REPO, 'agent.sh'), OFF_BOARD = join(REPO, 'off-board.sh');
@@ -138,6 +138,7 @@ test('ASS-413 AC5: the performance screen reads an off-board project as a Jira o
   assert.equal(result.rows.length, 1);
   assert.equal(result.rows[0].member.name, 'Ada Operator');
   assert.deepEqual(result.rows[0].cells.ticketsPerDay.variables[0], ['tickets', 1]);   // HD-2, done in the span, credited to the operator
+  assert.deepEqual(cellLines(result.rows[0].cells.subTasksPerDay), ['0', 'sub-tasks: 0', 'days: 7']);   // ASS-440 AC5: no sub-tasks off-board
 });
 
 test('ASS-413 AC6: a Jira-only project runs no off-board analytics; a failing off-board read is logged once and the cycle goes on', async () => {

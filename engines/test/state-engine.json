@@ -3,7 +3,7 @@
 
         { "id": "test", "sequence": 1, "name": "Test", "description": "Testing the solution locally against the acceptance criteria",
             "paired-ticket-system-status": "In Progress",
-            "action": { "type": "prompt", "prompt": "test", "agent-count": 1, "run-in-dev-container": true },
+            "action": { "type": "prompt", "prompt": "test", "agent-count": 1, "run-in-dev-container": true, "model": "claude-opus-5-5" },
             "exit-events": [
                 { "condition": { "all": [ { "turn-complete": true }, { "structured-output": { "is-approved": true } } ] }, "move-to-state": "take-screenshots" },
                 { "condition": { "all": [ { "turn-complete": true }, { "structured-output": { "is-approved": false } } ] }, "move-to-state": "done" }
@@ -11,7 +11,7 @@
         },
         { "id": "take-screenshots", "sequence": 2, "name": "Take Screenshots", "description": "Capturing screenshots of the changes working",
             "paired-ticket-system-status": "In Progress",
-            "action": { "type": "prompt", "prompt": "take-screenshots", "agent-count": 1, "run-in-dev-container": true },
+            "action": { "type": "prompt", "prompt": "take-screenshots", "agent-count": 1, "run-in-dev-container": true, "model": "claude-opus-5-5" },
             "exit-events": [
                 { "condition": { "turn-complete": true }, "move-to-state": "done" }
             ]

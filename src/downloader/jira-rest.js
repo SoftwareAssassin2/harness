@@ -1,5 +1,6 @@
 // The Jira REST reader for analytics (ASS-406): every ticket of a board's Jira
-// project, whoever holds it, with its full changelog, and the board's sprints.
+// project, whoever holds it, sub-tasks included (ASS-440), with its full
+// changelog, and the board's sprints.
 // acli (jira.js) returns only the signed-in user's tickets and never a
 // ticket's history, so these read Jira's REST API directly, with basic auth
 // from the jira work source's api-email and api-token. `fetchFn` is Node's
@@ -17,7 +18,6 @@
 // A response that is not ok throws `HTTP <status> …` naming the path (never
 // the credentials); a network failure throws as fetch does.
 
-const NO_SUBTASKS = 'issuetype not in subTaskIssueTypes()';
 const DEFAULT_STORY_POINTS_FIELD = 'customfield_10016';
 const DEFAULT_SPRINT_FIELD = 'customfield_10020';
 const PAGE = 100, SPRINT_PAGE = 50;
@@ -33,19 +33,19 @@ async function get({ site, email, token }, path, params, fetchFn) {
 }
 
 // fetchAnalyticsTickets({ site, projectKey, email, token, storyPointsField?,
-// sprintField?, since?, now? }, fetchFn) → the project's tickets (sub-tasks
-// left out), each mapped by analyticsTicket. With since (an ISO time) only
-// those updated at or after it: JQL `updated >= "-<n>m"`, n the whole minutes
-// from since to now (Date.now() unless given), rounded up — a time relative to
-// Jira's own clock, so the Jira user's time zone, which an absolute JQL date
-// is read in, cannot shift it. Without since, or an unreadable one, all.
+// sprintField?, since?, now? }, fetchFn) → the project's tickets, sub-tasks
+// included (ASS-440; ASS-406 left them out), each mapped by analyticsTicket.
+// With since (an ISO time) only those updated at or after it: JQL `updated >=
+// "-<n>m"`, n the whole minutes from since to now (Date.now() unless given),
+// rounded up — a time relative to Jira's own clock, so the Jira user's time
+// zone, which an absolute JQL date is read in, cannot shift it. Without since, or an unreadable one, all.
 export async function fetchAnalyticsTickets({ site, projectKey, email, token, storyPointsField, sprintField, since, now = Date.now() }, fetchFn) {
   const auth = { site, email, token };
   const points = storyPointsField || DEFAULT_STORY_POINTS_FIELD, sprints = sprintField || DEFAULT_SPRINT_FIELD;
   const from = since ? Date.parse(since) : NaN;
   const updated = Number.isNaN(from) ? '' : ` AND updated >= "-${Math.max(1, Math.ceil((now - from) / 60_000))}m"`;
-  const jql = `project = "${projectKey}" AND ${NO_SUBTASKS}${updated} ORDER BY created ASC`;
-  const fields = ['summary', 'status', 'assignee', 'issuetype', 'created', points, sprints].join(',');
+  const jql = `project = "${projectKey}"${updated} ORDER BY created ASC`;
+  const fields = ['summary', 'status', 'assignee', 'issuetype', 'parent', 'created', points, sprints].join(',');
   const issues = [];
   let nextPageToken;
   for (;;) {
@@ -93,8 +93,12 @@ const done = (page, values, read) => page.isLast === true || !values.length || (
 const byStart = (a, b) => (a.start === null) - (b.start === null) || (a.start ?? '').localeCompare(b.start ?? '') || a.id - b.id;
 
 // analyticsTicket(issue, storyPointsField, sprintField) → { key, title, type,
-// created, points, assignee, status, sprints, status-changes,
-// assignee-changes }: a person is { id (accountId), name (displayName) } or
+// created, points, assignee, status, status-category, [subtask, parent,]
+// sprints, status-changes, assignee-changes }: status-category is the status's
+// Jira category key (new, indeterminate or done; null when Jira gives none); a
+// sub-task (its issue type's subtask flag) has subtask: true and parent, its
+// parent's key (ASS-440) — a ticket has neither (its parent field, an epic's,
+// is not kept); a person is { id (accountId), name (displayName) } or
 // null; times are ISO (UTC); the changes come from the changelog's status and
 // assignee items, in time order (ties in the changelog's own order).
 export function analyticsTicket(issue, storyPointsField = DEFAULT_STORY_POINTS_FIELD, sprintField = DEFAULT_SPRINT_FIELD) {
@@ -111,6 +115,8 @@ export function analyticsTicket(issue, storyPointsField = DEFAULT_STORY_POINTS_F
     points: typeof f[storyPointsField] === 'number' ? f[storyPointsField] : null,
     assignee: person(f.assignee),
     status: f.status?.name ?? null,
+    'status-category': f.status?.statusCategory?.key ?? null,
+    ...(f.issuetype?.subtask === true ? { subtask: true, parent: f.parent?.key ?? null } : {}),
     sprints: (Array.isArray(f[sprintField]) ? f[sprintField] : []).map(s => (typeof s === 'object' && s !== null ? s.id : s)).filter(id => id !== undefined && id !== null),
     'status-changes': changes.filter(c => is(c.item, 'status')).map(c => ({ at: c.at, from: field(c.item, 'fromString'), to: field(c.item, 'toString'), by: c.by })),
     'assignee-changes': changes.filter(c => is(c.item, 'assignee')).map(c => ({ at: c.at, from: side(c.item, 'from'), to: side(c.item, 'to') })),

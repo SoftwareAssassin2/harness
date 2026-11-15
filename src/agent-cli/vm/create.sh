@@ -45,11 +45,42 @@ set -euo pipefail
 # All of it under the project's VM lock (vm.bash lock_vms), which the
 # vm:start it runs shares. Prints { name, ip, created } — created whether
 # this run cloned it. Fails (1) naming why otherwise.
+#
+# ASS-435: a project whose dev-environments mode is workstation or
+# vm+workstation (dev-environments.bash) places a variation that has no
+# machine yet on a free GCP workstation of its pool first
+# (workstation-variation.bash wsv_place: claimed in the live data, connected
+# and set up when it is not), and a variation that records one there stays
+# on it (wsv_claim). There, instead of the clone, the variation's own folder,
+# ~/harness/<KEY>-<variation>, is made and readied as a VM is (wsv_create:
+# repositories cloned and checked out once, the ticket's read-only copy,
+# vm:start's credentials and forwarder token; agent.sh is the workstation's
+# setup's), recorded through ticket:set-vm with kind workstation, and it
+# prints { name: <workstation id>, machine, ip: null, created }. With none
+# free, vm+workstation falls back to a VM, as below; workstation mode fails,
+# naming why each is not free (control keeps a variation from reaching this
+# while none is: src/control/workstation-machines.js). A variation that
+# records a VM stays in its VM, whatever the mode.
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../vm.bash"
 
 [[ $# -eq 3 ]] || { echo "usage: vm:create <project> <ticket-key> <variation>" >&2; exit 1; }
 project="$1" key="$(tr '[:lower:]' '[:upper:]' <<< "$2")" variation="$3"
 variation_exists vm:create "$project" "$key" "$variation"
+
+recorded="$(recorded_vm vm:create "$project" "$key" "$variation" 2>/dev/null || true)"
+mode="$(dev_environments_mode vm:create "$project")"
+if [[ "$recorded" == workstation:* ]]; then
+  wsm_parts "${recorded#workstation:}" || exit 1
+  rc=0; wsv_claim "$project" "$key" "$variation" "$wsm_id" || rc=$?
+  [[ $rc -eq 0 ]] || { echo "vm:create: $key $variation stays on the workstation it started on, and $wsv_why" >&2; exit 1; }
+  wsv_create "$project" "$key" "$variation" "$recorded"
+  exit
+elif [[ -z "$recorded" && "$mode" != vm ]]; then
+  rc=0; wsv_place "$project" "$key" "$variation" || rc=$?
+  if [[ $rc -eq 0 ]]; then wsv_create "$project" "$key" "$variation" "$wsv_machine"; exit; fi
+  [[ "$mode" != workstation ]] || { echo "vm:create: $project runs its tickets on workstations alone, and $wsv_why" >&2; exit 1; }
+  echo "vm:create: $wsv_why; $key $variation gets a VM" >&2
+fi
 vm="$(vm_name "$key" "$variation")" golden="golden-$project"
 mapfile -t repos < <(jq -r '.repositories[]?.url | (sub("\\.git$"; "") | split("/") | last), .' "$projects/$project/project.json")   # name, url, …
 
@@ -58,7 +89,7 @@ lock_vms vm:create "$project"   # to the end: two vm:creates of one VM (Setup's,
 # clone [<why it is recreated>] — $vm cloned from $golden, as above; the image's label copied into it, and linked to the variation at once.
 clone() {
   local why
-  limactl list "$golden" --format '{{.Status}}' >/dev/null 2>&1 || { echo "vm:create: no golden image $golden: build it with vm:build-golden $project" >&2; exit 1; }
+  lima_list "$golden" --format '{{.Status}}' >/dev/null 2>&1 || { echo "vm:create: no golden image $golden: build it with vm:build-golden $project" >&2; exit 1; }
   room=0; make_room vm:create "$project" "$(golden_bytes "$project")" "$vm" || room=$?
   if [[ $room -eq 3 ]]; then jq -nc --arg s "$room_short" --arg l "$room_long" '{ "ai-feedback-short": $s, "ai-feedback-long": $l }'; exit 3; fi
   [[ $room -eq 0 ]] || exit 1
@@ -75,19 +106,19 @@ clone() {
   "$agent" ticket:set-vm "$project" "$key" "$variation" "$vm" "" $recreated >/dev/null
   created=true
 }
-dir_of() { limactl list "$1" --format '{{.Dir}}'; }
+dir_of() { lima_list "$1" --format '{{.Dir}}'; }
 # fixed_since — the fix of $golden's last build marked one (vm:build-golden --fix), "<fixed-at> (<fix>)", when $vm was cloned from an older image.
 fixed_since() {
   jq -r --slurpfile vm <(cat "$(dir_of "$vm")/golden-image.json" 2>/dev/null || true) \
     'select(.["fixed-at"] and .hash != ($vm[0].hash // null) and .["fixed-at"] > ($vm[0]["built-at"] // "")) | "\(.["fixed-at"]) (\(.fix))"' \
     "$(dir_of "$golden")/golden-image.json" 2>/dev/null || true
 }
-if ! limactl list "$vm" --format '{{.Status}}' >/dev/null 2>&1; then clone; else fixed="$(fixed_since)"; fi
+if ! machine_status "$vm" >/dev/null 2>&1; then clone; else fixed="$(fixed_since)"; fi
 
 ip="$(VM_LOCK_HELD=1 "$agent" vm:start "$project" "$key" "$variation" | jq -r .ip)"
 
 if [[ -n "${fixed-}" ]]; then
-  if limactl shell --workdir / "$vm" -- bash -c 'test -e "${HARNESS_VM_ROOT-}$1"' - "$setup_marker"; then
+  if machine_run --workdir / "$vm" -- bash -c 'test -e "${HARNESS_VM_ROOT-}$1"' - "$setup_marker"; then
     echo "vm:create: $vm was cloned from an older $golden than its fix of $fixed; it is kept, as its Setup completed and the ticket's work may be in it (to take the fix, limactl delete -f $vm, then vm:create)" >&2
   else
     limactl delete -f "$vm" >/dev/null 2>&1 || { echo "vm:create: could not delete $vm" >&2; exit 1; }
@@ -96,7 +127,7 @@ if [[ -n "${fixed-}" ]]; then
   fi
 fi
 
-limactl shell --workdir / "$vm" -- bash -s "$vm" "${repos[@]}" <<'EOF' || { echo "vm:create: $vm is not usable" >&2; exit 1; }
+machine_run --workdir / "$vm" -- bash -s "$vm" "${repos[@]}" <<'EOF' || { echo "vm:create: $vm is not usable" >&2; exit 1; }
 set -euo pipefail
 R="${HARNESS_VM_ROOT-}"   # empty in a VM; tests run this against a folder standing in for its root
 vm="$1"; shift

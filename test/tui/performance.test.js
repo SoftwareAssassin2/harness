@@ -47,6 +47,8 @@ const TICKETS = { tickets: Object.fromEntries([
   ticket('PROJ-3', GRACE, [['2026-11-04', 'Working'], ['2026-11-06', 'Checking'], ['2026-11-07', 'Working'], ['2026-11-08', 'Checking'], ['2026-11-10', 'Finished']], { points: 5 }),
   ticket('PROJ-4', GRACE, [['2026-11-11', 'Working']]),
   ticket('PROJ-5', ADA, [['2026-10-21', 'Working'], ['2026-10-23', 'Checking'], ['2026-10-26', 'Finished']], { sprints: [12] }),
+  // A sub-task of PROJ-1 (ASS-440), its own workflow's statuses unpaired: done by Jira's category.
+  { ...ticket('PROJ-1a', ADA, [['2026-11-04', 'Doing'], ['2026-11-06', 'Closed']]), type: 'Sub-task', subtask: true, parent: 'PROJ-1', 'status-category': 'done' },
 ].map(t => [t.key, t])) };
 const mr = (repo, iid, username, day) => [`${repo}!${iid}`, { repo, iid, title: `PROJ-${iid}`, author: { username, name: username === 'bob' ? 'Bob' : username }, 'merged-at': at(day) }];
 const MRS = { 'merge-requests': Object.fromEntries([
@@ -91,14 +93,16 @@ test('a boxed grid: the columns in order, each cell its value over its labelled 
   const out = lines(onScreen());
   const top = out.findIndex(l => l.startsWith('┌'));
   assert.deepEqual(out[top + 1].split('│').slice(1, -1).map(h => h.trim()),
-    ['Developer', 'Tickets/day', 'Pts/day', 'MRs/day', 'First pass', 'Dev time', 'Test time', 'In progress now', 'Main layer']);
+    ['Developer', 'Tickets/day', 'Sub-tasks/day', 'Pts/day', 'MRs/day', 'First pass', 'Dev time', 'Test time', 'In progress now', 'Main layer']);
   const ada = out.findIndex(l => l.includes('Ada'));
   const cells = i => out[ada + i].split('│').slice(1, -1).map(c => c.trim());
-  assert.deepEqual(cells(0).slice(0, 4), ['Ada', '0.18', '0.45', '0.18']);   // 2 tickets, 5 points, 2 MRs over 11 days
-  assert.deepEqual(cells(1).slice(1, 4), ['tickets: 2', 'points: 5', 'MRs: 2']);
-  assert.deepEqual(cells(2).slice(1, 4), ['days: 11', 'days: 11', 'days: 11']);
-  assert.equal(cells(0)[8], 'api 50% (1)');
-  assert.equal(cells(1)[8], 'app 50% (1)');   // Main layer's further repositories under its first
+  assert.deepEqual(cells(0).slice(0, 5), ['Ada', '0.18', '0.09', '0.45', '0.18']);   // 2 tickets, 1 sub-task, 5 points, 2 MRs over 11 days
+  assert.deepEqual(cells(1).slice(1, 5), ['tickets: 2', 'sub-tasks: 1', 'points: 5', 'MRs: 2']);
+  assert.deepEqual(cells(2).slice(1, 5), ['days: 11', 'days: 11', 'days: 11', 'days: 11']);
+  assert.equal(cells(0)[9], 'api 50% (1)');
+  assert.equal(cells(1)[9], 'app 50% (1)');   // Main layer's further repositories under its first
+  const grace = out.findIndex(l => l.includes('Grace'));
+  assert.deepEqual(out.slice(grace, grace + 3).map(l => l.split('│')[3].trim()), ['0', 'sub-tasks: 0', 'days: 11']);
   assert.ok(out.every(l => visible(l) <= SIZE.columns));
 });
 
@@ -123,7 +127,7 @@ test('the operator\'s row: ▶ before the name, reverse video, double rules abov
 });
 
 test('a double rule between rows when the operator\'s row is in the middle, single ones elsewhere', () => {
-  const cells = Object.fromEntries(['ticketsPerDay', 'pointsPerDay', 'mrsPerDay', 'firstPass', 'devTime', 'testTime', 'inProgressNow', 'mainLayer'].map(k => [k, { value: '1', more: [], variables: [] }]));
+  const cells = Object.fromEntries(['ticketsPerDay', 'subTasksPerDay', 'pointsPerDay', 'mrsPerDay', 'firstPass', 'devTime', 'testTime', 'inProgressNow', 'mainLayer'].map(k => [k, { value: '1', more: [], variables: [] }]));
   const rows = ['Ada', 'Grace', 'Lin'].map((name, i) => ({ member: { id: `x${i}`, name }, cells }));
   const { head, body, foot } = screen.grid(rows, 'x1');
   assert.deepEqual(body.map(l => l[0]), ['├', '│', '╞', '│', '╞', '│']);

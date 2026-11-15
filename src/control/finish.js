@@ -4,8 +4,9 @@
 // else happens in the tick.
 import { stepOf, engineSteps, nextState } from './engine.js';
 import { enginesFor } from './state.js';
-import { ticketFacts } from './facts.js';
+import { ticketFacts, sandboxRefusedFeedback } from './facts.js';
 import { runsInVm } from './vm.js';
+import { machineOf } from './machine.js';
 import { found, contextOf, levelChanges, moveTicket, moveRun, isPaused, releaseWorkspace, firstStepId } from './moves.js';
 import { failed, recordKey, held, counted } from './backoff.js';
 import { anotherRepository, visitOf } from './repositories.js';
@@ -265,17 +266,29 @@ async function finishOne(ctx, state, live) {
     return;
   }
   const place = placeOf(ctx, state, pen);
-  const facts = { turnComplete: true, structuredOutput: penLive.result.structured_output, ...(place?.variation ? ticketFacts(ctx, place.project, place.ticket, place.variation, penLive.startedAt.getTime(), runsInVm(place.step) ? place.variation.vm?.name : undefined) : {}) };
+  const facts = { turnComplete: true, structuredOutput: penLive.result.structured_output, ...(place?.variation ? ticketFacts(ctx, place.project, place.ticket, place.variation, penLive.startedAt.getTime(), runsInVm(place.step) ? machineOf(place.variation) : undefined) : {}) };
   const next = place?.step ? nextState(place.step, place.engine, facts, place.changes) : null;
   for (const l of lives) await endAgent(ctx, l);
   if (!place) return;
+  // ASS-428 AC4: an agent.sh write the sandbox refused, named in the output, is logged and becomes the variation's
+  // health — set after any move, which clears it — so the operator sees "sandbox refused <command>".
+  const refused = sandboxRefusedFeedback(facts.structuredOutput);
+  const reportRefused = async () => {
+    if (!refused) return;
+    ctx.log(PHASE, `${pen['agent-name']}: ${pen.state}: ${refused.short}`);
+    if (place.ticket && place.variation) {
+      try { await ctx.cli(['ticket:set-ai-feedback', place.project.id, place.ticket.key, place.variation.name, refused.short, refused.long]); }
+      catch (error) { ctx.log('error', `${PHASE} ${place.ticket.key} ${place.variation.name}: ticket:set-ai-feedback failed: ${error.message}`); }
+    }
+  };
   // A step in each repository (ASS-119) whose run passed, with another repository's run to come: it stays, and that run is dispatched.
   const following = next && anotherRepository(ctx.memory, place.step, place.variation, visitOf(place), penLive.repository, next.exit);
-  if (following) { ctx.log(PHASE, `${pen['agent-name']}: ${pen.state} in ${penLive.repository} passed; ${following} next`); return; }
+  if (following) { ctx.log(PHASE, `${pen['agent-name']}: ${pen.state} in ${penLive.repository} passed; ${following} next`); return reportRefused(); }
   // No exit matching is no failure: the work may just need more turns, so the step runs again at once.
-  if (next?.to == null) { ctx.log(PHASE, `${pen['agent-name']}: no exit of ${pen.state} matched${next ? ' (target unresolved)' : ''}; the step runs again`); return; }
+  if (next?.to == null) { ctx.log(PHASE, `${pen['agent-name']}: no exit of ${pen.state} matched${next ? ' (target unresolved)' : ''}; the step runs again`); return reportRefused(); }
   // Stamped with when the groom started, so what arrived during it makes the ticket due again (ASS-213).
   if (place.kind === 'ticket' && place.backlog && place.step?.id === firstStepId(place.engine)) await ctx.cli(['ticket:refined', place.project.id, place.ticket.key, penLive.startedAt.toISOString().replace(/\.\d+Z$/, 'Z')]);
   if (place.kind === 'ticket') await moveTicket(ctx, PHASE, place.project, place.ticket, place.variation, next.to, next.reason === 'max-visits' ? 'max-visits' : undefined);
   else await moveRun(ctx, PHASE, place.run, next.to, facts.structuredOutput, next.reason === 'max-visits' ? 'max-visits' : undefined);
+  await reportRefused();
 }

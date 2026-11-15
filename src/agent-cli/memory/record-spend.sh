@@ -22,7 +22,7 @@ source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../json-file.bash"
 # priced from harness.json's model-prices (USD per million; cost-usd null for
 # a model with none, named in unpriced); a model's spend within one UTC hour (ASS-294)
 # is one record, its timestamp the latest read's — so each read appends or
-# grows one. Counted against the project's API caps and its spend tiles,
+# grows one. Counted against the project's API caps and its Day and Sprint Spend (the TUI models box, ASS-430),
 # never a ticket's (control/spend.js spendRecords).
 # - The first read is the baseline: nothing is recorded for what Hindsight
 #   spent before the harness counted it.

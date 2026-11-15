@@ -37,9 +37,10 @@
                     "dependency",
                     "rate-limit",
                     "credentials",
-                    "image"
+                    "image",
+                    "vm"
                 ],
-                "description": "Where the fix is made: harness (a fix ticket in the harness project's backlog), project (the cause is in the project's own code: checked against the latest master next, a bug raised in the project's own ticket system only when it fails there; the harness's backlog on the harness project), environment (where the work runs: repaired in place, else by the operator); dependency (ASS-390: no fault — it only waits for one of the ticket's own merge requests, one another depends on in another repository, to merge: back to Build's Await Sequential Merge); rate-limit (ASS-391: no fault of the ticket's — Claude usage or rate limits stopped its agents: Await Rate Limit resumes it on the API key fallback at once, or once the limit resets); credentials (ASS-395 AC5: a missing or failing credential — keychain item, token, login: a fresh credentials check; the project held, the ticket waits for the operator's fix there; else Blocked for Human with this reasoning); image (ASS-392: the project's golden image, the ticket's VM cloned from it, or the local image registry: Repair Image on the Mac, one golden rebuild at a time)"
+                "description": "Where the fix is made: harness (a fix ticket in the harness project's backlog), project (the cause is in the project's own code: checked against the latest master next, a bug raised in the project's own ticket system only when it fails there; the harness's backlog on the harness project), environment (where the work runs: repaired in place, else by the operator); dependency (ASS-390: no fault — it only waits for one of the ticket's own merge requests, one another depends on in another repository, to merge: back to Build's Await Sequential Merge); rate-limit (ASS-391: no fault of the ticket's — Claude usage or rate limits stopped its agents: Await Rate Limit resumes it on the API key fallback at once, or once the limit resets); credentials (ASS-395 AC5: a missing or failing credential — keychain item, token, login: a fresh credentials check; the project held, the ticket waits for the operator's fix there; else Blocked for Human with this reasoning); image (ASS-392: the project's golden image, the ticket's VM cloned from it, or the local image registry: Repair Image on the Mac, one golden rebuild at a time — ASS-427: only what cannot be fixed in the ticket's VM, the Lima template, kernel settings, the image's build); vm (ASS-427: a problem in the ticket's VM fixable in place there with a source every VM shares — a tool or package the image lacks, a cache or pulled image, a harness-written VM file missing an entry because its non-secret declaration lacks it, the credential valid: Repair the VM fixes it there at once and in its source for later VMs, never waiting for a rebuild)"
             },
             "reasoning": {
                 "type": "string",
@@ -47,7 +48,7 @@
             },
             "own-branch": {
                 "type": "boolean",
-                "description": "Project only (ASS-384): true when the cause is in what the ticket's own branch adds or changes (Troubleshoot's failing-file), not in master's code; the harness checks master and the branch, then sends the ticket back to Generate Solution; left out otherwise"
+                "description": "Project only (ASS-384): true when the cause is in what the ticket's own branch adds or changes (Troubleshoot's failing-file), not in master's code; its merged merge requests count too (ASS-423); the harness checks master and the branch, then sends the ticket back to Generate Solution; left out otherwise"
             },
             "human-action": {
                 "type": "string",

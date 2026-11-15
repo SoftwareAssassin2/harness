@@ -40,6 +40,9 @@ function entryRows(halves, width) {
   });
 }
 const color = code => text => `\x1b[${code}m${text}\x1b[0m`;
+// A merge request's build status colors (the sprint grid's MR column's, ASS-437 moved them to the Merge requests
+// tab): Merged and Closed gray, Running gold, Failed red, Passed green; any other uncolored.
+const BUILD_COLORS = { Merged: color('90'), Closed: color('90'), Running: color('38;2;255;215;0'), Failed: color('31'), Passed: color('32') };
 // A check's result: green Passed, red Failed, gray anything else.
 const result = status => ({ Passed: color('32'), Failed: color('31') }[status] ?? color('90'))(status ?? 'Not started');
 
@@ -63,6 +66,14 @@ export function testCounts(tests) {
 export function workedByHand(t) {
   const m = t?.['worked-manually'];
   return m ? `worked by hand by ${m.by} since ${String(m.since).replace('T', ' ').slice(0, 16)} UTC${m.note ? `: ${m.note}` : ''}` : null;
+}
+
+// vmHeld(v) — who keeps variation `v`'s VM running by hand since when, and
+// the note (ASS-427 AC7: its vm-hold, vm:hold on): "<vm> kept running by <by>
+// since <yyyy-mm-dd hh:mm> UTC[: <note>]"; null when it is not held.
+export function vmHeld(v) {
+  const h = v?.['vm-hold'];
+  return h ? `${v.vm?.name ?? 'its VM'} kept running by ${h.by} since ${String(h.since).replace('T', ' ').slice(0, 16)} UTC${h.note ? `: ${h.note}` : ''}` : null;
 }
 
 // reassignedTo(t) — why ticket `t` is held when ticket:sync found it
@@ -154,8 +165,9 @@ export function dependencyLine({ key, where, project, status, assignee, done }) 
 }
 
 // ticketLines(t, { status, stepName, agents, columns }) — the screen's lines
-// in two sections for the caller to scroll on its own, { details, history,
-// starts } (ASS-101): every field of the ticket, its state history, and the
+// in sections for the caller to scroll on its own, { details, merges, history,
+// starts } (ASS-101): every field of the ticket, its branch, worktree and merge
+// requests (ASS-437: the Merge requests tab), its state history, and the
 // row each history entry starts on (ASS-145). `t` is a
 // sprint ticket with its icon, shownKey and the variation on show; `status`
 // its Status cell text; stepName(id) a step's display name; prompted(id)
@@ -217,6 +229,7 @@ export function ticketLines(t, { status, stepName, prompted, agents, columns, st
     // Paused: why, when control pre-empted it for a fast-tracked ticket (ASS-83).
     ...(v['is-paused'] === true ? field('Paused', v['paused-for-fast-track'] ? `to free a seat for fast-tracked ${v['paused-for-fast-track']}` : 'yes') : []),
     ...(workedByHand(t) ? field('By hand', workedByHand(t)) : []),
+    ...(vmHeld(v) ? field('VM held', vmHeld(v)) : []),   // ASS-427 AC7: control keeps its VM running for the operator
     // Held because it was reassigned away from the operator (ASS-345), whoever it went to and when that was seen.
     ...(reassignedText(t) ? field('Held', reassignedText(t)) : []),
     ...field('Status in ticketing system', t['ticket-system-status']),
@@ -255,11 +268,21 @@ export function ticketLines(t, { status, stepName, prompted, agents, columns, st
     }).flat()),
     '',
     ...field('QA', t.qa?.status),
-    // A planned one (ASS-80) has no key, link or build status yet: its id, repository, branch, contents and what it waits on.
-    // One closed without being opened (ASS-81) likewise, its status then "not opened".
-    ...section('Merge requests', mrs.map(m => (isUnopened(m)
-      ? `  MR ${m.id}  ${mrStatus(m)} (${isPlanned(m) ? 'planned' : 'not opened'})  ${String(m.repository ?? NONE).replace(/\.git$/, '').split('/').pop()}  ${m.branch ?? NONE}  ${m.contents ?? NONE}${m['depends-on']?.length ? `  after MR ${m['depends-on'].join(', ')}` : ''}`
-      : `  ${link(m.key, m.url)}  ${mrStatus(m)}  ${link(m['build-status'] ?? NONE, m['build-url'] ?? m.url)}`))),
+  ];
+  // The Merge requests tab (ASS-437): the variation's branch and worktree, linked as the Details tab links them, then
+  // its merge requests — each opened one's key, status and build status, linked, the build status colored as the
+  // sprint grid's MR column colored it (BUILD_COLORS). A planned one (ASS-80) has no key,
+  // link or build status yet: its id, status, repository and branch, its contents beneath, wrapped to be read in
+  // full, then what it waits on. One closed without being opened (ASS-81) likewise, its status then "not opened".
+  const indent = '      ';
+  const merges = [
+    ...field('Branch', branch && [branchUrl ? link(branch, branchUrl) : branch]),
+    ...field('Worktree', worktree && [folder ? link(worktree, pathToFileURL(folder).href) : worktree]),
+    ...section('Merge requests', mrs.flatMap(m => (isUnopened(m)
+      ? [`  MR ${m.id}  ${mrStatus(m)} (${isPlanned(m) ? 'planned' : 'not opened'})  ${String(m.repository ?? NONE).replace(/\.git$/, '').split('/').pop()}  ${m.branch ?? NONE}`,
+        ...wrap(m.contents ?? NONE, Math.max(10, columns - indent.length)).map(line => indent + line),
+        ...(m['depends-on']?.length ? [`${indent}after MR ${m['depends-on'].join(', ')}`] : [])]
+      : [`  ${link(m.key, m.url)}  ${mrStatus(m)}  ${(BUILD_COLORS[m['build-status']] ?? String)(link(m['build-status'] ?? NONE, m['build-url'] ?? m.url))}`]))),
   ];
   // Each entry as tall as one with a bar, its text on the bar's line (and the rows it wraps onto, ASS-64), a ↓ under the bar between them.
   // No heading of its own: the ticket screen gives the section its header (ASS-102).
@@ -313,7 +336,7 @@ export function ticketLines(t, { status, stepName, prompted, agents, columns, st
     });
   });
   if (!history.length) history.push('  none');
-  return { details, history, starts };
+  return { details, merges, history, starts };
 }
 
 // refinementHistory(entry, name, engines) — what ticketLines takes as
@@ -531,6 +554,217 @@ export function gateLines({ title, choices, selected, focused, recorded, held, p
   ];
 }
 
+// ── The Blocked tab (ASS-439) ──────────────────────────────────────────────
+
+// The fix attempts Blocked makes before it hands a ticket to the operator:
+// ticket:fix-attempts sends it to Blocked for Human at 3 (src/agent-cli/ticket/fix-attempts.sh).
+const FIX_BUDGET = 3;
+
+// blockedSteps(steps) — an engine's blocked steps (ASS-439 AC1), told by
+// their area and id, never their names: its quarantine steps that are the
+// blocked state (is-blocked-state, Blocked for Human) or named
+// blocked-for-human, those named blocked, and those the blocked state's exits
+// send a ticket to (Have AI Try Again's Blocked). Self Healing and
+// Requirements Changed, quarantine too, are not among them.
+export function blockedSteps(steps) {
+  const quarantine = (steps ?? []).filter(s => s.area === 'quarantine');
+  const human = quarantine.filter(s => s['is-blocked-state'] === true || s.id === 'blocked-for-human');
+  const sent = new Set(human.flatMap(s => (s['exit-events'] ?? []).map(e => e['move-to-state']).filter(Boolean)));
+  return quarantine.filter(s => human.includes(s) || s.id === 'blocked' || sent.has(s.id));
+}
+
+// What Blocked's sub-engine (grouped-blocked) is doing at each of its steps,
+// for the Blocked tab's "Now" line; a step not here is named from its engine.
+const fixKey = b => b?.['waits-on']?.ticket ?? b?.key ?? null;
+const mrName = m => (m && typeof m === 'object' ? m.key ?? m.url ?? m.id : m) ?? null;
+const BLOCKED_NOW = {
+  'count-attempts': () => 'Counting its fix attempts',
+  'check-first': () => 'Checking the failure again',
+  'find-where': () => 'Finding where to troubleshoot',
+  troubleshoot: () => 'Troubleshooting',
+  'troubleshoot-on-host': () => 'Troubleshooting on the host',
+  classify: () => 'Classifying',
+  'check-on-master': () => 'Checking on the latest master',
+  'own-branch-or-obstacle': () => 'Checking for a fix in its own branch',
+  'own-branch-or-human': () => 'Checking for a fix in its own branch',
+  'plan-obstacle-fix': () => 'Planning the obstacle fix',
+  'find-where-to-repair-project': () => 'Finding where to repair the project',
+  'repair-project': () => 'Repairing the project',
+  'repair-project-on-host': () => 'Repairing the project on the host',
+  'wait-on-fix-merge-request': b => `Waiting on its fix merge request${mrName(b['fix-merge-request']) ? ` ${mrName(b['fix-merge-request'])}` : ''}`,
+  'await-fix-merge-request': b => `Waiting on its fix merge request${mrName(b['fix-merge-request']) ? ` ${mrName(b['fix-merge-request'])}` : ''}`,
+  'dependency-wait': b => `Waiting on dependency merge request${mrName(b.dependency ?? b['dependency-merge-request']) ? ` ${mrName(b.dependency ?? b['dependency-merge-request'])}` : ''}`,
+  'add-repository': () => 'Adding the missing repository',
+  'repair-environment': () => 'Repairing the environment',
+  'repair-environment-on-host': () => 'Repairing the environment on the host',
+  'create-fix-ticket': () => 'Creating the fix ticket',
+  'fast-track-fix': b => `Fast-tracking fix${fixKey(b) ? ` ${fixKey(b)}` : ''}`,
+  'wait-on': b => `Waiting on fix${fixKey(b) ? ` ${fixKey(b)}` : ''}`,
+  'await-fix': b => `Waiting on fix${fixKey(b) ? ` ${fixKey(b)}` : ''}`,
+  'resume-step': () => 'Finding where to resume',
+  'await-rate-limit': () => 'Waiting out the rate limit',
+  'check-credentials': () => 'Checking the credentials',
+  'credentials-status': () => 'Reading the credentials hold',
+  'credentials-unseen': () => 'Explaining the unseen credential',
+  'repair-vm': () => 'Repairing the VM and its source',   // ASS-427
+  'rebuild-source': () => 'Rebuilding the VM\'s source in the background',   // ASS-427
+  'await-golden-build': () => 'Waiting for the golden image build',
+  'repair-image': () => 'Repairing the image',
+  'verify-image': () => 'Verifying the repaired image',
+  done: (b, back) => `Done: going back to ${back ?? 'the step it blocked at'}`,
+  retry: () => 'Going round again: its fix closed unmerged',
+  'blocked-for-human': () => 'Handing it to you',
+};
+
+// blockedOf(t, steps, { engines, runs, hold, project }) — what the Blocked tab
+// explains (ASS-439 AC3), or null when sprint ticket `t`'s variation is at
+// none of blockedSteps: { step, human — at Blocked for Human (a human step)
+// rather than Blocked, back — the step it goes back to (returnTo, by its
+// history) and backName, since — when it entered the blocked steps this stay,
+// block — the current block: at Blocked for Human the last kept Blocked run
+// (blocks) when it was kept this stay, at Blocked its running run's output so
+// far (`runs`, transient-state-engines), earlier — the variation's other kept
+// runs, newest first, now — at Blocked its sub-engine's step (harness-status
+// sub-status) as words (BLOCKED_NOW), hold — the project's credentials hold
+// (credentials-hold.json, ASS-395), attempts and budget }.
+export function blockedOf(t, steps, { engines = {}, runs = [], hold = null, project } = {}) {
+  const v = t.variation ?? {};
+  const family = blockedSteps(steps);
+  const step = family.find(s => s.id === stateOf(v));
+  if (!step) return null;
+  const ids = new Set(family.map(s => s.id));
+  const human = step.action?.type === 'human';
+  const changes = levelChanges(v);
+  const since = changes.findLast(c => ids.has(c['to-state']) && !ids.has(c['from-state']))?.timestamp ?? null;
+  const back = returnTo(step.id, changes, steps);
+  const backName = back ? steps.find(s => s.id === back)?.name ?? back : null;
+  const kept = (v.blocks ?? []).filter(b => b && typeof b === 'object');
+  const thisStay = b => !since || !b?.timestamp || Date.parse(b.timestamp) >= Date.parse(since);
+  let block = null, earlier = kept;
+  if (human) {
+    if (kept.length && thisStay(kept.at(-1))) [block, earlier] = [kept.at(-1), kept.slice(0, -1)];
+  } else {
+    const run = runs.find(r => r.parent?.['work-item'] === t.key && r.parent?.variation === v.name && r.parent?.state === step.id && r.parent?.['transient-state-engine'] == null
+      && (project == null || r.project == null || r.project === project));
+    const out = run?.['structured-output'];
+    block = out && typeof out === 'object' && Object.keys(out).length ? out : null;
+  }
+  const sub = human ? null : v['harness-status']?.['sub-status'];
+  // Waiting on a fix ticket (ticket:wait-on: the variation's waits-on) before the run's output names it.
+  if (sub && ['wait-on', 'await-fix'].includes(sub.state) && v['waits-on'] && !block?.['waits-on']) block = { ...(block ?? {}), 'waits-on': v['waits-on'] };
+  const subName = sub ? engineSteps(engines, sub['state-engine'])?.steps?.find(s => s.id === sub.state)?.name ?? sub.state : null;
+  const now = sub ? (BLOCKED_NOW[sub.state]?.(block ?? {}, backName) ?? subName) : null;
+  // The sub-engine's Troubleshoot step, where a try again starts afresh; else its first.
+  const engine = step.action?.engine ?? steps.find(s => s.action?.type === 'state-engine' && family.includes(s))?.action?.engine;
+  const subSteps = engine ? engineSteps(engines, engine)?.steps ?? [] : [];
+  const restart = (subSteps.find(s => s.id === 'troubleshoot') ?? subSteps[0])?.name ?? 'Troubleshoot';
+  return { step, human, back, backName, since, block, earlier: earlier.toReversed(), now, hold, restart, attempts: block?.['fix-attempts'] ?? null, budget: FIX_BUDGET };
+}
+
+// blockedChoiceText(choice, info) — a blocked choice with what it does (ASS-439
+// AC4): one that follows the return-to-state, "you have fixed it: the ticket
+// goes back to <step>"; one back to a blocked step, Blocked running again from
+// its Troubleshoot; any other where it leads.
+export function blockedChoiceText(choice, info, steps = []) {
+  const family = blockedSteps(steps);
+  const to = family.find(s => s.name === choice.leadsTo || s.id === choice.leadsTo);
+  const what = to && to.action?.type !== 'human' ? `${to.name} runs again from ${info.restart} with what you changed`
+    : choice.leadsTo != null && to == null && (choice.leadsTo === info.backName || choice.leadsTo === 'back where it came from')
+      ? `you have fixed it: the ticket goes back to ${info.backName ?? 'the step it blocked at'}`
+      : choice.leadsTo != null ? `the ticket goes to ${choice.leadsTo}` : null;
+  return what ? `${choice.decision} — ${what}` : choice.decision;
+}
+
+// blockedLines(info, { width, now, choices, selected, focused, recorded, past, message }) — the
+// Blocked tab (ASS-439 AC3, AC4), top to bottom: where it blocked (the step it
+// goes back to) and since when; the current block's summary and root cause;
+// what Classify found — the issue, the failing repository, file, job and
+// assertion, whether it is the ticket's own code (and an own-branch fix's
+// source and planned merge request, ASS-423/424), master's evidence; what it
+// waits on — the fix ticket and whether its fix has landed, its fix or
+// dependency merge request, or the credentials hold's problems each with its
+// fix command; the fix attempts used of the budget; at Blocked the step its
+// sub-engine is at, at Blocked for Human the human action Classify asked for,
+// in red; the agent.sh writes the sandbox refused (sandbox-refused, ASS-428);
+// then at Blocked for Human the step's `choices`, each with what it does
+// (blockedChoiceText), the `selected` one marked as the Actions tab marks it,
+// what was recorded at it and any message, or at Blocked that the AI is on it;
+// last the earlier blocks, each one line, newest first. A field with no value
+// is left out; text wraps to `width`.
+export function blockedLines(info, { width, now = new Date(), steps = [], choices = [], selected = 0, focused = true, recorded = null, past = false, message = '' }) {
+  const b = info.block ?? {};
+  const beside = width >= 18 + 20;
+  const text = beside ? width - 18 : Math.max(10, width);
+  const field = (label, value, paint = String) => {
+    if (value == null || value === '' || (Array.isArray(value) && !value.length)) return [];
+    const lines = (Array.isArray(value) ? value : [value]).flatMap(v => String(v).split('\n').flatMap(line => wrap(line, text))).map(paint);
+    return beside ? lines.map((line, i) => pad(i ? '' : label, 18) + line) : [label, ...lines.map(l => `  ${l}`)];
+  };
+  const at = iso => `${String(iso).replace('T', ' ').slice(0, 16)} UTC`;
+  const group = (...parts) => { const lines = parts.flat(); return lines.length ? ['', ...lines] : []; };
+  const yesNo = x => (x === true ? 'yes' : x === false ? 'no' : x);
+  // Whose code: the ticket's own branch (ASS-384), and where in it (ASS-423: its branch, or its merged merge requests).
+  const own = b['own-branch'] === true ? `yes: the ticket's own ${b['own-branch-source'] === 'merged' ? 'merged merge requests' : 'branch'}${b['own-branch-why'] ? ` — ${b['own-branch-why']}` : ''}`
+    : b['own-branch'] === false ? `no: not the ticket's own code${b['own-branch-why'] ? ` — ${b['own-branch-why']}` : ''}` : b['own-branch-source'] ? `in its ${b['own-branch-source']}` : null;
+  const planned = b['merge-request-planned'];
+  const plannedText = planned && typeof planned === 'object'
+    ? `MR ${planned.id ?? '?'} in ${String(planned.repository ?? NONE).replace(/\.git$/, '').split('/').pop()}${planned.branch ? ` from ${planned.branch}` : ''}${planned.base ? ` into ${planned.base}` : ''}` : planned;
+  const master = b['master-evidence'] || b['on-master'] != null ? `${b['on-master'] != null ? `on master: ${yesNo(b['on-master'])}` : ''}${b['on-master'] != null && b['master-evidence'] ? ' — ' : ''}${b['master-evidence'] ?? ''}` : null;
+  // What it waits on: a fix ticket and whether it landed (ticket:fix-landed), a fix or dependency merge request.
+  const key = fixKey(b);
+  const waits = [
+    ...(key ? [`fix ${key}${b['waits-on']?.project ? ` (${b['waits-on'].project})` : ''} — ${b.landed === true ? 'its fix has landed' : `its fix has not landed${b.status ? ` (${b.status})` : ''}`}`] : []),
+    ...(b['fix-merge-request'] ? [`fix merge request ${mrName(b['fix-merge-request'])} — ${b.landed === true ? 'merged' : 'not merged yet'}`] : []),
+    ...(b.dependency || b['dependency-merge-request'] ? [`dependency merge request ${mrName(b.dependency ?? b['dependency-merge-request'])}`] : []),
+  ];
+  // The credentials hold (ASS-395): the project's while it holds, else the block's own problems.
+  const credentials = b.issue === 'credentials' || b.held === true || b['credentials-held'] === true;
+  const problems = credentials ? (info.hold?.problems?.length ? info.hold.problems : Array.isArray(b.problems) ? b.problems : []) : [];
+  const refused = [b['sandbox-refused'] ?? []].flat().filter(c => typeof c === 'string' && c.trim());
+  const sinceText = info.since ? `${at(info.since)} (${duration(now - Date.parse(info.since))})` : null;
+  const lines = [
+    ...field(info.human ? 'Blocked for you' : 'Blocked', info.backName ? `at ${info.backName}: it goes back there once resolved` : info.step.name),
+    ...field('Since', sinceText),
+    ...group(field('Summary', b.summary), field('Root cause', b['root-cause'])),
+    ...group(
+      field('Issue', b.issue),
+      field('Repository', b['failing-repository']),
+      field('File', b['failing-file']),
+      field('Job', b['failing-job']),
+      field('Assertion', b['failing-assertion']),
+      field('Own code', own),
+      field('Own-branch fix', plannedText && `planned ${plannedText}`),
+      field('Master', master),
+    ),
+    ...group(
+      field('Waiting on', waits),
+      ...(problems.length ? [field('Credentials', problems.flatMap(p => [`${p.credential ?? NONE}: ${p.problem ?? NONE}`, ...(p.fix ? [`fix: ${p.fix}`] : [])]))] : []),
+    ),
+    ...group(field('Fix attempts', info.attempts != null ? `${info.attempts} of ${info.budget}` : null)),
+    ...group(
+      info.human ? field('Human action', b['human-action'], color('31')) : field('Now', info.now),
+      field('Sandbox refused', refused.length ? `${refused.join(', ')}: its agent.sh write was refused` : null),
+    ),
+  ];
+  // The ways out: at Blocked for Human the step's choices, as the Actions tab lists them; at Blocked none.
+  const ways = info.human ? [
+    '', 'Resolve it — choose one:',
+    ...(choices.length ? choices.flatMap((c, i) => {
+      const line = blockedChoiceText(c, info, steps);
+      const rows = visible(line) <= width - 4 ? [line] : wrap(line, Math.max(4, width - 4));
+      if (i !== selected || past) return rows.map(row => `    ${row}`);
+      return rows.map((row, k) => `${k ? '    ' : '  ▸ '}${focused ? `\x1b[7m${row}\x1b[0m` : row}`);
+    }) : ['  nothing to choose: this step has no way on']),
+    ...(recorded ? ['', ...wrap(`Recorded: ${recorded.decision} at ${at(recorded.timestamp)} — control moves the ticket on.`, width)] : []),
+    ...(past ? ['', 'This is a past day: go to today to choose.'] : []),
+    ...(message ? ['', ...wrap(color('31')(message), width)] : []),
+  ] : ['', ...wrap('The AI is working on it: nothing to choose here. It comes to you, at Blocked for Human, should it need you.', width)];
+  // Earlier blocks, one line each, newest first: when, where from, the issue, the summary, how it ended.
+  const ENDED = { done: 'resumed', retry: 'went round again', 'blocked-for-human': 'handed to you' };
+  const earlier = info.earlier.map(e => fitTo(width)(`  ${e.timestamp ? String(e.timestamp).replace('T', ' ').slice(0, 16) : '?'}  ${e['came-from'] ?? '?'}  ${e.issue ? `${e.issue}: ` : ''}${e.summary ?? 'no analysis'}${e['ended-at'] ? ` — ${ENDED[e['ended-at']] ?? e['ended-at']}` : ''}`));
+  return [...lines, ...ways, ...(earlier.length ? ['', 'Earlier blocks (newest first)', ...earlier] : [])];
+}
+
 // ticketColumn(sections, width) — one column of the ticket screen's box (ASS-101),
 // boxed `width` wide: each section's `height` lines — its `head` lines, then
 // as many of its `lines` as are left from `scroll` (scrollBox, so a section
@@ -556,11 +790,24 @@ const joinColumns = columns => columns[0].map((line, i) => columns.slice(1).redu
 
 // The ticket screen's tabs (ASS-184), in order, each [id, label]: the one
 // open fills the box left of the quick-details panel, PANEL columns wide,
-// borders included; 1–5 name them.
-export const TABS = [['actions', 'Actions'], ['details', 'Details'], ['history', 'History'], ['questions', 'Questions'], ['chat', 'Chat']];
+// borders included; 1–6 name them. Merge requests (ASS-437) after Details.
+// While the variation is blocked a Blocked tab (BLOCKED_TAB, ASS-439) goes second (tabsOf).
+export const TABS = [['actions', 'Actions'], ['details', 'Details'], ['merges', 'Merge requests'], ['history', 'History'], ['questions', 'Questions'], ['chat', 'Chat']];
 // tabsOf(chat) — the tabs shown: TABS, less Chat without `chat` (its flag,
-// ticket-chat-tab, off: ASS-262), the rest then numbered 1–4.
-export const tabsOf = chat => (chat ? TABS : TABS.filter(([id]) => id !== 'chat'));
+// ticket-chat-tab, off: ASS-262), the rest then numbered 1–5; with `blocked`
+// (the variation at a blocked step, blockedOf, ASS-439 AC1) a Blocked tab second,
+// right after Actions, every later tab one number on.
+export const BLOCKED_TAB = ['blocked', 'Blocked'];
+export const tabsOf = (chat, blocked = false) => {
+  const shown = chat ? TABS : TABS.filter(([id]) => id !== 'chat');
+  return blocked ? [shown[0], BLOCKED_TAB, ...shown.slice(1)] : shown;
+};
+// tabNumber(tabs, id) — the number tab `id` goes by among the `tabs` shown (ASS-437, ASS-439: never TABS' index).
+export const tabNumber = (tabs, id) => tabs.findIndex(([x]) => x === id) + 1;
+// gateTab(gate, tabs) — the tab a `gate`'s choices are made on: the Blocked tab
+// while it is shown (ASS-439 AC4, AC5) — the blocked step's own choices; a
+// requirements change's or a move held at a leaving-gate stay on Actions.
+export const gateTab = (gate, tabs = TABS) => (tabs.some(([id]) => id === 'blocked') && gate && !gate.title && !gate.held ? 'blocked' : 'actions');
 export const PANEL = 40;
 const NARROW_PANEL = 28;   // the panel from 100 to 119 columns (ASS-185 AC1)
 const TAB_FLOOR = 20;   // the tabs' least width, borders included, on a screen too narrow for more
@@ -581,25 +828,28 @@ export const gateWaits = gate => Boolean(gate?.choices?.length);
 // Actions while a `gate` waits (gateWaits: a human step, a gate on leaving, a
 // pending requirements change), else Questions with `open` questions waiting
 // on the operator, else Chat — Details without the Chat tab (`chat` false, ASS-262).
-export const defaultTab = (gate, open, chat = true) => (gateWaits(gate) ? 'actions' : open ? 'questions' : chat ? 'chat' : 'details');
+// A blocked variation opens on its Blocked tab (`blocked`, ASS-439 AC2).
+export const defaultTab = (gate, open, chat = true, blocked = false) => (blocked ? 'blocked' : gateWaits(gate) ? 'actions' : open ? 'questions' : chat ? 'chat' : 'details');
 
 // needsYou(gate, open) — what the panel's Needs you says, by defaultTab's
-// rule, and the tab to do it on; null when nothing waits.
-export function needsYou(gate, open) {
+// rule, and the tab to do it on — its number among the `tabs` shown (gateTab:
+// the Blocked tab's while it shows the gate's choices, ASS-439); null when nothing waits.
+export function needsYou(gate, open, tabs = TABS) {
   if (gateWaits(gate)) {
     const what = gate.title ? 'Requirements changed' : gate.step.action?.type === 'human' ? gate.step.name : `Approve leaving ${gate.step.name}`;
-    return `${what} — tab 1`;
+    return `${what} — tab ${tabNumber(tabs, gateTab(gate, tabs))}`;
   }
-  return open ? `${open} open question${open === 1 ? '' : 's'} — tab 4` : null;
+  return open ? `${open} open question${open === 1 ? '' : 's'} — tab ${tabNumber(tabs, 'questions')}` : null;
 }
 
 // tabBar(active, width, { gate, open }) — the top border of the tabs' box,
 // `width` wide: each tab numbered, the `active` one in reverse video; Actions
 // with a red ● while a `gate` waits (gateWaits), Questions with its `open`
 // count and a red ● while any is open (ASS-185 AC2); `tabs` those shown (tabsOf, ASS-262).
-export function tabBar(active, width, { gate = false, open = 0 } = {}, tabs = TABS) {
+// The gate's ● is on the tab its choices are made on, `gateOn` (gateTab: Blocked's, ASS-439).
+export function tabBar(active, width, { gate = false, open = 0, gateOn = 'actions' } = {}, tabs = TABS) {
   const dot = ' \x1b[31m●\x1b[39m';
-  const badge = { actions: gate ? dot : '', questions: open ? ` (${open})${dot}` : '' };
+  const badge = { [gateOn]: gate ? dot : '', questions: open ? ` (${open})${dot}` : '' };
   const bar = `┌${tabs.map(([id, label], i) => {
     const name = ` ${i + 1} ${label}${badge[id] ?? ''} `;
     return id === active ? `\x1b[7m${name}\x1b[0m` : name;
@@ -614,7 +864,7 @@ export function tabBar(active, width, { gate = false, open = 0 } = {}, tabs = TA
 // something waits; its `status` and since when, and how long, from its last
 // move; Paused, By hand and Held (reassigned away, ASS-345) when they apply; the `agents` on it; priority (🪪
 // when set by hand) · points, and beneath an estimate noted too large (ASS-264); its ticketing system's status · assignee; up to
-// three merge requests, then how many more; its automated tests; Health's
+// three merge requests, then how many more and the tab they are on (its number among `tabs`, ASS-439); its automated tests; Health's
 // first line; spend (its chat's too, and its running agents' so far, marked:
 // `running`, ASS-270) · agent time; its branch, linked; then
 // its `documents` (review.js ticketDocuments, ASS-261), when it has any, each
@@ -639,7 +889,7 @@ const spendOf = (v, chatSpend, running) => `Spend ${tokenSpend(v, chatSpend, run
 const fileLink = (text, path) => link(text, pathToFileURL(path).href);
 const riskOf = documents => (documents?.risk ? (documents.risk === 'High' ? color('31') : String)(`Risk: ${documents.risk}`) : null);
 
-export function quickLines(t, { status, agents = [], needs, chatSpend = 0, running = 0, documents, screenshots, now = new Date(), width = PANEL - 4 }) {
+export function quickLines(t, { status, agents = [], needs, chatSpend = 0, running = 0, documents, screenshots, now = new Date(), width = PANEL - 4, tabs = TABS }) {
   const v = t.variation ?? {};
   const fit = fitTo(width);
   const key = keyLine(t);
@@ -662,6 +912,7 @@ export function quickLines(t, { status, agents = [], needs, chatSpend = 0, runni
     ...(moved ? [`  since ${at(moved)} UTC (${duration(now - Date.parse(moved))})`] : []),
     ...(v['is-paused'] === true ? [`Paused: ${v['paused-for-fast-track'] ? `for fast-track ${v['paused-for-fast-track']}` : 'yes'}`] : []),
     ...(hand ? [`By hand: ${hand.by} since ${at(hand.since)} UTC`] : []),   // UTC, as State's since (ASS-294)
+    ...(v['vm-hold'] ? [`VM held: ${v['vm-hold'].by} since ${at(v['vm-hold'].since)} UTC`] : []),   // ASS-427 AC7: vm:hold
     ...(reassignedTo(t) ? [`Held: ${reassignedTo(t)}`, `  since ${at(t.reassigned['detected-at'])} UTC`] : []),   // reassigned away (ASS-345), detected when
     agentsOf(agents),
     '',
@@ -670,7 +921,7 @@ export function quickLines(t, { status, agents = [], needs, chatSpend = 0, runni
     `Jira: ${t['ticket-system-status'] ?? NONE} · ${t['ticket-system-assignment'] ?? NONE}`,
     '',
     ...(mrs.length ? mrs.slice(0, 3).map((m, i) => `${i ? '     ' : 'MRs: '}${mr(m)}`) : [`MRs: ${NONE}`]),
-    ...(mrs.length > 3 ? [`     +${mrs.length - 3} more — tab 2`] : []),
+    ...(mrs.length > 3 ? [`     +${mrs.length - 3} more — tab ${tabNumber(tabs, 'merges')}`] : []),
     testsOf(v),
     `Health: ${v['ai-feedback-long']?.split('\n')[0] || NONE}`,
     '',

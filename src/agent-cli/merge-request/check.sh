@@ -87,6 +87,13 @@ set -euo pipefail
 # one of the set is Merged or Closed, a set all Closed too, so the loop ends.
 # Fails on an id the variation has not planned. Without --only, all as before.
 #
+# A merge request a build step planned mid-build (ticket:add-merge-request,
+# ASS-424: its row has planned-by) and not yet created is not ASS-354's
+# leftover: the ticket needs it. It is the reason "not-created" (last), its
+# ids listed as "not-created": [ids] with "needs-build": true (for a Release
+# engine's exit back to Build), and merged is false while it is, so
+# Release cannot finish without it.
+#
 # Exits 0 when the check ran, whatever it found; fails when the variation has
 # no merge request (but a fast-tracked ticket, ASS-151), a forge call fails, or the project, ticket or variation
 # is missing.
@@ -172,9 +179,11 @@ result="$(jq -nc --argjson mrs "$MRS" --argjson views "$VIEWS" --argjson pending
   def waits: (unmerged_deps($mrs) | map(select(.key != null))) != [];
   [range($mrs | length) as $i | { i: $i, m: $mrs[$i], v: $views[$i], held: any($pending[]; .i == $i) } | select(.m.status != "Closed" and .m.status != "Not Created" and .m.key != null and (.m | in_set($only)))] as $live
   | [$live[] | select(.m.status == "Open") | .held as $held | (.v.reasons[] | select(($held and . == "build-failed") | not)), (if $comments[.i | tostring] then "review-comments" else empty end)] as $all
-  | ["open-threads", "review-comments", "build-failed", "needs-rebase"] | map(select(IN($all[]))) as $reasons
+  # One a build step planned mid-build (planned-by, ASS-424) and not yet created is no ASS-354 leftover: the ticket needs it, so it is not-created and the set not merged.
+  | [$mrs[] | select(.["planned-by"] != null and .status == "Not Created" and in_set($only)) | .id] as $unbuilt
+  | ["open-threads", "review-comments", "build-failed", "needs-rebase", "not-created"] | map(select(IN($all[], (if $unbuilt != [] then "not-created" else empty end)))) as $reasons
   | ($live != [] and all($live[]; .m.status == "Merged" or (.m.status == "Open" and (.v["auto-merge"] == true or (.m | waits))))) as $auto
-  | (($live != [] or $loop) and all($live[]; .m.status == "Merged")) as $merged
+  | (($live != [] or $loop) and all($live[]; .m.status == "Merged") and $unbuilt == []) as $merged
   # Each Open one set to auto-merge that has waited past the bound, when the whole group is only waiting.
   | ($now | epoch) as $at
   | [if $reasons == [] and $auto and ($merged | not) then
@@ -187,6 +196,7 @@ result="$(jq -nc --argjson mrs "$MRS" --argjson views "$VIEWS" --argjson pending
   | (if $days == 1 then "1 day" else "\($days) days" end) as $bound
   | { "needs-attention": ($reasons | length > 0), reasons: $reasons, "auto-merge": $auto, merged: $merged }
   + (if $pending == [] then {} else { "build-pending": [$pending[] | { id, key, why }] } end)
+  + (if $unbuilt == [] then {} else { "not-created": $unbuilt, "needs-build": true } end)
   + (if $expired == [] then {} else {
       "approval-wait-expired": true, "awaiting-approval": $expired,
       "ai-feedback-short": "Waited over \($bound) for approval: \($names)",

@@ -1,0 +1,300 @@
+// workstation:setup (ASS-434 AC1–AC5): over a workstation's open connection,
+// installs under ~/harness, or checks, what an agent needs — the Claude Code
+// CLI, agent.sh pointed at the forwarder on the workstation's loopback, jq,
+// curl, git, Docker and the project's golden-image tools — records its version
+// there and in the live data, does nothing on a rerun, empties the runtime
+// folder after a restart, fails naming a tool it cannot install or Docker not
+// usable, and leaves the owner's own setup alone. Against a fake workstation
+// (test/support/fake-workstation.js: its home a temp folder).
+import { test, afterEach } from 'node:test';
+import assert from 'node:assert/strict';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import { createServer } from 'node:http';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, dirname } from 'node:path';
+import { fixture, AGENT } from './harness-fixture.js';
+import { fakeWorkstation } from '../support/fake-workstation.js';
+import { workstationUsable } from '../../src/control/workstation-connection.js';
+
+const run = promisify(execFile);
+const ID = 'ada-dev';
+const opened = [];
+const servers = [];
+afterEach(async () => {
+  for (const s of opened.splice(0)) await s.cli('workstation:disconnect', 'p', ID).catch(() => {});
+  for (const server of servers.splice(0)) server.close();
+});
+
+// The commands a bare workstation image has: no jq and no claude (the Mac's own are left off its PATH).
+const BASE = ['bash', 'sh', 'mkdir', 'chmod', 'cat', 'sed', 'id', 'rm', 'mktemp', 'cmp', 'mv', 'ln', 'base64', 'grep', 'uname', 'curl', 'git', 'rsync', 'cp', 'dirname', 'tr', 'head', 'env'];   // rsync: ASS-435
+async function bareImage(extra = []) {
+  const dir = mkdtempSync(join(tmpdir(), 'wsimg-'));
+  for (const c of [...BASE, ...extra]) symlinkSync((await run('bash', ['-c', `command -v ${c}`])).stdout.trim(), join(dir, c));
+  return dir;
+}
+
+// Project p on workstation ada-dev, running, its forwarder on `forwarder`; tools its golden-image tools, and
+// installer the body of its golden-image/workstation-tools.sh (none when null). cli(...) runs agent.sh.
+function setup({ tools = [], installer = null, forwarder = 7787, env = {} } = {}) {
+  const f = fixture(), w = fakeWorkstation(f.env);
+  Object.assign(w.env, env);
+  const pj = join(f.dir, 'projects', 'p', 'project.json'), hj = join(f.dir, 'harness.json');
+  const p = JSON.parse(readFileSync(pj, 'utf8'));
+  p['dev-environments'] = { mode: 'workstation', workstations: [{ id: ID, 'gcp-project': 'example-gcp-project', region: 'us-central1', cluster: 'example-workstations', config: 'example-config' }] };
+  p['golden-image'] = { folder: 'projects/p/golden-image', tools };
+  writeFileSync(pj, JSON.stringify(p));
+  mkdirSync(join(f.dir, 'projects', 'p', 'golden-image'), { recursive: true });
+  if (installer !== null) writeFileSync(join(f.dir, 'projects', 'p', 'golden-image', 'workstation-tools.sh'), installer);
+  const h = JSON.parse(readFileSync(hj, 'utf8'));
+  h['forwarder-port'] = forwarder;
+  writeFileSync(hj, JSON.stringify(h));
+  w.workstation(ID, 'STATE_RUNNING');
+  const cli = (...args) => run(AGENT, args, { env: w.env });
+  const result = (...args) => cli(...args).then(r => ({ code: 0, out: r.stdout, err: r.stderr }), e => ({ code: e.code, out: e.stdout, err: e.stderr }));
+  const entry = () => JSON.parse(readFileSync(join(f.dir, 'projects', 'p', 'workstations.json'), 'utf8'))[ID];
+  const home = w.home(ID);
+  const s = { f, w, cli, result, entry, home, at: (...rest) => join(home, ...rest), pj };
+  opened.push(s);
+  return s;
+}
+
+// The owner's own setup on the workstation, as the guide's first login leaves it: every file's content and mode.
+function ownerSetup(home) {
+  const files = { '.bashrc': 'export EDITOR=vim\n', '.profile': '. ~/.bashrc\n', '.gitconfig': '[user]\n\tname = Ada\n\temail = ada@example.com\n',
+    '.ssh/id_ed25519': 'PRIVATE KEY\n', '.ssh/config': 'Host gitlab.com\n', 'workspaces/example/README.md': 'mine\n' };
+  for (const [name, content] of Object.entries(files)) { mkdirSync(dirname(join(home, name)), { recursive: true }); writeFileSync(join(home, name), content); }
+}
+function snapshot(home, skip = ['harness']) {
+  const out = {};
+  const walk = rel => {
+    for (const name of readdirSync(join(home, rel))) {
+      const r = rel ? `${rel}/${name}` : name;
+      if (!rel && skip.includes(name)) continue;
+      const st = statSync(join(home, r));
+      if (st.isDirectory()) walk(r); else out[r] = `${st.mode.toString(8)} ${st.mtimeMs} ${readFileSync(join(home, r), 'utf8')}`;
+    }
+  };
+  walk('');
+  return out;
+}
+
+// A fake forwarder: answers each POST with "hi" on stdout and exit 0, recording the bodies.
+async function forwarder() {
+  const bodies = [];
+  const server = createServer((req, res) => {
+    let body = '';
+    req.on('data', d => { body += d; }).on('end', () => {
+      bodies.push({ url: req.url, body: JSON.parse(body) });
+      res.end(`${JSON.stringify({ o: Buffer.from('hi\n').toString('base64') })}\n${JSON.stringify({ exit: 0 })}\n`);
+    });
+  });
+  await new Promise(r => server.listen(0, '127.0.0.1', r));
+  servers.push(server);
+  return { port: server.address().port, bodies };
+}
+
+test('AC1, AC2, AC4, AC5: a fresh workstation gets jq, the Claude Code CLI, agent.sh pointed at the forwarder on its loopback and the project\'s tools, all under ~/harness, its version recorded there and in the live data; the owner\'s setup untouched', async () => {
+  const fwd = await forwarder();
+  const work = mkdtempSync(join(tmpdir(), 'wsdl-'));
+  // jq's release binary (standing in: the Mac's own jq, which macOS will not run from a copy) and claude.ai's installer, as file:// URLs; the installer logs each run.
+  writeFileSync(join(work, 'jq'), `#!/bin/bash\nexec ${(await run('bash', ['-c', 'command -v jq'])).stdout.trim()} "$@"\n`);
+  writeFileSync(join(work, 'install.sh'), `mkdir -p "$HOME/.local/bin" && printf '#!/bin/bash\\necho "2.0.1 (Claude Code)"\\n' > "$HOME/.local/bin/claude" && chmod 755 "$HOME/.local/bin/claude" && echo "$HOME" >> ${join(work, 'claude-installs')}\n`);
+  const s = setup({
+    tools: ['bats', 'git'], forwarder: fwd.port,
+    installer: `set -e\nfor t; do printf '#!/bin/bash\\necho %s\\n' "$t" > "$HARNESS_TOOLS/$t"; chmod 755 "$HARNESS_TOOLS/$t"; ln -sf "$HARNESS_TOOLS/$t" "$HARNESS_BIN/$t"; echo "$t" >> ${join(work, 'tool-installs')}; done\n`,
+    env: { HARNESS_WS_JQ_URL: `file://${join(work, 'jq')}`, HARNESS_WS_CLAUDE_INSTALLER: `file://${join(work, 'install.sh')}` },
+  });
+  writeFileSync(join(dirname(s.w.system(ID)), 'path'), await bareImage());
+  rmSync(join(s.w.system(ID), 'claude'));
+  ownerSetup(s.home);
+  const before = snapshot(s.home);
+  await s.cli('workstation:connect', 'p', ID);
+  const version = (await s.cli('workstation:setup', 'p', ID, '--version')).stdout.trim();
+  assert.match(version, /^[0-9a-f]{64}$/);
+
+  const out = JSON.parse((await s.cli('workstation:setup', 'p', ID)).stdout);
+  assert.equal(out.id, ID);
+  const e = s.entry();
+  assert.deepEqual(out.setup, e.setup);
+  assert.equal(e.setup.ok, true);
+  assert.equal(e.setup.version, version);
+  assert.equal(e.setup.error, null);
+  assert.deepEqual(e.setup.failed, []);
+  assert.equal(e.setup['set-up-at'], e.setup['checked-at']);
+  assert.ok(workstationUsable(e), 'connected and set up since');
+  for (const what of [/^installed jq/, /^installed the Claude Code CLI/, /^installed agent\.sh /, /^installed agent\.sh's wrapper/, /^wrote the harness's session environment/, /^ran the project's workstation-tools\.sh for bats/, /^made the runtime folder/, /^recorded setup/])
+    assert.ok(e.setup.did.some(d => what.test(d)), `did ${what}`);
+
+  // Everything under ~/harness; the runtime folder the workstation's own, 0700.
+  for (const bin of ['agent.sh', 'jq', 'claude', 'bats']) assert.ok(existsSync(s.at('harness', 'bin', bin)), bin);
+  assert.equal(readFileSync(s.at('harness', 'lib', 'agent.sh'), 'utf8'), readFileSync(join(import.meta.dirname, '..', '..', 'src', 'agent-cli', 'vm', 'in-vm', 'agent.sh'), 'utf8'));
+  assert.equal(readFileSync(join(work, 'claude-installs'), 'utf8').trim(), s.at('harness', 'tools', 'claude'), 'claude\'s installer ran with HOME in ~/harness/tools');
+  assert.equal(readFileSync(join(work, 'tool-installs'), 'utf8'), 'bats\n', 'only the missing tool handed to workstation-tools.sh');
+  const runtime = join(s.w.runtime(ID), `harness-${process.getuid()}`);
+  assert.equal(e.setup.runtime, runtime);
+  assert.equal(e.setup.home, s.home);
+  assert.equal(statSync(runtime).mode & 0o777, 0o700);
+  assert.equal(readFileSync(join(runtime, 'agent-url'), 'utf8'), `http://127.0.0.1:${fwd.port}/run\n`);
+  assert.deepEqual(JSON.parse(readFileSync(s.at('harness', 'setup.json'), 'utf8')), { version, 'boot-id': `boot-${ID}-1`, runtime });
+
+  // A harness session (sourcing ~/harness/env) finds its tools first, and agent.sh reaches the forwarder with the token ASS-435 puts in the runtime folder.
+  writeFileSync(join(runtime, 'agent-token'), 'tok123\n');
+  const session = await s.cli('workstation:ssh', 'p', ID, 'bash', '-c', '. ~/harness/env && echo "$HARNESS_RUNTIME" && command -v claude jq && agent.sh ticket:view ABC-1');
+  assert.deepEqual(session.stdout.split('\n'), [runtime, s.at('harness', 'bin', 'claude'), s.at('harness', 'bin', 'jq'), 'hi', '']);
+  assert.deepEqual(fwd.bodies, [{ url: '/run', body: { token: 'tok123', argv: ['ticket:view', 'ABC-1'] } }]);
+
+  // AC4: the owner's files — shell files, git identity, SSH keys, ~/workspaces — as they were; nothing beside ~/harness.
+  assert.deepEqual(snapshot(s.home), before);
+});
+
+test('AC2, AC5: a rerun with nothing missing does nothing — no installer, no file written — but records that it checked', async () => {
+  const work = mkdtempSync(join(tmpdir(), 'wsdl-'));
+  const s = setup({ tools: ['bats'], installer: `for t; do printf '#!/bin/bash\\n' > "$HARNESS_BIN/$t"; chmod 755 "$HARNESS_BIN/$t"; echo "$t" >> ${join(work, 'tool-installs')}; done\n` });
+  await s.cli('workstation:connect', 'p', ID);
+  await s.cli('workstation:setup', 'p', ID);
+  const first = s.entry().setup;
+  const files = snapshot(s.home, []);
+  const runtime = snapshot(s.w.runtime(ID), []);
+  await new Promise(r => setTimeout(r, 1100));   // a new checked-at second
+  const out = JSON.parse((await s.cli('workstation:setup', 'p', ID)).stdout);
+  assert.equal(out.setup.ok, true);
+  assert.deepEqual(out.setup.did, []);
+  assert.equal(out.setup['set-up-at'], first['set-up-at']);
+  assert.notEqual(out.setup['checked-at'], first['checked-at']);
+  assert.deepEqual(snapshot(s.home, []), files);
+  assert.deepEqual(snapshot(s.w.runtime(ID), []), runtime);
+  assert.equal(readFileSync(join(work, 'tool-installs'), 'utf8'), 'bats\n');
+});
+
+test('AC2: after the workstation restarts, setup empties the runtime folder and writes agent-url again, reinstalling nothing; a version rerun leaves the runtime folder alone', async () => {
+  const s = setup();
+  await s.cli('workstation:connect', 'p', ID);
+  await s.cli('workstation:setup', 'p', ID);
+  const runtime = s.entry().setup.runtime;
+  writeFileSync(join(runtime, 'agent-token'), 'old\n');
+  // A new version (the tools list changed): the runtime folder, and a running agent's token, kept.
+  const p = JSON.parse(readFileSync(s.pj, 'utf8'));
+  p['golden-image'].tools = ['git'];
+  writeFileSync(s.pj, JSON.stringify(p));
+  const again = JSON.parse((await s.cli('workstation:setup', 'p', ID)).stdout).setup;
+  assert.deepEqual(again.did.map(d => d.replace(/ [0-9a-f]{12} .*/, '')), ['recorded setup']);
+  assert.equal(readFileSync(join(runtime, 'agent-token'), 'utf8'), 'old\n');
+  // A restart: stopped, started again by connect (a new boot id, the container's /dev/shm empty).
+  s.w.setState(ID, 'STATE_STOPPED');
+  for (let i = 0; i < 50 && existsSync(join(s.w.harnessHome, 'workstations', `p-${ID}.sock`)); i++) await new Promise(r => setTimeout(r, 100));
+  await s.cli('workstation:connect', 'p', ID);
+  assert.ok(!workstationUsable(s.entry()), 'not usable until setup runs after the connect');
+  const after = JSON.parse((await s.cli('workstation:setup', 'p', ID)).stdout).setup;
+  assert.equal(after.ok, true);
+  assert.ok(after.did.some(d => /^made the runtime folder/.test(d)));
+  assert.ok(after.did.some(d => /^wrote the forwarder's URL \(http:\/\/127\.0\.0\.1:7787\/run\)/.test(d)));
+  assert.ok(!after.did.some(d => /^installed/.test(d)), 'nothing reinstalled');
+  assert.ok(!existsSync(join(runtime, 'agent-token')));
+  assert.equal(JSON.parse(readFileSync(s.at('harness', 'setup.json'), 'utf8'))['boot-id'], readFileSync(join(dirname(s.w.system(ID)), 'boot-id'), 'utf8'));
+  // The same version on the same boot: nothing to do.
+  assert.deepEqual(JSON.parse((await s.cli('workstation:setup', 'p', ID)).stdout).setup.did, []);
+});
+
+test('AC3, AC5: a tool that cannot be installed fails setup, naming it, recorded in the live data; the workstation is not usable', async () => {
+  const s = setup({ tools: ['kubeconform', 'git'] });
+  await s.cli('workstation:connect', 'p', ID);
+  const r = await s.result('workstation:setup', 'p', ID);
+  assert.equal(r.code, 1);
+  assert.match(r.err, /workstation:setup: p's workstation ada-dev: setup failed: kubeconform: not on the workstation, and the project has no golden-image\/workstation-tools\.sh to install it under \$HOME$/m);
+  const e = s.entry();
+  assert.equal(e.setup.ok, false);
+  assert.deepEqual(e.setup.failed.map(x => x.what), ['kubeconform']);
+  assert.ok(!workstationUsable(e));
+  assert.ok(!existsSync(s.at('harness', 'setup.json')), 'no setup recorded on the workstation');
+  // With an installer that does not install it: named so.
+  const t = setup({ tools: ['kubeconform'], installer: 'echo "no kubeconform for you" >&2; exit 3\n' });
+  await t.cli('workstation:connect', 'p', ID);
+  const u = await t.result('workstation:setup', 'p', ID);
+  assert.equal(u.code, 1);
+  assert.match(u.err, /no kubeconform for you/);
+  assert.equal(t.entry().setup.error, 'kubeconform: could not be installed: not on PATH after the project\'s golden-image/workstation-tools.sh (exit 3)');
+  // Fixed (now on the workstation): the next run is ok again.
+  writeFileSync(join(t.w.system(ID), 'kubeconform'), '#!/bin/bash\n', { mode: 0o755 });
+  assert.equal(JSON.parse((await t.cli('workstation:setup', 'p', ID)).stdout).setup.ok, true);
+  assert.equal(t.entry().setup.error, null);
+});
+
+test('AC3: Docker not usable, or not there, fails setup naming it; so does the Claude Code CLI failing to install', async () => {
+  const s = setup();
+  await s.cli('workstation:connect', 'p', ID);
+  s.w.mark(ID, 'docker-broken');
+  const r = await s.result('workstation:setup', 'p', ID);
+  assert.equal(r.code, 1);
+  assert.match(s.entry().setup.error, /^docker: not usable \(docker info failed\): permission denied while trying to connect to the Docker daemon socket/);
+  rmSync(join(s.w.system(ID), 'docker'));
+  writeFileSync(join(dirname(s.w.system(ID)), 'path'), await bareImage(['jq']));
+  await s.result('workstation:setup', 'p', ID);
+  assert.match(s.entry().setup.error, /^docker: not installed: the workstation config's container image has no Docker/);
+
+  const t = setup({ env: { HARNESS_WS_CLAUDE_INSTALLER: 'file:///nonexistent/install.sh' } });
+  writeFileSync(join(dirname(t.w.system(ID)), 'path'), await bareImage());
+  rmSync(join(t.w.system(ID), 'claude'));
+  writeFileSync(join(t.w.system(ID), 'jq'), '#!/bin/bash\n', { mode: 0o755 });
+  await t.cli('workstation:connect', 'p', ID);
+  assert.equal((await t.result('workstation:setup', 'p', ID)).code, 1);
+  assert.deepEqual(t.entry().setup.failed.map(x => x.what), ['claude']);
+  assert.match(t.entry().setup.error, /^claude: the Claude Code CLI could not be installed from file:\/\/\/nonexistent\/install\.sh: curl: /);
+});
+
+test('AC2: the version is a hash of the setup script, agent.sh, workstation-tools.sh, the forwarder URL and the tools list — asked without a connection; setup without one fails', async () => {
+  const s = setup({ tools: ['bats'] });
+  const version = async () => (await s.cli('workstation:setup', 'p', ID, '--version')).stdout.trim();
+  const v1 = await version();
+  assert.equal(await version(), v1);
+  const p = JSON.parse(readFileSync(s.pj, 'utf8'));
+  p['golden-image'].tools = ['bats', 'go'];
+  writeFileSync(s.pj, JSON.stringify(p));
+  const v2 = await version();
+  assert.notEqual(v2, v1);
+  writeFileSync(join(s.f.dir, 'projects', 'p', 'golden-image', 'workstation-tools.sh'), 'true\n');
+  assert.notEqual(await version(), v2);
+  const r = await s.result('workstation:setup', 'p', ID);
+  assert.equal(r.code, 1);
+  assert.match(r.err, /has no open connection: workstation:connect p ada-dev first/);
+  assert.equal((await s.result('workstation:setup', 'p', 'nobody')).code, 1);
+  assert.equal((await s.result('workstation:setup', 'p')).code, 1);
+});
+
+test('rsync missing (example-config\'s image has none): installed with passwordless sudo, its packages fetched once into ~/harness/tools/debs and installed from there after a restart; without passwordless sudo setup fails naming rsync', async () => {
+  const work = mkdtempSync(join(tmpdir(), 'wsapt-'));
+  const realRsync = (await run('bash', ['-c', 'command -v rsync'])).stdout.trim();
+  const s = setup();
+  const sys = s.w.system(ID), log = join(work, 'log');
+  const image = await bareImage(['jq']);
+  rmSync(join(image, 'rsync'));
+  writeFileSync(join(dirname(sys), 'path'), image);
+  // sudo, apt-get and dpkg standing in: apt-get download finds nothing until the package lists are refreshed; dpkg -i puts rsync on PATH.
+  writeFileSync(join(sys, 'sudo'), `#!/bin/bash\n[ "$1" = -n ] && shift\n[ -e ${join(work, 'no-sudo')} ] && { echo "sudo: a password is required" >&2; exit 1; }\n[ "$1" = true ] && exit 0\nexec "$@"\n`, { mode: 0o755 });
+  writeFileSync(join(sys, 'apt-get'), `#!/bin/bash\necho "apt-get $*" >> ${log}\ncase "$1" in\n  update) : > ${join(work, 'updated')} ;;\n  download) [ -e ${join(work, 'updated')} ] || { echo "E: Can't select candidate version from package rsync as it has no candidate" >&2; exit 100; }; shift; for p; do echo deb > "\${p}_1.0_amd64.deb"; done ;;\nesac\n`, { mode: 0o755 });
+  writeFileSync(join(sys, 'dpkg'), `#!/bin/bash\necho "dpkg $* DEBIAN_FRONTEND=$DEBIAN_FRONTEND" >> ${log}\nln -sf ${realRsync} ${join(sys, 'rsync')}\n`, { mode: 0o755 });
+  const debs = s.at('harness', 'tools', 'debs');
+  await s.cli('workstation:connect', 'p', ID);
+
+  const out = JSON.parse((await s.cli('workstation:setup', 'p', ID)).stdout);
+  assert.equal(out.setup.ok, true, out.setup.error);
+  assert.ok(out.setup.did.some(d => d.startsWith('installed rsync')));
+  assert.deepEqual(readdirSync(debs).sort(), ['libpopt0_1.0_amd64.deb', 'rsync_1.0_amd64.deb']);
+  assert.deepEqual(readFileSync(log, 'utf8').trim().split('\n'), [
+    'apt-get download rsync libpopt0', 'apt-get update -qq', 'apt-get download rsync libpopt0',
+    `dpkg -i ${join(debs, 'libpopt0_1.0_amd64.deb')} ${join(debs, 'rsync_1.0_amd64.deb')} DEBIAN_FRONTEND=noninteractive`]);
+
+  // A restart: rsync is gone again (only /home survives); the kept packages are installed, nothing downloaded.
+  rmSync(join(sys, 'rsync'));
+  writeFileSync(log, '');
+  assert.equal(JSON.parse((await s.cli('workstation:setup', 'p', ID)).stdout).setup.ok, true);
+  assert.deepEqual(readFileSync(log, 'utf8').trim().split('\n'), [`dpkg -i ${join(debs, 'libpopt0_1.0_amd64.deb')} ${join(debs, 'rsync_1.0_amd64.deb')} DEBIAN_FRONTEND=noninteractive`]);
+
+  // No passwordless sudo: setup fails, naming rsync.
+  rmSync(join(sys, 'rsync'));
+  writeFileSync(join(work, 'no-sudo'), '');
+  assert.equal((await s.result('workstation:setup', 'p', ID)).code, 1);
+  assert.deepEqual(s.entry().setup.failed.map(x => x.what), ['rsync']);
+  assert.match(s.entry().setup.error, /^rsync: not installed, and there is no passwordless sudo to install it/);
+});

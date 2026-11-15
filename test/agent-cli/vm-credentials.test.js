@@ -16,9 +16,9 @@ const run = promisify(execFile);
 const AGENT = join(import.meta.dirname, '..', '..', 'agent.sh');
 const TOKENS = { 'Claude Token (Test)': 'sk-ant-oat01-CLAUDE_tok', 'GitHub PAT (Test)': 'ghp_GITHUBtok', 'GitLab PAT (Test)': 'glpat-GITLAB.tok', 'Atlassian API Key (Test)': 'ATATT3xATL=tok', 'Anthropic API Key (Test)': 'sk-ant-api03-ANTHROPIC_key-AA' };
 const HARNESS = { claude: { 'keychain-service': 'Claude Token (Test)' }, github: { 'keychain-service': 'GitHub PAT (Test)' }, git: { 'user-name': 'Ada Example', 'user-email': 'c@example.com' } };
-const CASE_LAW = {
+const EXAMPLE_PROJECT = {
   claude: { 'keychain-service': 'Claude Token (Test)' },
-  gitlab: { 'keychain-service': 'GitLab PAT (Test)', host: 'gitlab.com', 'npm-registries': { '@example': '86735929', '@example-activity': '86868744' } },
+  gitlab: { 'keychain-service': 'GitLab PAT (Test)', host: 'gitlab.com', 'npm-registries': { '@example': '11223344', '@example-activity': '55667788' } },
   atlassian: { 'keychain-service': 'Atlassian API Key (Test)', site: 'example.atlassian.net', email: 'c@example.com' },
   git: { 'user-name': 'Ada Example', 'user-email': 'c@example.com' },
 };
@@ -29,7 +29,7 @@ const script = (bin, name, body) => { writeFileSync(join(bin, name), `#!/usr/bin
 // `<service>.mdat` when there, else 20261101000000Z; `<service>.hang` never answers;
 // `<service>.alarm` ends as the time limit's alarm ends a read that never answers, at once), and fakes on PATH. The
 // limit is 60s: the fake answers at once, but on a busy machine starting it took up to ~10s (ASS-109).
-function mac(declaration = { harness: HARNESS, 'example': CASE_LAW }, keychain = TOKENS) {
+function mac(declaration = { harness: HARNESS, 'example': EXAMPLE_PROJECT }, keychain = TOKENS) {
   const dir = mkdtempSync(join(tmpdir(), 'vmc-'));
   const home = join(dir, 'home'), kc = join(dir, 'keychain'), bin = join(dir, 'bin'), log = join(dir, 'log');
   for (const d of [join(home, '.harness'), kc, bin, log]) mkdirSync(d, { recursive: true });
@@ -119,10 +119,10 @@ test('a gitlab + atlassian project gets GITLAB_TOKEN/GITLAB_HOST, an npmrc with 
   assert.equal(status, 0, stderr);
   assert.deepEqual(envOf(root, 'GITLAB_TOKEN', 'GITLAB_HOST', 'GH_TOKEN'), ['GITLAB_TOKEN=glpat-GITLAB.tok', 'GITLAB_HOST=gitlab.com', 'GH_TOKEN=']);
   assert.equal(readFileSync(join(root, 'run', 'harness', 'npmrc'), 'utf8'), [
-    '@example:registry=https://gitlab.com/api/v4/projects/86735929/packages/npm/',
-    '//gitlab.com/api/v4/projects/86735929/packages/npm/:_authToken=${GITLAB_TOKEN}',
-    '@example-activity:registry=https://gitlab.com/api/v4/projects/86868744/packages/npm/',
-    '//gitlab.com/api/v4/projects/86868744/packages/npm/:_authToken=${GITLAB_TOKEN}', ''].join('\n'));
+    '@example:registry=https://gitlab.com/api/v4/projects/11223344/packages/npm/',
+    '//gitlab.com/api/v4/projects/11223344/packages/npm/:_authToken=${GITLAB_TOKEN}',
+    '@example-activity:registry=https://gitlab.com/api/v4/projects/55667788/packages/npm/',
+    '//gitlab.com/api/v4/projects/55667788/packages/npm/:_authToken=${GITLAB_TOKEN}', ''].join('\n'));
   assert.equal(gitGet(root, 'url.https://gitlab.com/.insteadof'), 'git@gitlab.com:');
   assert.match(gitCredential(root, 'gitlab.com', 'glpat-FROMENV'), /username=oauth2\npassword=glpat-FROMENV\n/);
   assert.equal(m.logOf('acli'), '');
@@ -145,7 +145,7 @@ test('AC5: run again after a keychain change, the VM gets the new token and noth
   const m = mac();
   await m.cli('vm:credentials', 'example', 'vm');
   const { root } = inVm(m);
-  writeFileSync(join(m.home, '.harness', 'vm-credentials.json'), JSON.stringify({ 'example': { claude: CASE_LAW.claude } }));
+  writeFileSync(join(m.home, '.harness', 'vm-credentials.json'), JSON.stringify({ 'example': { claude: EXAMPLE_PROJECT.claude } }));
   writeFileSync(join(m.kc, 'Claude Token (Test)'), 'sk-ant-oat01-NEW\n');
   await m.cli('vm:credentials', 'example', 'vm');
   assert.equal(inVm(m, 'tmpfs', root).status, 0);
@@ -284,7 +284,7 @@ test('ASS-350: vm:credential-stamps <project> prints each declared item\'s mdat 
 });
 
 test('ASS-350: vm:credential-stamps leaves out an item it cannot read or that shows no mdat, and fails on a bad project or declaration', async () => {
-  const m = mac({ example: { claude: CASE_LAW.claude, gitlab: CASE_LAW.gitlab } }, { 'Claude Token (Test)': 'sk-ant-oat01-CLAUDE_tok' });
+  const m = mac({ example: { claude: EXAMPLE_PROJECT.claude, gitlab: EXAMPLE_PROJECT.gitlab } }, { 'Claude Token (Test)': 'sk-ant-oat01-CLAUDE_tok' });
   assert.deepEqual(JSON.parse((await m.cli('vm:credential-stamps', 'example')).stdout), { claude: '20261101000000Z' });
   await assert.rejects(m.cli('vm:credential-stamps', 'other'), /declares no VM credentials for project 'other'/);
   await assert.rejects(m.cli('vm:credential-stamps', '../x'), /invalid project/);

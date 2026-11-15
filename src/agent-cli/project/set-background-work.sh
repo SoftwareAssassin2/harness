@@ -5,8 +5,8 @@ set -euo pipefail
 # Writes data/projects/<project>/project.json's background-work: false for off,
 # true for on (absent is on; PROJECTS_DIR overrides the projects folder, used
 # by tests). Control reads it every tick (ASS-127): while it is off it starts
-# none of the project's check-health, check-variation-appeal or
-# check-ticket-health runs and holds those already going (moves.js isPaused);
+# none of the project's check-health, check-memory, check-variation-appeal
+# or self-healing runs and holds those already going (moves.js isPaused);
 # a sprint ticket's gap resolution and its Blocked step go on. Fails, writing
 # nothing, on an unknown project or value.
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../json-file.bash"

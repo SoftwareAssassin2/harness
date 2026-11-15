@@ -57,7 +57,7 @@ test('ASS-399: grouped-plan validates, its new steps on the host but the stronge
   const plain = stepOf(PLAN, 'write-execution-plan'), stronger = stepOf(PLAN, 'write-execution-plan-stronger');
   assert.deepEqual(stronger.action, { ...plain.action, model: 'stronger' });
   assert.deepEqual([stronger['run-location'], stronger['is-planning-stage'], stronger['max-visits'], stronger['on-max-visits']], ['vm', true, 2, 'blocked']);
-  assert.equal(plain.action.model, undefined, 'every other step keeps the round robin');
+  assert.equal(plain.action.model, 'claude-opus-5-5', 'every other step runs on the model it names (ASS-452)');
   for (const id of ['record-plan-objections', 'record-objections-for-stronger-plan', 'ask-operator-about-plan', 'awaiting-plan-answer']) {
     assert.equal(stepOf(PLAN, id)['run-location'], undefined, id);
     assert.equal(stepOf(PLAN, id)['is-planning-stage'], true, id);
@@ -80,14 +80,15 @@ test('ASS-399 AC1: the third rejection, which would end Plan at its max visits, 
   assert.equal(nextState(stepOf(before, 'review-plan'), before, { turnComplete: true, structuredOutput: rejected('write-execution-plan') }, changes).to, 'blocked');
 });
 
-test('ASS-399 AC1: the stronger re-plan runs on harness.json\'s stronger-model, else its first (strongest) Claude model; a step naming no model is left to the round robin', () => {
+test('ASS-399 AC1: the stronger re-plan runs on harness.json\'s stronger-model, else its first (strongest) Claude model; a step naming no model is left to the round robin, one naming a model runs on it (ASS-452)', () => {
   const step = stepOf(PLAN, 'write-execution-plan-stronger');
   const claude = models => ({ 'agentic-command-line-interfaces': [{ name: 'codex', models: ['gpt-x'] }, { name: 'claude', models }] });
   assert.equal(modelFor(step, claude(['claude-opus-5-5', 'claude-sonnet-5'])), 'claude-opus-5-5');
   assert.equal(modelFor(step, { ...claude(['claude-opus-5-5', 'claude-sonnet-5']), 'stronger-model': 'claude-opus-5' }), 'claude-opus-5');
   assert.equal(modelFor(step, JSON.parse(readFileSync(join(ROOT, 'data', 'harness.json'), 'utf8'))), 'claude-opus-5-5');
   assert.equal(modelFor(step, {}), undefined);
-  assert.equal(modelFor(stepOf(PLAN, 'write-execution-plan'), claude(['claude-opus-5-5'])), undefined);
+  assert.equal(modelFor(stepOf(PLAN, 'write-execution-plan'), claude(['claude-opus-5-5'])), 'claude-opus-5-5');
+  assert.equal(modelFor({ action: { type: 'prompt', prompt: 'write-execution-plan-grouped' } }, claude(['claude-opus-5-5'])), undefined);
 });
 
 test('ASS-399 AC1: Write Execution Plan reads every objection so far, plan-objections-{variation}.md, summing them up under the plan\'s Objections section; the flat prompt does not', () => {
@@ -118,10 +119,11 @@ test('ASS-399 AC3: the stronger plan rejected too, the operator is asked instead
   for (const id of ['record-plan-objections', 'record-objections-for-stronger-plan', 'ask-operator-about-plan']) assert.equal(nextState(stepOf(PLAN, id), PLAN, { exitCode: 1 }).to, 'blocked', id);
 });
 
-test('ASS-399: validate.js takes an action\'s model only as "stronger", on a prompt step', () => {
+test('ASS-399: validate.js takes an action\'s model "stronger" (or, ASS-452, a claude model of harness.json\'s), on a prompt step alone', () => {
   const engineWith = action => ({ steps: [{ id: 'a', sequence: 1, action, 'exit-events': [{ condition: { 'turn-complete': true }, 'move-to-state': 'done' }] }, { id: 'done', sequence: 2, 'is-done': true, action: { type: 'none' } }] });
   const prompt = { type: 'prompt', prompt: 'write-execution-plan-grouped', 'agent-count': 1 };
   assert.deepEqual(validateStateEngine(engineWith({ ...prompt, model: 'stronger' }), ROOT), []);
-  assert.match(validateStateEngine(engineWith({ ...prompt, model: 'claude-opus-5' }), ROOT).join('\n'), /model "claude-opus-5" is not "stronger"/);
+  assert.deepEqual(validateStateEngine(engineWith({ ...prompt, model: 'claude-opus-5' }), ROOT), []);
+  assert.match(validateStateEngine(engineWith({ ...prompt, model: 'claude-opus-9' }), ROOT).join('\n'), /model "claude-opus-9" is not "stronger" or one of harness.json's claude models/);
   assert.match(validateStateEngine(engineWith({ type: 'none', model: 'stronger' }), ROOT).join('\n'), /model needs a prompt action/);
 });

@@ -15,8 +15,8 @@ set -euo pipefail
 # model; missing, the first model), which becomes the last model handed out —
 # skipping those the prompt's prompt.json supported-models does not name, unless
 # it names none of them or has none, when all take their turn — or, given
-# --model <model> first (ASS-399: a step whose action asks for the stronger
-# model, which control resolves, dispatch.js modelFor), every record that
+# --model <model> first (a step whose action names its model, ASS-452, or asks
+# for the stronger one, ASS-399, which control resolves, dispatch.js modelFor), every record that
 # model, the round robin and last-model-used left as they were. A record is status
 # Starting with no process, start-time and last-heartbeat now (UTC),
 # working-in-dev-container as given, the state-engine and prompt named, and its

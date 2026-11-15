@@ -74,7 +74,12 @@ test('ASS-182 AC3: a confined host agent is told it writes only temp and the har
   const host = confinedWhereText('/h/data/projects/p', '/code');
   assert.match(host, /You may write only temp; Claude Code refuses any other write\./);
   assert.match(host, /only through the agent\.sh commands you are given/);
-  assert.match(host, /never pipe/);
+  // ASS-428: by file, a bare call — the old "on stdin from a heredoc or a temp file (< file)" ran it sandboxed.
+  assert.match(host, /each run as a bare command line/);
+  assert.match(host, /Give a command its content by file, never on stdin/);
+  assert.match(host, /Never a pipe, redirect, heredoc, &&, ; or \$\(…\) on an agent\.sh line/);
+  assert.match(host, /name each such command in sandbox-refused/);
+  assert.doesNotMatch(host, /<<'EOF'|< file/);
   assert.doesNotMatch(host, /data folders/);
   const vm = vmWhereText({ id: 'p', json: { repositories: [{ url: 'https://github.com/o/app', description: 'The app.' }] } }, 'abc-3-a');
   assert.match(vm, /The ticket's folder is \/mnt\/ticket, read-only: read the ticket's files there; write them only through agent\.sh, the content on stdin\./);
@@ -99,4 +104,31 @@ test('ASS-238 AC3: vmWhereText says the forge token is for git and package insta
     const vm = vmWhereText({ id: 'p', json: { repositories: [{ url: 'https://github.com/o/app' }] } }, 'abc-3-a', repository);
     assert.ok(vm.includes('The forge token in your environment is for git and package installs only. Read and update merge requests only through agent.sh merge-request:view, merge-request:update, merge-request:upload-image, merge-request:reply and merge-request:resolve; never call a forge or Jira API yourself.'), vm);
   }
+});
+
+// ASS-428 AC2: every prompt a host agent runs — confined or not — gives agent.sh its content by a file path, a bare
+// call: no agent.sh call takes it on stdin ("on stdin", "-" where a path may stand), from a redirect, heredoc or pipe.
+// Left out: the flat development engines' steps in the ticket's worktree (and their test sub-engines), which run
+// outside the sandbox (worksOnCode) and whose prompts are never changed.
+const STDIN_MARKED = ['ticket:set-acceptance-criteria', 'ticket:set-merge-request-plan', 'ticket:add-merge-request', 'ticket:propose-split', 'ticket:post-comment'];
+const inWorktree = (engine, step) => ['steps-to-test', 'test'].includes(engine)
+  || (['harness-development', 'example-development'].includes(engine) && step.sequence >= engines[engine].steps.find(s => s.id === 'create-worktree').sequence);
+test('ASS-428 AC2: every host prompt gives agent.sh its content by a staged file\'s path, a bare call — never on stdin, a redirect, heredoc or pipe', () => {
+  const host = [...new Set(hostPrompts.filter(({ engine, step }) => !inWorktree(engine, step)).map(({ step }) => step.action.prompt))];
+  for (const p of ['troubleshoot-block-on-host-grouped', 'classify-issue-grouped', 'repair-image-on-host-grouped', 'repair-environment-on-host-grouped', 'repair-project-on-host-grouped', 'groom', 'estimate', 'split-ticket', 'clean-memory', 'apply-fix'])
+    assert.ok(host.includes(p), p);
+  const problems = host.flatMap(p => readFileSync(join(ROOT, 'prompts', p, 'prompt.txt'), 'utf8').split('\n').flatMap((line, i) => {
+    const at = `${p}:${i + 1}`, found = [];
+    const calls = [...line.matchAll(/`([^`]*(?:\{agent-sh\}|agent\.sh)[^`]*)`/g)].map(m => m[1]);
+    for (const call of calls) {
+      const bare = call.replace(/"[^"]*"/g, 'S').replace(/<[^<>\s][^<>]*>/g, 'X');   // quoted text and <placeholders> aside
+      if (/[|<>;&]|\$\(/.test(bare)) found.push(`${at}: not a bare call: ${call}`);
+      const command = /(?:\{agent-sh\}|agent\.sh) ([a-z-]+:[a-z-]+)/.exec(call)?.[1];
+      if (STDIN_MARKED.includes(command) && / -$/.test(call.trim())) found.push(`${at}: "-" (stdin) where a file path goes: ${call}`);
+    }
+    if (calls.length && /(?<!never )on stdin/.test(line)) found.push(`${at}: content on stdin`);
+    if (/<<\s*'?EOF|\bheredoc \(<</.test(line)) found.push(`${at}: a heredoc`);
+    return found;
+  }));
+  assert.deepEqual(problems, []);
 });

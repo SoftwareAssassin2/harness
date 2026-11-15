@@ -150,47 +150,53 @@ test('tick: a ticket whose system status strays from its step\'s pairing gets on
   }
 });
 
-test('tick: only the harness project\'s engine checks health — every project\'s state changes sampled into harness runs, naming the ticket\'s project', async () => {
+// ASS-450 AC1, AC3, AC6: the ticket health check is removed. The harness project's own engine (as the family and
+// software-assassin engines under data/ do) still declares its keys: they are ignored, logged once per engine as
+// obsolete, never an error; the state changes of every project start no run of it; the project health check is as it was.
+test('ASS-450: no state change starts a ticket health check, though the harness project\'s engine still declares its keys — logged once as obsolete; its check-health still fires', async () => {
   const f = controlFixture();
-  // h, the harness project, runs its own copy of the engine, the only one with the health checks.
   const engine = JSON.parse(readFileSync(engineFile(f), 'utf8'));
-  const health = { 'check-health-interval-seconds': 300, 'check-ticket-health-sample-every': 2, 'check-health-steps': engine['check-health-steps'],
-    'check-ticket-health-steps': [{ id: 'check-ticket-health', sequence: 1, action: { type: 'state-engine', engine: 'investigate-gap' }, 'exit-events': [{ condition: { 'is-done': true } }] }] };
-  for (const key of Object.keys(health)) delete engine[key];
+  const health = { 'check-health-interval-seconds': 300, 'check-health-steps': engine['check-health-steps'] };
+  const obsolete = { 'check-ticket-health-sample-every': 1,
+    'check-ticket-health-steps': [{ id: 'check-ticket-health', sequence: 1, action: { type: 'state-engine', engine: 'check-ticket-health-grouped' }, 'exit-events': [{ condition: { 'is-done': true } }] }] };
+  for (const key of [...Object.keys(health), ...Object.keys(obsolete)]) delete engine[key];
   writeFileSync(engineFile(f), JSON.stringify(engine));
-  mkdirSync(join(f.dir, 'engines', 'harness-e'));
-  writeFileSync(join(f.dir, 'engines', 'harness-e', 'state-engine.json'), JSON.stringify({ ...engine, ...health }));
+  // h, the harness project, runs an engine of its own (data/projects/h/engines, ASS-276) declaring the removed keys.
+  mkdirSync(join(f.dir, 'projects', 'h', 'engines', 'harness-e'), { recursive: true });
+  const own = join(f.dir, 'projects', 'h', 'engines', 'harness-e', 'state-engine.json');
+  writeFileSync(own, JSON.stringify({ ...engine, ...health, ...obsolete }));
   mkdirSync(join(f.dir, 'projects', 'h', 'sprints', 'sprint-1'), { recursive: true });
   writeFileSync(join(f.dir, 'projects', 'h', 'project.json'), JSON.stringify({ name: 'H', 'execution-state-engine': 'harness-e', 'work-sources': [], 'local-environments': [{ name: 'local-pc', type: 'local-pc', folder: join(f.dir, 'workspace'), 'active-branch': null }] }));
   writeFileSync(join(f.dir, 'projects', 'h', 'sprints.json'), JSON.stringify({ list: [{ number: 1, 'is-active': true }] }));
   writeFileSync(join(f.dir, 'projects', 'h', 'sprints', 'sprint-1', 'sprint.json'), JSON.stringify({ number: 1, features: [], bugs: [], spikes: [] }));
   edit(f, join(f.dir, 'harness.json'), h => { h['harness-project'] = 'h'; });
-  const runs = () => f.assignments()['transient-state-engines'].map(r => [r.project, r['state-engine'], r.parent.trigger ?? null, r.parent['ticket-project'] ?? null]);
+  const runs = () => f.assignments()['transient-state-engines'].map(r => [r.project, r['state-engine'], r.parent.trigger ?? null]);
+  const said = () => f.lines.filter(l => l.includes('obsolete'));
   let clock = f.ctx.started.getTime();
   f.ctx.now = () => new Date(clock);
   process.env.FAKE_HOLD = join(f.dir, 'hold');
   writeFileSync(process.env.FAKE_HOLD, '');
   try {
-    await tick(f.ctx);                                                                           // p's ABC-3 moves twice: sampled into an h run
-    assert.deepEqual(runs(), [['h', 'harness-e/check-ticket-health-steps', 'check-ticket-health', 'p']]);
-    await tick(f.ctx);                                                                           // its investigate run gets an agent, told the ticket's project
-    const told = f.lines.find(l => l.startsWith('cli agent.sh agent:dispatch ') && l.includes('ticket-project=p'));
-    assert.ok(told?.includes(`ticket-project-folder=${join(f.dir, 'projects', 'p')}`), f.lines.join('\n'));
-    assert.match(told, /seats=.*in-planning.{0,3}:\[.{0,2}ABC-3 A/, 'ASS-240 AC1: the ticket project\'s limits and seat holders (plan.js seatsOf)');
+    await tick(f.ctx);                                                                           // p's ABC-3 moves twice: no health run
+    assert.ok(f.lines.some(l => / ABC-3 A backlog → committed/.test(l)), f.lines.join('\n'));
+    assert.deepEqual(runs(), []);
+    assert.deepEqual(said(), [`engines ${own}: check-ticket-health-sample-every, check-ticket-health-steps are obsolete and ignored (ASS-450: the ticket health check is removed); remove them`]);
+    assert.ok(!f.lines.some(l => /^error /.test(l)), f.lines.join('\n'));
     clock += 300_000;
     await tick(f.ctx);                                                                           // h's check-health fires; p has none
-    assert.deepEqual(runs().filter(r => r[2] === 'check-health'), [['h', 'harness-e/check-health-steps', 'check-health', null]]);
+    assert.deepEqual(runs(), [['h', 'harness-e/check-health-steps', 'check-health']]);
+    assert.ok(!runs().some(r => r[2] === 'check-ticket-health' || /check-ticket-health/.test(r[1])), JSON.stringify(runs()));
+    assert.equal(said().length, 1, 'said once per engine');
   } finally {
     delete process.env.FAKE_HOLD;
     f.ctx.stopAgents();
   }
 });
 
-test('tick: timers start check-health and check-variation-appeal runs at their intervals, state changes are sampled for check-ticket-health, and no turn fires self-healing', async () => {
+test('tick: timers start check-health and check-variation-appeal runs at their intervals, no state change starts a ticket health check (ASS-450), and no turn fires self-healing', async () => {
   const f = controlFixture();
   edit(f, engineFile(f), e => {
-    Object.assign(e, { 'check-health-interval-seconds': 300, 'check-variation-appeal-interval-seconds': 600, 'check-ticket-health-sample-every': 2 });
-    e['check-ticket-health-steps'] = [{ id: 'check-ticket-health', sequence: 1, action: { type: 'state-engine', engine: 'investigate-gap' }, 'exit-events': [{ condition: { 'is-done': true } }] }];
+    Object.assign(e, { 'check-health-interval-seconds': 300, 'check-variation-appeal-interval-seconds': 600 });
     e['check-variation-appeal-steps'] = [{ id: 'check-variation-appeal', sequence: 1, action: { type: 'state-engine', engine: 'investigate-gap' }, 'exit-events': [{ condition: { 'is-done': true } }] }];
   });
   // A stale self-healing-trigger left in harness.json fires nothing: self-healing starts only from check-health's assess step.
@@ -200,12 +206,11 @@ test('tick: timers start check-health and check-variation-appeal runs at their i
   let clock = f.ctx.started.getTime();
   f.ctx.now = () => new Date(clock);
   try {
-    await tick(f.ctx);                                                                           // A: backlog → committed → plan is 2 changes: sampled
-    assert.deepEqual(runs(), [['example-development/check-ticket-health-steps', 'check-ticket-health', 'ABC-3', 'A']]);
-    assert.equal(f.assignments()['transient-state-engines'][0].parent['ticket-project'], 'p');
+    await tick(f.ctx);                                                                           // A: backlog → committed → plan is 2 changes: no run (ASS-450)
+    assert.deepEqual(runs(), []);
     clock += 300_000;
     await tick(f.ctx);
-    assert.deepEqual(runs().slice(1), [['investigate-gap', null, null, null], ['example-development/check-health-steps', 'check-health', null, null]]);
+    assert.deepEqual(runs(), [['example-development/check-health-steps', 'check-health', null, null]]);
     clock += 300_000;
     await tick(f.ctx);                                                                           // check-health again? no: one at a time. Appeal: the ticket has two variations
     assert.deepEqual(runs().filter(r => r[1] === 'check-health').length, 1);

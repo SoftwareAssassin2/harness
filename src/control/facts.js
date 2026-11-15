@@ -69,7 +69,7 @@ const blocks = value => (Array.isArray(value) ? value.join(', ') : (value ? 'spr
 // where }; undefined with no issue, or no harness project named.
 export function fixTicketIn(issue, project, harness) {
   if (!issue || issue === 'dependency') return undefined;   // ASS-390: a dependency is waited on at Build's Await Sequential Merge, never ticketed
-  if (issue === 'rate-limit' || issue === 'credentials' || issue === 'image') return undefined;   // ASS-391, ASS-395: a rate limit is waited out, a credential held or the operator's; ASS-392: an image issue is repaired by Repair Image on the Mac; never ticketed
+  if (issue === 'rate-limit' || issue === 'credentials' || issue === 'image' || issue === 'vm') return undefined;   // ASS-391, ASS-395: a rate limit is waited out, a credential held or the operator's; ASS-392: an image issue is repaired by Repair Image on the Mac; ASS-427: a VM issue by Repair the VM, in place and in its source; never ticketed
   if (issue === 'project' && !isHarnessProject(harness, project)) return { project, where: 'its own ticket system' };
   const home = harnessProject(harness);
   return home ? { project: home, where: 'the harness project\'s backlog' } : undefined;
@@ -79,6 +79,8 @@ export function fixTicketIn(issue, project, harness) {
 const ISSUE = { harness: 'a harness issue', project: 'a project issue', environment: 'an environment issue', dependency: 'a wait for a dependency merge request', 'rate-limit': 'a Claude rate limit (ASS-391)', credentials: 'a missing or failing credential (ASS-395)' };
 // ASS-392: an image issue — the project's golden image, or the ticket's VM built from it.
 ISSUE.image = 'an image issue (the project\'s golden image, or the ticket\'s VM built from it)';
+// ASS-427: a VM issue — fixable in the ticket's VM, its source the golden image or the harness's VM setup.
+ISSUE.vm = 'a VM issue (fixable in place in the ticket\'s VM; its source the golden image or the harness\'s VM setup)';
 
 // What grouped-blocked's Check on the Latest Master answered (ASS-163,
 // project:check-on-master's on-master), for the prompts after it: present
@@ -174,6 +176,21 @@ export function ticketFacts(ctx, project, ticket, variation, since, vm) {
   };
 }
 
+// sandboxRefusedFeedback(output) — ASS-428 AC4: a confined host agent whose
+// agent.sh write the sandbox refused names each such command in its output's
+// sandbox-refused (dispatch.js withSandboxRefused): the variation's health,
+// { short: "sandbox refused <command>[, <command>…]", long: why and what
+// to do }, so the operator sees which command, not a vague block; null when
+// the output names none.
+export function sandboxRefusedFeedback(output) {
+  const commands = [...new Set([output?.['sandbox-refused'] ?? []].flat().filter(c => typeof c === 'string' && c.trim()).map(c => c.trim()))];
+  if (!commands.length) return null;
+  return {
+    short: `sandbox refused ${commands.join(', ')}`,
+    long: `sandbox refused ${commands.join(', ')}: the host agent's agent.sh write under data/ failed with "Operation not permitted". Only a bare agent.sh command line, its content given by file path, runs outside the sandbox (engines/grouped-engines.md, "Host agents give agent.sh its content by file"); a pipe, redirect or heredoc runs it sandboxed.`,
+  };
+}
+
 // blockHistory(variation) — what Blocked's prompts learn from (ASS-107,
 // operator 2026-10-24): every entry into Blocked anew in the variation's
 // state-changes, counted by the step it came from (cameFrom), a step it
@@ -186,7 +203,9 @@ const ENDED = {
   // ASS-384: a run that sent the ticket back to fix its own branch (ticket:own-branch-fix).
   // ASS-390: one whose check passed on re-check, whose fix merge request merged, or sent to wait for its dependency.
   // ASS-392: one whose image Repair Image repaired, verified on a VM from it (vm:image-recheck).
-  done: b => `${b['image-verified'] === true ? `its image repaired (${b['ai-feedback-short'] ?? 'no note'}), verified on a VM from it` : b['recheck-passed'] === true ? 'passed on re-check, nothing to fix' : b['needs-fix'] === false ? 'nothing wrong found'
+  // ASS-427: one whose VM Repair the VM fixed in place, the same change made to its source for later VMs.
+  done: b => `${b['image-verified'] === true && b['in-place'] === true && b.fixed === true ? `its VM fixed in place (${b['ai-feedback-short'] ?? 'no note'}), its source (${b.source ?? '?'}: ${b['source-change'] ?? '?'}) fixed for later VMs${b['golden-queued'] === true ? ', queued behind a running build' : ''}, verified on its VM`
+    : b['image-verified'] === true ? `its image repaired (${b['ai-feedback-short'] ?? 'no note'}), verified on a VM from it` : b['recheck-passed'] === true ? 'passed on re-check, nothing to fix' : b['needs-fix'] === false ? 'nothing wrong found'
     : b['awaits-dependency'] === true ? `only waiting for its dependency merge request (${b.dependency?.key ?? b.dependency?.url ?? '?'}): sent to Await Sequential Merge`
     // ASS-391: a rate limit, resumed on the API key fallback, after its reset, or with none recorded; ASS-395: its project held by its credentials.
     : b['api-fallback'] === true ? `rate limited (${b['rate-limit']?.kind ?? '?'}): resumed on the API key fallback`

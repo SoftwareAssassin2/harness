@@ -2,7 +2,7 @@
 // Planning and Total Time Executing, from a variation's state-changes.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { agentTime, tokenSpend, planningTime, executingTime, ticketLines, testCounts, quickLines, defaultTab, needsYou, tabBar, ticketTabs, TABS, tabsOf, PANEL, panelWidth, tabWidth, stripLines } from '../../src/tui/ticket.js';
+import { agentTime, tokenSpend, planningTime, executingTime, ticketLines, testCounts, quickLines, defaultTab, needsYou, tabBar, ticketTabs, TABS, tabsOf, PANEL, panelWidth, tabWidth, stripLines, vmHeld } from '../../src/tui/ticket.js';
 
 const H = 3600e3;
 const at = hours => new Date(Date.UTC(2026, 9, 12, 8) + hours * H).toISOString().replace('.000', '');
@@ -330,7 +330,7 @@ test('ASS-184 AC2: the title takes at most two lines; a manual priority shows wi
   assert.equal(out[3], '');
   assert.ok(out.includes('Priority 1 🪪 · Points 2'));
   const at = out.findIndex(l => l.startsWith('MRs:'));
-  assert.deepEqual(out.slice(at, at + 4), ['MRs: !1 Open Running', '     !2 Open Running', '     !3 Open Running', '     +2 more — tab 2']);
+  assert.deepEqual(out.slice(at, at + 4), ['MRs: !1 Open Running', '     !2 Open Running', '     !3 Open Running', '     +2 more — tab 3']);   // the Merge requests tab (ASS-437)
   assert.ok(out.every(l => visible(l) <= PANEL - 4), out.join('\n'));
   const bare = quickLines({ icon: '✨', key: 'ABC-1', variation: {} }, { status: 'Backlog', agents: [], now: NOW }).map(strip);
   assert.deepEqual(bare.filter(l => /^(MRs|Tests|Health|Branch):/.test(l) || l.startsWith('Spend')), ['MRs: —', 'Tests: —', 'Health: —', 'Spend — · Agent time —', 'Branch: —']);
@@ -359,36 +359,37 @@ test('ASS-184 AC4: the screen opens on Actions when a gate waits, else Questions
   assert.equal(needsYou(gate, 2), 'Human Review — tab 1');
   assert.equal(needsYou({ step: { name: 'Build' }, choices: approve }, 0), 'Approve leaving Build — tab 1');
   assert.equal(needsYou({ title: 'Pending requirements change', step: { name: 'Build' }, choices: approve }, 0), 'Requirements changed — tab 1');
-  assert.equal(needsYou(null, 1), '1 open question — tab 4');
-  assert.equal(needsYou(null, 2), '2 open questions — tab 4');
+  assert.equal(needsYou(null, 1), '1 open question — tab 5');   // ASS-437: Merge requests third
+  assert.equal(needsYou(null, 2), '2 open questions — tab 5');
   assert.equal(needsYou(null, 0), null);
 });
 
 test('a gate with nothing to choose (Awaiting Answers: its exit is no open questions) sends the operator to Questions, not Actions', () => {
   const gate = { step: { name: 'Awaiting Answers', action: { type: 'human' } }, choices: [] };
   assert.equal(defaultTab(gate, 1), 'questions');
-  assert.equal(needsYou(gate, 1), '1 open question — tab 4');
+  assert.equal(needsYou(gate, 1), '1 open question — tab 5');
   assert.equal(defaultTab(gate, 0), 'chat');
   assert.equal(needsYou(gate, 0), null);
 });
 
-test('ASS-262 AC4: without the Chat tab, four tabs numbered 1–4, the screen opening on Details where it would have on Chat', () => {
+test('ASS-262 AC4: without the Chat tab, five tabs numbered 1–5 (ASS-437), the screen opening on Details where it would have on Chat', () => {
   const approve = [{ decision: 'Approve', leadsTo: 'Done' }];
   const gate = { step: { name: 'Human Review', action: { type: 'human' } }, choices: approve };
-  assert.deepEqual(tabsOf(false).map(([id]) => id), ['actions', 'details', 'history', 'questions']);
+  assert.deepEqual(tabsOf(false).map(([id]) => id), ['actions', 'details', 'merges', 'history', 'questions']);
   assert.equal(tabsOf(true), TABS);
   assert.deepEqual([defaultTab(gate, 2, false), defaultTab(null, 2, false), defaultTab(null, 0, false)], ['actions', 'questions', 'details']);
-  assert.match(strip(tabBar('details', 100, {}, tabsOf(false))), /^┌ 1 Actions │ 2 Details │ 3 History │ 4 Questions ─+$/);
+  assert.match(strip(tabBar('details', 100, {}, tabsOf(false))), /^┌ 1 Actions │ 2 Details │ 3 Merge requests │ 4 History │ 5 Questions ─+$/);
   const out = ticketTabs({ tab: 'details', panes: [{ lines: ['detail one'] }], panel: ['key'], columns: 120, height: 3, tabs: tabsOf(false) });
-  assert.match(strip(out[0]), /^┌ 1 Actions │ 2 Details │ 3 History │ 4 Questions ─+┬ Ticket ─+┐$/);
+  assert.match(strip(out[0]), /^┌ 1 Actions │ 2 Details │ 3 Merge requests │ 4 History │ 5 Questions ─+┬ Ticket ─+┐$/);
 });
 
-test('ASS-184 AC1/AC4: five tabs in order, numbered; the active one alone in reverse video', () => {
-  assert.deepEqual(TABS.map(([id]) => id), ['actions', 'details', 'history', 'questions', 'chat']);
+test('ASS-184 AC1/AC4, ASS-437 AC2: six tabs in order, numbered, Merge requests after Details; the active one alone in reverse video', () => {
+  assert.deepEqual(TABS.map(([id]) => id), ['actions', 'details', 'merges', 'history', 'questions', 'chat']);
   const bar = tabBar('history', 100);
-  assert.match(strip(bar), /^┌ 1 Actions │ 2 Details │ 3 History │ 4 Questions │ 5 Chat ─+$/);
+  assert.match(strip(bar), /^┌ 1 Actions │ 2 Details │ 3 Merge requests │ 4 History │ 5 Questions │ 6 Chat ─+$/);
   assert.equal(strip(bar).length, 100);
-  assert.deepEqual([...bar.matchAll(/\x1b\[7m([^\x1b]*)\x1b\[0m/g)].map(m => m[1]), [' 3 History ']);
+  assert.deepEqual([...bar.matchAll(/\x1b\[7m([^\x1b]*)\x1b\[0m/g)].map(m => m[1]), [' 4 History ']);
+  assert.deepEqual([...tabBar('merges', 100).matchAll(/\x1b\[7m([^\x1b]*)\x1b\[0m/g)].map(m => m[1]), [' 3 Merge requests ']);
 });
 
 test('ASS-184 AC1/AC2: the tabbed box — the tab bar over the active tab\'s panes, the panel 40 wide at the right, every row the screen\'s width', async () => {
@@ -419,7 +420,7 @@ test('ASS-185 AC1: below 100 columns the panel is a 3-line strip above the tabs,
   const out = ticketTabs({ tab: 'details', panes: [{ lines: ['detail one'] }], panel: ['one', 'two', 'three'], columns: 96, height: 4 });
   assert.equal(out.length, 3 + 6);
   assert.deepEqual(out.slice(0, 3).map(strip), ['one', 'two', 'three']);
-  assert.match(strip(out[3]), /^┌ 1 Actions │ 2 Details │ 3 History │ 4 Questions │ 5 Chat ─+┐$/);
+  assert.match(strip(out[3]), /^┌ 1 Actions │ 2 Details │ 3 Merge requests │ 4 History │ 5 Questions │ 6 Chat ─+┐$/);
   assert.match(strip(out[4]), /^│ detail one +│$/);
   assert.match(strip(out.at(-1)), /^└─+┘$/);
   assert.ok(out.slice(3).every(l => visible(l) === 96), out.map(visible).join(','));
@@ -447,13 +448,13 @@ test('ASS-185 AC1: the strip — key · variation · title; state · Needs you; 
 
 test('ASS-185 AC2: Actions shows a red ● while a gate waits, Questions its open count and a red ●; labels stay whole, active or not', () => {
   const bar = tabBar('details', 100, { gate: true, open: 2 });
-  assert.match(strip(bar), /^┌ 1 Actions ● │ 2 Details │ 3 History │ 4 Questions \(2\) ● │ 5 Chat ─+$/);
+  assert.match(strip(bar), /^┌ 1 Actions ● │ 2 Details │ 3 Merge requests │ 4 History │ 5 Questions \(2\) ● │ 6 Chat ─+$/);
   assert.match(bar, /Questions \(2\) \x1b\[31m●/);
   assert.equal(strip(bar).length, 100);
   assert.match(bar, /\x1b\[31m●/);
-  assert.match(strip(tabBar('actions', 100, { gate: true, open: 0 })), /^┌ 1 Actions ● │ 2 Details │ 3 History │ 4 Questions │ 5 Chat/);
+  assert.match(strip(tabBar('actions', 100, { gate: true, open: 0 })), /^┌ 1 Actions ● │ 2 Details │ 3 Merge requests │ 4 History │ 5 Questions │ 6 Chat/);
   assert.match(tabBar('actions', 100, { gate: true }), /^┌\x1b\[7m 1 Actions \x1b\[31m●\x1b\[39m \x1b\[0m/, 'the ● keeps the reverse video');
-  assert.match(strip(tabBar('chat', 100, { gate: false, open: 0 })), /^┌ 1 Actions │ 2 Details │ 3 History │ 4 Questions │ 5 Chat ─+$/);
+  assert.match(strip(tabBar('chat', 100, { gate: false, open: 0 })), /^┌ 1 Actions │ 2 Details │ 3 Merge requests │ 4 History │ 5 Questions │ 6 Chat ─+$/);
 });
 
 // ASS-196: an overlap is stored once — on the ticket whose Find Dependencies
@@ -598,4 +599,81 @@ test('ASS-355: the Dependencies field lists each dependency on its own line with
   ]);
   const plain = ticketLines({ key: 'B-1', title: 'Backlog', dependencies: ['B-2', 'B-3'], variation: {} }, { status: '', stepName: id => id, prompted: () => false, agents: [], columns: 120 }).details.map(strip);
   assert.equal(plain.find(l => l.startsWith('Dependencies')).slice(28), 'B-2, B-3');
+});
+
+// ===== ASS-437: a ticket's merge requests on a tab of their own =====
+const MR_TICKET = {
+  icon: '✨', key: 'ABC-1', title: 'T',
+  variation: {
+    name: 'A',
+    build: { branch: 'change/ABC-1', 'branch-url': 'http://b/ABC-1', worktree: '.worktrees/ABC-1', 'worktree-folder': '/src/repo/.worktrees/ABC-1' },
+    'merge-request': [
+      { id: 1, key: '!12', url: 'http://mr/12', status: 'Open', 'build-status': 'Passed', 'build-url': 'http://ci/12' },
+      { id: 2, key: null, url: null, status: 'Not Created', repository: 'https://gitlab.com/g/api.git', branch: 'change/ABC-1-api', contents: 'the endpoint and its migration', 'depends-on': [1] },
+      { id: 3, key: null, url: null, status: 'Closed', repository: 'https://gitlab.com/g/web', branch: 'change/ABC-1-web', contents: 'nothing changed', 'depends-on': [] },
+    ],
+  },
+};
+const mrLines = (t, columns = 100) => ticketLines(t, { status: 'Build', stepName: id => id, prompted: () => false, agents: [], columns, steps: [] });
+
+test('ASS-437 AC3: the Merge requests tab shows the branch and worktree, linked, then each merge request: opened (key, status, build status, linked), planned and not opened (id, status, repository, branch, contents, what it waits on)', () => {
+  const { merges } = mrLines(MR_TICKET);
+  assert.deepEqual(merges.map(strip), [
+    `${'Branch'.padEnd(28)}change/ABC-1`,
+    `${'Worktree'.padEnd(28)}.worktrees/ABC-1`,
+    '',
+    'Merge requests',
+    '  !12  Open  Passed',
+    '  MR 2  Not Created (planned)  api  change/ABC-1-api',
+    '      the endpoint and its migration',
+    '      after MR 1',
+    '  MR 3  Closed (not opened)  web  change/ABC-1-web',
+    '      nothing changed',
+  ]);
+  assert.ok(merges[0].includes('\x1b]8;;http://b/ABC-1\x1b\\change/ABC-1\x1b]8;;\x1b\\'));                       // as the Build column linked them
+  assert.ok(merges[1].includes('\x1b]8;;file:///src/repo/.worktrees/ABC-1\x1b\\.worktrees/ABC-1\x1b]8;;\x1b\\'));
+  const opened = merges.find(l => strip(l).includes('!12'));
+  assert.ok(opened.includes('\x1b]8;;http://mr/12\x1b\\!12\x1b]8;;\x1b\\') && opened.includes('\x1b[32m\x1b]8;;http://ci/12\x1b\\Passed'), opened);   // linked; Passed green
+  assert.ok(!merges.some(l => /\x1b\]8;;[^\x1b]+\x1b\\MR [23]/.test(l)));                                        // the unopened ones unlinked
+});
+
+test('ASS-437 AC3: a planned merge request\'s contents wrap to the tab\'s width, to be read in full', () => {
+  const long = { ...MR_TICKET, variation: { ...MR_TICKET.variation, 'merge-request': [{ ...MR_TICKET.variation['merge-request'][1], contents: 'word '.repeat(40).trim() }] } };
+  const { merges } = mrLines(long, 40);
+  const body = merges.slice(merges.indexOf('Merge requests') + 2).map(strip);
+  assert.ok(body.length > 3, body.join('\n'));
+  assert.ok(body.every(l => l.startsWith('      ') && l.length <= 40), body.join('\n'));
+  assert.equal(body.slice(0, -1).join(' ').replace(/\s+/g, ' ').trim(), 'word '.repeat(40).trim());
+  assert.equal(body.at(-1), '      after MR 1');
+});
+
+test('ASS-437 AC3: with no merge requests, branch or worktree the tab says so', () => {
+  const { merges } = mrLines({ icon: '✨', key: 'ABC-2', title: 'T', variation: { name: 'A' } });
+  assert.deepEqual(merges.map(strip), [`${'Branch'.padEnd(28)}—`, `${'Worktree'.padEnd(28)}—`, '', 'Merge requests', '  none']);
+});
+
+test('ASS-437 AC4: the Details tab has no Merge requests section; its Branch and Worktree fields stay', () => {
+  const details = mrLines(MR_TICKET).details.map(strip);
+  assert.ok(!details.some(l => /Merge requests|!12|MR 2|MR 3/.test(l)), details.join('\n'));
+  assert.ok(details.some(l => /^Branch +change\/ABC-1$/.test(l)) && details.some(l => /^Worktree +\.worktrees\/ABC-1$/.test(l)));
+  assert.match(details.at(-1), /^QA/);                                                                            // the last field now
+});
+
+test('ASS-437 AC5: the quick-details panel still lists up to three merge requests and the branch', () => {
+  const panel = quickLines(MR_TICKET, { status: 'Build', agents: [], now: new Date(at(1)) }).map(strip);
+  assert.ok(panel.includes('MRs: !12 Open Passed') && panel.includes('     MR 2 planned') && panel.includes('     MR 3 closed, not opened'), panel.join('\n'));
+  assert.ok(panel.includes('Branch: change/ABC-1'));
+});
+
+test('ASS-427 AC7: a variation whose VM the operator holds running (vm:hold) says so on its screen and its quick panel — who, since when, the note; none when not held', () => {
+  const hold = { by: 'ada', since: '2026-11-14T19:00:00Z', note: 'adding bats by hand' };
+  const variation = { name: 'A', vm: { name: 'abc-1770-a' }, 'vm-hold': hold, 'local-testing': {}, 'state-changes': [] };
+  assert.equal(vmHeld(variation), 'abc-1770-a kept running by ada since 2026-11-14 19:00 UTC: adding bats by hand');
+  const details = ticketLines({ key: 'ABC-1770', title: 'T', variation }, { status: 'Blocked for Human', stepName: id => id, prompted: () => false, agents: [], columns: 120, steps: [] }).details;
+  assert.ok(details.some(l => /^VM held +abc-1770-a kept running by ada since 2026-11-14 19:00 UTC: adding bats by hand$/.test(l)), details.join('\n'));
+  const panel = quickLines({ key: 'ABC-1770', title: 'T', variation }, { status: 'Blocked for Human', now: new Date('2026-11-14T20:00:00Z') }).map(l => l.replace(/\x1b\[[0-9;]*m|\x1b\]8;;[^\x1b]*\x1b\\/g, ''));
+  assert.ok(panel.includes('VM held: ada since 11-14 19:00 UTC'), panel.join('\n'));
+  const { 'vm-hold': _, ...free } = variation;
+  assert.equal(vmHeld(free), null);
+  assert.ok(!ticketLines({ key: 'ABC-1770', title: 'T', variation: free }, { status: 'Build', stepName: id => id, prompted: () => false, agents: [], columns: 120, steps: [] }).details.some(l => l.startsWith('VM held')));
 });

@@ -10,12 +10,12 @@ Ticket {ticket} in project {project} is blocked by its environment. Fix whatever
    - remove a stopped or stale compose stack of the project's, or a container left over;
    - re-run a failed setup step;
    - clear a stale cache or regenerate a generated file the step reads;
-   - a recorded test command that no longer runs as recorded: record it again through `{agent-sh} automated-tests:record {project} {ticket} {variation}`, never by editing its file;
+   - a recorded test command that no longer runs as recorded: record it again through `{agent-sh} automated-tests:record {project} {ticket} {variation} <tests-file>`, <tests-file> the absolute path of a temp file of your own holding the whole JSON list, a bare call, never by editing its file;
    - a stale branch — the worktree on an old or wrong branch, behind its base — reset to the base it should be on (origin's), never discarding the ticket's own commits;
    - save an uncommitted edit aside (git stash, or a copy in a temp folder: mktemp -d), then clean it.
 3. Never: edit harness or product code (a product-code fix is Repair Project's, in a merge request of its own); change a credential, token or secret; discard work you have not saved aside first; push to any branch. A repair that needs any of these is not yours: the operator's.
 4. Re-run what failed. Repaired only when the failing thing now passes.
-5. Write to {ticket-folder}/change-log-{variation}.md (through `{agent-sh} work:append {project} {ticket} {variation} change-log.md`, the entry on stdin) what you found, what you changed (files, commands, containers, branches; where you saved work aside) and why, and what the re-run showed.
+5. Write to {ticket-folder}/change-log-{variation}.md (through `{agent-sh} work:append {project} {ticket} {variation} change-log.md <entry-file>`, <entry-file> the absolute path of a temp file of your own holding the entry, a bare call: never a pipe, redirect or heredoc into agent.sh) what you found, what you changed (files, commands, containers, branches; where you saved work aside) and why, and what the re-run showed.
 
 Quote or cite only files and output you have actually read in this run; never attribute a rule to a file you haven't opened.
 

@@ -11,8 +11,9 @@ set -euo pipefail
 # { state: <start>, state-engine: <sub-engine> }, a sub-state change appended
 # after the move — so control starts the run there (steps.js); given an
 # <output-json> object too, the sub-status keeps it as `output`, the run's
-# structured-output to start from (ASS-124: what a ticket health check found,
-# for Blocked's repair step). Fails, writing nothing, unless the variation is
+# structured-output to start from (ASS-124; its one caller, the ticket
+# health check's ticket:repair-environment, was removed with that check,
+# ASS-450). Fails, writing nothing, unless the variation is
 # at <from-state>, or on such a start step, or on an output that is not an
 # object or comes without a start step.
 #

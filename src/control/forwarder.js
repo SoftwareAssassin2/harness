@@ -16,6 +16,21 @@
 // three that once took a file in /mnt/ticket, which is read-only: ASS-182;
 // merge-request:update and :upload-image: ASS-238; merge-request:reply:
 // ASS-239), at most STDIN_CAP bytes.
+//
+// ASS-435: a GCP workstation's agents reach it the same way, at
+// http://127.0.0.1:<port> on the workstation — the forwarder's port
+// reverse-forwarded there by the workstation's connection (ASS-433) — with a
+// token vm:start put in the setup's runtime folder and bound, in
+// vm-tokens.json, under the variation's machine
+// (workstation:<project>:<id>:<folder>), so every call is authorized against
+// the binding as a VM's is. A workstation has no mount of the ticket folder,
+// only a read-only copy in the variation's folder (<folder>/ticket), so after
+// each call the forwarder runs for such a binding — every one: a call's
+// writes are not known beforehand — the copy is brought up to date
+// (machine-workstation.js syncTicketCopy: rsync over the connection) before
+// the call's exit is sent (AC4): an agent reads its own writes there as soon
+// as agent.sh returns. A copy that fails is said on the call's stderr, the
+// exit code the command's own.
 import http from 'node:http';
 import { spawn } from 'node:child_process';
 import { readFileSync } from 'node:fs';
@@ -23,6 +38,7 @@ import { createHash, timingSafeEqual } from 'node:crypto';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { flattenSprint } from './rank.js';
+import { syncTicketCopy } from './machine-workstation.js';
 import { dataDir } from '../data-folder.js';
 
 const ALLOW = JSON.parse(readFileSync(join(import.meta.dirname, 'forwarder-allowlist.json'), 'utf8'));
@@ -39,8 +55,9 @@ const same = (a, b) => typeof a === 'string' && a.length === b.length && timingS
 // as an agent one assigned to the binding's ticket variation (agents change
 // from step to step; the VM, and its token, stay); each it names as stdin
 // "-", the content on stdin (ASS-182: never a path, of the VM's or the Mac's);
-// and no more arguments than its "max-args" allows (ASS-298: work:write's
-// optional trailing file path is the Mac's alone).
+// and no more arguments than its "max-args" allows (ASS-298, ASS-428: the
+// optional trailing file path of work:write, work:append and the others is
+// the Mac's alone).
 // A command whose rule says "fast-track": true
 // (ASS-151: vm:build-golden-start, vm:golden-status — a golden-image rebuild
 // ticket's work on the Mac) runs only for a binding fastTracked(binding)
@@ -117,7 +134,13 @@ export function startForwarder({ root, env = process.env, port, log = () => {} }
       child.stdout.on('data', send('o'));
       child.stderr.on('data', send('e'));
       child.on('error', error => res.end(`${JSON.stringify({ e: Buffer.from(`${error.message}\n`).toString('base64'), exit: 127 })}\n`));
-      child.on('close', (code, signal) => res.end(`${JSON.stringify({ exit: code ?? (signal === 'SIGKILL' ? 137 : 143) })}\n`));
+      const exit = (code, signal) => `${JSON.stringify({ exit: code ?? (signal === 'SIGKILL' ? 137 : 143) })}\n`;
+      child.on('close', (code, signal) => {
+        if (!a.vm?.startsWith('workstation:')) { res.end(exit(code, signal)); return; }
+        syncTicketCopy(a.vm.slice('workstation:'.length), a.binding['ticket-folder'], { env })
+          .catch(error => { log('forwarder', `SYNC ${a.vm} failed: ${error.message}`); send('e')(Buffer.from(`agent.sh: the ticket folder's copy on the workstation could not be brought up to date: ${(error.stderr || error.message).trim()}\n`)); })
+          .finally(() => res.end(exit(code, signal)));
+      });
       res.on('close', () => { if (child.exitCode === null) child.kill('SIGTERM'); });
     });
   });

@@ -257,6 +257,14 @@ test('ASS-358: a separator\'s text is centred in its line, in its color; cut to 
     assert.match(out[4], /^├\x1b\[34m.*\x1b\[0m┤$/);
     assert.match(stripped(out[4]), columns >= 30 ? new RegExp(LABEL) : /^├ pla[^─]*… ┤$/);
   }
+  // ASS-426: the sprint grid's longer, counted label is cut the same way.
+  const COUNTED = 'planning (12) ↓ · ↑ in progress (6)';
+  for (const columns of [60, 39, 30, 20, 8]) {
+    const out = boxTable(['A'], [['x'], ['y']], { columns, stretch: 0, dashed: true, separators: () => ({ color: '34', text: COUNTED }) });
+    assert.equal(out.length, 7, String(columns));
+    assert.equal(visible(out[4]), columns, out[4]);
+    assert.match(stripped(out[4]), columns >= 39 ? /^├─* planning \(12\) ↓ · ↑ in progress \(6\) ─*┤$/ : /^├ pla[^─]*… ┤$/, String(columns));
+  }
 });
 
 test('ASS-358: a restyled table takes the same lines, scrolls and selects as a dashed one; the solid line is never reversed and carries the thumb', () => {

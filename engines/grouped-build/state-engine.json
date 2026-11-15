@@ -45,7 +45,8 @@
                 "type": "prompt",
                 "prompt": "generate-automated-tests-grouped",
                 "agent-count": 1,
-                "run-in-dev-container": false
+                "run-in-dev-container": false,
+                "model": "claude-opus-5-5"
             },
             "exit-events": [
                 {
@@ -90,7 +91,8 @@
                 "type": "prompt",
                 "prompt": "generate-solution-grouped",
                 "agent-count": 1,
-                "run-in-dev-container": true
+                "run-in-dev-container": true,
+                "model": "claude-opus-5-5"
             },
             "exit-events": [
                 {
@@ -113,7 +115,8 @@
                 "type": "prompt",
                 "prompt": "check-on-merge-request-build-grouped",
                 "agent-count": 1,
-                "run-in-dev-container": true
+                "run-in-dev-container": true,
+                "model": "claude-opus-5-5"
             },
             "exit-events": [
                 {
@@ -387,7 +390,8 @@
                 "type": "prompt",
                 "prompt": "code-review-grouped",
                 "agent-count": 1,
-                "run-in-dev-container": false
+                "run-in-dev-container": false,
+                "model": "claude-sonnet-5"
             },
             "exit-events": [
                 {
@@ -434,7 +438,8 @@
                 "type": "prompt",
                 "prompt": "security-review-grouped",
                 "agent-count": 1,
-                "run-in-dev-container": false
+                "run-in-dev-container": false,
+                "model": "claude-sonnet-5"
             },
             "exit-events": [
                 {

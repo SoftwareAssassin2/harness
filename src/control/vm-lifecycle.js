@@ -101,6 +101,16 @@
 // cap lifted), it runs again as its step says: started by the lifecycle, its
 // step neither re-run nor a visit spent.
 //
+// ASS-427 AC7: a variation the operator holds (vm:hold <project> <ticket>
+// <variation> on: its vm-hold, { by, since, note }) has its VM kept running
+// whatever else would stop it — Blocked for Human, a pause, working by hand,
+// a wait for a slot, its dependencies or a rate limit — as one an assignment
+// is on is, and started (or recreated) when it is not running, by the same
+// disk and memory rules as any start, so the operator, or Claude acting for
+// them, can work in it by hand; logged once as the hold begins and once as it
+// is released (vm:hold off), when its step's rules apply again — stopped,
+// where they say so. The TUI shows the hold on the ticket.
+//
 // A step judged while its VM is still starting reads it as down (ASS-133:
 // Check Setup Complete sent a set-up ticket on to Create VM), so a variation
 // at a step that runs its VM, whose recorded VM control has not seen Running
@@ -119,15 +129,18 @@
 // ceiling (ASS-348: 30 minutes, harness.json's vm-up-ceiling-seconds); limactl list is read in
 // the tick to drop VMs no longer Running; the project's match job probes
 // each Running VM not yet in vmsUp before using it.
-import { execFile } from 'node:child_process';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync } from 'node:fs';
+import { readJson } from './read.js';
 import { join } from 'node:path';
 import { statusOf, isHeld, isActive, stepOf, isManual } from './engine.js';
 import { heldKinds, payWith } from './state.js';
 import { planFor } from './plan.js';
 import { holdOf, heldBy } from './dependencies.js';
 import { backoffDelay, held } from './backoff.js';
-import { limaEnv, runsInVm } from './vm.js';
+import { runsInVm } from './vm.js';
+import { machineStatuses, runInMachine, machineOf, onWorkstation } from './machine.js';
+import { entriesOf, onWorkstationVariation, machineUp, whyDown, placementWait } from './workstation-machines.js';
+import { controlPath } from './workstation-connection.js';
 import { diskHeld } from './disk.js';
 import { memoryShort, memoryHeldVm, liftMemoryHolds, unhold } from './host-memory.js';
 import { humanPause, moveTicket } from './moves.js';
@@ -155,7 +168,7 @@ export function rateLimitStop(ctx, state, project, variation) {
   if (!held.length) return null;
   const step = statusOf(project.engines ?? state.engines, project.engineName, variation).detailStep;
   if (step?.action?.type !== 'prompt' || !isActive(step)) return null;
-  const inVm = runsInVm(step), recorded = inVm ? credentialKindOf(ctx, project.id, variation?.vm?.name) : null;
+  const inVm = runsInVm(step), recorded = inVm ? credentialKindOf(ctx, project.id, machineOf(variation)) : null;
   const both = inVm ? recorded === 'both' : existsSync(join(ctx.paths.projects, project.id, '.claude-api'));
   const kind = both ? null : inVm ? recorded : ctx.memory.hostKinds?.get(project.id)?.kind ?? 'claude';
   const capHold = project.json?.['api-cap-hold'] ?? null;
@@ -195,9 +208,22 @@ const rateHealth = (id, key, limit) => ({
 // pending (ASS-387: its wait past VM_WAIT on a pending start logged),
 // dispatching (dispatch.js vmDown's own wait past VM_WAIT logged, ASS-348) },
 // dropped once the VM is up or should not run.
+//
+// ASS-435: a variation on a GCP workstation (its vm { kind: workstation })
+// waits so while its machine there is not up (workstation-machines.js
+// machineUp: the workstation connected, its login live, set up, held by the
+// variation and readied since it last started) — and for as long as that
+// takes, with no VM_WAIT and no ceiling: each way a workstation is down is
+// one control works on (connecting it, setting it up, readying the folder,
+// workstations.js) or the operator must (a sign-in, a failed setup), and its
+// Health says which (workstations.js tend, AC7). Its wait is logged once with
+// why. An unplaced variation of a project in workstation mode waits so while
+// no workstation of its pool is free (placementWait), as a ticket waits for
+// its VM: its Create VM step not run until one is.
 export const VM_WAIT = 2 * 60_000;
 export const NEVER_UP = 'never-up';
 export function awaitsVm(ctx, state, project, variation, who) {
+  if (onWorkstationVariation(variation) || !variation?.vm?.name) return workstationWait(ctx, state, project, variation, who);
   const name = variation?.vm?.name;
   if (!name || (ctx.memory.vmsUp ??= new Set()).has(name) || vmUse(project.engines ?? state.engines, project.engineName, variation) !== 'running') return false;
   const ticket = project.tickets.find(t => t.variations?.includes(variation));
@@ -218,6 +244,38 @@ export function awaitsVm(ctx, state, project, variation, who) {
   }
   if (!w.over) { w.over = true; ctx.log(PHASE, `${who}: its VM ${name} is not running after ${held(VM_WAIT)}; judged as it stands`); }
   return false;
+}
+
+// makesMachine(step) — the step's command is vm:create, which places a variation and readies its machine.
+export const makesMachine = step => /(^|\s)(\.\/)?agent\.sh vm:create\b/.test(step?.action?.command ?? '');
+
+// workstationWait(ctx, state, project, variation, who) — ASS-435's waits
+// (see awaitsVm): true while the variation's step needs its machine and it
+// is not up on its workstation, or, unplaced in workstation mode, none is
+// free; logged once per wait with why, and once as it ends.
+function workstationWait(ctx, state, project, variation, who) {
+  const ticket = project.tickets.find(t => t.variations?.includes(variation));
+  const key = `${project.id} ${ticket?.key} ${variation?.name}`;
+  const waits = (ctx.memory.workstationWaits ??= new Map());
+  let why = null;
+  if (onWorkstationVariation(variation)) {
+    // Its Create VM step (vm:create) makes the machine up itself: never held for it, so its exit is read as it ends.
+    const status = statusOf(project.engines ?? state.engines, project.engineName, variation);
+    if (vmUse(project.engines ?? state.engines, project.engineName, variation) === 'running' && !makesMachine(status.detailStep)) {
+      const id = variation.vm.name;
+      const entry = entriesOf(ctx, project.id)[id];
+      if (!machineUp(entry, ticket?.key, variation.name)) why = whyDown(project.devEnvironments, id, entry, ticket?.key, variation.name, ctx.env.HOME);
+      // Its connection's socket gone (the master ended: dropped, or the workstation stopped) — down now, before the minute's check notices.
+      else if (!existsSync(controlPath(ctx.env, project.id, id))) why = `workstation ${id}'s connection is not open (it dropped, or the workstation stopped); reconnecting`;
+    }
+  } else why = placementWait(ctx, state, project, variation);
+  const was = waits.get(key);
+  if (!why) {
+    if (was) { waits.delete(key); ctx.log(PHASE, `${who}: no longer waits for a workstation`); }
+    return false;
+  }
+  if (was !== why) { waits.set(key, why); ctx.log(PHASE, `${who}: waits: ${why}`); }
+  return true;
 }
 
 // startPending(ctx, state, project, name) — ASS-387: whether the VM's start
@@ -261,13 +319,19 @@ export async function neverUp(ctx, phase, at, name, ceiling) {
 // The project's inventory, data/projects/<p>/vms.json: name → its row.
 const inventoryOf = (ctx, projectId) => {
   const file = join(ctx.paths.projects, projectId, 'vms.json');
-  return existsSync(file) ? JSON.parse(readFileSync(file, 'utf8')) : {};
+  return existsSync(file) ? readJson(file) : {};   // ASS-457: read again if caught half-written; one that never parses skips the tick (read.js)
 };
 
 // credentialKindOf(ctx, projectId, name) — the credential kind the VM's
 // vms.json row records (ASS-215: 'claude' or 'anthropic'; 'both', ASS-217,
 // for a VM holding both, whose agents control pays per dispatch), or null.
-export const credentialKindOf = (ctx, projectId, name) => (name && inventoryOf(ctx, projectId)[name]?.['credential-kind']) || null;
+// `name` is the variation's machine (machine.js machineOf): a workstation's
+// (ASS-435) is its live data holder's, as vm:start recorded it.
+export const credentialKindOf = (ctx, projectId, name) => {
+  const ws = onWorkstation(name);
+  if (ws) return entriesOf(ctx, projectId)[ws.id]?.holder?.['credential-kind'] || null;
+  return (name && inventoryOf(ctx, projectId)[name]?.['credential-kind']) || null;
+};
 
 // declaredVmKind(ctx, id) — the kind the project's VMs are to run on, as
 // ~/.harness/vm-credentials.json declares it now: 'both' (ASS-217: a VM holds
@@ -285,7 +349,8 @@ function declaredVmKind(ctx, id) {
 // inventory knows it, yet its variation is in the sprint — a vm:create that failed before linking it — logged so when it is stopped),
 // paused (ASS-297: the scope of the human pause holding the project, when only that keeps it from running), keep (paused and busy:
 // left as it is till its assignment ends), release (ASS-325: at a `vm: released` step, not held, set aside or paused: to delete),
-// rateLimited (ASS-400: rateLimitStop's, when only that keeps it from running), health (its variation's ai-feedback-long) }.
+// rateLimited (ASS-400: rateLimitStop's, when only that keeps it from running), health (its variation's ai-feedback-long),
+// hold (ASS-427 AC7: its variation's vm-hold, vm:hold's { by, since, note }, or null — held, it is to run, whatever else says not) }.
 function vmsOf(ctx, state, project) {
   const vms = new Map();
   const pause = humanPause(state, project.id);
@@ -296,7 +361,7 @@ function vmsOf(ctx, state, project) {
     vms.set(name, { ticket: e.ticket, variation: e.variation, run: false, kind: e['credential-kind'] ?? null, stamps: e['credential-stamps'] ?? null, unlinked, busy });
   }
   for (const t of project.tickets) for (const v of t.variations ?? []) {
-    if (!v.vm?.name) continue;
+    if (!v.vm?.name || onWorkstationVariation(v)) continue;   // ASS-435: a workstation's machine is workstations.js's
     const use = vmUse(project.engines ?? state.engines, project.engineName, v), free = !v['is-deleted'] && !isHeld(t, v);
     const wants = free && use === 'running', release = free && !pause && use === 'released';
     const busy = state.assignments.some(a => a.project === project.id && a['work-item'] === t.key && a.variation === v.name);
@@ -306,16 +371,16 @@ function vmsOf(ctx, state, project) {
     const run = wants && !waits && !dependsOn.length && !pause && !rateLimited;
     const ready = waits && plan.ready.some(r => r.key === t.key && r.variation === v.name);   // ASS-362: a finished plan, said so
     const paused = wants && pause ? pause : undefined, keep = !!pause && busy;   // ASS-297: paused, stopped once idle, never started
-    vms.set(v.vm.name, { ...vms.get(v.vm.name), ticket: t.key, variation: v.name, state: v['harness-status']?.state, run, waits, ready, dependsOn, busy, paused, keep, release, rateLimited, health: v['ai-feedback-long'] ?? null });
+    const hold = !v['is-deleted'] && v['vm-hold'] ? v['vm-hold'] : null;   // ASS-427 AC7: held running for the operator — whatever its step, pause or wait says
+    vms.set(v.vm.name, { ...vms.get(v.vm.name), ticket: t.key, variation: v.name, state: v['harness-status']?.state, health: v['ai-feedback-long'] ?? null, hold,
+      ...(hold ? { run: true, waits: false, ready: false, dependsOn: [], busy, paused: undefined, keep: false, release: false, rateLimited: null }
+        : { run, waits, ready, dependsOn, busy, paused, keep, release, rateLimited }) });
   }
   return vms;
 }
 
-// Each Lima instance's status, by name.
-const statuses = ctx => new Promise((resolve, reject) => execFile('limactl', ['list', '--format', '{{.Name}}\t{{.Status}}'], { env: limaEnv(ctx.env) }, (error, stdout) => {
-  if (error) reject(new Error(`limactl list: ${error.message}`));
-  else resolve(new Map(stdout.split('\n').filter(Boolean).map(line => line.split('\t'))));
-}));
+// Each machine's status, by name (the machine layer, machine.js, ASS-432: each Lima instance's).
+const statuses = ctx => machineStatuses({ env: ctx.env }).catch(error => { throw new Error(`limactl list: ${error.message}`); });
 
 // superviseVms(ctx, state) — reads, in the tick, which of the projects' VMs
 // are up (memory.vmsUp), so a VM gone down since the last tick — an outage,
@@ -348,14 +413,14 @@ export async function superviseVms(ctx, state) {
 const isUp = (ctx, name) => { (ctx.memory.vmsUp ??= new Set()).add(name); ctx.memory.vmWaits?.delete(name); };
 
 // probe(ctx, name) — whether `name`'s sshd accepts connections yet.
-const probe = (ctx, name) => new Promise((resolve, reject) => execFile('limactl', ['shell', name, '--', 'true'], { env: limaEnv(ctx.env), timeout: 5000 }, error => error ? reject(error) : resolve()));
+const probe = (ctx, name) => runInMachine(name, ['true'], { env: ctx.env, timeout: 5000 }).then(() => {});
 
 // changedKeys(recorded, now) — the credential kinds both stamp whose keychain
 // stamp now is later than the recorded one (ASS-350; ASS-356: later, not merely
 // different — mdat is a fixed-width YYYYMMDDhhmmssZ, so it sorts by time — so
 // stamps cached before a VM's start or refresh, older than those it recorded,
 // are never a change); none when either is unknown.
-const changedKeys = (recorded, now) => (recorded && now ? Object.keys(now).filter(k => recorded[k] && now[k] && now[k] > recorded[k]) : []);
+export const changedKeys = (recorded, now) => (recorded && now ? Object.keys(now).filter(k => recorded[k] && now[k] && now[k] > recorded[k]) : []);
 
 // stampsOf(ctx, id, every) — the project's keychain item stamps (ASS-356):
 // memory.vmStamps' id → { at, stamps } when read less than `every` ms ago,
@@ -363,7 +428,7 @@ const changedKeys = (recorded, now) => (recorded && now ? Object.keys(now).filte
 // null when the read failed — logged once till a read succeeds, and not tried
 // again till `every` has passed.
 export const CREDENTIAL_STAMP_INTERVAL = 300;
-async function stampsOf(ctx, id, every) {
+export async function stampsOf(ctx, id, every) {
   const cache = (ctx.memory.vmStamps ??= new Map()), now = ctx.now().getTime();
   const c = cache.get(id);
   if (c && now - c.at < every) return c.stamps;
@@ -402,6 +467,18 @@ async function rateLimitHealth(ctx, id, name, vm, s) {
   }
 }
 
+// holdLog(ctx, id, name, vm) — ASS-427 AC7: a VM held running for the
+// operator (vm:hold) logged once as its hold begins — control keeps it
+// running, as it keeps one an agent works in, and starts it when stopped —
+// and once as it ends (vm:hold off), its step's rules applying again;
+// memory.vmHolds: the names held when last seen.
+const holdText = h => `vm:hold by ${h.by ?? 'the operator'} since ${h.since ?? '?'}${h.note ? `: ${h.note}` : ''}`;
+function holdLog(ctx, id, name, vm) {
+  const held = (ctx.memory.vmHolds ??= new Set());
+  if (vm.hold && !held.has(name)) { held.add(name); ctx.log(PHASE, `${id} ${name}: held running for the operator (${vm.ticket} ${vm.variation} at ${vm.state}; ${holdText(vm.hold)}): not stopped, and started when stopped, until vm:hold ${id} ${vm.ticket} ${vm.variation} off`); }
+  else if (!vm.hold && held.has(name)) { held.delete(name); ctx.log(PHASE, `${id} ${name}: its operator hold released (vm:hold off); its step's rules apply again`); }
+}
+
 // One project's pass, by `status` (limactl list's, read this tick): each VM
 // not yet reached but Running is probed (ASS-169: a VM is `Running` a few
 // seconds before its sshd accepts connections) — silently, so a VM not yet
@@ -417,6 +494,7 @@ async function match(ctx, id, vms, r, status, diskHold = false, stampEvery = CRE
     if (vm.keep) continue;   // ASS-297: its project paused, an assignment on it: left as it is till that ends
     if (vm.release && vm.busy) continue;   // ASS-325: released, an assignment on it: left as it is till that ends
     const now = ctx.now().getTime(), s = status.get(name);
+    holdLog(ctx, id, name, vm);   // ASS-427 AC7
     await rateLimitHealth(ctx, id, name, vm, s);   // ASS-400
     const holding = `vm-stop/${name}`;   // ASS-349: a stop held for an agent at work in it, logged once per hold
     if (vm.run || !vm.busy || s !== 'Running') ctx.memory.warned.delete(holding);
@@ -428,7 +506,7 @@ async function match(ctx, id, vms, r, status, diskHold = false, stampEvery = CRE
     if (vm.release && s == null) continue;   // ASS-325: deleted already
     if (vm.release) [first, args, did] = [s === 'Running' ? ['vm:stop', id, name] : null, ['vm:delete', id, name], `deleted (${vm.ticket} ${vm.variation} at ${vm.state}: released)`];
     else if (vm.run && s == null) [args, did] = [['vm:create', id, vm.ticket, vm.variation], `recreated (${vm.ticket} ${vm.variation} at ${vm.state}; it had been deleted)`];
-    else if (vm.run && s != null && s !== 'Running') [args, did] = [['vm:start', id, vm.ticket, vm.variation], `started (${vm.ticket} ${vm.variation} at ${vm.state})`];
+    else if (vm.run && s != null && s !== 'Running') [args, did] = [['vm:start', id, vm.ticket, vm.variation], `started (${vm.ticket} ${vm.variation} at ${vm.state}${vm.hold ? '; held for the operator' : ''})`];
     else if (!vm.run && s === 'Running') {
       const why = `${vm.ticket} ${vm.variation} ${vm.state ? `at ${vm.state}` : vm.unlinked ? 'not linked to its variation' : 'is not in the sprint'}${vm.waits ? (vm.ready ? '; planned, waits for a build seat' : '; waits for a slot') : ''}${vm.dependsOn?.length ? `; waits on ${vm.dependsOn.join(', ')}` : ''}${vm.paused ? `; ${vm.paused === 'all' ? 'all projects are' : `${id} is`} paused` : ''}${vm.rateLimited ? `; rate-limited until ${vm.rateLimited.until}, no API fallback` : ''}`;
       if (vm.busy) {   // ASS-349: an assignment on its variation — its agent at work in it — holds the stop till it ends

@@ -13,6 +13,8 @@
 //   a vm: command, code.bash's in_project, vm.bash's vm_of / running_vm), or
 //   re-runs a check that may (REACHES_VM_INDIRECTLY);
 // - an exit condition's script does (vm:setup-complete probes the VM);
+// - its agent, on the host, works in it (ASS-427: Repair the VM's prompt runs
+//   commands in the ticket's VM through vm:run);
 // - it is a pass-through: a host script or none step with no timer and no
 //   person, which finishes at once, whose every way on within its engine (the
 //   engine's own done steps aside) is a step that needs the VM — stopping the
@@ -53,6 +55,7 @@ function needsVm(engine, step, seen = new Set()) {
   if (runsInVm(step)) return 'runs in the VM';
   if (step.action?.type === 'script' && commandReachesVm(step.action.command)) return 'its command reaches the VM';
   if ((step['exit-events'] ?? []).flatMap(e => conditionScripts(e.condition)).some(commandReachesVm)) return 'an exit condition probes the VM';
+  if (step.action?.type === 'prompt' && /\{agent-sh\} vm:run\b/.test(readFileSync(join(ROOT, 'prompts', step.action.prompt, 'prompt.txt'), 'utf8'))) return 'its agent works in the VM from the Mac (vm:run)';
   if (!instant(step) || seen.has(step.id)) return null;
   seen.add(step.id);
   const next = [...new Set((step['exit-events'] ?? []).map(e => e['move-to-state']))].map(id => engine.steps.find(s => s.id === id)).filter(s => s && !s['is-done']);

@@ -1,0 +1,86 @@
+{
+    "description": "Prompt for repairing a blocked ticket's VM in place and its source for later VMs, on the Mac (the grouped engines' Blocked, ASS-427): the smallest fix in the ticket's VM through vm:run, the failing check re-run there; then the same change to its source — the golden image definition through vm:golden-write (queued while a build runs) and vm:golden-add-tool, or a non-secret VM-setup declaration through vm:credentials-declare — the rebuild left to the harness, never waited on; not fixable in place (the Lima template, kernel settings): in-place false, the rebuild path; never a secret; logs what it found and changed, cites only what it read",
+    "supported-command-line-interfaces": [
+        "claude"
+    ],
+    "supported-models": [
+        "claude-opus-5-5",
+        "claude-opus-5",
+        "claude-sonnet-5",
+        "claude-opus-4-8",
+        "claude-opus-4-7"
+    ],
+    "persona": "developer",
+    "input-arguments": [
+        {
+            "name": "project",
+            "description": "Project folder name under data/projects/",
+            "example": "my-project",
+            "required": true
+        },
+        {
+            "name": "ticket",
+            "description": "Ticket number",
+            "example": "ABC-1234",
+            "required": true
+        },
+        {
+            "name": "problem",
+            "description": "The checked analysis of the block: summary, root cause, evidence, its classification",
+            "example": "bats is not in the golden image: the static-policy gate execs it",
+            "required": true
+        }
+    ],
+    "output": {
+        "type": "object",
+        "properties": {
+            "in-place": {
+                "type": "boolean",
+                "description": "true when the problem can be fixed in the ticket's VM; false (the Lima template, kernel settings, the image's build, no VM yet) sends it to the rebuild path, the ticket waiting"
+            },
+            "fixed": {
+                "type": "boolean",
+                "description": "true when fixed in the ticket's VM, the failing check passing there, and the same change made to its source"
+            },
+            "source": {
+                "type": "string",
+                "enum": [
+                    "golden-image",
+                    "vm-setup",
+                    "none"
+                ],
+                "description": "Where the source fix went: the golden image definition, the harness's VM-setup declaration (~/.harness/vm-credentials.json), or none"
+            },
+            "source-change": {
+                "type": "string",
+                "description": "What was written to the source: the file and change, the tool added, the declaration added"
+            },
+            "golden-queued": {
+                "type": "boolean",
+                "description": "true when vm:golden-write queued the definition change because a golden build ran: the harness writes it and rebuilds once that build ends"
+            },
+            "evidence": {
+                "type": "array",
+                "items": {
+                    "type": "string"
+                },
+                "description": "The commands run and what each showed"
+            },
+            "ai-feedback-short": {
+                "type": "string",
+                "description": "Fixed: what was done in the VM and its source; else what the operator must do — one line, shown on the dashboard"
+            },
+            "ai-feedback-long": {
+                "type": "string",
+                "description": "What was found, what was done in the VM and in its source, and what must be done"
+            }
+        },
+        "required": [
+            "in-place",
+            "fixed",
+            "evidence",
+            "ai-feedback-short",
+            "ai-feedback-long"
+        ]
+    }
+}

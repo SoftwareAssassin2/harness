@@ -1,15 +1,16 @@
 // The sprint screen's ticket rows lay their icons out in one-cell columns
-// (ASS-259): c1 ▮ the step color, c2 the type (✦ feature, ✘ bug, ⌕ spike), c3 ☛
-// worked by hand, c4 ↯ fast-tracked, c5 one ⦿ (red: a requirements change waits;
-// else blue: needs the operator; else dim grey: going on with an assumption), c6
-// ⚉ an agent working on that row's ticket and variation — each a blank when it
-// doesn't apply — then c7, two cells, 💺 for a variation holding a planning or
+// (ASS-259): c1 █ the step color, c2 the type (✦ feature, ✘ bug, ⌕ spike), c3 ☛
+// worked by hand, c4 ↯ fast-tracked, c5 one ⦿ (blue: a requirements change waits;
+// else red: needs the operator — swapped by ASS-430; else dim grey: going on with an assumption) —
+// each a blank when it doesn't apply — then two cells (ASS-456; c6's one-cell ⚉ before it), 🤖 for
+// agents working on that row's ticket and variation, else 💻 for a script step running on it, else two
+// blanks — then c7, two cells, 💺 for a variation holding a planning or
 // in-progress seat by the planner (ASS-357), two blanks without — then a blank
 // and the text, so the text starts on the same
 // terminal column on every row. A paused variation's text starts "PAUSED " in
 // blue, "UNASSIGNED " in red for a ticket reassigned away from the operator
 // (ASS-345); one its dependencies hold (ASS-355) gets a second line, "↳ WAITING
-// ON <KEY>" in gold, the ↳ under the key (ASS-360); no 📝 or ⏸️. Every glyph is East Asian Width N with no Emoji property. A
+// ON <KEY>" in gold, the ↳ under the key (ASS-360); no 📝 or ⏸️. Every one-cell glyph is East Asian Width N with no Emoji property. A
 // key in dim text under the grid says what each means.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -17,7 +18,7 @@ import { initialState, handleKey, render } from '../../src/tui/app.js';
 import { visible } from '../../src/tui/text.js';
 import { GLYPHS } from '../../src/tui/screens/shared.js';
 import { seatsOf } from '../../src/control/plan.js';
-import { waitingWho } from '../../src/tui/screens/sprint.js';
+import { waitingWho, priorityPrefix } from '../../src/tui/screens/sprint.js';
 
 const strip = s => s.replace(/\x1b\[[0-9;]*m|\x1b\]8;;[^\x1b]*\x1b\\/g, '');
 const wide = { columns: 200, rows: 80, now: new Date('2026-10-01T16:04:00Z') };
@@ -61,10 +62,14 @@ const out = raw.map(strip);
 // The grid's row for `key` (A-13.A, A-13.B for its variations), raw or stripped.
 const rowOf = (key, lines = out) => lines.find(l => new RegExp(`(^|\\s)${key.replace('.', '\\.')}: `).test(strip(l)));
 // The Ticket cell after the grid's left border and its padding, and its first TEXT cells: the icon columns.
-// TEXT counts UTF-16 units: the six one-cell glyphs, the seat (💺, two units and two cells, or two blanks), a blank.
-const cell = key => rowOf(key).slice(2);
-const TEXT = 9;
+// TEXT counts UTF-16 units: the five one-cell glyphs, 🤖/💻 (ASS-456) and the seat (💺) — each two units and two
+// cells, or two blanks — and a blank: as many units as cells.
+// LEFT: the grid's left border and its padding, then the priority's three cells and a blank (ASS-454).
+const LEFT = 2 + 4;
+const cell = key => rowOf(key).slice(LEFT);
+const TEXT = 10;
 const SEAT = '💺';
+const ROBOT = '🤖', COMPUTER = '💻';
 const prefix = key => cell(key).slice(0, TEXT);
 // What the text starts with on each row: PAUSED for a paused variation, else the key.
 const textOf = key => (['A-2', 'A-9'].includes(key) ? 'PAUSED ' : `${key}: `);
@@ -72,7 +77,7 @@ const KEYS = ['A-1', 'A-2', 'A-3', 'A-4', 'A-5', 'A-6', 'A-7', 'A-8', 'A-9', 'A-
 // The key under the grid: the lines right after its bottom border that start with a key entry.
 const keyLines = lines => {
   const after = lines.slice(lines.findLastIndex(l => /^└/.test(strip(l))) + 1);
-  const end = after.findIndex(l => !/^([▮✦✘⌕☛↯⦿⚉]|💺|PAUSED|UNASSIGNED|AWAITING|AWAITING MERGE) /u.test(strip(l)));
+  const end = after.findIndex(l => !/^([█✦✘⌕☛↯⦿]|\d+|🤖|💻|💺|PAUSED|UNASSIGNED|AWAITING|AWAITING MERGE) /u.test(strip(l)));
   return end < 0 ? after : after.slice(0, end);
 };
 
@@ -90,27 +95,27 @@ test('ASS-259 AC1, AC8: the ticket text starts on the same terminal column on ev
   for (const key of KEYS) assert.equal(cell(key)[TEXT - 1], ' ', key);   // a blank before the text
 });
 
-test('ASS-259 AC1: c1 ▮ step, c2 type, c3 ☛, c4 ↯, c5 ⦿, c6 ⚉ — each one cell, a blank when it does not apply', () => {
+test('ASS-259 AC1: c1 █ step, c2 type, c3 ☛, c4 ↯, c5 ⦿ — each one cell, a blank when it does not apply; then 🤖 (ASS-456; ⚉ before), two cells', () => {
   // Then c7 (ASS-357): 💺 where the planner seats the variation — no limits here, so every one in
   // motion — two blanks for paused (A-2, A-9), worked by hand (A-3), blocked (A-6) and no step (A-10).
   const expect = {
-    'A-1': `▮✦    ${SEAT}`,
-    'A-2': '▮✦☛↯⦿⚉  ',
-    'A-3': '▮✦☛     ',
-    'A-4': `▮✦ ↯  ${SEAT}`,
-    'A-5': `▮✦  ⦿ ${SEAT}`,
-    'A-6': '▮✦  ⦿   ',
-    'A-7': `▮✦  ⦿ ${SEAT}`,
-    'A-8': `▮✦   ⚉${SEAT}`,
-    'A-9': '▮✦      ',
-    'A-10': ' ✦      ',
-    'A-11': `▮✘    ${SEAT}`,
-    'A-12': `▮⌕    ${SEAT}`,
-    'A-13.A': `▮✦    ${SEAT}`,
-    'A-13.B': `▮✦   ⚉${SEAT}`,
+    'A-1': `█✦     ${SEAT}`,
+    'A-2': `█✦☛↯⦿${ROBOT}  `,
+    'A-3': '█✦☛      ',
+    'A-4': `█✦ ↯   ${SEAT}`,
+    'A-5': `█✦  ⦿  ${SEAT}`,
+    'A-6': '█✦  ⦿    ',
+    'A-7': `█✦  ⦿  ${SEAT}`,
+    'A-8': `█✦   ${ROBOT}${SEAT}`,
+    'A-9': '█✦       ',
+    'A-10': ' ✦       ',
+    'A-11': `█✘     ${SEAT}`,
+    'A-12': `█⌕     ${SEAT}`,
+    'A-13.A': `█✦     ${SEAT}`,
+    'A-13.B': `█✦   ${ROBOT}${SEAT}`,
   };
   for (const key of KEYS) assert.equal(prefix(key), `${expect[key]} `, key);
-  assert.ok(rowOf('A-1', raw).includes('m▮\x1b[0m'));                // ▮ in the step's color
+  assert.ok(rowOf('A-1', raw).includes('m█\x1b[0m'));                // █ in the step's color
 });
 
 // The code points of U+2000–U+2BFF whose East Asian Width is not N (A, W, Na or H),
@@ -136,35 +141,41 @@ const eastAsianN = glyph => {
   return cp >= 0x2000 && cp <= 0x2bff && !NOT_N.some(([lo, hi = lo]) => cp >= lo && cp <= hi);
 };
 
-test('ASS-259 AC2: every prefix glyph is East Asian Width N with no Emoji property, one code point, one cell', () => {
-  assert.deepEqual(Object.values(GLYPHS).sort(), [...'▮✦✘⌕☛↯⦿⚉'].sort());
-  for (const glyph of Object.values(GLYPHS)) {
+test('ASS-259 AC2: every one-cell prefix glyph is East Asian Width N (bar ASS-453\'s █, Ambiguous) with no Emoji property, one code point, one cell', () => {
+  assert.deepEqual(Object.values(GLYPHS).sort(), [...'█✦✘⌕☛↯⦿', ROBOT, COMPUTER].sort());   // ASS-456: 🤖 and 💻 for ⚉
+  const ONE_CELL = Object.values(GLYPHS).filter(g => g !== GLYPHS.agent && g !== GLYPHS.script);
+  for (const glyph of ONE_CELL) {
     assert.equal([...glyph].length, 1, glyph);
-    assert.ok(eastAsianN(glyph), `${glyph} East Asian Width N`);
+    assert.ok(glyph === GLYPHS.step || eastAsianN(glyph), `${glyph} East Asian Width N`);
     assert.ok(!/\p{Emoji}/u.test(glyph) && !/\p{Extended_Pictographic}/u.test(glyph), `${glyph} no Emoji property`);
     assert.equal(visible(glyph), 1, glyph);
   }
   assert.ok(!eastAsianN('●') && !eastAsianN('█') && !eastAsianN('✨') && !eastAsianN('⚡'));   // the old glyphs: A, A, W, W
-  // Nothing else in any row's six glyph columns: GLYPHS or blanks, no VS16; then the seat column, 💺 or two blanks (ASS-357).
-  for (const key of KEYS) assert.ok([...prefix(key).slice(0, 6)].every(c => c === ' ' || Object.values(GLYPHS).includes(c)), key);
-  for (const key of KEYS) assert.ok([SEAT, '  '].includes(prefix(key).slice(6, 8)), key);
+  // Nothing else in any row's five glyph columns: GLYPHS or blanks, no VS16; then 🤖, 💻 or two blanks (ASS-456);
+  // then the seat column, 💺 or two blanks (ASS-357).
+  for (const key of KEYS) assert.ok([...prefix(key).slice(0, 5)].every(c => c === ' ' || ONE_CELL.includes(c)), key);
+  for (const key of KEYS) assert.ok([ROBOT, COMPUTER, '  '].includes(prefix(key).slice(5, 7)), key);
+  for (const key of KEYS) assert.ok([SEAT, '  '].includes(prefix(key).slice(7, 9)), key);
+  assert.equal(visible(ROBOT), 2);
+  assert.equal(visible(COMPUTER), 2);
 });
 
-test('ASS-259 AC3: c5 is red for a requirements change waiting, else blue for one needing the operator, else dim grey for an assumption; no 📝; the count is unchanged', () => {
+test('ASS-259 AC3: c5 is blue for a requirements change waiting, else red for one needing the operator (ASS-430: swapped), else dim grey for an assumption; no 📝; the count is unchanged', () => {
   const dot = key => rowOf(key, raw).match(/\x1b\[([0-9;]+)m⦿/)?.[1];
-  assert.equal(dot('A-5'), '31');                                    // a requirements change: red, though it is at a human gate too
-  assert.equal(dot('A-2'), '31');                                    // red even paused and worked by hand
-  assert.equal(dot('A-6'), '34');                                    // blocked: blue
+  assert.equal(dot('A-5'), '34');                                    // a requirements change: blue, though it is at a human gate too
+  assert.equal(dot('A-2'), '34');                                    // blue even paused and worked by hand
+  assert.equal(dot('A-6'), '31');                                    // blocked: red
   assert.equal(dot('A-7'), '2;90');                                  // a non-blocking question: dim grey
   for (const key of ['A-1', 'A-3', 'A-4', 'A-8', 'A-9', 'A-10']) assert.equal(dot(key), undefined, key);
   assert.ok(!out.some(l => l.includes('📝')));
   assert.equal(Number(strip(out[7]).match(/│ +(\d+) +│/)[1]), 2);   // A-5 and A-6, as before (ASS-242/248/254)
 });
 
-test('ASS-259 AC4: ⚉ only on the rows of the ticket and variation an agent is working on, and on no past day', () => {
-  assert.deepEqual(KEYS.filter(k => prefix(k).includes('⚉')), ['A-2', 'A-8', 'A-13.B']);
+test('ASS-259 AC4, ASS-456 AC1/AC2: 🤖 (⚉ before) only on the rows of the ticket and variation an agent is working on, and on no past day', () => {
+  assert.deepEqual(KEYS.filter(k => prefix(k).includes(ROBOT)), ['A-2', 'A-8', 'A-13.B']);
   const past = { ...state, day: '2026-09-30', projects: [{ ...project, days: { '2026-09-30': project.sprint } }] };
-  assert.ok(!render(past, wide).map(strip).some(l => /A-\d+: /.test(l) && l.slice(2, 2 + TEXT).includes('⚉')));
+  assert.ok(!render(past, wide).map(strip).some(l => /A-\d+: /.test(l) && l.slice(LEFT, LEFT + TEXT).includes(ROBOT)));
+  assert.ok(!out.some(l => l.includes('⚉')));                        // ASS-456 AC4: ⚉ drawn nowhere
 });
 
 test('ASS-259 AC5: a paused variation shows no ⏸️; its text starts "PAUSED " in blue, then the key and title', () => {
@@ -176,39 +187,42 @@ test('ASS-259 AC5: a paused variation shows no ⏸️; its text starts "PAUSED "
   assert.ok(!['A-1', 'A-3', 'A-8'].some(k => cell(k).includes('PAUSED')));
 });
 
-test('ASS-259 AC6: the ? menu explains ⦿ in its three colors, ⚉ and the type, hand and fast-track glyphs', () => {
+test('ASS-259 AC6: the ? menu explains ⦿ in its three colors, 🤖 and 💻 (ASS-456; ⚉ before) and the type, hand and fast-track glyphs', () => {
   const menu = render(handleKey(state, { sequence: '?' }, wide), wide);
   const line = text => menu.find(l => strip(l).includes(text)) ?? '';
-  assert.ok(line('needs you').includes('\x1b[34m⦿'), 'blue ⦿');
+  assert.ok(line('needs you').includes('\x1b[31m⦿'), 'red ⦿');
   assert.ok(line('assumption').includes('\x1b[2;90m⦿'), 'grey ⦿');
-  assert.ok(line('requirements change').includes('\x1b[31m⦿'), 'red ⦿');
-  assert.match(strip(line('agent is working')), /⚉ an agent is working on it/);
-  assert.match(strip(line('feature')), /✦ feature +✘ bug +⌕ spike +☛ worked by hand +↯ fast-tracked/);
+  assert.ok(line('requirements change').includes('\x1b[34m⦿'), 'blue ⦿');
+  assert.match(strip(line('are working on it')), /🤖 agents are working on it {2}💻 a script is running on it/);
+  assert.ok(!menu.some(l => l.includes('⚉')));
+  const glyphs = menu.map(strip).find(l => l.includes('✦ feature') && l.includes('worked by hand')) ?? '';   // the menu's line, not the key under the grid (in view since ASS-437's one-line rows)
+  assert.match(glyphs, /✦ feature +✘ bug +⌕ spike +☛ worked by hand +↯ fast-tracked/);
 });
 
 test('ASS-259 AC7: a dim key directly under the grid shows each glyph as drawn in the rows, with its meaning, and PAUSED', () => {
   const bottom = raw.findLastIndex(l => /^└/.test(strip(l)));
   const key = keyLines(raw);
   assert.equal(raw.indexOf(key[0]), bottom + 1);                     // directly under the grid
-  assert.equal(strip(key.join('  ')), '▮ step  ✦ feature  ✘ bug  ⌕ spike  ☛ by hand  ↯ fast-tracked  ⦿ requirements change  ⦿ needs you  ⦿ assumption  ⚉ agent working  💺 holds a seat (planning or in progress)  PAUSED paused  UNASSIGNED reassigned away  AWAITING a dependency not done yet  AWAITING MERGE MRs to merge, in order');
+  assert.equal(strip(key.join('  ')), '137 priority (999 = 999 or more)  137 priority set by hand  █ step  ✦ feature  ✘ bug  ⌕ spike  ☛ by hand  ↯ fast-tracked  ⦿ requirements change  ⦿ needs you  ⦿ assumption  🤖 agent working  💻 script running  💺 holds a seat (planning or in progress)  PAUSED paused  UNASSIGNED reassigned away  AWAITING a dependency not done yet  AWAITING MERGE MRs to merge, in order');
   const all = key.join('');
   for (const kind of ['31', '34', '2;90']) assert.ok(all.includes(`\x1b[${kind}m⦿\x1b[0m`), kind);   // ⦿ in each of its colors
+  assert.ok(all.includes('\x1b[34m⦿\x1b[0m\x1b[2m requirements change') && all.includes('\x1b[31m⦿\x1b[0m\x1b[2m needs you'));   // ASS-430: a change blue, needs you red
   assert.ok(all.includes('\x1b[34mPAUSED\x1b[0m'));
-  assert.ok(all.includes('\x1b[2m requirements change\x1b[0m') && all.includes('\x1b[2m▮\x1b[0m'));   // dim
+  assert.ok(all.includes('\x1b[2m requirements change\x1b[0m') && all.includes('\x1b[2m█\x1b[0m'));   // dim
 });
 
 test('ASS-259 AC7: the key wraps between entries at the screen width, never inside one, and is never cut off — the grid gives up rows', () => {
-  const ENTRIES = ['▮ step', '✦ feature', '✘ bug', '⌕ spike', '☛ by hand', '↯ fast-tracked', '⦿ requirements change', '⦿ needs you', '⦿ assumption', '⚉ agent working', '💺 holds a seat (planning or in progress)', 'PAUSED paused', 'UNASSIGNED reassigned away', 'AWAITING a dependency not done yet', 'AWAITING MERGE MRs to merge, in order'];
+  const ENTRIES = ['137 priority (999 = 999 or more)', '137 priority set by hand', '█ step', '✦ feature', '✘ bug', '⌕ spike', '☛ by hand', '↯ fast-tracked', '⦿ requirements change', '⦿ needs you', '⦿ assumption', '🤖 agent working', '💻 script running', '💺 holds a seat (planning or in progress)', 'PAUSED paused', 'UNASSIGNED reassigned away', 'AWAITING a dependency not done yet', 'AWAITING MERGE MRs to merge, in order'];
   assert.equal(Math.max(...ENTRIES.map(visible)), 41);   // the seat's entry (ASS-357), the widest: no narrower screen holds it whole
   for (const columns of [200, 100, 60, 41]) {
-    const size = { ...wide, columns, rows: 40 };
+    const size = { ...wide, columns, rows: 44 };   // 44: at 41 columns the key's 11 lines leave a 40-row screen no room for the grid's bottom border (ASS-454's two priority entries)
     const lines = render(state, size);
     const key = keyLines(lines).map(strip);
     assert.ok(key.length >= 1, String(columns));
     assert.ok(key.every(l => visible(l) <= columns), String(columns));
     assert.deepEqual(key.flatMap(l => l.split('  ')), ENTRIES, String(columns));   // each entry whole, in order
     if (columns < 200) assert.ok(key.length > 1, String(columns));
-    assert.equal(lines.length, 40);
+    assert.equal(lines.length, 44);
     assert.equal(lines.findLastIndex(l => /^└/.test(strip(l))) + 1, lines.indexOf(keyLines(lines)[0]));
   }
   // Short of room, the grid shows fewer rows; the key stays whole. With no
@@ -216,10 +230,38 @@ test('ASS-259 AC7: the key wraps between entries at the screen width, never insi
   const at = rows => render(state, { ...wide, rows }).map(strip);
   const shown = lines => KEYS.filter(k => lines.some(l => l.includes(`${k}: `))).length;
   assert.ok(shown(at(40)) < shown(at(80)) && shown(at(40)) > 0);
-  const whole = lines => keyLines(['└', ...lines.slice(lines.findIndex(l => l.startsWith('▮ step')))]).join('  ');
+  const whole = lines => keyLines(['└', ...lines.slice(lines.findIndex(l => l.startsWith('137 priority')))]).join('  ');
   for (const rows of [40, 30]) assert.equal(whole(at(rows)), keyLines(at(80)).join('  '), String(rows));
   const short = at(30);
   assert.ok(!short.slice(short.findIndex(l => /^│ +Ticket +│/.test(l))).some(l => l.startsWith('└')));   // at 30 rows the grid's bottom border went instead
+});
+
+// ASS-453: the step mark is █ (U+2588 FULL BLOCK), East Asian Width A, drawn
+// one cell where the terminal draws ambiguous-width characters narrow (the
+// default outside CJK locales); visible counts it one cell, so every row lays out
+// exactly as it did with ▮.
+test('ASS-453 AC1: the step mark is █ in the step\'s color on every row with a step, and the key reads "█ step"', () => {
+  assert.equal(GLYPHS.step, '\u2588');
+  for (const key of KEYS.filter(k => k !== 'A-10')) assert.match(rowOf(key, raw), /│ {5}\x1b\[[\d;]+m█\x1b\[0m/, key);
+  assert.ok(!raw.some(l => l.includes('▮')));
+  assert.ok(strip(keyLines(raw).join('  ')).split('  ').includes('█ step'));
+});
+
+test('ASS-453 AC2: █ is one cell to the width measure; every row\'s width and column positions are what they were with ▮', () => {
+  assert.equal(visible('█'), 1);
+  assert.equal(visible('\x1b[38;2;1;2;3m█\x1b[0m'), 1);
+  // The same rows before the change: each █ put back as ▮.
+  const before = raw.map(l => l.replaceAll('█', '▮'));
+  const bars = line => [...strip(line)].reduce((at, c, i, cs) => (c === '│' ? [...at, visible(cs.slice(0, i).join(''))] : at), []);
+  for (const key of KEYS) {
+    const now = rowOf(key, raw), was = before[raw.indexOf(now)];
+    assert.equal(visible(now), visible(was), key);
+    assert.deepEqual(bars(now), bars(was), key);   // every column border on the same cell
+    assert.equal(visible(strip(now).slice(0, strip(now).indexOf(textOf(key)))), visible(strip(was).slice(0, strip(was).indexOf(textOf(key)))), key);
+  }
+  // Every row of the grid, header and borders too, is as wide as the rest.
+  const top = out.findIndex(l => /^┌.*┬/.test(l)), bottom = out.findLastIndex(l => /^└/.test(l));
+  assert.deepEqual([...new Set(out.slice(top, bottom + 1).map(visible))], [wide.columns]);
 });
 
 // ASS-345 AC5: a ticket ticket:sync holds as reassigned away from the operator
@@ -236,7 +278,7 @@ test('ASS-345 AC5, ASS-355 AC7: a reassigned ticket\'s rows start "UNASSIGNED " 
   ];
   const s = initialState({ projects: [{ ...project, sprint: { ...project.sprint, features: held, bugs: [], spikes: [] }, questions: [] }], workflows: [{ name: 'e', steps }], assignments: [] });
   const r = render(s, wide);
-  const text = key => strip(r.find(l => new RegExp(`(^|\\s)${key.replace('.', '\\.')}: `).test(strip(l)))).slice(2 + TEXT);
+  const text = key => strip(r.find(l => new RegExp(`(^|\\s)${key.replace('.', '\\.')}: `).test(strip(l)))).slice(LEFT + TEXT);
   for (const key of ['R-1', 'R-2', 'R-3.A', 'R-3.B']) assert.ok(text(key).startsWith(`UNASSIGNED ${key}: `), `${key}: ${text(key)}`);
   assert.ok(text('R-4').startsWith('PAUSED R-4: '), text('R-4'));
   assert.ok(!['R-1', 'R-2', 'R-3.A', 'R-3.B'].some(k => text(k).includes('PAUSED')));
@@ -281,7 +323,7 @@ const ticketLines = (lines, key) => {
 
 test('ASS-360 AC2: a held row\'s first line is as for an unheld row — icons, seat, PAUSED or UNASSIGNED if they apply, then the key — no AWAITING', () => {
   const r = render(heldState(), wide);
-  const text = key => ticketLines(r, key)[0].slice(1 + TEXT);
+  const text = key => ticketLines(r, key)[0].slice(LEFT - 1 + TEXT);
   for (const key of ['W-1', 'W-2', 'W-4', 'W-5', 'W-6', 'W-7']) assert.ok(text(key).startsWith(`${key}: `), text(key));
   assert.ok(text('W-3').startsWith('PAUSED W-3: '), text('W-3'));                     // paused and waiting: PAUSED shows
   assert.ok(text('W-10').startsWith('UNASSIGNED W-10: '), text('W-10'));
@@ -294,8 +336,8 @@ test('ASS-360 AC3, ASS-355 AC7: a held row\'s second line is "↳ AWAITING …" 
   for (const key of ['W-1', 'W-2', 'W-3', 'W-6', 'W-7']) {
     const [first, under] = ticketLines(r, key);
     assert.ok(under.trimStart().startsWith('↳ AWAITING '), `${key}: ${under}`);
-    assert.equal(under.indexOf('↳'), 1 + TEXT, key);                                   // after the icon and seat columns
-    assert.equal(first.indexOf(key === 'W-3' ? 'PAUSED' : `${key}:`), 1 + TEXT, key);   // under the line's text
+    assert.equal(under.indexOf('↳'), LEFT - 1 + TEXT, key);                                   // after the icon and seat columns
+    assert.equal(first.indexOf(key === 'W-3' ? 'PAUSED' : `${key}:`), LEFT - 1 + TEXT, key);   // under the line's text
   }
   assert.equal(second('W-1').trim(), '↳ AWAITING EX-1 (Sam)');
   assert.ok(ticketLines(r, 'W-1')[2].includes(`↳ ${GOLD}AWAITING EX-1 (Sam)\x1b[0m`), ticketLines(r, 'W-1')[2]);
@@ -324,22 +366,22 @@ test('ASS-360 AC7: each key on the AWAITING line names its assignee\'s first nam
 });
 
 test('ASS-360 AC4: the Ticket column is floored at the waiting line when it is wider than the first line needs, and never otherwise; selection and scrolling count the two-line cell', () => {
-  const long = 'LONG-KEY-12345';   // its line 9 + 37 = 46 wide: over the floor, still on a 60-column screen (render cuts lines at the screen's width)
+  const long = 'LONG-KEY-12345';   // its line 4 + 9 + 37 = 50 wide: over the floor, still on a 60-column screen (render cuts lines at the screen's width)
   const outside = [long, 'EX-9'].map(key => ({ key, 'ticket-system-status': 'To Do', 'ticket-system-assignment': 'Sam Long' }));
   const one = deps => initialState({ projects: [{ ...project, waitForDependencies: true, outside,
     sprint: { ...project.sprint, features: [ticket('L-1', 'A title well over twenty-four characters', { dependencies: deps })], bugs: [], spikes: [] }, questions: [] }], workflows: [{ name: 'e', steps: heldEngine }], assignments: [] });
   const ticketWidth = lines => strip(lines.find(l => /│ +Ticket +│/.test(strip(l)))).indexOf('│', 1) - 3;
-  // Narrow: Ticket gets its floor, the key and TITLE_CHARS of title (9 + 5 + 24 + 1 = 39). A shorter waiting line leaves it there; a wider one floors it at its own width.
+  // Narrow: Ticket gets its floor, the priority and a blank (ASS-454), the icon columns, the key and TITLE_CHARS of title (4 + 9 + 5 + 24 + 1 = 43). A shorter waiting line leaves it there; a wider one floors it at its own width.
   const narrow = { ...wide, columns: 60 };
   const floor = ticketWidth(render(one([]), narrow));
-  assert.equal(floor, TEXT + 5 + 24 + 1);
+  assert.equal(floor, 4 + TEXT + 5 + 24 + 1);
   const shorter = render(one(['EX-9']), narrow);
   assert.equal(ticketLines(shorter, 'L-1')[1].trim(), '↳ AWAITING EX-9 (Sam)');
   assert.equal(ticketWidth(shorter), floor);
   const wider = render(one([long]), narrow);
   const under = ticketLines(wider, 'L-1')[1].trim();
   assert.equal(under, `↳ AWAITING ${long} (Sam)`);                               // whole, never cut
-  assert.equal(ticketWidth(wider), TEXT + visible(under));
+  assert.equal(ticketWidth(wider), 4 + TEXT + visible(under));
   // Selection reverses both of a held row's lines; moving down past it lands on the next row.
   const size = { ...wide, rows: 36 };   // room for a few rows: the rest scroll into view
   let s = { ...heldState(), focus: 'tickets' };
@@ -401,7 +443,7 @@ const seatProject = (limits = {}) => ({
 });
 const seatState = (projects = [seatProject()]) => initialState({ projects, workflows: [{ name: 'e', steps: seatSteps }], assignments: [] });
 const seatRow = (lines, key) => lines.find(l => new RegExp(`(^|\\s)${key.replace('.', '\\.')}: `).test(strip(l)));
-const seated = lines => SEAT_KEYS.filter(k => strip(seatRow(lines, k)).slice(2, 2 + TEXT).includes(SEAT));
+const seated = lines => SEAT_KEYS.filter(k => strip(seatRow(lines, k)).slice(LEFT, LEFT + TEXT).includes(SEAT));
 
 test('ASS-357 AC1: 💺 on exactly the rows whose variation holds a planning or in-progress seat by the planner (seatsOf); over the limits, paused, held by a question, done, blocked or queued: none', () => {
   const lines = render(seatState(), wide);
@@ -430,7 +472,7 @@ test('ASS-357 AC2: the key under the grid lists 💺 as "holds a seat (planning 
   assert.ok(key.split('  ').includes('💺 holds a seat (planning or in progress)'), key);
 });
 
-test('ASS-357 AC3: a past day\'s snapshot shows no 💺, as it shows no ⚉ — seats are live state', () => {
+test('ASS-357 AC3: a past day\'s snapshot shows no 💺, as it shows no 🤖 (ASS-456; ⚉ before) — seats are live state', () => {
   const live = seatState();
   const past = { ...live, day: '2026-09-30', projects: [{ ...live.projects[0], days: { '2026-09-30': live.projects[0].sprint } }] };
   const lines = render(past, wide);
@@ -446,11 +488,10 @@ test('ASS-357 AC4: 💺 is two cells wide; seated and unseated rows stay aligned
     const top = lines.findIndex(l => /^┌.*┬/.test(strip(l))), bottom = lines.findLastIndex(l => /^└/.test(strip(l)));
     for (const l of lines.slice(top, bottom + 1)) assert.equal(visible(l), columns, strip(l));
     const starts = SEAT_KEYS.map(k => { const c = strip(seatRow(lines, k)); return visible(c.slice(0, c.indexOf(k === 'S-4' ? 'PAUSED ' : `${k}: `))); });
-    assert.deepEqual(new Set(starts), new Set([2 + 6 + 2 + 1]), JSON.stringify(starts));   // border and blank, six glyphs, the seat's two cells, a blank
-    // The columns after Ticket start at the same place on every row: each row's Priority ("<rank> 🪪") on one column.
+    assert.deepEqual(new Set(starts), new Set([2 + 4 + 5 + 2 + 2 + 1]), JSON.stringify(starts));   // border and blank, the priority and a blank (ASS-454), five glyphs, 🤖/💻's two cells (ASS-456), the seat's two cells, a blank
+    // Each row starts with its priority (set by hand here) in three cells (ASS-454), then the icon columns.
     const rank = k => seatFeatures.find(t => t.key === k.split('.')[0])['manual-priority'];
-    const priority = SEAT_KEYS.map(k => { const c = strip(seatRow(lines, k)); return visible(c.slice(0, c.indexOf(` ${rank(k)} 🪪`))); });
-    assert.equal(new Set(priority).size, 1, JSON.stringify(priority));
+    for (const k of SEAT_KEYS) assert.ok(strip(seatRow(lines, k)).startsWith(`│ ${String(rank(k)).padStart(3)} `), k);
   }
 });
 
@@ -472,7 +513,7 @@ test('ASS-357 AC1: a variation its dependencies hold (AWAITING) holds no seat, a
     sprint: { number: 10, start: '2026-09-18', end: '2026-10-01', features: deps, bugs: [], spikes: [] },
   });
   const keys = ['D-1', 'D-3', 'D-4', 'D-2'];
-  const seatedOf = lines => keys.filter(k => strip(seatRow(lines, k)).slice(2, 2 + TEXT).includes(SEAT));
+  const seatedOf = lines => keys.filter(k => strip(seatRow(lines, k)).slice(LEFT, LEFT + TEXT).includes(SEAT));
   const held = render(seatState([project(true)]), wide);
   assert.deepEqual(seatedOf(held), ['D-4', 'D-2']);
   for (const [k, on] of [['D-1', 'D-2'], ['D-3', 'X-1']]) assert.ok(strip(held[held.indexOf(seatRow(held, k)) + 1]).includes(`↳ AWAITING ${on}`), k);   // under the key (ASS-360)
@@ -495,7 +536,7 @@ test('ASS-404 AC3: a variation whose VM is held for memory holds no seat, as con
     sprint: { number: 10, start: '2026-09-18', end: '2026-10-01', features: tickets, bugs: [], spikes: [] },
   });
   const keys = ['M-1', 'M-2', 'M-3'];
-  const seatedOf = lines => keys.filter(k => strip(seatRow(lines, k)).slice(2, 2 + TEXT).includes(SEAT));
+  const seatedOf = lines => keys.filter(k => strip(seatRow(lines, k)).slice(LEFT, LEFT + TEXT).includes(SEAT));
   const hold = { since: '2026-10-01T16:00:00Z', vm: 'm-1-a', held: [{ vm: 'm-1-a', key: 'M-1', variation: 'A', state: 'build' }] };
   assert.deepEqual(seatedOf(render(seatState([project(hold)]), wide)), ['M-2', 'M-3']);
   assert.deepEqual(seatedOf(render(seatState([project(null)]), wide)), ['M-1', 'M-2']);
@@ -539,7 +580,7 @@ test('ASS-363 AC3: a variation at a shows-merge-train step gets "↳ AWAITING ME
   const r = render(mergeState(), wide);
   const second = key => cellLines(r, key)[1];
   assert.equal(second('M-1').trim(), '↳ AWAITING MERGE api !12 → web !7 → web MR 3');
-  assert.equal(second('M-1').indexOf('↳'), 1 + TEXT);                                   // under the key, as AWAITING
+  assert.equal(second('M-1').indexOf('↳'), LEFT - 1 + TEXT);                                   // under the key, as AWAITING
   assert.equal(second('M-5').trim(), '↳ AWAITING MERGE api !12 → web !7; lib !4 → web !8');
   assert.equal(second('M-7').trim(), '↳ AWAITING MERGE api !12 → web !7 → web MR 3');   // a sub-engine's step with the flag
   const raw = r[r.findIndex(l => / M-1: /.test(strip(l))) + 1];
@@ -570,7 +611,7 @@ test('ASS-363 AC4: no AWAITING MERGE line with nothing awaited or without the fl
   const r = render(mergeState(), wide);
   for (const key of ['M-2', 'M-3', 'M-4', 'M-8']) assert.ok(!cellLines(r, key)[1].includes('AWAITING MERGE'), `${key}: ${cellLines(r, key)[1]}`);
   const [first, waiting, awaiting] = cellLines(r, 'M-6');
-  assert.ok(first.slice(1 + TEXT).startsWith('M-6: '), first);
+  assert.ok(first.slice(LEFT - 1 + TEXT).startsWith('M-6: '), first);
   assert.equal(waiting.trim(), '↳ AWAITING EX-1 (Sam)');
   assert.equal(awaiting.trim(), '↳ AWAITING MERGE api !12 → web !7 → web MR 3');
   assert.equal(waiting.indexOf('↳'), awaiting.indexOf('↳'));
@@ -583,7 +624,7 @@ test('ASS-363 AC4: the Ticket column is floored at an AWAITING MERGE line wider 
   const r = render(mergeState([merging('M-9', long, { dependencies: ['EX-1'] })]), narrow);
   const under = cellLines(r, 'M-9')[2].trim();
   assert.equal(under, '↳ AWAITING MERGE api !12 → web !7 → lib !4 → web !8');           // whole, never cut
-  assert.equal(ticketWidth(r), TEXT + visible(under));
+  assert.equal(ticketWidth(r), 4 + TEXT + visible(under));
   // Selection reverses all three of M-6's lines; moving down past it lands on the next row.
   const size = { ...wide, rows: 36 };
   let s = { ...mergeState(), focus: 'tickets' };
@@ -601,4 +642,161 @@ test('ASS-363 AC4: the Ticket column is floored at an AWAITING MERGE line wider 
     s = handleKey(s, { name: 'down' }, size);
   }
   assert.deepEqual([...seen].sort(), mergeTickets.map(t => t.key).sort());
+});
+
+// ASS-454: no Priority column; every ticket row starts with its priority in three cells, right-aligned, then a
+// blank, then the icon columns. Over 999 it shows 999 (the key says so); none, three blanks; set by hand (manual-priority),
+// bright magenta, no 🪪. A held row's AWAITING line indents by the same four cells.
+const ranked = [
+  ticket('P-1', 'One digit', { priority: 1 }),
+  ticket('P-2', 'Two digits', { priority: 42 }),
+  ticket('P-3', 'Three digits', { priority: 137 }),
+  ticket('P-4', 'No priority'),
+  ticket('P-5', 'Over the cap', { priority: 1500 }),
+  ticket('P-6', 'By hand', { priority: 7, 'manual-priority': 7 }),
+  ticket('P-7', 'Held', { priority: 5, dependencies: ['EX-1'] }),
+  ticket('P-8', 'Over the cap by hand', { priority: 1234, 'manual-priority': 1234 }),
+].map(t => ({ 'ticket-system-assignment': OPERATOR, ...t }));
+const rankedState = initialState({ projects: [{ ...project, waitForDependencies: true, outside: heldOutside, sprint: { ...project.sprint, features: ranked, bugs: [], spikes: [] }, questions: [] }], workflows: [{ name: 'e', steps: heldEngine }], assignments: [] });
+const rankedRaw = render(rankedState, wide);
+const rankedRow = (key, lines = rankedRaw) => lines.find(l => new RegExp(`(^|\\s)${key}: `).test(strip(l)));
+
+test('ASS-454 AC1, AC5: the grid has no Priority column; the others keep their order; the Ticket header starts with the four-cell indent, centred over the rest of its column', () => {
+  const header = strip(rankedRaw.find(l => /│ +Ticket +│/.test(strip(l))));
+  assert.deepEqual(header.split('│').slice(1, -1).map(h => h.trim()), ['Ticket', 'Status', 'Points', 'Dev', 'Testing', 'Total Token Spend', 'Assignee', 'Agents']);
+  assert.ok(!rankedRaw.some(l => /│ Priority │/.test(strip(l))));
+  const width = header.indexOf('│', 1) - 3;                           // the Ticket column's text width
+  assert.equal(header.indexOf('Ticket') - 2, 4 + Math.floor((width - 4 - 'Ticket'.length) / 2));
+  // The other columns line up under their headers: each row's Status (Build) starts in the Status column.
+  const status = header.indexOf('│', 1);
+  for (const key of ['P-1', 'P-3', 'P-4', 'P-5']) assert.equal(strip(rankedRow(key)).indexOf(' Build ', status - 1), status + 1, key);
+});
+
+test('ASS-454 AC2: every ticket row starts with its priority in three cells, right-aligned, then a blank and the icon columns; over 999 shows 999; none shows three blanks', () => {
+  const lead = key => strip(rankedRow(key)).slice(2, 6);
+  assert.equal(lead('P-1'), '  1 ');
+  assert.equal(lead('P-2'), ' 42 ');
+  assert.equal(lead('P-3'), '137 ');
+  assert.equal(lead('P-4'), '    ');
+  assert.equal(lead('P-5'), '999 ');
+  assert.ok(!rankedRaw.some(l => strip(l).includes('999+') || strip(l).includes('1500')));
+  // The icon columns, then the text, start on the same cells on every row.
+  for (const key of ranked.map(t => t.key)) {
+    const row = strip(rankedRow(key));
+    assert.equal(row[6] === '█' || row[6] === ' ', true, key);
+    assert.equal(visible(row.slice(0, row.indexOf(`${key}: `))), LEFT + TEXT, key);
+  }
+  const key = strip(keyLines(rankedRaw).join('  ')).split('  ');
+  assert.ok(key.includes('137 priority (999 = 999 or more)'), key.join('|'));
+});
+
+test('ASS-454 AC2: a held row\'s AWAITING line indents by the same four cells as its first line, the ↳ under the key', () => {
+  const at = rankedRaw.indexOf(rankedRow('P-7'));
+  const [first, under] = [rankedRaw[at], rankedRaw[at + 1]].map(strip);
+  assert.ok(first.startsWith('│   5 '), first);
+  assert.ok(under.startsWith(`│ ${' '.repeat(4 + TEXT)}↳ AWAITING EX-1`), under);
+  assert.equal(under.indexOf('↳'), first.indexOf('P-7: '));
+  for (const l of rankedRaw.slice(rankedRaw.findIndex(l => /^┌.*┬/.test(strip(l))), rankedRaw.findLastIndex(l => /^└/.test(strip(l))) + 1)) assert.equal(visible(l), wide.columns, strip(l));
+});
+
+test('ASS-454 AC3: a priority set by hand is drawn in bright magenta, no 🪪; the key explains it', () => {
+  assert.ok(rankedRow('P-6').startsWith('│   \x1b[95m7\x1b[0m '), JSON.stringify(rankedRow('P-6')));
+  assert.ok(rankedRow('P-8').startsWith('│ \x1b[95m999\x1b[0m '), JSON.stringify(rankedRow('P-8')));   // capped, still by hand
+  for (const key of ['P-1', 'P-2', 'P-3', 'P-5', 'P-7']) assert.ok(!rankedRow(key).includes('\x1b[95m'), key);
+  assert.ok(!rankedRaw.some(l => l.includes('🪪')));
+  const key = keyLines(rankedRaw).join('  ');
+  assert.ok(key.includes('\x1b[95m137\x1b[0m\x1b[2m priority set by hand\x1b[0m'), key);
+  // Not a color any step or line on the grid draws in.
+  assert.ok(!rankedRaw.filter(l => !l.includes('\x1b[95m137')).some(l => l.replace(/\x1b\[95m\d+\x1b\[0m/g, '').includes('\x1b[95m')));
+});
+
+test('ASS-454 AC4: priorityPrefix — four cells whatever it is given; a row without a priority (an empty seat, ASS-451) gets four blanks', () => {
+  assert.equal(priorityPrefix(null), '    ');
+  assert.equal(priorityPrefix(undefined, true), '    ');
+  assert.equal(priorityPrefix(1), '  1 ');
+  assert.equal(priorityPrefix(42), ' 42 ');
+  assert.equal(priorityPrefix(137), '137 ');
+  assert.equal(priorityPrefix(999), '999 ');
+  assert.equal(priorityPrefix(100000), '999 ');
+  assert.equal(priorityPrefix(3, true), '  \x1b[95m3\x1b[0m ');
+  for (const p of [null, 0, 9, 99, 999, 5000]) assert.equal(visible(priorityPrefix(p, true)), 4, String(p));
+});
+
+// ASS-456: the two-cell column after c5 shows 🤖 when one or more agents work on the row's ticket and
+// variation (one however many), else 💻 when a script step runs on it (runsScript: not at its gate, not
+// held — paused or worked by hand — not on a past day), else two blanks. A script step for that.
+const runSteps = [...heldEngine.filter(x => x.id !== 'done'), { id: 'run', name: 'Run', sequence: 7, action: { type: 'script' } }, heldEngine.find(x => x.id === 'done')];
+const runTickets = [
+  ticket('C-1', 'Script step', { state: 'run' }),
+  ticket('C-2', 'Script step, an agent too', { state: 'run' }),
+  ticket('C-3', 'Two agents', {}),
+  ticket('C-4', 'Script step, paused', { state: 'run', paused: true }),
+  ticket('C-5', 'Script step, worked by hand', { state: 'run', 'worked-manually': HAND }),
+  ticket('C-6', 'Script step, at its gate', { state: 'run', 'pending-requirements-change': CHANGE }),
+  ticket('C-7', 'Neither', {}),
+  ticket('C-8', 'Script step, awaiting', { state: 'run', dependencies: ['EX-1'] }),
+  ticket('C-9', 'An agent, awaiting', { dependencies: ['EX-1'] }),
+  ticket('C-10', 'Neither, awaiting', { state: 'stuck', dependencies: ['EX-1'] }),
+].map(t => ({ 'ticket-system-assignment': OPERATOR, ...t }));
+const runAgents = [['C-2', 'Daredevil'], ['C-3', 'Elektra'], ['C-3', 'Punisher'], ['C-9', 'Blade']]
+  .map(([item, name]) => ({ project: 'p', 'agent-name': name, 'work-item': item, variation: null }));
+const runProject = { ...project, waitForDependencies: true, outside: heldOutside, sprint: { ...project.sprint, features: runTickets, bugs: [], spikes: [] }, questions: [] };
+const runState = (extra = {}) => initialState({ projects: [{ ...runProject, ...extra }], workflows: [{ name: 'e', steps: runSteps }], assignments: runAgents });
+const RUN_KEYS = runTickets.map(t => t.key);
+const working = (lines, key) => strip(rowOf(key, lines)).slice(LEFT + 5, LEFT + 7);
+
+test('ASS-456 AC1: 🤖 for one agent and for several (one 🤖), 💻 at a script step, 🤖 over 💻, two blanks otherwise', () => {
+  const r = render(runState(), wide);
+  const expect = { 'C-1': COMPUTER, 'C-2': ROBOT, 'C-3': ROBOT, 'C-4': '  ', 'C-5': '  ', 'C-6': '  ', 'C-7': '  ', 'C-8': COMPUTER, 'C-9': ROBOT, 'C-10': '  ' };
+  assert.deepEqual(Object.fromEntries(RUN_KEYS.map(k => [k, working(r, k)])), expect);
+  assert.equal([...strip(rowOf('C-3', r)).matchAll(/🤖/gu)].length, 1 + 1);   // one in the row's column, however many agents; the Agents cell's first line
+  assert.ok(strip(rowOf('C-3', r)).includes('🤖 Elektra') && r.some(l => strip(l).includes('🤖 Punisher')));
+});
+
+test('ASS-456 AC2: no 🤖 or 💻 on a past day', () => {
+  const s = runState({ days: { '2026-09-30': runProject.sprint } });
+  const r = render({ ...s, day: '2026-09-30' }, wide);
+  for (const key of RUN_KEYS) assert.equal(working(r, key), '  ', key);
+});
+
+test('ASS-456 AC3: rows with 🤖, 💻 and neither line up — icon, seat and text columns, AWAITING lines, the header — every grid line the screen\'s width', () => {
+  for (const columns of [200, 120]) {
+    const r = render(runState(), { ...wide, columns });
+    const top = r.findIndex(l => /^┌.*┬/.test(strip(l))), bottom = r.findLastIndex(l => /^└/.test(strip(l)));
+    for (const l of r.slice(top, bottom + 1)) assert.equal(visible(l), columns, strip(l));
+    for (const key of RUN_KEYS) {
+      const row = strip(rowOf(key, r));
+      const before = text => visible(row.slice(0, row.indexOf(text)));
+      assert.equal(before(`${key}: `) - (['C-4'].includes(key) ? 7 : 0), LEFT + TEXT, key);   // the text (C-4: after PAUSED)
+      assert.equal(visible(row.slice(0, LEFT + 5)), LEFT + 5, key);                     // the icon columns
+      assert.equal(visible(row.slice(0, LEFT + 7)), LEFT + 7, key);                     // 🤖/💻, then the seat column
+    }
+    for (const key of ['C-8', 'C-9', 'C-10']) {
+      const [first, under] = ticketLines(r, key);
+      assert.ok(under.trimStart().startsWith('↳ AWAITING '), `${key}: ${under}`);
+      assert.equal(visible(under.slice(0, under.indexOf('↳'))), LEFT - 1 + TEXT, key);
+      assert.equal(visible(first.slice(0, first.indexOf(`${key}:`))), LEFT - 1 + TEXT, key);
+    }
+    // The header stays over its column: on every row, 🤖 and 💻 counted two cells, the cell under the header's
+    // Ticket/Status divider is a blank and the Status text starts two cells after it, as under the header.
+    const cells = l => [...strip(l)].flatMap(c => (visible(c) === 2 ? [c, ''] : [c]));
+    const header = cells(r.find(l => /^│ +Ticket +│/.test(strip(l))));
+    const divider = header.indexOf('│', 1);
+    assert.equal(header[divider + 2], 'S');
+    for (const key of RUN_KEYS) {
+      const row = cells(rowOf(key, r));
+      assert.equal(row.length, header.length, key);
+      assert.deepEqual([row[divider - 1], row[divider], row[divider + 1]], [' ', ' ', ' '], key);
+      assert.notEqual(row[divider + 2], ' ', key);
+    }
+  }
+});
+
+test('ASS-456 AC4: the key reads "🤖 agent working  💻 script running", and ⚉ is drawn nowhere', () => {
+  const r = render(runState(), wide);
+  const key = keyLines(r);
+  assert.ok(strip(key.join('  ')).includes('⦿ assumption  🤖 agent working  💻 script running  💺 holds a seat'), strip(key.join('  ')));
+  assert.ok(key.join('').includes('🤖\x1b[2m agent working\x1b[0m') && key.join('').includes('💻\x1b[2m script running\x1b[0m'));
+  assert.ok(!r.some(l => l.includes('⚉')));
+  assert.ok(!render(handleKey(runState(), { sequence: '?' }, wide), wide).some(l => l.includes('⚉')));
 });

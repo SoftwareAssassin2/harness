@@ -40,16 +40,16 @@ vm="$(vm_name "$key" "$variation")" golden="golden-$project"
 refuse() { blocked_log "$project" "$key" "$variation" "Repair Image" "vm:recreate refused: $1"; echo "$command: $1" >&2; exit 3; }
 lock_vms "$command" "$project"
 ! build_in_progress "$project" || refuse "$golden is being built now; wait for it to finish (vm:golden-wait $project), then recreate $vm"
-limactl list "$golden" --format '{{.Status}}' >/dev/null 2>&1 || refuse "there is no $golden to clone $vm from: build it first"
+lima_list "$golden" --format '{{.Status}}' >/dev/null 2>&1 || refuse "there is no $golden to clone $vm from: build it first"
 
 setup=false where=""
-if limactl list "$vm" --format '{{.Status}}' >/dev/null 2>&1; then
-  if [[ "$(limactl list "$vm" --format '{{.Status}}')" != Running ]]; then
+if machine_status "$vm" >/dev/null 2>&1; then
+  if [[ "$(machine_status "$vm")" != Running ]]; then
     VM_LOCK_HELD=1 "$agent" vm:start "$project" "$key" "$variation" >/dev/null 2>&1 \
       || refuse "$vm could not be started to check it for the ticket's unsaved work; the operator decides whether to delete it"
   fi
   # One line "setup <true|false>", then "repo <name> <branch or -> <commit>" or "unsaved <name>: <why>" per repository.
-  where="$(limactl shell --workdir / "$vm" -- bash -c '
+  where="$(machine_run --workdir / "$vm" -- bash -c '
     R="${HARNESS_VM_ROOT-}"
     if [ -e "$R$1" ]; then echo "setup true"; else echo "setup false"; fi
     for d in "$R"/repos/*/; do
@@ -63,14 +63,14 @@ if limactl list "$vm" --format '{{.Status}}' >/dev/null 2>&1; then
   unsaved="$(sed -n 's/^unsaved //p' <<< "$where")"
   [[ "$setup" != true || -z "$unsaved" ]] \
     || refuse "$vm holds the ticket's work not on any remote — $(paste -sd ';' - <<< "$unsaved" | sed 's/;/; /g'); push or save it first, or the operator deletes it"
-  limactl stop -f "$vm" >/dev/null 2>&1 || true
+  machine_stop "$vm" force >/dev/null 2>&1 || true
   delete_vm "$command" "$project" "$vm" || { echo "$command: could not delete $vm" >&2; exit 1; }
 fi
 
 out="$(VM_LOCK_HELD=1 "$agent" vm:create "$project" "$key" "$variation")" || { echo "$command: vm:create failed after $vm was deleted" >&2; exit 1; }
 put_back="$(sed -n 's/^repo //p' <<< "$where")"
 if [[ "$setup" == true && -n "$put_back" ]]; then
-  limactl shell --workdir / "$vm" -- bash -c '
+  machine_run --workdir / "$vm" -- bash -c '
     R="${HARNESS_VM_ROOT-}" failed=0
     while read -r name branch commit; do
       d="$R/repos/$name"
@@ -84,6 +84,6 @@ fi
 if [[ "$setup" == true ]]; then
   "$agent" vm:mark-setup-complete "$project" "$key" "$variation" >/dev/null || { echo "$command: $vm was recreated, but its Setup could not be marked complete again" >&2; exit 1; }
 fi
-generation="$(generation_of "$(limactl list "$vm" --format '{{.Dir}}')")"
+generation="$(generation_of "$(lima_list "$vm" --format '{{.Dir}}')")"
 blocked_log "$project" "$key" "$variation" "Repair Image" "vm:recreate: $vm recreated from $golden (generation ${generation:-unknown})$([[ "$setup" == true ]] && echo ", its repositories put back on their branches and its Setup marked complete again" || true)."
 echo "$out"

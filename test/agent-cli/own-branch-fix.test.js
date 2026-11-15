@@ -12,6 +12,8 @@ import assert from 'node:assert/strict';
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { lima, git, edit } from './vm-fixture.js';
+import { run, AGENT } from './harness-fixture.js';
+import { fakeForge } from '../support/fake-forge.js';
 
 const RUN = '55555555-5555-4555-8555-555555555555';
 const FOUND = {
@@ -26,7 +28,7 @@ const FOUND = {
 // ABC-3 A, its VM abc-3-a, blocked from build of p's `dev` engine (Build runs Generate Solution); its
 // merge request in harness on change/ABC-3-1, base main, a commit adding db/V27__events.sql; the
 // Blocked run RUN holding `output`.
-function setup(output = FOUND, { vm = 'abc-3-a' } = {}) {
+function setup(output = FOUND, { vm = 'abc-3-a', mrs = null, env = null } = {}) {
   const l = lima();
   l.v.instance('abc-3-a', 'Running');
   const at = (...rest) => join(l.f.dir, ...rest);
@@ -50,7 +52,7 @@ function setup(output = FOUND, { vm = 'abc-3-a' } = {}) {
     Object.assign(s.features[0].variations[0], {
       ...(vm ? { vm: { name: vm, ip: '192.168.64.9', 'created-at': '2026-11-11T00:00:00Z' } } : {}),
       'state-changes': [c('committed', 'plan'), c('plan', 'build'), c('build', 'test'), c('test', 'blocked')],
-      'merge-request': [{ id: 1, repository: 'https://github.com/o/harness', branch: 'change/ABC-3-1', base: 'main', contents: 'c', 'depends-on': [], status: 'Open', key: null, url: null, 'build-status': null }],
+      'merge-request': mrs ?? [{ id: 1, repository: 'https://github.com/o/harness', branch: 'change/ABC-3-1', base: 'main', contents: 'c', 'depends-on': [], status: 'Open', key: null, url: null, 'build-status': null }],
     });
   });
   const a = JSON.parse(readFileSync(at('assignments.json'), 'utf8'));
@@ -64,8 +66,8 @@ function setup(output = FOUND, { vm = 'abc-3-a' } = {}) {
   const plan = join(l.folder, 'execution-plan-A.md');
   return {
     ...l, own, plan,
-    fix: () => l.cli('ticket:own-branch-fix', 'p', 'ABC-3', 'A', RUN),
-    refused: () => l.cli('ticket:own-branch-fix', 'p', 'ABC-3', 'A', RUN).then(() => assert.fail('it passed'), e => e),
+    fix: () => (env ? run(AGENT, ['ticket:own-branch-fix', 'p', 'ABC-3', 'A', RUN], { env: env(l.env) }) : l.cli('ticket:own-branch-fix', 'p', 'ABC-3', 'A', RUN)),
+    refused: () => (env ? run(AGENT, ['ticket:own-branch-fix', 'p', 'ABC-3', 'A', RUN], { env: env(l.env) }) : l.cli('ticket:own-branch-fix', 'p', 'ABC-3', 'A', RUN)).then(() => assert.fail('it passed'), e => e),
     read: () => readFileSync(plan, 'utf8'),
   };
 }
@@ -128,4 +130,84 @@ test('ASS-384: an unknown run or a bad variation fails (exit 1), writing nothing
   const bad = await s.cli('ticket:own-branch-fix', 'p', 'ABC-3', 'Z', RUN).then(() => null, e => e);
   assert.equal(bad?.code, 1);
   assert.ok(!existsSync(s.plan));
+});
+
+// ASS-423 — the ticket's own code includes what its merged merge requests added or changed, read from their diffs on
+// the forge (fake-forge.js), not from the VM's checkout, which shows nothing of them once they merged. Modelled on
+// ABC-1770: QA put it On Hold after its MRs merged, over a gap in a test its own MR added.
+const CORPUS = 'https://gitlab.com/g/example-corpus.git', HUB = 'https://github.com/o/harness';
+const MERGED = {
+  ...FOUND, summary: 'the reconciler integration test records no subscription invoice', 'root-cause': 'the test Worker sets no Subscription, so worker.go skips recording and the test passes without exercising record_stripe_subscription_invoice',
+  evidence: ['postgres_integration_test.go:204 — Worker{} without Subscription'],
+  'failing-repository': 'https://gitlab.com/g/example-corpus', 'failing-job': 'go-test', 'failing-assertion': 'TestReconcilerAgainstRealPlatformDatabase records evt_int_inv', 'failing-file': 'apps/billing-reconciler/postgres_integration_test.go:204',
+};
+const row = (id, repository, status, key, base = 'master') => ({ id, repository, branch: `change/ABC-3-${id}`, base, contents: `MR ${id}`, 'depends-on': [], status, key, url: null, 'build-status': status });
+// MR 1 (harness) and MR 2, MR 3 (example-corpus) all Merged or Closed; the VM's example-corpus on master (nothing of its own: the merge base is HEAD).
+const ALL_DONE = [row(1, HUB, 'Merged', '#7', 'main'), row(2, CORPUS, 'Merged', '!3951'), row(3, CORPUS, 'Closed', '!3952')];
+const DIFFS = /^api projects\/g%2Fexample-corpus\/merge_requests\/3951\/diffs\?per_page=100 --hostname gitlab\.com --paginate$/;
+const TEST_FILE = 'apps/billing-reconciler/postgres_integration_test.go';
+const withForge = (routes, mrs = ALL_DONE, output = MERGED) => {
+  const forge = fakeForge();
+  for (const [tool, match, response] of routes) forge.route(tool, match, response);
+  const bin = forge.path.split(':')[0];
+  return { forge, s: setup(output, { mrs, env: e => ({ ...e, PATH: `${bin}:${e.PATH}` }) }) };
+};
+const mrsOf = s => JSON.parse(readFileSync(join(s.f.dir, 'projects', 'p', 'sprints', 'sprint-10', 'sprint.json'), 'utf8')).features[0].variations[0]['merge-request'];
+
+test('ASS-423 AC1/AC2/AC3: every MR of the failing repository Merged or Closed, the failing file in a merged one\'s diff on the forge — the own-branch fix, one new MR planned (next id, change/ABC-3-<id> on the merged one\'s base, contents saying what to fix and why), the plan naming it and forbidding the merged branches', async () => {
+  const { s, forge } = withForge([['glab', DIFFS, { out: [{ old_path: 'apps/billing-reconciler/worker.go', new_path: 'apps/billing-reconciler/worker.go' }, { old_path: TEST_FILE, new_path: TEST_FILE }] }]]);
+  const out = JSON.parse((await s.fix()).stdout);
+  assert.equal(out['own-branch-fix'], true);
+  assert.equal(out['own-branch-source'], 'merged');
+  assert.match(out['own-branch-why'], /^apps\/billing-reconciler\/postgres_integration_test\.go is one this ticket's merged MR 2 \(!3951\) in example-corpus added or changed/);
+  assert.deepEqual(out['merge-request-planned'], { id: 4, repository: CORPUS, branch: 'change/ABC-3-4', base: 'master' });
+  assert.deepEqual([out['resume-at'], out['ai-feedback-short']], ['build', null]);
+  const mrs = mrsOf(s);
+  assert.equal(mrs.length, 4, 'one new MR, the others kept');
+  assert.deepEqual(mrs.slice(0, 3).map(m => m.status), ['Merged', 'Merged', 'Closed']);
+  const added = mrs[3];
+  assert.deepEqual([added.id, added.repository, added.branch, added.base, added.status, added.key, added['depends-on']], [4, CORPUS, 'change/ABC-3-4', 'master', 'Not Created', null, []]);
+  assert.equal(added['planned-by']?.step, 'Blocked', 'marked planned-by, so control holds Build and Release until it is built (ASS-424)');
+  assert.match(added['planned-by'].why, /^Blocked's own-branch fix: apps\/billing-reconciler\/postgres_integration_test\.go is this ticket's own code and its merge requests in example-corpus have merged or closed$/);
+  assert.match(added['planned-by'].at, /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$/);
+  assert.ok(mrs.slice(0, 3).every(m => m['planned-by'] == null), 'only the new one is marked');
+  assert.match(added.contents, /^Own-branch fix \(Blocked, \d{4}-\d\d-\d\d\): the reconciler integration test records no subscription invoice\. Fix apps\/billing-reconciler\/postgres_integration_test\.go:204 in https:\/\/gitlab\.com\/g\/example-corpus \(job go-test\) — TestReconcilerAgainstRealPlatformDatabase records evt_int_inv: the test Worker sets no Subscription/);
+  assert.match(added.contents, /its merge requests there \(MR 2 \(!3951\), MR 3 \(!3952\)\) have merged or closed, so the fix goes in this new one, from the latest origin\/master/);
+  const text = s.read();
+  assert.match(text, /the failure is in this ticket's own code: apps\/billing-reconciler\/postgres_integration_test\.go, which its merged MR 2 \(!3951\) in example-corpus added or changed/);
+  assert.match(text, /Step added: fix it in a new merge request, MR 4 \(example-corpus, branch change\/ABC-3-4, from the latest origin\/master\), planned for this fix \(Generate Solution builds and opens it\)\. This ticket's merge requests in example-corpus \(MR 2 \(!3951\), MR 3 \(!3952\)\) are merged or closed: do not reopen them or push to their branches\./);
+  assert.ok(!forge.log('glab').some(l => /3952/.test(l)), 'a closed one\'s diff is not read: it never landed');
+  assert.equal(forge.log('glab').filter(l => / -X /.test(l)).length, 0, 'nothing written on the forge');
+});
+
+test('ASS-423 AC1: a merged pull request on GitHub, its files read with --paginate; GitLab\'s older …/changes when …/diffs is refused', async () => {
+  const hub = withForge([['gh', /^api repos\/o\/harness\/pulls\/7\/files\?per_page=100 --paginate$/, { out: [{ filename: 'db/V28__other.sql' }, { filename: 'db/V27__events.sql', previous_filename: 'db/V26__events.sql' }] }]],
+    [row(1, HUB, 'Merged', '#7', 'main')], { ...FOUND, 'failing-file': 'db/V26__events.sql' });
+  const out = JSON.parse((await hub.s.fix()).stdout);
+  assert.equal(out['own-branch-source'], 'merged', 'a rename\'s old name counts');
+  assert.deepEqual(out['merge-request-planned'], { id: 2, repository: HUB, branch: 'change/ABC-3-2', base: 'main' }, 'its one MR merged: a new one');
+  const changes = withForge([['glab', DIFFS, { exit: 1 }], ['glab', /^api projects\/g%2Fexample-corpus\/merge_requests\/3951\/changes --hostname gitlab\.com$/, { out: { changes: [{ old_path: 'x', new_path: TEST_FILE }] } }]]);
+  assert.equal(JSON.parse((await changes.s.fix()).stdout)['own-branch-source'], 'merged');
+});
+
+test('ASS-423 AC2: an open MR of the ticket for the failing repository — the fix goes on it, as before: nothing planned', async () => {
+  const { s } = withForge([['glab', DIFFS, { out: [{ old_path: TEST_FILE, new_path: TEST_FILE }] }]], [...ALL_DONE, row(4, CORPUS, 'Open', '!4000')]);
+  const out = JSON.parse((await s.fix()).stdout);
+  assert.deepEqual([out['own-branch-fix'], out['own-branch-source'], out['merge-request-planned']], [true, 'merged', null]);
+  assert.equal(mrsOf(s).length, 4);
+  assert.match(s.read(), /Step added: fix it in this ticket's own branch \(Generate Solution\)/);
+});
+
+test('ASS-423 AC7: a file in no MR of the ticket (nor its branch), or a merged MR the forge will not show — not its own code: exit 3, nothing planned or written', async () => {
+  const none = withForge([['glab', DIFFS, { out: [{ old_path: 'apps/other.go', new_path: 'apps/other.go' }] }]]);
+  let e = await none.s.refused();
+  assert.equal(e.code, 3, e.stderr);
+  assert.match(JSON.parse(e.stdout)['own-branch-why'], /apps\/billing-reconciler\/postgres_integration_test\.go is not one the branch master in example-corpus adds or changes; none of its merged merge requests in example-corpus adds or changes it/);
+  assert.equal(mrsOf(none.s).length, 3);
+  assert.ok(!existsSync(none.s.plan));
+  const unread = withForge([['glab', DIFFS, { exit: 1 }], ['glab', /\/changes /, { exit: 1 }]]);
+  e = await unread.s.refused();
+  assert.equal(e.code, 3);
+  assert.match(JSON.parse(e.stdout)['own-branch-why'], /its merged MR 2 \(!3951\) in example-corpus could not be read from the forge/);
+  assert.equal(mrsOf(unread.s).length, 3);
 });

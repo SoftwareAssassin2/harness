@@ -88,7 +88,7 @@ test('ticket:change-state fails, writing nothing, on a start step when the targe
   assert.equal(readFileSync(sprintFile(dir), 'utf8'), before);
 });
 
-// ASS-124: a ticket handed to a sub-engine part way in (ticket:repair-environment) brings what its run is to start from.
+// ASS-124: a ticket handed to a sub-engine part way in brings what its run is to start from (its first caller, ticket:repair-environment, was removed with the ticket health check, ASS-450).
 test('ticket:change-state with a start step and an output keeps the output on the sub-status, for the run control starts there; refused unless an object', async () => {
   const dir = withEngine(projects());
   await move(dir, 'p', 'ABC-3', 'A', 'generate-solution', 'local-testing', 'take-screenshots', '{"summary":"S"}');

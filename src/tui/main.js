@@ -4,11 +4,11 @@
 // one column narrower than the terminal, so the rightmost column of the screen
 // stays blank (ASS-311). All behaviour lives in app.js.
 import { emitKeypressEvents } from 'node:readline';
-import { mkdirSync, readFileSync, rmSync } from 'node:fs';
+import { mkdirSync, readFileSync, rmSync, appendFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { execFile, execFileSync } from 'node:child_process';
 import { join } from 'node:path';
-import { initialState, handleKey, render, decided, openRequested, controlStarted, controlExited, controlDraining, drawColumns } from './app.js';
+import { initialState, handleKey, render, decided, openRequested, controlStarted, controlExited, controlDraining, controlWaiting, controlRestarted, controlBack, BACK_MS, drawColumns } from './app.js';
 import { loadProjects, loadWorkflows, loadPauses, loadSelfHealing, loadAssignments, loadTransientEngines, loadChats, loadHarness, loadModelUsage, loadDiskSpace, loadAnalytics, watchFiles, dataFiles, keepSame, projectsChanged, activeSprintFile } from './load.js';
 import { operatorNeededNotifier, headerWarningNotifier } from '../notify/notifier.js';
 import { startControl } from '../control/process.js';
@@ -196,26 +196,66 @@ const LOGS = join(homedir(), '.harness', 'logs');
 const controlLogFiles = Object.fromEntries(state.projects.map(p => [p.id, join(LOGS, `control-${p.id}.log`)]));
 state = { ...state, controlLogFiles };
 const controlIds = state.projects.map(p => p.id);
-const controls = state.projects.map(p => startControl({
-  args: ['--project', p.id],
-  logFile: controlLogFiles[p.id],
-  // A control exits with 75 when a fix asks for a restart (harness:request-restart, which names every control), once it has drained its agents (ASS-200):
-  // once no control the request names still runs, the dashboard stops the rest and waits for them, then exits with 75, and harness-cli/tui.sh starts it again on the new code (ASS-193).
-  onExit: code => {
-    ended.add(p.id);
-    const quitting = state.quitting;
-    state = controlExited(state, p.id, code, restartWaitsFor());
-    if (state.quitting && !quitting) quit(75);
-    draw();
-  },
-  // Its drain's "restart waiting for N agents" goes on the legend (controlDraining).
-  onLine: line => {
-    const drain = controlDraining(state, p.id, line.text);
-    const legend = drain !== state;
-    state = { ...drain, controlLog: [...state.controlLog, { ...line, project: p.id }].slice(-CONTROL_LINES) };
-    if (state.screen === 'c' || legend) draw();
-  },
-}));
+// ASS-460: a control that ends by itself, with a code other than 0 or 75, is
+// started again after its backoff (app.js controlExited: 5 s, 30 s, 2 min,
+// then every 5 min; not after 5 crashes in 10 minutes, until the operator
+// presses R on the control screen), never while the dashboard is quitting or a
+// restart is under way. Each restart, and each give-up, is said on the control
+// screen and in the control's log file, as "[supervisor] …"; the header shows
+// it down in red, and it notifies once (frame.js controlTroubles, through the
+// header warning notifications) until it has run a minute again (controlBack).
+const supervisorSays = (id, text) => {
+  const at = new Date();
+  try { appendFileSync(controlLogFiles[id], `${at.toISOString()}  [supervisor] ${text}\n`); } catch { /* the log only */ }
+  state = { ...state, controlLog: [...state.controlLog, { text: `dashboard  ${text}`, stream: 'stderr', at, project: id }].slice(-CONTROL_LINES) };
+};
+const restartTimers = new Map();
+function runControl(p) {
+  return startControl({
+    args: ['--project', p.id],
+    logFile: controlLogFiles[p.id],
+    // A control exits with 75 when a fix asks for a restart (harness:request-restart, which names every control), once it has drained its agents (ASS-200):
+    // once no control the request names still runs, the dashboard stops the rest and waits for them, then exits with 75, and harness-cli/tui.sh starts it again on the new code (ASS-193).
+    onExit: code => {
+      ended.add(p.id);
+      const quitting = state.quitting;
+      state = controlExited(state, p.id, code, restartWaitsFor());
+      if (state.quitting && !quitting) quit(75);
+      const down = state.quitting ? null : state.controlsDown[p.id];
+      if (down?.restartAt) {
+        supervisorSays(p.id, `control exited (code ${code ?? 'signal'}); starting it again in ${Math.round((down.restartAt - Date.now()) / 1000)}s (crash ${down.crashes} in 10 minutes)`);
+        clearTimeout(restartTimers.get(p.id));
+        restartTimers.set(p.id, setTimeout(() => restartControl(p.id, 'after its backoff'), Math.max(0, down.restartAt - Date.now())));
+      } else if (down?.gaveUp) supervisorSays(p.id, `control exited (code ${code ?? 'signal'}): ${down.crashes} crashes in 10 minutes, not started again until R is pressed on the control screen`);
+      draw();
+      notifyLater();
+    },
+    // Its drain's "restart waiting for N agents" goes on the legend (controlDraining); ASS-457: its waiting for its data on the header (controlWaiting).
+    onLine: line => {
+      const drain = controlWaiting(controlDraining(state, p.id, line.text), p.id, line.text, line.at);
+      const legend = drain !== state;
+      state = { ...drain, controlLog: [...state.controlLog, { ...line, project: p.id }].slice(-CONTROL_LINES) };
+      if (state.screen === 'c' || legend) draw();
+      if (legend) notifyLater();
+    },
+  });
+}
+const controls = state.projects.map(runControl);
+// restartControl(id, why) — project id's down control started again, in its
+// place in `controls` (so a quit stops it), unless the dashboard is quitting
+// or restarting, or it already runs; back once it has run BACK_MS.
+function restartControl(id, why) {
+  restartTimers.delete(id);
+  const i = controlIds.indexOf(id);
+  if (i < 0 || state.quitting || state.restart || !ended.has(id)) return;
+  const control = runControl(state.projects.find(p => p.id === id) ?? { id });
+  controls[i] = control;
+  ended.delete(id);
+  state = controlRestarted(state, id, { pid: control.pid, startTime: new Date() });
+  supervisorSays(id, `control started again (${why}) as pid ${control.pid}`);
+  setTimeout(() => { state = controlBack(state, id, control.pid); draw(); notifyLater(); }, BACK_MS).unref();
+  draw();
+}
 // Each running control's process id and when it started go on the state, for the footer's control box (ASS-310);
 // they all start in this tick, so one start time stands for them all, and controlExited drops each as it ends.
 const startTime = new Date();
@@ -262,7 +302,7 @@ const log = text => {
 const harnessJson = () => { try { return JSON.parse(readFileSync(process.env.HARNESS_FILE ?? join(DATA, 'harness.json'), 'utf8')); } catch { return {}; } };
 const isGoldenBuild = pid => { try { return execFileSync('ps', ['-o', 'command=', '-p', String(pid)], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).includes('vm:build-golden'); } catch { return false; } };
 const end = ender({
-  children: [...controls, downloader],
+  get children() { return [...controls, downloader]; },   // ASS-460: a control started again is in `controls` in its place
   agentPids: () => { try { return loadAssignments(ASSIGNMENTS).map(a => a['process-id']); } catch { return []; } },
   alive, kill: (pid, signal) => process.kill(pid, signal), log,
   goldenBuilds: () => goldenBuilds(join(DATA, 'projects'), isGoldenBuild),
@@ -377,7 +417,16 @@ stdin.on('keypress', (_, key) => {
   // The time the screens size themselves at, as render draws the footer (ASS-295).
   let next = handleKey(state, key, { columns: drawColumns(stdout.columns), rows: stdout.rows, now: new Date() });
   if (next.quit) process.exit(0);
-  if (next.quitting && !state.quitting) quit();
+  if (next.quitting && !state.quitting) { for (const timer of restartTimers.values()) clearTimeout(timer); quit(); }
+  // ASS-460: R on the control screen — the selected project's down control started now, its backoff dropped.
+  if (next.controlRestart) {
+    const id = next.controlRestart;
+    next = { ...next, controlRestart: null };
+    clearTimeout(restartTimers.get(id));
+    state = next;
+    restartControl(id, 'R pressed');
+    next = state;
+  }
   // Space holds or releases the human's pause: the banner flips at once; the
   // file is the truth once the command finishes (the watcher waits till then).
   // space (the selected project) and ! (all agents): the scope whose human pause flipped.

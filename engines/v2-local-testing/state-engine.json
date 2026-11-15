@@ -44,7 +44,8 @@
                 "type": "prompt",
                 "prompt": "test-grouped",
                 "agent-count": 1,
-                "run-in-dev-container": true
+                "run-in-dev-container": true,
+                "model": "claude-opus-5-5"
             },
             "exit-events": [
                 {
@@ -104,7 +105,8 @@
                 "type": "prompt",
                 "prompt": "take-screenshots-grouped",
                 "agent-count": 1,
-                "run-in-dev-container": true
+                "run-in-dev-container": true,
+                "model": "claude-opus-5-5"
             },
             "exit-events": [
                 {

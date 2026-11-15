@@ -30,8 +30,8 @@ const ALL = [
   ticket('A-1', 'done'), ticket('A-2', 'done'), ticket('A-3', 'review'), ticket('A-4', 'build'), ticket('A-5', 'detour'),
   ticket('A-6', 'refine'), ticket('A-7', 'refine'), ticket('A-8', 'committed'), ticket('A-9', 'stuck'),
 ];
-const GREEN = /^├\x1b\[32m─+ in progress ↓ · ↑ done ─+\x1b\[0m[┤█]$/;   // labelled (ASS-371)
-const BLUE = /^├\x1b\[34m─+ planning ↓ · ↑ in progress ─+\x1b\[0m[┤█]$/;
+const GREEN = /^├\x1b\[32m─+ in progress \(\d+\) ↓ · ↑ done \(\d+\) ─+\x1b\[0m[┤█]$/;   // labelled (ASS-371)
+const BLUE = /^├\x1b\[34m─+ planning \(\d+\) ↓ · ↑ in progress \(\d+\) ─+\x1b\[0m[┤█]$/;
 const DASHED = /^│\x1b\[90m {3}- {3}- .*-\s*\x1b\[0m[│█]$/;
 
 // The line drawn above each ticket row on show, by key: 'green', 'blue', 'dashed' or (the first row) 'top'.
@@ -52,7 +52,7 @@ test('AC1, AC2, AC3: green under the last Done row, blue over the first planning
   assert.deepEqual(above, { 'A-1': 'top', 'A-2': 'dashed', 'A-3': 'green', 'A-4': 'dashed', 'A-5': 'dashed', 'A-6': 'blue', 'A-7': 'dashed', 'A-8': 'dashed', 'A-9': 'dashed' }, out.join('\n'));
   const blue = out.find(l => BLUE.test(l));
   assert.equal(visible(blue), wide.columns);
-  const [left, right] = strip(blue).slice(1, -1).split(' planning ↓ · ↑ in progress ');
+  const [left, right] = strip(blue).slice(1, -1).split(' planning (4) ↓ · ↑ in progress (3) ');
   assert.ok(Math.abs(left.length - right.length) <= 1, strip(blue));              // centred
   assert.equal(out.filter(l => GREEN.test(l)).length, 1);
   assert.equal(out.filter(l => BLUE.test(l)).length, 1);
@@ -63,7 +63,7 @@ test('ASS-371: the green line carries "in progress ↓ · ↑ done", centred, fu
   const green = out.find(l => GREEN.test(l));
   assert.ok(green, out.join('\n'));
   assert.equal(visible(green), wide.columns);
-  const [left, right] = strip(green).slice(1, -1).split(' in progress ↓ · ↑ done ');
+  const [left, right] = strip(green).slice(1, -1).split(' in progress (3) ↓ · ↑ done (2) ');
   assert.ok(Math.abs(left.length - right.length) <= 1, strip(green));
 });
 
@@ -90,11 +90,11 @@ test('AC2: the full label, centred in the grid, at every width: down to the narr
     const out = render(stateOf(ALL), { ...wide, columns });
     const blue = out.find(l => l.startsWith('├\x1b[34m'));
     assert.ok(blue, `${columns}\n${out.join('\n')}`);
-    assert.match(strip(blue), /^├─+ planning ↓ · ↑ in progress ─+/, String(columns));
+    assert.match(strip(blue), /^├─+ planning \(4\) ↓ · ↑ in progress \(3\) ─+/, String(columns));
     const top = strip(out.find(l => l.startsWith('┌') && l.includes('┬')));
     if (!top.endsWith('┐')) continue;                                              // the grid runs past the screen (ASS-207): cut there
     assert.equal(visible(blue), visible(top), String(columns));
-    const [left, right] = strip(blue).slice(1, -1).split(' planning ↓ · ↑ in progress ');
+    const [left, right] = strip(blue).slice(1, -1).split(' planning (4) ↓ · ↑ in progress (3) ');
     assert.ok(Math.abs(left.length - right.length) <= 1, strip(blue));
   }
 });
@@ -129,8 +129,8 @@ test('AC4: a past day draws the lines from its own rows', () => {
 
 // ASS-401: a solid purple line, "in progress ↓ · ↑ in QA", under the last row whose status chain is at an is-qa
 // step (any level), when other rows follow; the green line over QA rows reads "in QA ↓ · ↑ done".
-const PURPLE = /^├\x1b\[35m─+ in progress ↓ · ↑ in QA ─+\x1b\[0m[┤█]$/;
-const GREEN_QA = /^├\x1b\[32m─+ in QA ↓ · ↑ done ─+\x1b\[0m[┤█]$/;
+const PURPLE = /^├\x1b\[35m─+ in progress \(\d+\) ↓ · ↑ in QA \(\d+\) ─+\x1b\[0m[┤█]$/;
+const GREEN_QA = /^├\x1b\[32m─+ in QA \(\d+\) ↓ · ↑ done \(\d+\) ─+\x1b\[0m[┤█]$/;
 const qaSteps = [...steps, { id: 'check', name: 'Check', sequence: 8, 'is-qa': true, action: { type: 'none' } }];
 const qaStateOf = features => initialState({ projects: [{ id: 'p', name: 'P', stateEngine: 'e', sprint: sprintOf(features) }], workflows: [{ name: 'e', steps: qaSteps }], assignments: [] });
 function qaLines(state) {
@@ -151,7 +151,7 @@ test('ASS-401 AC2, AC3: purple under the last QA row, centred; the green line ov
   assert.deepEqual(above, { 'A-1': 'top', 'A-2': 'green-qa', 'A-3': 'dashed', 'A-4': 'purple', 'A-6': 'blue' }, out.join('\n'));
   const purple = out.find(l => PURPLE.test(l));
   assert.equal(visible(purple), wide.columns);
-  const [left, right] = strip(purple).slice(1, -1).split(' in progress ↓ · ↑ in QA ');
+  const [left, right] = strip(purple).slice(1, -1).split(' in progress (1) ↓ · ↑ in QA (2) ');
   assert.ok(Math.abs(left.length - right.length) <= 1, strip(purple));
   assert.equal(out.filter(l => PURPLE.test(l)).length, 1);
 });
@@ -189,4 +189,70 @@ test('ASS-402 AC2: a QA step but no QA row, or no QA step, opens at the last Don
 test('ASS-402 AC3: a past day opens at its last Done row', () => {
   const s = initialState({ projects: [{ id: 'p', name: 'P', stateEngine: 'e', sprint: sprintOf(qaRows), days: { '2026-09-30': sprintOf(qaRows) } }], workflows: [{ name: 'e', steps: qaSteps }], assignments: [] });
   assert.equal(topRow({ ...s, day: '2026-09-30' }), 'A-30');
+});
+
+// ASS-426: each section line's sides carry their row counts, "<below> (N) ↓ · ↑ <above> (M)": the grid's rows
+// between the line and the next line drawn (or the grid's edge) on that side, scrolled into view or not.
+const labels = out => out.filter(l => /^├\x1b\[3[245]m/.test(l)).map(l => strip(l).slice(1, -1).replace(/^─+ | ─+$/g, ''));
+
+test('ASS-426 AC1, AC2: all four labels with their counts on a grid of done, QA, in-progress and planning rows', () => {
+  const rows = [
+    ticket('A-1', 'done'), ticket('A-2', 'done'), ticket('A-3', 'check'), ticket('A-4', 'check'),
+    ticket('A-5', 'review'), ticket('A-6', 'build'), ticket('A-7', 'build'), ticket('A-8', 'refine'), ticket('A-9', 'stuck'),
+  ];
+  const { above, out } = qaLines(qaStateOf(rows));
+  assert.deepEqual(above, { 'A-1': 'top', 'A-2': 'dashed', 'A-3': 'green-qa', 'A-4': 'dashed', 'A-5': 'purple', 'A-6': 'dashed', 'A-7': 'dashed', 'A-8': 'blue', 'A-9': 'dashed' }, out.join('\n'));
+  assert.deepEqual(labels(out), ['in QA (2) ↓ · ↑ done (2)', 'in progress (3) ↓ · ↑ in QA (2)', 'planning (2) ↓ · ↑ in progress (3)']);
+  // Without QA rows the green line reads "in progress (N) ↓ · ↑ done (M)".
+  const noQa = qaLines(qaStateOf(rows.filter(t => !/check/.test(t.title))));
+  assert.deepEqual(labels(noQa.out), ['in progress (3) ↓ · ↑ done (2)', 'planning (2) ↓ · ↑ in progress (3)']);
+  // Each line centred, full width.
+  for (const l of out.filter(l => /^├\x1b\[3[245]m/.test(l))) {
+    assert.equal(visible(l), wide.columns);
+    const [left, right] = strip(l).slice(1, -1).split(/ [a-zQA ]+\(\d+\) ↓ · ↑ [a-zQA ]+\(\d+\) /);
+    assert.ok(Math.abs(left.length - right.length) <= 1, strip(l));
+  }
+});
+
+test('ASS-426 AC2: a grid with only some sections counts each side to the next line drawn or the grid\'s edge', () => {
+  assert.deepEqual(labels(lines(stateOf(ALL)).out), ['in progress (3) ↓ · ↑ done (2)', 'planning (4) ↓ · ↑ in progress (3)']);
+  assert.deepEqual(labels(lines(stateOf(ALL.slice(2))).out), ['planning (4) ↓ · ↑ in progress (3)']);         // no Done rows: from the top
+  assert.deepEqual(labels(lines(stateOf(ALL.filter(t => !/refine/.test(t.title)))).out), ['in progress (5) ↓ · ↑ done (2)']);   // no blue line: to the bottom
+  assert.deepEqual(labels(qaLines(qaStateOf([ticket('A-2', 'check'), ticket('A-4', 'build')])).out), ['in progress (1) ↓ · ↑ in QA (1)']);
+  assert.deepEqual(labels(qaLines(qaStateOf([ticket('A-1', 'done'), ticket('A-2', 'check'), ticket('A-3', 'check')])).out), ['in QA (2) ↓ · ↑ done (1)']);
+  assert.deepEqual(labels(lines(stateOf(ALL.slice(0, 2))).out), []);                                         // still no line
+});
+
+test('ASS-426 AC2: rows scrolled out of view are counted', () => {
+  // Opens on the last QA row (ASS-402): the Done rows and the green line above them are out of view.
+  const { above, out } = qaLines(qaStateOf(qaRows));
+  assert.ok(!('A-1' in above) && !('A-63' in above), Object.keys(above).join(' '));
+  assert.deepEqual(labels(out), ['in progress (30) ↓ · ↑ in QA (3)']);
+  const top = qaLines({ ...qaStateOf(qaRows), selected: 0, scroll: 0 });
+  assert.deepEqual(labels(top.out), []);                                                                      // the green line is at row 31, out of view
+  const atGreen = qaLines({ ...qaStateOf(qaRows), selected: 29, scroll: 29 });
+  assert.deepEqual(labels(atGreen.out), ['in QA (3) ↓ · ↑ done (30)', 'in progress (30) ↓ · ↑ in QA (3)']);
+  const short = lines(stateOf(ALL, { focus: 'tickets', selected: 3, scroll: 3 }), { ...wide, rows: 40 });
+  assert.equal(short.above['A-4'], 'top');
+  assert.deepEqual(labels(short.out), ['planning (4) ↓ · ↑ in progress (3)']);
+});
+
+test('ASS-426 AC4: at every width the counted lines stay one line each, as wide as the grid; no row or column lost', () => {
+  const top0 = { selected: 0, scroll: 0 };   // both from the top: the opening row (ASS-402) differs between them
+  const plain = columns => render(stateOf(ALL.map(t => ticket(t.key, 'build')), top0), { ...wide, columns });
+  const header = out => strip(out.find(l => l.startsWith('│') && l.includes('Ticket'))).split('│').map(h => h.trim());
+  for (const columns of [200, 120, 90, 60, 40]) {
+    const out = render(stateOf(ALL, top0), { ...wide, columns }), flat = plain(columns);
+    assert.equal(out.length, flat.length, String(columns));
+    const keys = o => o.map(l => strip(l).match(/ (A-\d+): /)?.[1]).filter(Boolean).sort();
+    assert.deepEqual(keys(out), keys(flat), String(columns));
+    const top = strip(out.find(l => l.startsWith('┌') && l.includes('┬')));
+    if (top.endsWith('┐')) assert.deepEqual(header(out), header(flat), String(columns));   // past the screen each is cut at its own widths (ASS-207)
+    const drawn = out.filter(l => /^├\x1b\[3[245]m/.test(l));
+    assert.equal(drawn.length, 2, String(columns));
+    for (const l of drawn) {
+      assert.equal(visible(l), visible(top), String(columns));
+      if (top.endsWith('┐')) assert.match(strip(l), /^├─+ (planning \(4\) ↓ · ↑ in progress \(3\)|in progress \(3\) ↓ · ↑ done \(2\)) ─+┤$/, String(columns));
+    }
+  }
 });

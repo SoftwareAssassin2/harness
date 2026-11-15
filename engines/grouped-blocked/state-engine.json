@@ -98,7 +98,8 @@
                 "type": "prompt",
                 "prompt": "troubleshoot-block-grouped",
                 "agent-count": 1,
-                "run-in-dev-container": false
+                "run-in-dev-container": false,
+                "model": "claude-opus-5-5"
             },
             "exit-events": [
                 {
@@ -134,7 +135,8 @@
                 "type": "prompt",
                 "prompt": "troubleshoot-block-on-host-grouped",
                 "agent-count": 1,
-                "run-in-dev-container": false
+                "run-in-dev-container": false,
+                "model": "claude-opus-5-5"
             },
             "exit-events": [
                 {
@@ -164,13 +166,14 @@
             "id": "classify",
             "sequence": 6,
             "name": "Classify",
-            "description": "A harness issue (a fix ticket in the harness project's backlog), a project issue (its cause in the project's own code: checked against the latest master before anything is raised, ASS-163) or an environment issue (repaired in place: a repository the project lacks, that Troubleshoot named, is one), with its reasoning. ASS-390: or a dependency (the block only waits for one of the ticket's own merge requests in another repository to merge: Await Sequential Merge's to wait on, AC5). Each outcome is one exit on its issue (classify-issue-grouped's enum); an outcome with no exit of its own is Blocked for Human, never a stuck run. ASS-391: or a Claude usage or rate limit (rate-limit: Await Rate Limit, on the API key fallback at once or waiting for the reset); ASS-395 AC5: or a missing or failing credential (credentials: a fresh credentials check, the project's hold waited on, else Blocked for Human). ASS-418: a host agent, so its VM is stopped here (started again, by the lifecycle, at the next step that needs it)",
+            "description": "A harness issue (a fix ticket in the harness project's backlog), a project issue (its cause in the project's own code: checked against the latest master before anything is raised, ASS-163) or an environment issue (repaired in place: a repository the project lacks, that Troubleshoot named, is one), with its reasoning. ASS-390: or a dependency (the block only waits for one of the ticket's own merge requests in another repository to merge: Await Sequential Merge's to wait on, AC5). Each outcome is one exit on its issue (classify-issue-grouped's enum); an outcome with no exit of its own is Blocked for Human, never a stuck run. ASS-391: or a Claude usage or rate limit (rate-limit: Await Rate Limit, on the API key fallback at once or waiting for the reset); ASS-395 AC5: or a missing or failing credential (credentials: a fresh credentials check, the project's hold waited on, else Blocked for Human). ASS-418: a host agent, so its VM is stopped here (started again, by the lifecycle, at the next step that needs it). ASS-427: or a problem in the ticket's VM fixable in place there whose source is the golden image or the harness's VM setup (vm: a missing tool or package, a cache, a pulled image, a harness-written VM file such as /run/harness/npmrc — the credential valid but the VM not set up to use it, AC5): Repair the VM, which fixes it in the VM at once and in its source for later VMs, the ticket not waiting for any golden build; image is now what cannot be fixed in place (the Lima template: cpus, memory, disk; kernel settings; the image's build itself), on today's path (AC4)",
             "vm": "stopped",
             "action": {
                 "type": "prompt",
                 "prompt": "classify-issue-grouped",
                 "agent-count": 1,
-                "run-in-dev-container": false
+                "run-in-dev-container": false,
+                "model": "claude-opus-5-5"
             },
             "exit-events": [
                 {
@@ -262,6 +265,21 @@
                         ]
                     },
                     "move-to-state": "check-credentials"
+                },
+                {
+                    "condition": {
+                        "all": [
+                            {
+                                "turn-complete": true
+                            },
+                            {
+                                "structured-output": {
+                                    "issue": "vm"
+                                }
+                            }
+                        ]
+                    },
+                    "move-to-state": "repair-vm"
                 },
                 {
                     "condition": {
@@ -467,7 +485,8 @@
                 "type": "prompt",
                 "prompt": "repair-project-grouped",
                 "agent-count": 1,
-                "run-in-dev-container": false
+                "run-in-dev-container": false,
+                "model": "claude-opus-5-5"
             },
             "exit-events": [
                 {
@@ -504,7 +523,8 @@
                 "prompt": "repair-project-on-host-grouped",
                 "agent-count": 1,
                 "run-in-dev-container": false,
-                "works-on-code": true
+                "works-on-code": true,
+                "model": "claude-opus-5-5"
             },
             "exit-events": [
                 {
@@ -678,15 +698,31 @@
             "id": "repair-environment",
             "sequence": 18,
             "name": "Repair the Environment",
-            "description": "In the variation's VM and the project's containers there (ASS-390 AC1: whatever there blocks the blocked step — dependencies, containers, checkouts, caches, generated files, recorded test commands, stale branches — never a credential, uncommitted work saved aside first): repaired and the failing thing re-run to pass, the ticket resumes; else Blocked for Human with what was found and what to do (ASS-97)",
+            "description": "In the variation's VM and the project's containers there (ASS-390 AC1: whatever there blocks the blocked step — dependencies, containers, checkouts, caches, generated files, recorded test commands, stale branches — never a credential, uncommitted work saved aside first): repaired and the failing thing re-run to pass, the ticket resumes; else Blocked for Human with what was found and what to do (ASS-97). ASS-427: a fix every VM from the image would need too (a tool or package the image lacks, a cache or pulled image it should carry, a harness-written VM file) is not made here: vm-source true sends it to Repair the VM, which fixes the VM and its source",
             "vm": "running",
             "action": {
                 "type": "prompt",
                 "prompt": "repair-environment-grouped",
                 "agent-count": 1,
-                "run-in-dev-container": false
+                "run-in-dev-container": false,
+                "model": "claude-opus-5-5"
             },
             "exit-events": [
+                {
+                    "condition": {
+                        "all": [
+                            {
+                                "turn-complete": true
+                            },
+                            {
+                                "structured-output": {
+                                    "vm-source": true
+                                }
+                            }
+                        ]
+                    },
+                    "move-to-state": "repair-vm"
+                },
                 {
                     "condition": {
                         "all": [
@@ -721,7 +757,8 @@
                 "prompt": "repair-environment-on-host-grouped",
                 "agent-count": 1,
                 "run-in-dev-container": false,
-                "works-on-code": true
+                "works-on-code": true,
+                "model": "claude-opus-5-5"
             },
             "exit-events": [
                 {
@@ -997,10 +1034,89 @@
             ]
         },
         {
-            "id": "await-golden-build",
+            "id": "repair-vm",
             "sequence": 29,
+            "name": "Repair the VM and Its Source",
+            "description": "ASS-427 AC1/AC2/AC5: a problem in the ticket's VM that can be fixed in place, on the host (its source is written on the Mac), confined as Repair Image is, the VM kept running for it: it makes the smallest fix in the ticket's VM (vm:run, a script file of its own run in that VM alone) and re-runs the failing check there; then the same change in its source, so every later VM has it — the golden image definition (vm:golden-write, queued while a build runs, AC3, and vm:golden-add-tool for a missing tool, so a build without it fails), or for VM setup the harness writes at start its non-secret declaration (vm:credentials-declare: a gitlab npm-registries scope → project id in ~/.harness/vm-credentials.json, applied to the ticket's VM at once; a secret is the operator's). Fixed (fixed true): Rebuild the Source in the Background, then Verify the Repaired Image — never waiting for a golden build. Not fixable in place (in-place false: the Lima template, kernel settings, no VM yet): today's path, Await the Golden Build and Repair Image (AC4). Else Blocked for Human with what it tried",
+            "vm": "running",
+            "action": {
+                "type": "prompt",
+                "prompt": "repair-vm-on-host-grouped",
+                "agent-count": 1,
+                "run-in-dev-container": false,
+                "model": "claude-opus-5-5"
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "all": [
+                            {
+                                "turn-complete": true
+                            },
+                            {
+                                "structured-output": {
+                                    "fixed": true
+                                }
+                            }
+                        ]
+                    },
+                    "move-to-state": "rebuild-source"
+                },
+                {
+                    "condition": {
+                        "all": [
+                            {
+                                "turn-complete": true
+                            },
+                            {
+                                "structured-output": {
+                                    "in-place": false
+                                }
+                            }
+                        ]
+                    },
+                    "move-to-state": "await-golden-build"
+                },
+                {
+                    "condition": {
+                        "turn-complete": true
+                    },
+                    "move-to-state": "blocked-for-human"
+                }
+            ]
+        },
+        {
+            "id": "rebuild-source",
+            "sequence": 30,
+            "name": "Rebuild the Source in the Background",
+            "description": "ASS-427 AC2/AC3: the fix written into the golden image definition is carried into a rebuild that nobody waits for (vm:golden-followup with the ticket, on the host, the VM kept running for Verify): no build running, the rebuild starts now (vm:build-golden-start, detached); one running, the definition change waits in golden-queue and control starts the rebuild once that build ends (one build per project at a time, golden-followup.js); the image current — a VM-setup fix needs no rebuild — nothing to build. The build's result (its tools check among its checks) is logged on the ticket when it ends (AC6). Whatever it exits, Verify the Repaired Image follows: the ticket never waits on it",
+            "vm": "running",
+            "action": {
+                "type": "script",
+                "command": "./agent.sh vm:golden-followup {project} {work-item} {variation}"
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "exit-code": 0
+                    },
+                    "move-to-state": "verify-image"
+                },
+                {
+                    "condition": {
+                        "not": {
+                            "exit-code": 0
+                        }
+                    },
+                    "move-to-state": "verify-image"
+                }
+            ]
+        },
+        {
+            "id": "await-golden-build",
+            "sequence": 31,
             "name": "Await the Golden Build",
-            "description": "ASS-392 AC3: one golden rebuild of a project at a time. Before Repair Image, and again whenever it found or started one, wait while the project's golden image is being built (vm:golden-wait: golden-build.lock held, or golden-build-run.json's build still going — the reading vm:build-golden-start refuses a second start on, whoever started it: control's golden rebuild ticket, the operator, another ticket's Repair Image), polling (exit 1, its waiting-exit-code: no failure counted); no build running (exit 0), Repair Image, which re-checks first whether the problem is still there; no golden-image definition (exit 2), Blocked for Human. Its max-visits bounds the builds one stay may wait for",
+            "description": "ASS-392 AC3: one golden rebuild of a project at a time. ASS-427 AC4: only on the path for what cannot be fixed in place (Classify's image, or Repair the VM's in-place false), where the ticket waits for the rebuild. Before Repair Image, and again whenever it found or started one, wait while the project's golden image is being built (vm:golden-wait: golden-build.lock held, or golden-build-run.json's build still going — the reading vm:build-golden-start refuses a second start on, whoever started it: control's golden rebuild ticket, the operator, another ticket's Repair Image), polling (exit 1, its waiting-exit-code: no failure counted); no build running (exit 0), Repair Image, which re-checks first whether the problem is still there; no golden-image definition (exit 2), Blocked for Human. Its max-visits bounds the builds one stay may wait for",
             "max-visits": 4,
             "on-max-visits": "blocked-for-human",
             "record-script-output": true,
@@ -1028,14 +1144,15 @@
         },
         {
             "id": "repair-image",
-            "sequence": 30,
+            "sequence": 32,
             "name": "Repair the Image",
-            "description": "ASS-392 AC2: an image issue, on the host (the Blocked agents in the VM cannot rebuild images), confined as Troubleshoot on the Host is: it re-checks first whether the problem is still there (a build may have finished while it waited: gone, it rebuilds nothing), then may only start the project's registry (registry:up), edit its image definition in its golden-image folder (vm:golden-write, nothing outside it), rebuild the golden image (vm:build-golden-start, which never overlaps another build) and recreate the ticket's VM from the current image (vm:recreate, never losing work not on a remote) — nothing else on the Mac, never a credential. A build running, found or started (golden-building), waits at Await the Golden Build and comes back; fixed, Verify the Repaired Image; else Blocked for Human with what it tried",
+            "description": "ASS-392 AC2: an image issue that cannot be fixed in the ticket's VM (ASS-427 AC4: the Lima template — cpus, memory, disk —, kernel settings, the image's build itself), on the host (the Blocked agents in the VM cannot rebuild images), confined as Troubleshoot on the Host is: it re-checks first whether the problem is still there (a build may have finished while it waited: gone, it rebuilds nothing), then may only start the project's registry (registry:up), edit its image definition in its golden-image folder (vm:golden-write, nothing outside it), rebuild the golden image (vm:build-golden-start, which never overlaps another build) and recreate the ticket's VM from the current image (vm:recreate, never losing work not on a remote) — nothing else on the Mac, never a credential. A build running, found or started (golden-building), waits at Await the Golden Build and comes back; fixed, Verify the Repaired Image; else Blocked for Human with what it tried",
             "action": {
                 "type": "prompt",
                 "prompt": "repair-image-on-host-grouped",
                 "agent-count": 1,
-                "run-in-dev-container": false
+                "run-in-dev-container": false,
+                "model": "claude-opus-5-5"
             },
             "exit-events": [
                 {
@@ -1078,9 +1195,9 @@
         },
         {
             "id": "verify-image",
-            "sequence": 31,
+            "sequence": 33,
             "name": "Verify the Repaired Image",
-            "description": "ASS-392 AC4: done only when the failing check passes on a VM from the repaired image (vm:image-recheck, on the host, the VM kept running for it): the golden image current (built from its definition as it is now), the ticket's VM, when it has one, a clone of it, and the blocked step's check (ticket:recheck-block, as Check First runs it) passing there (exit 0); no check of the harness's own to re-run (exit 2: an agent's step, or one that makes a VM), Repair Image's run of it stands; else (exit 3, or the command failing) Blocked for Human with what was tried. Each outcome logged in the change log",
+            "description": "ASS-392 AC4, ASS-427 AC6: done when the failing check passes on the ticket's fixed VM (vm:image-recheck, on the host, the VM kept running for it: the blocked step's check, ticket:recheck-block as Check First runs it, passing there, exit 0) — the VM need not be a clone of the newest image, nor the image current: a rebuild started for the fix is checked by its own build (its tools check) and its result logged on the ticket (vm:golden-followup); the image's state and the VM's generation are logged with the outcome. No check of the harness's own to re-run (exit 2: an agent's step, or one that makes a VM), the repair's own run of it stands; else (exit 3, or the command failing) Blocked for Human with what was tried. Each outcome logged in the change log",
             "vm": "running",
             "record-script-output": true,
             "action": {
@@ -1112,9 +1229,9 @@
         },
         {
             "id": "done",
-            "sequence": 32,
+            "sequence": 34,
             "name": "Done",
-            "description": "Fixed, repaired, nothing wrong any more, or sent back to fix its own branch (ASS-384), passed on re-check, its fix merge request merged, or sent to wait for its dependency merge request (ASS-390): the parent follows return-to-state, or the run's resume-at where engine.js allows it, on the API key fallback or after its rate limit reset (ASS-391), or held by its project's credentials (ASS-395)",
+            "description": "Fixed, repaired, nothing wrong any more, or sent back to fix its own branch (ASS-384), passed on re-check, its fix merge request merged, or sent to wait for its dependency merge request (ASS-390): the parent follows return-to-state, or the run's resume-at where engine.js allows it, on the API key fallback or after its rate limit reset (ASS-391), or held by its project's credentials (ASS-395); or its VM fixed in place, its source fixed for later VMs in the background (ASS-427)",
             "is-done": true,
             "action": {
                 "type": "none"
@@ -1122,7 +1239,7 @@
         },
         {
             "id": "retry",
-            "sequence": 33,
+            "sequence": 35,
             "name": "Retry",
             "description": "The fix ticket was closed unmerged, a failed attempt: the parent goes round Blocked again, its attempts counted afresh",
             "is-done": true,
@@ -1132,7 +1249,7 @@
         },
         {
             "id": "blocked-for-human",
-            "sequence": 34,
+            "sequence": 36,
             "name": "Blocked for Human",
             "description": "No fix could be raised, waited on or made, or 3 fix attempts failed: the parent goes to Blocked for Human, the run's ai-feedback saying why",
             "is-done": true,

@@ -30,7 +30,7 @@
 //     included — what `top`'s MEM column shows — read with `footprint -f bytes
 //     --noCategories -p <pid> …` (its phys_footprint). ASS-404 read the
 //     resident size (ps rss), which leaves compressed and swapped pages out:
-//     on 2026-11-12 a 10 GiB case-law VM had 0.96 GiB resident while top
+//     on 2026-11-12 a 10 GiB client-project VM had 0.96 GiB resident while top
 //     showed it at 10G MEM, 17G CMPRS. Compared on this Mac that day: top's
 //     MEM 10G (291M, 76M for two other processes); footprint 10759519712 B
 //     (305546752, 80200616); proc_pid_rusage's ri_phys_footprint, from a test
@@ -40,8 +40,24 @@
 //     figures ("10G"), and the helper would need building with clang; so
 //     footprint. When it cannot be read the resident size is used, and the
 //     need says so (reading.measure 'footprint' or 'resident').
-// A VM is held while macOS reports warn or critical pressure, or free memory
-// below the need; under normal pressure with that much free nothing is held.
+// A VM is held (memoryVerdict, ASS-422) under critical pressure; under normal
+// pressure while free memory is below the need (with that much free nothing
+// is held); and under warn pressure unless the memory macOS can reclaim
+// without swapping covers the need and macOS has not swapped since the
+// previous reading. ASS-422: macOS's warn level reflects the compressor's
+// occupancy, not exhaustion — with six 8 GiB VMs it is near-constant, and on
+// 2026-11-13 it held a 6.6 GiB need with 0.2 GiB free but 11.3 GiB inactive,
+// 21 GiB compressed and no swap-outs. The reclaimable memory is vm_stat's
+// free + inactive + speculative + purgeable pages, times its page size (read,
+// not assumed): reading.reclaimableBytes. Swapping is vm_stat's Swapouts
+// grown since the previous reading (reading(), which keeps the last Swapouts
+// seen); with no previous reading (control just started, or vm_stat's
+// Swapouts not read before) it is not known — held under warn — unless swap
+// use (sysctl vm.swapusage) is nil, which no swap-out can leave; the next
+// reading, MEMORY_READ_EVERY later, decides. Under warn the VMs this hold let
+// start under the same reading are counted against the reclaimable memory,
+// as the seat check (seat-memory.js, which shares this verdict) counts the
+// VMs already starting for its seats; under normal pressure nothing changes.
 // Held, the VM is not started: its variation waits as for a slot (awaitsVm
 // says so, with no VM_WAIT, so its steps are not judged and no agent is
 // dispatched into it) and holds no planning or in-progress seat meanwhile
@@ -86,7 +102,35 @@ export function parseSysctl(text) {
   const value = name => Number(new RegExp(`^${name.replaceAll('.', '\\.')}:\\s*(\\d+)`, 'm').exec(text)?.[1]);
   const freePercent = value('kern.memorystatus_level'), level = value('kern.memorystatus_vm_pressure_level'), totalBytes = value('hw.memsize');
   if (Number.isNaN(freePercent) || Number.isNaN(totalBytes)) throw new Error('sysctl: unexpected output');
-  return { freePercent, pressure: PRESSURE[level] ?? 'unknown', totalBytes };
+  const out = { freePercent, pressure: PRESSURE[level] ?? 'unknown', totalBytes };
+  // ASS-422: vm.swapusage, "total = 0.00M  used = 0.00M  free = 0.00M  (encrypted)", when asked for.
+  const swap = /^vm\.swapusage:.*?\bused\s*=\s*(\d+(?:\.\d+)?)([KMGT])/m.exec(text);
+  if (swap) out.swapUsedBytes = Math.round(Number(swap[1]) * 1024 ** ' KMGT'.indexOf(swap[2]));
+  return out;
+}
+
+// RECLAIMABLE — ASS-422: vm_stat's counters of the pages macOS reclaims
+// without swapping (vm_stat's "Pages free" leaves the speculative out).
+const RECLAIMABLE = { free: 'Pages free', inactive: 'Pages inactive', speculative: 'Pages speculative', purgeable: 'Pages purgeable' };
+
+// parseVmStat(text) — ASS-422: { pageSize, pages ({ free, inactive,
+// speculative, purgeable }), reclaimable (each in bytes), reclaimableBytes
+// (their sum), swapouts (null when not listed) } from `vm_stat`'s output, its
+// page size read from its header ("(page size of 16384 bytes)").
+export function parseVmStat(text) {
+  const pageSize = Number(/\(page size of (\d+) bytes\)/.exec(text)?.[1]);
+  if (!pageSize) throw new Error('vm_stat: no page size');
+  const count = label => {
+    const m = new RegExp(`^${label}:\\s*(\\d+)\\.?\\s*$`, 'm').exec(text);
+    return m ? Number(m[1]) : null;
+  };
+  const pages = {}, reclaimable = {};
+  for (const [name, label] of Object.entries(RECLAIMABLE)) {
+    pages[name] = count(label);
+    if (pages[name] == null) throw new Error(`vm_stat: no "${label}"`);
+    reclaimable[name] = pages[name] * pageSize;
+  }
+  return { pageSize, pages, reclaimable, reclaimableBytes: Object.values(reclaimable).reduce((a, b) => a + b, 0), swapouts: count('Swapouts') };
 }
 
 // VZ_PROCESS — the process of a Virtualization framework VM (one per Lima vz instance).
@@ -156,15 +200,25 @@ const run = (command, args) => new Promise((resolve, reject) => execFile(command
 }));
 
 // readHostMemory(home) — ASS-404: a reading of the Mac's memory now, {
-// freePercent, pressure, totalBytes, freeBytes (ASS-419), vms (Lima instance
+// freePercent, pressure, totalBytes, swapUsedBytes (ASS-422, when read),
+// freeBytes (ASS-419), reclaimableBytes, reclaimable, pageSize, swapouts
+// (ASS-422: vm_stat's, parseVmStat; reclaimableBytes null when it could not
+// be read, vmStatError saying why), vms (Lima instance
 // name → its VM process's footprint bytes, ASS-419, for the instances in
 // `home`, LIMA_HOME; null when they could not be measured, vmsError saying
 // why), measure (ASS-419: 'footprint', or 'resident' when only ps rss could
 // be read, footprintError saying why) } — sysctl, ps, footprint and lsof,
 // each well under a second.
 export const readHostMemory = home => async () => {
-  const reading = parseSysctl(await run('sysctl', ['kern.memorystatus_level', 'kern.memorystatus_vm_pressure_level', 'hw.memsize']));
+  const reading = parseSysctl(await run('sysctl', ['kern.memorystatus_level', 'kern.memorystatus_vm_pressure_level', 'hw.memsize', 'vm.swapusage']));
   reading.freeBytes = freeBytes(reading);
+  try {
+    const vm = parseVmStat(await run('vm_stat', []));
+    Object.assign(reading, { reclaimableBytes: vm.reclaimableBytes, reclaimable: vm.reclaimable, pageSize: vm.pageSize, swapouts: vm.swapouts });
+  } catch (error) {
+    reading.reclaimableBytes = null;
+    reading.vmStatError = error.message;
+  }
   try {
     const measured = await footprints(parseVzProcesses(await run('ps', ['-axo', 'pid=,rss=,comm=']))), procs = measured.procs;
     reading.measure = measured.measure;
@@ -204,7 +258,7 @@ export function vmMemoryBytes(ctx, project) {
 function projectVms(ctx, project) {
   const names = new Set();
   try { for (const name of Object.keys(JSON.parse(readFileSync(join(ctx.paths.projects, project.id, 'vms.json'), 'utf8')))) names.add(name); } catch { /* none */ }
-  for (const t of project.tickets ?? []) for (const v of t.variations ?? []) if (v.vm?.name) names.add(v.vm.name);
+  for (const t of project.tickets ?? []) for (const v of t.variations ?? []) if (v.vm?.name && v.vm.kind !== 'workstation') names.add(v.vm.name);   // ASS-435: a workstation is no VM of the Mac's
   return names;
 }
 
@@ -252,26 +306,73 @@ export async function vmNeed(ctx, state, project) {
 // freeBytes(reading) — the free memory macOS reports: its free percentage of the Mac's memory.
 export const freeBytes = reading => Math.round(reading.totalBytes * reading.freePercent / 100);
 
-// memoryVerdict(reading, need) — ASS-404: { short, why }: whether a new VM is
-// held — macOS's pressure warn or critical, or its free memory below the need —
-// and why, in words with macOS's figures.
-export function memoryVerdict(reading, need) {
-  const free = freeBytes(reading);
+// memoryVerdict(reading, need, starting) — ASS-404, ASS-422: whether a new VM
+// is held, the one rule the VM-start hold and the seat check (seat-memory.js)
+// both ask, `starting` the bytes of the VMs already starting that the
+// reading does not show yet (0 by default). { short, rule, room, figure,
+// brief, why }: `rule` which rule decided — 'critical' (always held),
+// 'free' (normal pressure, or a level macOS does not name: free memory less
+// `starting` at least the need), or under warn 'warn-reclaimable' (room:
+// reclaimable memory less `starting` at least the need, no swapping — not
+// held), 'warn-short' (short of it), 'warn-swapping', 'warn-swap-unknown'
+// (no earlier reading to compare) or 'warn-unread' (vm_stat not read);
+// `room` the free (`figure` 'free') or reclaimable ('reclaimable') memory
+// less `starting`, compared with the need; `brief` the rule in words, `why`
+// with macOS's figures. With starting 0 the normal-pressure words are
+// ASS-404's, unchanged.
+export function memoryVerdict(reading, need, starting = 0) {
+  const free = freeBytes(reading), less = starting > 0 ? ` once the ${gib(starting)} GiB for the VMs already starting is counted` : '';
   const macos = `macOS: pressure ${reading.pressure}, ${reading.freePercent}% free, ${gib(free)} of ${gib(reading.totalBytes)} GiB`;
-  if (reading.pressure === 'warn' || reading.pressure === 'critical') return { short: true, why: `memory pressure ${reading.pressure} (${macos})` };
-  if (free < need.bytes) return { short: true, why: `${gib(free)} GiB free, below the ${gib(need.bytes)} GiB a VM needs (${macos})` };
-  return { short: false, why: `pressure ${reading.pressure}, ${gib(free)} GiB free (${reading.freePercent}% of ${gib(reading.totalBytes)} GiB), at or above the ${gib(need.bytes)} GiB a VM needs` };
+  const verdict = (short, rule, room, figure, brief, why) => ({ short, rule, room, figure, brief, why: why ?? `${brief} (${macos})` });
+  if (reading.pressure === 'critical') return verdict(true, 'critical', free - starting, 'free', 'pressure critical: held', `memory pressure critical (${macos})`);
+  if (reading.pressure === 'warn') return warnVerdict(reading, need, starting, macos, less, verdict);
+  const room = free - starting;
+  if (room < need.bytes) return verdict(true, 'free', room, 'free', `pressure ${reading.pressure}, ${gib(room)} GiB free${less} < ${gib(need.bytes)} GiB needed: held`, `${gib(room)} GiB free${less}, below the ${gib(need.bytes)} GiB a VM needs (${macos})`);
+  return verdict(false, 'free', room, 'free', `pressure ${reading.pressure}, ${gib(room)} GiB free${less} ≥ ${gib(need.bytes)} GiB needed: started`, `pressure ${reading.pressure}, ${gib(room)} GiB free (${reading.freePercent}% of ${gib(reading.totalBytes)} GiB)${less}, at or above the ${gib(need.bytes)} GiB a VM needs`);
+}
+
+// warnVerdict — ASS-422: memoryVerdict under warn pressure (see there).
+function warnVerdict(reading, need, starting, macos, less, verdict) {
+  const r = reading.reclaimable;
+  const figures = reading.reclaimableBytes == null ? macos
+    : `${macos}; reclaimable ${gib(reading.reclaimableBytes)} GiB${r ? `: ${gib(r.free)} free + ${gib(r.inactive)} inactive + ${gib(r.speculative)} speculative + ${gib(r.purgeable)} purgeable` : ''}`;
+  const out = (short, rule, room, brief) => verdict(short, rule, room, 'reclaimable', brief, `${brief} (${figures})`);
+  if (reading.reclaimableBytes == null) return out(true, 'warn-unread', null, `pressure warn, reclaimable memory not read${reading.vmStatError ? ` (${reading.vmStatError})` : ''}: held`);
+  const room = reading.reclaimableBytes - starting;
+  if (reading.swapping === true) return out(true, 'warn-swapping', room, `pressure warn, swapping (${reading.swapoutsSince} swap-outs since the last reading): held`);
+  if (reading.swapping !== false) return out(true, 'warn-swap-unknown', room, 'pressure warn, swap-outs not known yet (no earlier reading to compare): held');
+  if (room < need.bytes) return out(true, 'warn-short', room, `pressure warn, ${gib(room)} GiB reclaimable${less} < ${gib(need.bytes)} GiB needed: held`);
+  return out(false, 'warn-reclaimable', room, `pressure warn, ${gib(room)} GiB reclaimable${less} ≥ ${gib(need.bytes)} GiB needed, ${reading.swapNote ?? 'no swap-outs since the last reading'}: started`);
+}
+
+// withSwap(r, before) — ASS-422: the reading with whether macOS swapped since
+// the previous one (`before`, the last Swapouts seen, or null): swapping
+// true (swapoutsSince how many), false (swapNote why), or null not known.
+function withSwap(r, before) {
+  if (r.swapouts != null && before != null) {
+    const since = r.swapouts - before;
+    return since > 0 ? { ...r, swapping: true, swapoutsSince: since } : { ...r, swapping: false, swapNote: 'no swap-outs since the last reading' };
+  }
+  if (r.swapUsedBytes === 0) return { ...r, swapping: false, swapNote: 'no swap in use' };
+  return { ...r, swapping: null };
 }
 
 // reading(ctx) — the Mac's memory, read at most every MEMORY_READ_EVERY
-// (memory.hostMemory), or null when it cannot be read (logged once per streak).
-async function reading(ctx) {
-  const c = (ctx.memory.hostMemory ??= { at: null, reading: null, failing: false });
+// (memory.hostMemory), or null when it cannot be read (logged once per streak);
+// ASS-422: with whether macOS swapped since the previous reading (withSwap:
+// memory.hostMemory.swapouts the last Swapouts seen), and the VMs the hold let
+// start under it (started) forgotten — the one reading both the hold and the
+// seat check (seat-memory.js) judge by.
+export async function reading(ctx) {
+  const c = (ctx.memory.hostMemory ??= { at: null, reading: null, failing: false, swapouts: null, started: new Map() });
   const now = ctx.now().getTime();
   if (c.at != null && now - c.at < MEMORY_READ_EVERY) return c.reading;
   c.at = now;
+  c.started = new Map();
   try {
-    c.reading = await ctx.hostMemory();
+    const r = await ctx.hostMemory();
+    c.reading = withSwap(r, c.swapouts ?? null);
+    if (r.swapouts != null) c.swapouts = r.swapouts;
     c.failing = false;
   } catch (error) {
     if (!c.failing) ctx.log('error', `memory: ${error.message}; no VM held for memory till it reads`);
@@ -290,7 +391,8 @@ function record(ctx, id, hold) {
   const r = hold.reading, body = `${JSON.stringify({
     since: iso(hold.since),
     pressure: r.pressure, 'free-percent': r.freePercent, 'free-bytes': freeBytes(r), 'total-bytes': r.totalBytes,
-    'need-bytes': hold.need.bytes, 'need-why': hold.need.why, 'need-measure': hold.need.measure, why: hold.why,
+    'reclaimable-bytes': r.reclaimableBytes ?? null, swapouts: r.swapouts ?? null, swapping: r.swapping ?? null,   // ASS-422
+    rule: hold.rule ?? null, 'need-bytes': hold.need.bytes, 'need-why': hold.need.why, 'need-measure': hold.need.measure, why: hold.why,
     vm: hold.first, held: [...hold.variations.values()],
   }, null, 2)}\n`;
   if (body === hold.written) return;
@@ -313,6 +415,16 @@ function lift(ctx, id, hold, verdict) {
 // heldName(held) — a held variation's key in its hold: "<KEY> <variation>".
 const heldName = held => `${held.key} ${held.variation}`;
 
+// startedBytes(ctx, r, except) — ASS-422: under warn pressure, the needs of the
+// VMs the hold let start under reading `r` (memory.hostMemory.started), but
+// `except`'s; 0 under any other pressure (ASS-404's rule, unchanged).
+function startedBytes(ctx, r, except) {
+  if (r.pressure !== 'warn') return 0;
+  let sum = 0;
+  for (const [k, bytes] of ctx.memory.hostMemory?.started ?? []) if (k !== except) sum += bytes;
+  return sum;
+}
+
 // memoryShort(ctx, state, project, name, held) — whether a VM of the project
 // (`name`, null when not known yet: a vm:create step) must not start now for
 // want of memory: the hold put on (logged, recorded) or kept, the VM and its
@@ -325,17 +437,23 @@ export async function memoryShort(ctx, state, project, name, held = null) {
   const holds = (ctx.memory.memoryHolds ??= new Map());
   const hold = holds.get(project.id);
   if (r == null) return false;
-  const need = memoryNeed(ctx, state, project, r), verdict = memoryVerdict(r, need);
+  const key = name ?? (held ? heldName(held) : Symbol('vm'));
+  const need = memoryNeed(ctx, state, project, r), verdict = memoryVerdict(r, need, startedBytes(ctx, r, key));
   if (!verdict.short) {
     if (hold) lift(ctx, project.id, hold, verdict);
+    if (r.pressure === 'warn') {   // ASS-422: started under warn — said, and counted against the reclaimable memory till the next reading
+      const started = ctx.memory.hostMemory.started;
+      if (!started.has(key)) ctx.log(PHASE, `${project.id} ${name ?? 'its VM'}${held ? ` (${heldName(held)})` : ''}: ${verdict.why}`);
+      started.set(key, need.bytes);
+    }
     return false;
   }
   if (!hold) {
     holds.set(project.id, { since: ctx.now().getTime(), first: name, vms: new Set(), variations: new Map() });
-    ctx.log(PHASE, `Out of memory: ${verdict.why}; a ${project.id} VM needs ${gib(need.bytes)} GiB (${need.why}): ${name ?? 'its VM'}${held ? ` (${heldName(held)})` : ''} not started — no ${project.id} VM starts or is created until macOS reports normal pressure and that much free; its variation waits as for a slot, holding no seat, no failure counted`);
+    ctx.log(PHASE, `Out of memory: ${verdict.why}; a ${project.id} VM needs ${gib(need.bytes)} GiB (${need.why}): ${name ?? 'its VM'}${held ? ` (${heldName(held)})` : ''} not started — no ${project.id} VM starts or is created until macOS reports normal pressure and that much free, or warn pressure with that much reclaimable and no swapping; its variation waits as for a slot, holding no seat, no failure counted`);
   }
   const h = holds.get(project.id);
-  Object.assign(h, { need, reading: r, why: verdict.why });
+  Object.assign(h, { need, reading: r, why: verdict.why, rule: verdict.rule });
   h.variations ??= new Map();
   if (name) h.vms.add(name);
   if (held) h.variations.set(heldName(held), { ...(name ? { vm: name } : {}), ...held });
@@ -395,9 +513,9 @@ export async function liftMemoryHolds(ctx, state) {
     if (!ctx.hostMemory) continue;
     const r = await reading(ctx);
     if (r == null) continue;
-    const need = memoryNeed(ctx, state, project, r), verdict = memoryVerdict(r, need);
+    const need = memoryNeed(ctx, state, project, r), verdict = memoryVerdict(r, need, startedBytes(ctx, r));
     if (!verdict.short) { lift(ctx, project.id, hold, verdict); changed = true; continue; }
-    Object.assign(hold, { need, reading: r, why: verdict.why });
+    Object.assign(hold, { need, reading: r, why: verdict.why, rule: verdict.rule });
     hold.variations ??= new Map();
     record(ctx, project.id, hold);   // the figures as read now
   }

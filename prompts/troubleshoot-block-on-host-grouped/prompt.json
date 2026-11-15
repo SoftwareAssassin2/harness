@@ -72,7 +72,7 @@
             },
             "failing-file": {
                 "type": "string",
-                "description": "Only then: the file the failure is in, its path in the failing repository, :line where one fails (ASS-384: one the ticket's own branch adds or changes sends the ticket back to Generate Solution, not to the operator)"
+                "description": "Only then: the file the failure is in, its path in the failing repository, :line where one fails (ASS-384: one the ticket's own branch adds or changes — or, ASS-423, one of its merge requests added or changed, merged or not — sends the ticket back to Generate Solution, not to the operator)"
             }
         },
         "required": [

@@ -253,9 +253,9 @@ test('ASS-180 AC5: ticket:set-requirements and ticket:set-acceptance-criteria - 
 test('ASS-180 AC5: the forwarder allowlist has exactly these two new keys (automated-tests:record, ticket:set-demo-plan) and no new entry for the host-only commands', () => {
   const allowlist = JSON.parse(readFileSync(join(ROOT, 'src', 'control', 'forwarder-allowlist.json'), 'utf8'));
   assert.ok(Object.hasOwn(allowlist, 'automated-tests:record'), 'automated-tests:record on the allowlist');
-  assert.deepEqual(allowlist['automated-tests:record'], { project: 0, ticket: 1, variation: 2 });
+  assert.deepEqual(allowlist['automated-tests:record'], { project: 0, ticket: 1, variation: 2, 'max-args': 3 });   // ASS-428: its file path the Mac's alone
   assert.ok(Object.hasOwn(allowlist, 'ticket:set-demo-plan'), 'ticket:set-demo-plan on the allowlist');
-  assert.deepEqual(allowlist['ticket:set-demo-plan'], { project: 0, ticket: 1, variation: 2 });
+  assert.deepEqual(allowlist['ticket:set-demo-plan'], { project: 0, ticket: 1, variation: 2, 'max-args': 3 });
   assert.ok(!Object.hasOwn(allowlist, 'ticket:set-requirements'), 'ticket:set-requirements is NOT on the allowlist');
 });
 
@@ -358,8 +358,25 @@ test('ASS-298 AC2: a VM\'s work:write with a 5th argument — a path or "-" — 
   }
 });
 
-test('ASS-298 AC2: the allowlist caps work:write at 4 arguments — { project: 0, ticket: 1, variation: 2, max-args: 4 } — and no other rule carries max-args', () => {
+// ASS-428: work:append, automated-tests:record, ticket:set-demo-plan and merge-request:create-fix took the same trailing file path, capped the same way.
+const CAPPED = { 'work:write': 4, 'work:append': 4, 'automated-tests:record': 3, 'ticket:set-demo-plan': 3, 'merge-request:create-fix': 6 };
+test('ASS-298 AC2, ASS-428: the allowlist caps work:write at 4 arguments — { project: 0, ticket: 1, variation: 2, max-args: 4 } — and each other command with a trailing file path at its stdin form\'s count; no other rule carries max-args', () => {
   const allowlist = JSON.parse(readFileSync(join(ROOT, 'src', 'control', 'forwarder-allowlist.json'), 'utf8'));
   assert.deepEqual(allowlist['work:write'], { project: 0, ticket: 1, variation: 2, 'max-args': 4 });
-  assert.deepEqual(Object.entries(allowlist).filter(([k, r]) => k !== 'work:write' && r && typeof r === 'object' && Object.hasOwn(r, 'max-args')).map(([k]) => k), []);
+  for (const [command, max] of Object.entries(CAPPED)) assert.equal(allowlist[command]['max-args'], max, command);
+  assert.deepEqual(Object.entries(allowlist).filter(([k, r]) => !Object.hasOwn(CAPPED, k) && r && typeof r === 'object' && Object.hasOwn(r, 'max-args')).map(([k]) => k), []);
+});
+
+test('ASS-428: a VM\'s work:append, automated-tests:record, ticket:set-demo-plan or merge-request:create-fix given a file path past its stdin form is refused (max-args); the stdin form, and ticket:add-merge-request\'s "-", still pass', () => {
+  const f = fixture(), { tokens, assignments } = bindings(f.dir);
+  const may = (...argv) => authorize(tokens, assignments, 'harness-token', argv);
+  const forms = [['work:append', 'harness', 'ASS-74', 'A', 'change-log.md'], ['automated-tests:record', 'harness', 'ASS-74', 'A'], ['ticket:set-demo-plan', 'harness', 'ASS-74', 'A'],
+    ['merge-request:create-fix', 'harness', 'ASS-74', 'A', 'https://github.com/o/harness', 'change/ASS-74-fix-1', 'the fix']];
+  for (const argv of forms) {
+    assert.deepEqual(may(...argv).argv, argv, argv[0]);
+    const r = may(...argv, '/mnt/ticket/body.md');
+    assert.equal(r.argv, undefined, argv[0]);
+    assert.match(r.refuse ?? '', new RegExp(`${argv[0]} takes at most ${argv.length - 1} arguments`), argv[0]);
+  }
+  assert.match(may('ticket:add-merge-request', 'harness', 'ASS-74', 'A', '/mnt/ticket/mr.json').refuse ?? '', /stdin|"-"/, 'a path in place of "-" is refused');
 });

@@ -10,7 +10,7 @@ import { openSync, writeSync, closeSync, mkdirSync, readSync, fstatSync } from '
 import { join } from 'node:path';
 import { sessionDir, eventLines } from './session.js';
 import { initialUsage, foldUsage, toUsageJson, writeUsage, billingOf } from './session-usage.js';
-import { inVm, newMarker, stopInVm, limaEnv } from '../control/vm.js';
+import { machineCommand, machinePaths, newMarker, stopMarked } from '../control/machine.js';
 
 const INBOX_MS = 200;
 const BYPASS = '--dangerously-skip-permissions';
@@ -62,9 +62,11 @@ export const billed = (agent, usd) => (agent.billing === 'subscription' ? 0 : us
 // init event; null until then), billing (billingOf the init event; null until
 // then), lastTotalCost, send(text), stop() }: send logs
 // "> <text>" and writes it to the agent as a user message; stop signals its
-// whole process group. With `vm` (a VM's name, ASS-74) it runs in that VM
-// instead, `cwd` a folder there, through limactl shell under a marker of its
-// own (`marker`, returned too: see vm.js); stop then also ends it in the VM,
+// whole process group. With `vm` (a VM's name, ASS-74; a machine, ASS-432:
+// a GCP workstation's too, ASS-435) it runs in that VM
+// instead, `cwd` a folder there (its repos folder, /repos/ in a VM, by default: machinePaths), through the machine
+// layer (machine.js machineCommand, ASS-432: limactl shell for a VM) under a
+// marker of its own (`marker`, returned too); stop then also ends it in the VM,
 // which the local signal never reaches. Each complete line appended to <dir>/inbox.jsonl is
 // sent as send sends it, checked for every INBOX_MS.
 export function startAgent({ name, root, dir: given, cwd, vm, command, model, jsonSchema, mcpConfig, resume, systemPrompt, confinedBy, startTime = new Date().toISOString(), env = process.env, usage, onEvent = () => {}, onResult = () => {}, onExit = () => {} }) {
@@ -75,8 +77,9 @@ export function startAgent({ name, root, dir: given, cwd, vm, command, model, js
   const write = lines => { if (log !== null) writeSync(log, lines.map(l => `${l}\n`).join('')); };
   const marker = vm ? newMarker() : undefined;
   const argv = agentCommand({ command, model, jsonSchema, mcpConfig, resume, systemPrompt, confinedBy });
-  const [file, ...args] = vm ? inVm(vm, argv, { cwd, marker }) : argv;
-  const child = spawn(file, args, { cwd: vm ? undefined : cwd, env: vm ? limaEnv(env) : env, detached: true, stdio: ['pipe', 'pipe', 'pipe'] });
+  const run = vm ? machineCommand(vm, argv, { cwd: cwd ?? machinePaths(vm).repos, marker, env }) : { argv, env };
+  const [file, ...args] = run.argv;
+  const child = spawn(file, args, { cwd: vm ? undefined : cwd, env: run.env, detached: true, stdio: ['pipe', 'pipe', 'pipe'] });
   const agent = { pid: child.pid, startTime, dir, sessionId: null, billing: null, lastTotalCost: 0, marker, send, stop };
   let used = initialUsage();
   createInterface({ input: child.stdout }).on('line', line => {
@@ -104,7 +107,7 @@ export function startAgent({ name, root, dir: given, cwd, vm, command, model, js
   }
   function stop() {
     try { process.kill(-child.pid, 'SIGTERM'); } catch { /* already gone */ }
-    if (vm) stopInVm(vm, marker, env);
+    if (vm) stopMarked(vm, marker, env);
   }
   // The inbox, read from where the last check stopped; a line not yet ended
   // waits for the rest of it, kept as bytes so a character split between

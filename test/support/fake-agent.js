@@ -32,7 +32,10 @@
 // FAKE_API_KEY_SOURCE the init event names it as its apiKeySource (ASS-216):
 // "none" is a subscription login. With FAKE_UNFINISHED (a turn number, ASS-268)
 // that turn and every later one says its assistant line and never ends: no
-// result, as an agent killed or dying mid-turn. Ends when stdin does. Under test/support/, which npm test's pattern
+// result, as an agent killed or dying mid-turn. Ends when stdin does — but
+// with FAKE_OUTLIVE_STDIN (ASS-425) it does not: as a Claude mid-turn in a VM
+// whose `limactl shell` has gone, it runs on until signalled, or until its
+// parent is gone (orphaned, so a test that kills that parent leaks nothing). Under test/support/, which npm test's pattern
 // (test/**/*.test.js) leaves alone: run as a test it would wait on stdin forever.
 import { existsSync } from 'node:fs';
 // `auth status`, as claude auth status answers it: logged in as fake@example.com;
@@ -122,4 +125,7 @@ async function answer(lines) {
     });
   }
 }
-process.stdin.on('end', () => process.exit(0));
+if (process.env.FAKE_OUTLIVE_STDIN) {
+  const parent = process.ppid;
+  setInterval(() => { if (process.ppid !== parent) process.exit(0); }, 100);
+} else process.stdin.on('end', () => process.exit(0));

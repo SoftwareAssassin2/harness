@@ -148,7 +148,7 @@ test('the grouped engines raise a Jira ticket through ticket:raise-bug; the flat
   const read = path => readFileSync(join(ROOT, path), 'utf8');
   const engine = name => JSON.parse(read(`engines/${name}/state-engine.json`));
   const engineOf = (name, step) => engine(name).steps.find(s => s.id === step).action.engine;
-  assert.deepEqual([engineOf('grouped-blocked', 'create-fix-ticket'), engineOf('check-ticket-health-grouped', 'create-ticket')], ['create-ticket-grouped', 'create-ticket-grouped']);
+  assert.equal(engineOf('grouped-blocked', 'create-fix-ticket'), 'create-ticket-grouped');
   const prompts = engine('create-ticket-grouped').steps.toSorted((a, b) => a.sequence - b.sequence).map(s => s.action.prompt).filter(Boolean);
   assert.ok(prompts.indexOf('find-existing-ticket') >= 0 && prompts.indexOf('find-existing-ticket') < prompts.indexOf('create-ticket-grouped'), prompts.join(' '));   // ASS-258: other steps may come between
   const grouped = read('prompts/create-ticket-grouped/prompt.txt');

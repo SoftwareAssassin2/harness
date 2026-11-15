@@ -6,6 +6,7 @@
 #
 #   source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../vm-credentials.bash"
 #   declared_credentials <command> <project>   # the project's object in ~/.harness/vm-credentials.json, as JSON; fails on a bad one
+#                                              # (VM_CREDENTIALS_FILE names another file: ASS-435's -real test, which keeps the operator's own)
 #   read_tokens <command> <project> <json>     # fills TOKENS[kind] and SERVICES[kind] from the keychain; fails naming every bad item at once
 #   read_stamps <json>                         # each declared item's keychain modification time, as JSON { "<kind>": "<mdat>" }: never its value
 #   forge_tokens <command> <url…>              # sets gh_token and gl_token from the Mac's own gh and glab logins, for the forges the URLs are on;
@@ -70,7 +71,7 @@ declare -A NEEDS=([claude]="keychain-service" [anthropic]="keychain-service" [gi
 declare -A TOKENS=() SERVICES=()
 
 declared_credentials() {
-  local command="$1" project="$2" file="$HOME/.harness/vm-credentials.json" decl kind field missing
+  local command="$1" project="$2" file="${VM_CREDENTIALS_FILE:-$HOME/.harness/vm-credentials.json}" decl kind field missing
   [[ -f "$file" ]] || { echo "$command: no $file declaring which credentials each project's VMs get" >&2; return 1; }
   decl="$(jq -ce --arg p "$project" '.[$p] // empty | objects' "$file" 2>/dev/null)" \
     || { echo "$command: $file declares no VM credentials for project '$project'" >&2; return 1; }

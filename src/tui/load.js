@@ -9,7 +9,10 @@ import { isHarnessProject } from '../control/harness-project.js';
 import { mergedWindows } from '../agents/session-usage.js';
 import { loadReviews } from './review.js';
 import { dataDir } from '../data-folder.js';
+import { withoutObsolete } from '../workflow/obsolete.js';
 import { limaHome } from '../control/vm.js';
+import { devEnvironments, devEnvironmentsErrors, usesWorkstations } from '../control/dev-environments.js';
+import { loadWorkstations, expiredLogins } from '../control/workstation-connection.js';
 
 // A file's JSON, parsed again only once it has changed (its mtime or size), so
 // reading everything again on every change costs only the files that did. An
@@ -68,7 +71,13 @@ const asShown = sprint => sprint && Object.fromEntries(Object.entries(sprint).ma
 // the operator must run gcloud auth login: only for a project that checks for
 // it (check-for-expired-gcloud-auth, ASS-28) and while its
 // gcloud-requires-reauthentication file reads exactly `true` (ASS-58, see
-// requiresReauthentication); glabReauthentication the same for glab auth
+// requiresReauthentication) — or, ASS-433, for one whose tickets run on
+// workstations, which control flags so when a workstation's own gcloud login
+// (its gcloud-config) has expired; gcloudLogins those workstations' logins,
+// [{ ids, config, command }] (control/workstation-connection.js
+// expiredLogins: the command with the CLOUDSDK_CONFIG it needs), [] for none;
+// workstations its workstations.json, each workstation's state, connection and
+// last connect error (loadWorkstations); glabReauthentication the same for glab auth
 // login (check-for-expired-glab-auth, ASS-61); backgroundWorkOff whether its
 // background work is switched off (background-work false, ASS-127);
 // waitForDependencies whether a ticket of its waits for the tickets it
@@ -91,7 +100,8 @@ const asShown = sprint => sprint && Object.fromEntries(Object.entries(sprint).ma
 // spending limit (ASS-191: control/spend.js defaultSpendLimit, harness.json the
 // one in `dir`'s parent, the data folder), null for none; apiCost its org's
 // API spend this month (see apiCostOf, ASS-221); golden its golden image (see
-// loadGolden, ASS-292), looked for in `lima` (control/vm.js limaHome). Sprints and snapshots come
+// loadGolden, ASS-292), looked for in `lima` (control/vm.js limaHome); devEnvironments where its tickets run,
+// { mode, workstations } (control/dev-environments.js, ASS-431), null while its dev-environments is wrong. Sprints and snapshots come
 // without their soft-deleted variations; sprints, snapshots, the backlog and
 // the questions without soft-deleted tickets (ASS-104).
 export const loadProjects = (dir, lima = limaHome()) => readdirSync(dir)
@@ -112,7 +122,9 @@ export const loadProjects = (dir, lima = limaHome()) => readdirSync(dir)
       days: loadDays(join(dir, name, 'sprints', 'days')),
       questions: loadQuestions(join(dir, name)).filter(q => !deletedKeys(join(dir, name)).has(String(q['asked-on-ticket'] ?? '').toUpperCase())),
       highlights: project['highlighted-tickets'] ?? [],
-      gcloudReauthentication: project['check-for-expired-gcloud-auth'] === true && requiresReauthentication(join(dir, name), 'gcloud'),
+      gcloudReauthentication: (project['check-for-expired-gcloud-auth'] === true || usesWorkstations(settingsOf(project)?.mode)) && requiresReauthentication(join(dir, name), 'gcloud'),
+      gcloudLogins: expiredLogins(settingsOf(project), loadWorkstations(join(dir, name))),   // ASS-433: the workstations' gcloud logins to renew
+      workstations: loadWorkstations(join(dir, name)),   // ASS-433: each workstation's state, connection and last connect error
       glabReauthentication: project['check-for-expired-glab-auth'] === true && requiresReauthentication(join(dir, name), 'glab'),
       backgroundWorkOff: project['background-work'] === false,
       notifications: project['operator-needed-notifications'] !== false,   // ASS-383: macOS notifications when a ticket becomes Operator Needed, on unless false
@@ -131,16 +143,20 @@ export const loadProjects = (dir, lima = limaHome()) => readdirSync(dir)
       apiKey: hasApiKey(join(dir, name)),   // ASS-333: whether its agents can fall back to an API key (see hasApiKey)
       hindsight: project.hindsight ?? null,   // its memory's server, for the memory screen (ASS-62)
       collaborations: loadCollaborations(join(dir, name), readJson),
-      chatSpend: loadChatSpend(join(dir, name), readJson),   // ASS-271: the chat screen's turns, for the spend tiles
-      memorySpend: loadMemorySpend(join(dir, name), readJson),   // ASS-269: its Hindsight's Claude spend, for the spend tiles
+      chatSpend: loadChatSpend(join(dir, name), readJson),   // ASS-271: the chat screen's turns, for the models box's spend (ASS-430; the spend tiles before)
+      memorySpend: loadMemorySpend(join(dir, name), readJson),   // ASS-269: its Hindsight's Claude spend, for the models box's spend (ASS-430)
       demoPlans: loadDemoPlans(join(dir, name)),
       reviews: loadReviews(join(dir, name)),
       spendLimit: defaultSpendLimit(harnessOf(dir), project),
       apiCost: apiCostOf(dir, name, project),
       golden: loadGolden(name, project, lima),
+      devEnvironments: settingsOf(project),   // ASS-431: vm, vm+workstation or workstation, and its workstations
     };
   })
   .toSorted((a, b) => a.name.localeCompare(b.name));
+
+// settingsOf(json) — a project.json's dev-environments (ASS-431), null while it is wrong.
+const settingsOf = json => (devEnvironmentsErrors(json).length ? null : devEnvironments(json));
 
 // pickLimits(json) — the fields of a project.json or harness.json control's
 // planner (control/plan.js planDispatch) reads: the ticket limits, max-agents
@@ -316,7 +332,7 @@ function loadDemoPlans(dir) {
 const workflowsIn = (dir, own = {}) => (existsSync(dir) ? readdirSync(dir).toSorted() : [])
   .filter(name => existsSync(join(dir, name, 'state-engine.json')))
   .map(name => {
-    const engine = readJson(join(dir, name, 'state-engine.json'));
+    const engine = withoutObsolete(readJson(join(dir, name, 'state-engine.json')));   // ASS-450: keys no longer read dropped, as control drops them
     return {
       name,
       steps: (engine.steps ?? []).toSorted((a, b) => a.sequence - b.sequence),

@@ -151,7 +151,7 @@ test('assignments:set-account records the Claude account an agent runs on — em
   assert.equal(JSON.stringify(f.assignments()), before);
 });
 
-test('assignments:set-process, :heartbeat and :set-status write the running process, a heartbeat and a status on the record', async () => {
+test('assignments:set-process, :heartbeat and :set-status write the running process, a heartbeat and a status on the record; set-process leaves an agent Shutting Down so', async () => {
   const f = fixture();
   await f.agent('assignments:set-process', 'Spock', '4242', 'sess-1');
   let spock = f.assignments().assignments[1];
@@ -167,6 +167,8 @@ test('assignments:set-process, :heartbeat and :set-status write the running proc
   assert.match(f.assignments().assignments[2]['last-heartbeat'], STAMP);
   await f.agent('assignments:set-status', 'Spock', 'Shutting Down');
   assert.equal(f.assignments().assignments[1].status, 'Shutting Down');
+  await f.agent('assignments:set-process', 'Spock', '4243', 'sess-2');          // its session id, said after it was asked to shut down (ASS-425)
+  assert.deepEqual([f.assignments().assignments[1]['session-id'], f.assignments().assignments[1].status], ['sess-2', 'Shutting Down']);
   await f.agent('assignments:set-status', 'Spock', 'Ended');
   assert.equal(f.assignments().assignments[1].status, 'Ended');
 });

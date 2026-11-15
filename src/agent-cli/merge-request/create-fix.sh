@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Description: Open the separate fix merge request Blocked's Repair Project made to unblock a ticket — merge-request:create-fix <project> <ticket-key> <variation> <repository-url> <branch> <title> < description.
+# Description: Open the separate fix merge request Blocked's Repair Project made to unblock a ticket — merge-request:create-fix <project> <ticket-key> <variation> <repository-url> <branch> <title> [<file>], the description stdin's or <file>'s.
 set -euo pipefail
 
 # ASS-390 AC2. grouped-blocked's Repair Project fixes product code that
@@ -16,7 +16,10 @@ set -euo pipefail
 # fix: "<KEY>: <title> (fix <n>, unblocks <KEY>)", or conventional "fix:
 # <title> (fix <n>, unblocks <KEY>) (<KEY>)"), its description saying which
 # ticket it unblocks (ticket_reference) and that the harness opened it, then
-# stdin — why: what blocked the ticket and what the fix changes — and taken
+# stdin — or, given <file> (ASS-428: a confined host agent can't pipe or
+# redirect into agent.sh without re-sandboxing it, so it stages the text in a
+# temp file of its own and passes the path, the call a bare one), that file's
+# text — why: what blocked the ticket and what the fix changes — and taken
 # out of draft (mr_ready), so it can be reviewed, approved and merged by
 # people. It is recorded on the variation as one of its fix-merge-requests
 # [{ n, repository, branch, base, key (!<iid>, #<number> on GitHub), url,
@@ -25,15 +28,16 @@ set -euo pipefail
 # fix-merge-request: <url>, key, branch, repository, base, created } and
 # exits 0. Fails (1), recording nothing, on bad arguments, an unknown
 # ticket or variation, a repository not the project's, a branch that is not a
-# fix branch of this ticket, nothing on stdin, a branch not on the forge or
+# fix branch of this ticket, a <file> that is no file, no description, a
+# branch not on the forge or
 # changing nothing, or a forge call failing.
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../merge-requests.bash"
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../merge-request-title.bash"
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../work.bash"
 
 command=merge-request:create-fix
-usage="usage: $command <project> <ticket-key> <variation> <repository-url> <branch> <title> < description"
-[[ $# -eq 6 ]] || { echo "$usage" >&2; exit 1; }
+usage="usage: $command <project> <ticket-key> <variation> <repository-url> <branch> <title> [<file>] < description"
+[[ $# -eq 6 || $# -eq 7 ]] || { echo "$usage" >&2; exit 1; }
 project="$1" key="$(upper "$2")" variation="$3" url="${4%/}" branch="$5" title="$6"
 url="${url%.git}"
 [[ "$project" =~ ^[A-Za-z0-9_-]+$ ]] || { echo "$command: invalid project '$project'" >&2; exit 1; }
@@ -45,8 +49,14 @@ slug="$(ticket_slug "$key" "$variation")"
   || { echo "$command: $branch is no fix branch of $key $variation: change/$slug-fix-<n>; the ticket's own branches are never a fix's" >&2; exit 1; }
 n="${BASH_REMATCH[2]}"
 [[ -n "${title//[[:space:]]/}" ]] || { echo "$command: the title is empty" >&2; exit 1; }
+from=stdin
+if [[ $# -eq 7 ]]; then
+  from="$7"
+  [[ -f "$from" ]] || { echo "$command: no file $from: nothing opened" >&2; exit 1; }
+  exec < "$from"
+fi
 why="$(cat)"
-[[ -n "${why//[[:space:]]/}" ]] || { echo "$command: no description on stdin: say what blocked $key and what the fix changes" >&2; exit 1; }
+[[ -n "${why//[[:space:]]/}" ]] || { echo "$command: no description on $from: say what blocked $key and what the fix changes" >&2; exit 1; }
 
 # The one merge request, as merge-requests.bash's helpers take it: MRS and URLS of a single row (index 0).
 URLS="$(jq -nc --arg u "$url" '[$u]')"

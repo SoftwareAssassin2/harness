@@ -20,10 +20,12 @@
 //   <d> to `display`; `clone --tty=false <from> <to> --set <expr>` makes one, Stopped,
 //   with the expression in `set` and the ssh port it pins (exit 1 when <from>
 //   is missing); `start --tty=false <vm>` makes it Running, `stop` Stopped,
-//   `delete -f` removes it.
+//   `delete -f` removes it; `copy -r <from> <to>` copies a file or folder,
+//   either side `<vm>:<path>`, the path under $FAKE_VM_ROOT (ASS-432; exit 1
+//   when the instance or the source is missing).
 // Under test/support/, which npm test's pattern leaves alone.
 import { spawn } from 'node:child_process';
-import { appendFileSync, mkdirSync, existsSync, readFileSync, writeFileSync, readdirSync, rmSync } from 'node:fs';
+import { appendFileSync, cpSync, mkdirSync, existsSync, readFileSync, writeFileSync, readdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 
 const args = process.argv.slice(2);
@@ -77,5 +79,14 @@ if (args[0] === 'shell') {
     writeFileSync(at(positional[0], 'status'), command === 'start' ? 'Running' : 'Stopped');
   } else if (command === 'delete') {
     rmSync(join(instances, positional[0]), { recursive: true, force: true });
+  } else if (command === 'copy') {
+    const [from, to] = positional.map(p => {
+      const m = /^([^/:]+):(.*)$/.exec(p);
+      if (!m) return p;
+      if (!existsSync(join(instances, m[1]))) { console.error(`instance ${m[1]} not found`); process.exit(1); }
+      return join(process.env.FAKE_VM_ROOT ?? process.cwd(), m[2]);
+    });
+    if (!existsSync(from)) { console.error(`${from}: No such file or directory`); process.exit(1); }
+    cpSync(from, to, { recursive: true });
   }
 }

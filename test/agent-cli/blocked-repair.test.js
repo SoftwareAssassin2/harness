@@ -176,6 +176,12 @@ test('ASS-390 AC2: merge-request:create-fix opens Repair Project\'s fix merge re
     assert.match(e.stderr, message);
   }
   assert.equal(s.variation()['fix-merge-requests'].length, 1);
+  // ASS-428 AC1: the description from a file path given last, for the confined host agent; a missing or empty file opens nothing.
+  const staged = s.at('why.md');
+  writeFileSync(staged, '');
+  assert.ok((await withStdin([APP, 'change/ABC-3-fix-2', 'T', staged], WHY)).stderr.includes(`no description on ${staged}`));
+  assert.match((await withStdin([APP, 'change/ABC-3-fix-2', 'T', '/no/such/why.md'], WHY)).stderr, /merge-request:create-fix: no file \/no\/such\/why\.md: nothing opened/);
+  assert.equal(s.variation()['fix-merge-requests'].length, 1);
 });
 
 test('ASS-390 AC6: ticket:wait-on --merge-request waits on a fix merge request create-fix recorded; ticket:fix-landed polls it — open: 1, the Health naming it and saying it needs approval; merged: 0, landed, the feedback cleared; closed unmerged: 3, a question for the operator', async () => {

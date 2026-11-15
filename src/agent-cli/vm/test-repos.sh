@@ -48,7 +48,7 @@ if [[ $# -gt 0 ]]; then
   repos=("$@")
 fi
 golden="golden-$project"
-limactl list "$golden" --format '{{.Status}}' >/dev/null 2>&1 || { echo "vm:test-repos: no golden image $golden: build it with vm:build-golden $project" >&2; exit 1; }
+lima_list "$golden" --format '{{.Status}}' >/dev/null 2>&1 || { echo "vm:test-repos: no golden image $golden: build it with vm:build-golden $project" >&2; exit 1; }
 forge_tokens vm:test-repos "${urls[@]}"
 tokens() { printf '%s\n%s\n' "$gh_token" "$gl_token"; }
 zot="$(jq -r '.registry.port // empty' "$json")"
@@ -60,10 +60,10 @@ vm="test-$project-$(date +%s)"
 trap 'limactl delete -f "$vm" >/dev/null 2>&1 || true' EXIT
 limactl clone --tty=false "$golden" "$vm" --set ".mounts = [] | .ssh.localPort = $(free_port)" >/dev/null 2>&1 \
   || { echo "vm:test-repos: could not clone $golden into $vm" >&2; exit 1; }
-start_sandboxed vm:test-repos "$vm" none $zot
+machine_start vm:test-repos "$vm" none $zot
 echo "vm:test-repos: $vm cloned from $golden and started; log: $log" >&2
 
-tokens | limactl shell --workdir / "$vm" -- bash -c '
+tokens | machine_run --workdir / "$vm" -- bash -c '
 set -euo pipefail
 R="${HARNESS_VM_ROOT-}"   # empty in a VM; tests run this against a folder standing in for its root
 IFS= read -r GH_TOKEN || true; IFS= read -r GITLAB_TOKEN || true
@@ -95,8 +95,8 @@ for name in "${repos[@]}"; do
     echo "== $name $test_name: $command" >> "$log"
     forge_tokens vm:test-repos "${urls[@]}"   # again for each test: glab's token lasts hours, a run longer
     started=$SECONDS status=0 from=$(($(wc -c < "$log") + 1))   # the output goes to the log as it comes
-    if [[ -n "$runner" ]]; then tokens | limactl shell --workdir "/repos/$name" "$vm" -- bash -c "$runner" run-test.sh "$command" >> "$log" 2>&1 || status=$?
-    else limactl shell --workdir "/repos/$name" "$vm" -- bash -c "$command" < /dev/null >> "$log" 2>&1 || status=$?
+    if [[ -n "$runner" ]]; then tokens | machine_run --workdir "/repos/$name" "$vm" -- bash -c "$runner" run-test.sh "$command" >> "$log" 2>&1 || status=$?
+    else machine_run --workdir "/repos/$name" "$vm" -- bash -c "$command" < /dev/null >> "$log" 2>&1 || status=$?
     fi
     took=$((SECONDS - started)); seconds=$((seconds + took))
     tail -c +"$from" "$log" > "$out"

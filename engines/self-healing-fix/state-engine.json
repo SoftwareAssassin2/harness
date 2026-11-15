@@ -9,7 +9,7 @@
             ]
         },
         { "id": "apply-fix", "sequence": 2, "name": "Apply Fix", "description": "Fixing the issue described in the ticket, on its ticket, while the tickets it holds stay paused. ASS-418: on the host, so its VM is stopped here", "vm": "stopped",
-            "action": { "type": "prompt", "prompt": "apply-fix", "agent-count": 1, "run-in-dev-container": false, "works-on-code": true },
+            "action": { "type": "prompt", "prompt": "apply-fix", "agent-count": 1, "run-in-dev-container": false, "works-on-code": true, "model": "claude-opus-5-5" },
             "exit-events": [
                 { "condition": { "all": [ { "turn-complete": true }, { "structured-output": { "is-fixed": false } } ] }, "move-to-state": "hand-to-human" },
                 { "condition": { "turn-complete": true }, "move-to-state": "request-restart" }

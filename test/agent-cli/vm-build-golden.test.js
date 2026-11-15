@@ -102,6 +102,7 @@ test('AC1: builds golden-p from the template and the declared setup, in order, t
     'shell golden-p-build provision.sh ',
     'shell golden-p-build git.sh ',
     'shell golden-p-build desktop.sh ',                                            // ASS-76: every project's image has a desktop, browser and terminal
+    'shell golden-p-build memory.sh ',                                             // ASS-421: its kernel zeroes freed pages (init_on_free=1)
     'shell golden-p-build registry.sh us-central1-docker.pkg.dev',
     'stop golden-p-build',
     'start --tty=false golden-p-build',
@@ -240,14 +241,14 @@ test('a project with no images and no warm.sh skips those steps; one with no reg
   const s = setup({ registry: false, repositories: ['https://github.com/o/harness'] });
   await s.build();
   const steps = s.calls().filter(c => c.startsWith('shell')).map(c => c.split(' ')[2]);
-  assert.deepEqual(steps, ['provision.sh', 'git.sh', 'desktop.sh', 'repositories.sh', 'finish.sh']);
+  assert.deepEqual(steps, ['provision.sh', 'git.sh', 'desktop.sh', 'memory.sh', 'repositories.sh', 'finish.sh']);
   assert.equal(s.logOf('stdin.repositories.sh'), `${GH}\n\n`);                     // no GitLab repository: no glab token read
 });
 
 test('AC2 (ASS-134): a project whose registry has no upstream, as the harness\'s, gets no mirror', async () => {
   const s = setup({ upstream: false, repositories: ['https://github.com/o/harness'] });
   await s.build();
-  assert.deepEqual(s.calls().filter(c => c.startsWith('shell')).map(c => c.split(' ')[2]), ['provision.sh', 'git.sh', 'desktop.sh', 'repositories.sh', 'finish.sh']);
+  assert.deepEqual(s.calls().filter(c => c.startsWith('shell')).map(c => c.split(' ')[2]), ['provision.sh', 'git.sh', 'desktop.sh', 'memory.sh', 'repositories.sh', 'finish.sh']);
 });
 
 test('AC3: VMs live under LIMA_HOME', async () => {

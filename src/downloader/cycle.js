@@ -91,13 +91,15 @@ import { dataDir } from '../data-folder.js';
 //    the cycle goes on; it is logged only when it starts failing.
 // 5b. Analytics (ASS-406), every cycle, for a project whose jira work source
 //    has api-email and api-token (Jira REST's basic auth), when adapters.
-//    jiraRest is given: every ticket of the board's Jira project (sub-tasks
-//    left out), whoever holds it, with its full changelog (jiraRest.
+//    jiraRest is given: every ticket of the board's Jira project, sub-tasks
+//    included (ASS-440), whoever holds it, with its full changelog (jiraRest.
 //    fetchAnalyticsTickets) — those updated since ANALYTICS_OVERLAP_MS before
 //    analytics/tickets.json's fetched-through, all of them when there is none
-//    — to `analytics:sync-tickets <project> <file>` with { fetched-through
-//    (the time just before the read), tickets: [...] }; then the board's
-//    sprints of every state (jiraRest.fetchBoardSprints) to `analytics:
+//    or the file has no includes-subtasks yet (written before ASS-440, so
+//    without the sub-tasks: read whole once to backfill them) — to
+//    `analytics:sync-tickets <project> <file>` with { fetched-through (the
+//    time just before the read), includes-subtasks: true, tickets: [...] };
+//    then the board's sprints of every state (jiraRest.fetchBoardSprints) to `analytics:
 //    sync-sprints <project> <file>` with { sprints: [...] }. Neither touches
 //    the sprint files or backlog.json. No credentials, or a read (or its
 //    write) that fails, is logged once until that changes, the file it would
@@ -345,16 +347,19 @@ async function syncAnalytics({ key, project, source, board, tickets, call, rest,
   const auth = { site: board.site, email, token };
   const reason = err => String(err?.message ?? err).split('\n')[0];
 
-  let since = null;
+  let since = null, backfill = false;
   try {
-    const through = Date.parse(JSON.parse(readFileSync(tickets, 'utf8'))['fetched-through']);
-    if (!Number.isNaN(through)) since = new Date(through - ANALYTICS_OVERLAP_MS).toISOString();
+    const kept = JSON.parse(readFileSync(tickets, 'utf8'));
+    const through = Date.parse(kept['fetched-through']);
+    // A file written before ASS-440 has no sub-tasks: all of them read again, once.
+    backfill = !Number.isNaN(through) && kept['includes-subtasks'] !== true;
+    if (!Number.isNaN(through) && !backfill) since = new Date(through - ANALYTICS_OVERLAP_MS).toISOString();
   } catch { /* no tickets.json yet, or unreadable: the first read, all of them */ }
   try {
     const fetchedThrough = new Date().toISOString();
     const read = await rest.fetchAnalyticsTickets({ ...auth, projectKey: board.projectKey, storyPointsField: source['story-points-field'], sprintField: source['sprint-field'], since }, fetchFn);
-    log(`analytics: ${read.length} tickets ${since ? `updated since ${since}` : 'read, all of them'}`);
-    await call(['analytics:sync-tickets', project], { 'fetched-through': fetchedThrough, tickets: read });
+    log(`analytics: ${read.length} tickets ${since ? `updated since ${since}` : `read, all of them${backfill ? ' (once, for the sub-tasks)' : ''}`}`);
+    await call(['analytics:sync-tickets', project], { 'fetched-through': fetchedThrough, 'includes-subtasks': true, tickets: read });
     note('tickets', null);
   } catch (err) {
     note('tickets', `analytics: the tickets could not be read; tickets.json stays as it is: ${reason(err)}`);

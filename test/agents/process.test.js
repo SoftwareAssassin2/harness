@@ -10,7 +10,7 @@ import { tmpdir } from 'node:os';
 import { sessionDir, readSession } from '../../src/agents/session.js';
 import { startAgent, agentCommand, billed } from '../../src/agents/process.js';
 import { fakeVm } from '../support/fake-vm.js';
-import { until } from '../support/until.js';
+import { until, within } from '../support/until.js';
 
 // A stand-in for claude that prints its arguments, says it started, and ends a
 // turn per message with a running total cost and a structured output.
@@ -132,16 +132,23 @@ test('an agent in a VM is the same command through `limactl shell --workdir <cwd
   await agent.stopped();
 });
 
+// Here the fake agent outlives its stdin (FAKE_OUTLIVE_STDIN), as a Claude
+// mid-turn does when the ssh under `limactl shell` goes, and the fake VM runs
+// it in a session of its own: nothing local can end it, only the pkill. The
+// pkill is not waited for by stop() (vm.js), so the test waits for it.
 test('stopping an agent in a VM ends the process inside it too: the local group\'s SIGTERM does not reach the VM, so control pkills its marker there', async t => {
   const root = mkdtempSync(join(tmpdir(), 'root-')), v = fakeVm();
   let exited = null;
-  const agent = started(t, { name: 'Hulk', root, cwd: '/repos/', vm: 'ass-74-a', command: ['node', FAKE], env: v.env, onExit: (code, signal) => { exited = { code, signal }; } });
-  assert.ok(await until(() => running(agent.marker)), 'it runs, as the VM would run it');
+  const agent = started(t, { name: 'Hulk', root, cwd: '/repos/', vm: 'ass-74-a', command: ['node', FAKE], env: { ...v.env, FAKE_OUTLIVE_STDIN: '1' }, onExit: (code, signal) => { exited = { code, signal }; } });
+  assert.ok(await until(() => running(agent.marker) && agent.sessionId === 'fake-session'), 'it runs, as the VM would run it');   // its init said: the agent itself is up, not just the local limactl whose command line carries the marker too
   agent.stop();
-  assert.ok(await until(() => exited !== null), 'the local limactl shell ends');
-  assert.ok(await until(() => !running(agent.marker)), 'and so does the process in the VM');
+  assert.ok(await until(() => v.calls().some(c => c.argv[0] === 'pkill')), 'control pkills its marker in the VM');
   const pkill = v.calls().find(c => c.argv[0] === 'pkill');
   assert.deepEqual(pkill, { vm: 'ass-74-a', workdir: null, argv: ['pkill', '-TERM', '-f', `[h]${agent.marker.slice(1)}`] });
+  assert.ok(await until(() => !running(agent.marker)), 'and so the process in the VM ends');
+  const ended = await within(agent.ended);   // its output closed: the agent itself is gone, not just the bash under the marker
+  assert.equal(typeof ended, 'object', ended);
+  assert.ok(await until(() => exited !== null), 'the local limactl shell ends');
 });
 
 // ── ASS-190: with a `usage` option, startAgent writes usage.json beside

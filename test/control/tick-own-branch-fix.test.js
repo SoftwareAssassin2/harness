@@ -26,10 +26,16 @@ const FIXED = { 'own-branch-fix': true, 'own-branch-why': 'db/V27__x.sql is one 
   'ai-feedback-short': null, 'ai-feedback-long': null };
 
 // ABC-3 A blocked at local-testing after Build's third visit (its max-visits), its Blocked a run of own-branch-or-human.
-function fixture(answer) {
+// ASS-423 (qa): blocked from a QA step after Local Testing instead — a person's step with its own Jira status, as a project's QA is.
+function fixture(answer, { qa = false } = {}) {
   const f = controlFixture();
   edit(join(f.dir, 'engines', 'example-development', 'state-engine.json'), e => {
     e['check-health-interval-seconds'] = 1e9;
+    if (qa) {
+      e.steps.find(s => s.id === 'local-testing')['exit-events'][0]['move-to-state'] = 'qa';
+      e.steps.find(s => s.id === 'done').sequence = 7;
+      e.steps.splice(e.steps.findIndex(s => s.id === 'done'), 0, { id: 'qa', sequence: 6, 'is-qa': true, 'paired-ticket-system-status': 'QA', 'return-to-state': 'qa', action: { type: 'human' } });
+    }
     e.steps.unshift({ id: 'blocked-for-human', sequence: -1, 'is-blocked-state': true, action: { type: 'human' } });
     Object.assign(e.steps.find(s => s.id === 'blocked'), {
       action: { type: 'state-engine', engine: 'own' }, 'follow-return-to-state': true,
@@ -45,7 +51,7 @@ function fixture(answer) {
   edit(sprint(f), s => {
     s.features[0]['ticket-system-status'] = 'Blocked';
     Object.assign(s.features[0].variations[0], { 'harness-status': hs('blocked'),
-      'state-changes': [was('plan', 'build'), was('build', 'build'), was('build', 'build'), was('build', 'local-testing'), was('local-testing', 'blocked')] });
+      'state-changes': [was('plan', 'build'), was('build', 'build'), was('build', 'build'), was('build', 'local-testing'), ...(qa ? [was('local-testing', 'qa'), was('qa', 'blocked')] : [was('local-testing', 'blocked')])] });
   });
   f.now = Date.parse('2026-11-11T21:41:00Z');
   f.ctx.now = () => new Date(f.now);
@@ -79,4 +85,18 @@ test('ASS-384 AC4/AC5: not shown to be the ticket\'s own branch (exit 3) — Blo
   await settle(f);
   assert.equal(state(f), 'blocked-for-human', f.lines.join('\n'));
   assert.ok(!f.variation()['state-changes'].some(c => c.cause === 'own-branch-fix'));
+});
+
+test('ASS-423 AC5: a block from QA (its merge requests merged) taking the own-branch fix — back to Build, Generate Solution\'s group, its Jira status Build\'s pairing, not QA\'s or Blocked\'s; on through Build again toward QA, not to Blocked for Human', async () => {
+  const planned = { 'own-branch-source': 'merged', 'merge-request-planned': { id: 4, repository: 'https://gitlab.com/g/api', branch: 'change/ABC-3-4', base: 'master' },
+    'own-branch-why': 'apps/x_test.go is one this ticket\'s merged MR 3 (!3951) in api added or changed, and the latest master does not show the failure' };
+  const f = fixture({ exitCode: 0, stdout: JSON.stringify({ ...FIXED, ...planned }) }, { qa: true });
+  await settle(f);
+  assert.notEqual(state(f), 'blocked-for-human', f.lines.join('\n'));
+  assert.deepEqual(topTrail(f).slice(4), ['local-testing→qa', 'qa→blocked', 'blocked→build', 'build→local-testing'], f.lines.join('\n'));
+  const cleared = f.variation()['state-changes'].findLast(c => c['from-state'] === 'blocked' && !c['sub-state-change']);
+  assert.deepEqual([cleared['to-state'], cleared.cause], ['build', 'own-branch-fix'], 'resumed at Build, not back at QA (its return-to-state)');
+  assert.ok(f.lines.some(l => /^steps ABC-3 A blocked: the failure is in its own branch \(own-branch fix\); resumes at build/.test(l)), f.lines.join('\n'));
+  assert.equal(f.ticket()['ticket-system-status'], 'In Progress', 'Build\'s paired status');
+  assert.equal(f.variation()['ai-feedback-short'] ?? null, null, 'not marked as handed to the operator');
 });

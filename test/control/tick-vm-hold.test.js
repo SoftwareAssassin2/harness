@@ -146,3 +146,42 @@ test('ASS-349 AC3: precedence — a paused project\'s busy VM is kept as ASS-297
   assert.deepEqual(await r.pass(), ['vm:delete p abc-3-a', 'vm:stop p abc-3-a']);
   assert.deepEqual([...l.holds(), ...r.holds()], []);
 });
+
+// ASS-427 AC7: the operator holds a ticket's VM running to work in it by hand
+// (vm:hold <project> <ticket> <variation> on: its variation's vm-hold) — at
+// Blocked for Human, paused, worked by hand — and the lifecycle respects it as
+// it does an assignment: not stopped; and, unlike one, started when stopped,
+// so a VM the operator needs is up. Released (off), it is stopped as its step says.
+const HOLD = { 'vm-hold': { by: 'ada', since: '2026-11-14T19:00:00Z', note: 'adding bats by hand' } };
+
+test('ASS-427 AC7: a VM held for the operator at Blocked for Human is not stopped — logged once as held — and is stopped once released', async () => {
+  const l = lifecycle({ A: [at('blocked-for-human'), 'Running', HOLD] });
+  assert.deepEqual(await l.pass(), [], 'held: not stopped');
+  assert.deepEqual(await l.pass(), []);
+  const held = l.f.lines.filter(line => /held running for the operator/.test(line));
+  assert.deepEqual(held, ['vm p abc-3-a: held running for the operator (ABC-3 A at blocked-for-human; vm:hold by ada since 2026-11-14T19:00:00Z: adding bats by hand): not stopped, and started when stopped, until vm:hold p ABC-3 A off'], 'logged once');
+  l.edit(t => { delete t.variations[0]['vm-hold']; });   // vm:hold off
+  assert.deepEqual(await l.pass(), ['vm:stop p abc-3-a']);
+  assert.ok(l.f.lines.includes('vm p abc-3-a: its operator hold released (vm:hold off); its step\'s rules apply again'), l.f.lines.join('\n'));
+  assert.ok(l.f.lines.includes('vm p abc-3-a: stopped (ABC-3 A at blocked-for-human)'), l.f.lines.join('\n'));
+});
+
+test('ASS-427 AC7: a held VM that is stopped is started — at Blocked for Human, a paused variation, a ticket worked by hand, a paused project — and none of them stops a held running one', async () => {
+  for (const [status, extra, ticket, pauses] of [
+    [at('blocked-for-human'), {}, {}, {}],
+    [BUILDING, { 'is-paused': true }, {}, {}],
+    [BUILDING, {}, { 'worked-manually': { by: 'alice', since: '2026-10-27T10:00:00Z', note: null } }, {}],
+    [BUILDING, {}, {}, { p: { human: { since: '2026-11-10T14:00:00Z' } } }],
+  ]) {
+    const c = JSON.stringify({ status, extra, ticket, pauses });
+    const stopped = lifecycle({ A: [status, 'Stopped', { ...extra, ...HOLD }] });
+    stopped.edit(t => Object.assign(t, ticket));
+    stopped.assign([], pauses);
+    assert.deepEqual(await stopped.pass(), ['vm:start p ABC-3 A'], c);
+    assert.ok(stopped.f.lines.some(line => /^vm p abc-3-a: started \(ABC-3 A at \S+; held for the operator\)$/.test(line)), `${c}\n${stopped.f.lines.join('\n')}`);
+    const running = lifecycle({ A: [status, 'Running', { ...extra, ...HOLD }] });
+    running.edit(t => Object.assign(t, ticket));
+    running.assign([], pauses);
+    assert.deepEqual(await running.pass(), [], c);
+  }
+});

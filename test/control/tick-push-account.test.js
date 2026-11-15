@@ -19,7 +19,7 @@ const { pushAccount } = await import('../../src/agents/forge.js').catch(() => ({
 
 const HOUR = 3600e3;
 const HUB = 'https://github.com/SoftwareAssassin2/harness';
-const LAB = name => `https://gitlab.com/caselaw-group/${name}`;
+const LAB = name => `https://gitlab.com/example-group/${name}`;
 const write = (file, json) => { mkdirSync(join(file, '..'), { recursive: true }); writeFileSync(file, JSON.stringify(json, null, 4)); };
 const projectFile = (f, id) => join(f.dir, 'projects', id, 'project.json');
 // Project `id` (p is the fixture's own; another is added) with these repositories (undefined: none declared).
@@ -194,7 +194,7 @@ test('ASS-307 AC2: with the real pushAccount a GitHub project never reads the Gi
   ].join('\n'));
   chmodSync(join(bin, 'security'), 0o755);
   const reads = () => (existsSync(join(bin, 'argv')) ? readFileSync(join(bin, 'argv'), 'utf8').trim().split('\n') : []);
-  const hub = await stubForge({ login: 'SoftwareAssassin2' }), lab = await stubForge({ username: 'caselaw-bot' });
+  const hub = await stubForge({ login: 'SoftwareAssassin2' }), lab = await stubForge({ username: 'example-bot' });
   const { f, home, check } = checking({ credentials: { p: { ...GITHUB, ...GITLAB }, r: GITLAB } });
   withRepositories(f, 'r', [LAB('a'), LAB('b')]);
   const env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, USER: 'me', HARNESS_HOME: home, GITHUB_API_URL: hub.url, GITLAB_API_URL: lab.url };
@@ -210,7 +210,7 @@ test('ASS-307 AC2: with the real pushAccount a GitHub project never reads the Gi
   await check();
   assert.deepEqual(reads(), ['find-generic-password -s GitHub PAT -w', 'find-generic-password -s GitLab PAT -w']);
   assert.deepEqual([hub.requests.length, lab.requests.length], [1, 1]);
-  assert.equal(recorded(f, 'r')?.account, 'caselaw-bot');
+  assert.equal(recorded(f, 'r')?.account, 'example-bot');
   assert.equal(recorded(f, 'r')?.provider, 'GitLab');
   assert.equal(recorded(f, 'p')?.provider, 'GitHub');
   for (const token of [HUB_TOKEN, LAB_TOKEN]) {

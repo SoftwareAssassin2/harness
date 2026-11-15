@@ -12,7 +12,7 @@ const harness = read('engines/harness-development/state-engine.json');
 const example = JSON.parse(readFileSync(join(engineDir('example-development'), 'state-engine.json'), 'utf8'));   // the example project's own (ASS-277)
 const step = id => harness.steps.find(s => s.id === id);
 const REVIEW_LOOP = ['take-out-of-draft-mode', 'team-code-review', 'address-merge-request-feedback', 'ensure-auto-merge', 'qa-testing'];
-const HEALTH = ['check-health-steps', 'check-health-interval-seconds', 'check-ticket-health-steps', 'check-ticket-health-sample-every'];
+const HEALTH = ['check-health-steps', 'check-health-interval-seconds'];
 const JOIN_SPRINT = ['ready-tickets-join-sprint-at'];
 const TAIL = ['merge-pull-request', 'update-workspace', 'request-restart', 'await-restart', 'done'];
 
@@ -30,12 +30,13 @@ test('harness-development is example\'s flow up to the variation choice, with no
   assert.deepEqual(Object.keys(harness).filter(k => !HEALTH.includes(k) && !JOIN_SPRINT.includes(k)).toSorted(), Object.keys(example).toSorted());
 });
 
-test('the health checks are the harness\'s alone: check-health and check-ticket-health are in harness-development, not example-development (ASS-11)', () => {
+test('the health check is the harness\'s alone: check-health is in harness-development, not example-development (ASS-11); the ticket health check is gone from both (ASS-450)', () => {
   for (const key of HEALTH) {
     assert.ok(key in harness, key);
     assert.ok(!(key in example), key);
   }
   for (const key of ['check-variation-appeal-steps', 'check-variation-appeal-interval-seconds', 'gap-resolution-steps']) assert.ok(key in example && key in harness, key);
+  for (const key of ['check-ticket-health-steps', 'check-ticket-health-sample-every']) assert.ok(!(key in harness) && !(key in example), key);
 });
 
 test('ready-tickets-join-sprint-at is the harness\'s alone: in harness-development, not in example-development (ASS-44)', () => {

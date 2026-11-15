@@ -106,7 +106,7 @@ test('ASS-252 AC2: the new prompts\' outputs are what the exits read', () => {
   for (const points of [1, 2, 3, 5, 8, 13, null]) assert.ok(estimate.output.properties.points.enum.includes(points), String(points));
   assert.ok(prompt('split-ticket').output.required.includes('summary'));
   const text = readFileSync(join(ROOT, 'prompts', 'split-ticket', 'prompt.txt'), 'utf8');
-  assert.match(text, /\{agent-sh\} ticket:propose-split \{project\} \{ticket\} -/);
+  assert.match(text, /\{agent-sh\} ticket:propose-split \{project\} \{ticket\} <proposal-file>/);   // ASS-428: a staged file's path, the agent confined on the host
   assert.match(text, /question:ask \{project\} \{ticket\} <--blocking\|--non-blocking>/);
   assert.doesNotMatch(text, /ticket:create/);   // Accept creates the tickets, not the agent
 });

@@ -133,11 +133,13 @@ const pastDays = project => Object.keys(project?.days ?? {})
 // Human Review rejection goes back to being chosen — { reason, at } (ASS-228) — or null; gatesDraft: the states it
 // is being gated on leaving — { ids checked, at (the step the cursor is on) } — or null.
 // Across its tabs (ASS-184, see ticketView): ticketTab, the tab open (TABS);
-// ticketScroll, ticketHistoryScroll and ticketQuestionsScroll, the first line
-// shown of the details, the history and the questions, each its tab's own;
+// ticketScroll, ticketMergesScroll, ticketHistoryScroll and ticketQuestionsScroll, the first line
+// shown of the details, the merge requests (ASS-437), the history and the questions, each its tab's own;
 // ticketStatesScroll, the states' beside the history — null for the state it
 // is in to be centred; ticketQuestionSelected, the question
-// enter answers; ticketChoice, the human action selected; decide, a choice to
+// enter answers; ticketChoice, the human action selected; ticketBlockedScroll and
+// ticketBlockedChoice, the Blocked tab's first line shown (null: its choice kept in
+// view) and its way out selected (ASS-439); decide, a choice to
 // record — the agent-cli command and its
 // arguments — which main.js runs and clears; ticketMessage, what recording the last one said.
 // demoRun: the Demo action asked for (ASS-76) — vm:demo and its arguments —
@@ -184,7 +186,11 @@ const pastDays = project => Object.keys(project?.days ?? {})
 // project — { pid, startTime } — which the footer's control box is built
 // from (ASS-310; see controlStarted). controlsDown: each control that has
 // ended on its own, by project — { code, line (the one it logged before its
-// exit line) }.
+// exit line), and ASS-460's restart: see controlExited }; controlCrashes, the
+// times each crashed lately (controlExited); dataWaiting, what each control
+// waits to read (controlWaiting, ASS-457); controlRestart, the project whose
+// down control the operator asked to start (R on the control screen), which
+// main.js starts and clears.
 // menuOpen: the ? menu (ASS-183) is drawn over the screen.
 // chats: chats.json's chats (ASS-33), every project's; chatsRunning: the ids
 // whose agent runs; chatsWritten: when each one's log was last written (ms),
@@ -214,7 +220,7 @@ export const initialState = ({ projects = [], workflows = [], assignments = [], 
   updatesSince: null, updatesForm: null, updatesScroll: 0, updatesMessage: '', openMrsScroll: 0,
   analytics: {}, performanceLoad: null, performanceSpan: null, performanceForm: null, performanceScroll: 0, performanceMessage: '',
   ticket: null, ...ticket.OPENED_TICKET, priorityDraft: null, reasonDraft: null, returnDraft: null, gatesDraft: null, decide: null, decideCloses: false, demoRun: null, demos: {},
-  backlogSelected: 0, backlogScroll: 0, subflowStart: 0, subflowScroll: 0, agentSelected: 0, agentScroll: 0, agentsGrid, agentsTable: false, agentPage: 0, agentTile: 0, sessionWritten: {}, sessionTails: {}, pending: {}, agent: null, agentLog: null, agentLogScroll: null, agentDraft: {}, agentCursor: {}, agentTyping: false, keyTail: null, agentPrompt: null, agentMessage: '', agentEvents: false, quitting: false, restart: false, controls, draining: {}, controlsDown: {}, menuOpen: false,
+  backlogSelected: 0, backlogScroll: 0, subflowStart: 0, subflowScroll: 0, agentSelected: 0, agentScroll: 0, agentsGrid, agentsTable: false, agentPage: 0, agentTile: 0, sessionWritten: {}, sessionTails: {}, pending: {}, agent: null, agentLog: null, agentLogScroll: null, agentDraft: {}, agentCursor: {}, agentTyping: false, keyTail: null, agentPrompt: null, agentMessage: '', agentEvents: false, quitting: false, restart: false, controls, draining: {}, controlsDown: {}, controlCrashes: {}, dataWaiting: {}, controlRestart: null, menuOpen: false,
   chats, chatsRunning, chatsWritten, chatSelected: 0, chatScroll: 0, chat: null, chatLog: null, chatLogScroll: null, chatDraft: '', chatCursor: 0, chatMessage: '', chatEvents: false, chatSend: null, chatDelete: null, chatConfirm: null,
   memories: {}, memorySelected: 0, memoryScroll: 0, memoryConfirm: null, memoryDelete: null, memoryLoad: null, memoryMessage: '',
   ticketConfirm: null, ticketChatOpen: null, ticketChatLog: null, ticketChatScroll: null, ticketChatDraft: '', ticketChatCursor: 0, ticketChatMessage: '', ticketChatSend: null,
@@ -278,6 +284,13 @@ export function handleKey(state, key, size = {}) {
   if (key.sequence === 'Q' && !key.ctrl) {
     const next = { ...state, quitting: true, screen: 'c', ticket: null };
     return { ...next, focus: focusable(next).includes(state.focus) ? state.focus : focusable(next)[0] };
+  }
+  // ASS-460: R on the control screen starts the selected project's down control again (its crash count forgotten), backoff or not.
+  if (key.sequence === 'R' && !key.ctrl && state.screen === 'c') {
+    const id = state.projects[state.project]?.id, down = state.controlsDown?.[id];
+    if (!down || down.restarted) return state;
+    const { [id]: _, ...controlCrashes } = state.controlCrashes ?? {};
+    return { ...state, controlRestart: id, controlCrashes };
   }
   // / hides the project menu, or shows it again; hidden, it gives up the focus.
   if (key.sequence === '/' && !key.ctrl) {
@@ -371,7 +384,7 @@ export function controlStarted(state, id, { pid, startTime }) {
   return { ...state, controls: { ...state.controls, [id]: { pid, startTime } } };
 }
 
-// controlExited(state, id, code, waiting) — project id's control has ended
+// controlExited(state, id, code, waiting, now) — project id's control has ended
 // with code (null for a signal), as main.js hears it; `waiting` the controls
 // the restart request names that still run. While quitting, nothing: it was
 // stopped. 75 asks for a restart (ASS-193); once no named control still
@@ -380,13 +393,69 @@ export function controlStarted(state, id, { pid, startTime }) {
 // the line it logged before its exit line (startControl's, which comes
 // last), and drops its controls record so the DOWN box takes over; a 75
 // keeps it, so the box can show the restart (ASS-310).
-export function controlExited(state, id, code, waiting = 0) {
+// ASS-460: a control down with a code other than 0 (a crash, a signal, or 69
+// and 70: control gave up waiting for its data, or met an uncaught exception —
+// src/control/main.js), not while a restart is under way, is started again by
+// main.js at its `restartAt`: RESTART_BACKOFF_MS after it ended, by how many
+// times it has crashed in the last GIVE_UP.withinMs (its controlCrashes, ms) —
+// 5 s, 30 s, 2 min, then every 5 min — until it has crashed GIVE_UP.crashes
+// times in that window: then `gaveUp`, and it stays down until the operator
+// starts it (R on the control screen: handleKey's controlRestart, or a restart
+// of the harness). One that exits 0 by itself is down, not restarted.
+// controlsDown[id]: { code, line, at, restartAt (ms, or null), gaveUp, crashes
+// (in the window), restarted (ms it was started again, while not yet back:
+// controlRestarted, controlBack) }.
+export const RESTART_BACKOFF_MS = [5e3, 30e3, 120e3, 300e3];
+export const GIVE_UP = { crashes: 5, withinMs: 10 * 60e3 };
+export function controlExited(state, id, code, waiting = 0, now = Date.now()) {
   if (state.quitting) return state;
   const { [id]: _, ...draining } = state.draining;
   const line = state.controlLog.filter(l => l.project === id).at(-2)?.text ?? '';
   const { [id]: __, ...controls } = state.controls;
-  const next = code === 75 ? { ...state, restart: true, draining } : { ...state, draining, controls, controlsDown: { ...state.controlsDown, [id]: { code, line } } };
+  const { [id]: ___, ...dataWaiting } = state.dataWaiting ?? {};
+  if (code === 75) {
+    const next = { ...state, restart: true, draining };
+    return !waiting ? { ...next, quitting: true } : next;
+  }
+  const restartable = code !== 0 && !state.restart;
+  const crashes = restartable ? [...(state.controlCrashes?.[id] ?? []).filter(at => now - at < GIVE_UP.withinMs), now] : state.controlCrashes?.[id] ?? [];
+  const gaveUp = restartable && crashes.length >= GIVE_UP.crashes;
+  const restartAt = restartable && !gaveUp ? now + RESTART_BACKOFF_MS[Math.min(crashes.length, RESTART_BACKOFF_MS.length) - 1] : null;
+  const down = { code, line, at: now, restartAt, gaveUp, crashes: crashes.length };
+  const next = { ...state, draining, controls, dataWaiting, controlCrashes: { ...state.controlCrashes, [id]: crashes }, controlsDown: { ...state.controlsDown, [id]: down } };
   return next.restart && !waiting ? { ...next, quitting: true } : next;
+}
+
+// controlRestarted(state, id, { pid, startTime }, now) — ASS-460: project id's
+// control, down, started again (by its backoff or the operator): running
+// (controlStarted), its outage kept — `restarted` — until it is back
+// (controlBack), so a control that crashes again at once is one outage, one
+// notification, and its crashes still count towards giving up.
+export function controlRestarted(state, id, { pid, startTime }, now = Date.now()) {
+  const down = state.controlsDown?.[id];
+  const next = controlStarted(state, id, { pid, startTime });
+  return down ? { ...next, controlsDown: { ...state.controlsDown, [id]: { ...down, restartAt: null, restarted: now } } } : next;
+}
+// controlBack(state, id, pid) — ASS-460: the control restarted as `pid` has
+// run BACK_MS without exiting: its outage is over, cleared.
+export const BACK_MS = 60e3;
+export function controlBack(state, id, pid) {
+  if (!state.controlsDown?.[id]?.restarted || state.controls?.[id]?.pid !== pid) return state;
+  const { [id]: _, ...controlsDown } = state.controlsDown;
+  return { ...state, controlsDown };
+}
+
+// controlWaiting(state, id, text) — ASS-457/458: a line of project id's
+// control saying it waits for its data ("data waiting: cannot read …",
+// src/control/tick.js waitForData) records what it cannot read and since when
+// (dataWaiting, by project), for the header and the control box; "data
+// recovered: …" clears it. Any other line changes nothing.
+export function controlWaiting(state, id, text, at = new Date()) {
+  const waiting = text.match(/^\S+ data waiting: (cannot read .*?); control skips/)?.[1];
+  if (waiting != null) return state.dataWaiting?.[id]?.text === waiting ? state : { ...state, dataWaiting: { ...state.dataWaiting, [id]: { text: waiting, since: state.dataWaiting?.[id]?.since ?? at } } };
+  if (!/^\S+ data recovered: /.test(text) || !state.dataWaiting?.[id]) return state;
+  const { [id]: _, ...dataWaiting } = state.dataWaiting;
+  return { ...state, dataWaiting };
 }
 
 // controlDraining(state, id, text) — a line of project id's control: its

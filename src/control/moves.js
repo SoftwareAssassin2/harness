@@ -8,8 +8,7 @@ import { join } from 'node:path';
 import { cleared, ticketKey, runKey } from './backoff.js';
 import { changePath, stepOf, isHeld } from './engine.js';
 import { mayEnter, slotKind, topRun } from './plan.js';
-import { memoryShortForSeat } from './seat-memory.js';   // ASS-420
-import { gib } from './host-memory.js';
+import { memoryShortForSeat, seatWords } from './seat-memory.js';   // ASS-420; ASS-422: the refusal in words
 
 // firstStepId(engine) — the id of the step with the lowest sequence, where a run starts.
 export const firstStepId = engine => (engine?.steps ?? []).toSorted((a, b) => a.sequence - b.sequence)[0]?.id;
@@ -87,7 +86,7 @@ function exempt(state, pause, workItem, runId) {
 // (project.json background-work false, project:set-background-work, ASS-127):
 // control starts none of its BACKGROUND runs and holds those going (isPaused).
 // Absent is on. Self-healing starts only from check-health, so it is held with it.
-export const BACKGROUND = ['check-health', 'check-memory', 'check-variation-appeal', 'check-ticket-health', 'self-healing'];
+export const BACKGROUND = ['check-health', 'check-memory', 'check-variation-appeal', 'self-healing'];
 export const backgroundOff = project => project?.json?.['background-work'] === false;
 
 // backgroundProject(state, runId) — the project of the run, or the run it is
@@ -196,8 +195,8 @@ export function gated(variation, engineName = variation['harness-status']?.['sta
 // the variation is gated (gated): then its work there is marked done
 // (ticket:mark-work-done, the move held as its pending move — holdAtGate;
 // logged, naming where it would go) and it stays for the human, whose
-// approval on the dashboard (ticket:approve-gate) makes that move. Each move of a sprint ticket is handed to ticket health
-// sampling (see triggers.js sampleHealth); a backlog ticket moves through its refinement engine the same way (ASS-144).
+// approval on the dashboard (ticket:approve-gate) makes that move. A backlog ticket moves through its refinement engine
+// the same way (ASS-144). (ASS-450: no move is handed to ticket health sampling any more; that check is removed.)
 // Given a `cause` (a move no human made at a human step: fast-track, ASS-151; or a block
 // cleared by a landed fix, FIX_LANDED, ASS-309, which restarts the step-visit window), it is
 // recorded on the change (MOVE_CAUSE, sprint.bash); SKIPPED's, a switched-off step passed
@@ -213,7 +212,6 @@ export async function moveTicket(ctx, phase, project, ticket, variation, to, why
   ctx.log(phase, `${ticket.key} ${variation.name} ${from} → ${to}${startAt ? ` at ${startAt}` : ''}${why ? ` (${why})` : ''}`);
   const status = /ticket system status → (.*)$/m.exec(said);
   if (status) ctx.log(phase, `${ticket.key} ticket system status → ${status[1]}`);
-  if (project.tickets.some(t => t.key === ticket.key)) ctx.memory.health.push({ project: project.id, 'work-item': ticket.key, variation: variation.name });   // a sprint ticket's: a backlog ticket's refinement is not sampled
   return true;
 }
 
@@ -234,7 +232,7 @@ export function mayMove(ctx, phase, state, project, variation, who, to) {
     if (!short) return true;
     if (!ctx.memory.warned.has(`seat-memory/${visit}`)) {
       ctx.memory.warned.add(`seat-memory/${visit}`);
-      ctx.log(phase, `${who}: waits for memory for its VM to move to ${to} (need ${gib(short.need.bytes)} GB, ${gib(Math.max(0, short.free))} GB free)`);
+      ctx.log(phase, `${who}: waits for memory for its VM to move to ${to} (${seatWords(short)})`);
     }
     return false;
   }

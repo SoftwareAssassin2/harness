@@ -11,7 +11,8 @@
                 "type": "prompt",
                 "prompt": "revise-acceptance-criteria",
                 "agent-count": 1,
-                "run-in-dev-container": false
+                "run-in-dev-container": false,
+                "model": "claude-opus-5-5"
             },
             "exit-events": [
                 {
@@ -74,7 +75,8 @@
                 "type": "prompt",
                 "prompt": "judge-requirements-change",
                 "agent-count": 1,
-                "run-in-dev-container": false
+                "run-in-dev-container": false,
+                "model": "claude-opus-5-5"
             },
             "exit-events": [
                 {

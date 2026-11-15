@@ -1,6 +1,8 @@
 // Validates an engines/<workflow>/state-engine.json. Returns a list of
 // human-readable errors; empty = valid. Engine-wide settings consumed where
-// they are read (e.g. check-ticket-health-sample-every, triggers.js); ASS-44's
+// they are read (e.g. check-health-interval-seconds, triggers.js); ASS-450:
+// keys the harness no longer reads (obsolete.js) are ignored, never an error,
+// so an engine still declaring them validates as it would without; ASS-44's
 // ready-tickets-join-sprint-at is checked here against the engine's own step
 // ids — the only engine-level setting whose value is a step id.
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
@@ -8,6 +10,7 @@ import { join } from 'node:path';
 import { repositoryName, EACH } from '../control/repositories.js';
 import { stepOf } from '../control/engine.js';
 import { dataDir } from '../data-folder.js';
+import { withoutObsolete } from './obsolete.js';
 
 const ACTION_TYPES = new Set(['script', 'prompt', 'state-engine', 'human', 'none']);
 const LEGACY_ACTION_FIELDS = ['script-to-execute', 'prompt-to-execute', 'workflow-to-execute', 'prompt-mode', 'prompt-timer-minutes'];
@@ -62,6 +65,7 @@ const engineFile = (root, name, own) => (own && existsSync(join(own, name, 'stat
 // engine is its own of (ASS-277): the engines its steps run are found there
 // before engines/, as control finds them for that project's work.
 export function validateStateEngine(engine, root, name, own) {
+  engine = withoutObsolete(engine);
   const errors = [];
   const steps = engine.steps ?? [];
   // steps, plus every side list of them: top-level arrays named *-steps or *-trigger.
@@ -217,17 +221,40 @@ function checkAction(s, at, root, errors, own) {
     if (a.type !== 'script' || a.mode !== 'timer') errors.push(`${at} waiting-exit-code needs a timer script action`);
     else if (!Number.isInteger(a['waiting-exit-code']) || a['waiting-exit-code'] === 0) errors.push(`${at} waiting-exit-code must be a non-zero exit code`);
   }
-  // model (ASS-399): the model a prompt step's agents run on — "stronger", harness.json's stronger-model,
-  // else its first Claude model (dispatch.js modelFor); missing, assignments:create's round robin.
+  // model (ASS-399, ASS-452): the model a prompt step's agents run on (dispatch.js modelFor) — one of
+  // harness.json's claude models, which its prompt's prompt.json supported-models, when it lists any,
+  // must name; or "stronger", harness.json's stronger-model, else its first Claude model. Missing,
+  // assignments:create's round robin.
   if ('model' in a) {
+    const models = claudeModels(root);
     if (a.type !== 'prompt') errors.push(`${at} model needs a prompt action`);
-    else if (a.model !== 'stronger') errors.push(`${at} model "${a.model}" is not "stronger"`);
+    else if (a.model !== 'stronger' && !models.includes(a.model))
+      errors.push(`${at} model "${a.model}" is not "stronger" or one of harness.json's claude models (${models.join(', ') || 'none'})`);
+    else if (a.model !== 'stronger') {
+      const supported = supportedModels(root, a.prompt);
+      if (supported.length && !supported.includes(a.model)) errors.push(`${at} model "${a.model}" is not in prompt "${a.prompt}"'s supported-models (${supported.join(', ')})`);
+    }
   }
   if (a.type === 'script') checkCommand(a.command, at, root, errors);
   if (a.type === 'state-engine') {
     if (typeof a.engine !== 'string') errors.push(`${at} state-engine action has no engine`);
     else if (!(own && existsSync(join(own, a.engine))) && !existsSync(join(root, 'engines', a.engine))) errors.push(`${at} has unknown state engine "${a.engine}"`);
   }
+}
+
+// claudeModels(root) — harness.json's claude models (data/harness.json under
+// root), the ones a prompt step's action.model may name (ASS-452); [] without it.
+function claudeModels(root) {
+  const file = join(dataDir(root ?? ''), 'harness.json');
+  const harness = existsSync(file) ? JSON.parse(readFileSync(file, 'utf8')) : {};
+  return (harness['agentic-command-line-interfaces'] ?? []).find(c => c.name === 'claude')?.models ?? [];
+}
+
+// supportedModels(root, prompt) — the prompt's prompt.json supported-models; [] when it has none.
+function supportedModels(root, prompt) {
+  const file = join(root ?? '', 'prompts', prompt ?? '', 'prompt.json');
+  const list = existsSync(file) ? JSON.parse(readFileSync(file, 'utf8'))['supported-models'] : undefined;
+  return Array.isArray(list) ? list : [];
 }
 
 // start-sub-engine-at (ASS-66): an exit entering a state-engine step names
@@ -330,7 +357,7 @@ function reaches(from, name, root, own, seen = new Set()) {
   seen.add(from);
   const file = engineFile(root, from, own);
   if (!existsSync(file)) return false;
-  const lists = Object.entries(JSON.parse(readFileSync(file, 'utf8'))).filter(([key, list]) => /(^|-)(steps|trigger)$/.test(key) && Array.isArray(list)).flatMap(([, list]) => list);
+  const lists = Object.entries(withoutObsolete(JSON.parse(readFileSync(file, 'utf8')))).filter(([key, list]) => /(^|-)(steps|trigger)$/.test(key) && Array.isArray(list)).flatMap(([, list]) => list);
   return lists.some(s => s.action?.type === 'state-engine' && reaches(s.action.engine, name, root, own, seen));
 }
 

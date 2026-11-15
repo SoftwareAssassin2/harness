@@ -199,8 +199,9 @@ export function planFor(state, project, agents = {}) {
   });
 }
 
-// seatsOf(state, project) — what the grouped health check is told of a
-// project (ASS-240, dispatch.js {seats}): its limits, project.json's and
+// seatsOf(state, project) — what a harness run about another project's
+// ticket is told of that project (ASS-240, dispatch.js {seats}; the TUI's
+// seats too): its limits, project.json's and
 // harness.json's (null for none), and who holds its seats (planFor): "<key>
 // <variation>" in progress and in planning, and over the limits — in motion
 // at a step that takes a seat, with none free.
@@ -269,7 +270,7 @@ const waitsOutside = step => step.action?.type === 'none' && step['is-planning-s
   && !(step['exit-events'] ?? []).some(e => { const k = Object.keys(e.condition ?? {})[0]; return k === 'always' || k === 'agent-needs-work'; });
 
 // triggerAllowed({ transient, kind, project, workItem, variation }) — whether
-// a triggered engine of `kind` (check-health, check-ticket-health,
+// a triggered engine of `kind` (check-health, check-memory,
 // check-variation-appeal, gap-resolution, self-healing) may start: false while
 // a transient engine record for the same project with parent.trigger === kind
 // — and, when given, the same work-item and variation — already exists

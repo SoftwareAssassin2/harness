@@ -117,8 +117,10 @@ if [[ -n "$held" && "$home" != "$backlog" ]]; then
 fi
 
 # Each live variation's VM stopped (vm:stop; one stopped already is left as
-# it is) and kept: a restored ticket's work runs in it again.
-vms="$(jq -c '[.variations[] | .vm.name // empty]' <<< "$found")"
+# it is) and kept: a restored ticket's work runs in it again. A variation on a
+# GCP workstation (ASS-435) has no VM to stop: control frees its workstation
+# once the ticket is gone from the sprint (workstation:release).
+vms="$(jq -c '[.variations[] | .vm | select(.kind != "workstation") | .name // empty]' <<< "$found")"
 while IFS= read -r vm; do "$agent" vm:stop "$project" "$vm"; done < <(jq -r '.[]' <<< "$vms")
 
 # Each open merge request of a live variation (status Open, with a url)

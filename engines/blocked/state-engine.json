@@ -10,7 +10,8 @@
                 "type": "prompt",
                 "prompt": "troubleshoot-block",
                 "agent-count": 1,
-                "run-in-dev-container": false
+                "run-in-dev-container": false,
+                "model": "claude-opus-5-5"
             },
             "exit-events": [
                 {

@@ -109,6 +109,6 @@ test('ASS-265 AC2, AC4: the split-ticket prompt sizes a ticket by its own projec
   const text = readFileSync(join(ROOT, 'prompts', 'split-ticket', 'prompt.txt'), 'utf8');
   assert.match(text, /Read the code it touches, in \{project-code-folder\} \(a harness ticket's: \{harness-folder\}\)/);
   assert.match(text, /5: across several parts of the system \(in the harness: control, the CLI and the TUI\)/);
-  assert.match(text, /\{agent-sh\} ticket:propose-split \{project\} \{ticket\} -/);
+  assert.match(text, /\{agent-sh\} ticket:propose-split \{project\} \{ticket\} <proposal-file>/);   // ASS-428: a staged file's path, the agent confined on the host
   assert.match(text, /at awaiting-split-decision/);   // the example GitHub project's gate has the harness's gate's id, so the prompt's rejection note holds
 });
