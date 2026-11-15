@@ -206,7 +206,9 @@ what is missing under `~/harness` only (agent.sh, jq, the Claude Code CLI)
 and checking git, curl, Docker and the project's `golden-image.tools`. A
 tool the workstation lacks is installed by the project's optional
 `golden-image/workstation-tools.sh`, given the missing tools' names and
-`HARNESS_BIN` to put them in. Until setup succeeds nothing is dispatched to
+`HARNESS_BIN` to put them in; the golden-image folder's other top-level
+files (not Lima's `provision.sh`, `template.yaml`…) are shipped beside it, so
+it can source one it shares with `provision.sh`. Until setup succeeds nothing is dispatched to
 the workstation and the dashboard shows `Workstation <id> setup failed` (see
 `engines/grouped-engines.md`, "A GCP workstation's setup").
 
