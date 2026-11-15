@@ -1,5 +1,7 @@
 Write the automated tests for ticket {ticket}, following its test plan ({ticket-folder}/test-plan-{variation}.md).
 
+Never end your turn while a command you started is still running: run a long one (a full test suite, say) in the foreground with a timeout long enough for it, or, when it may outlast the tool's foreground limit, in the background, polling it until it exits — then write your results and finish.
+
 1. Write one test per behavior in the test plan, using the project's existing test framework and conventions.
 2. The feature isn't built yet, so the new tests should fail — but they must run. Fix any test that errors instead of failing.
 3. Don't write the implementation.

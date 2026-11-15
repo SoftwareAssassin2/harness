@@ -226,6 +226,20 @@ test('ASS-304: test-grouped never ends its turn while a command it started is st
   assert.doesNotMatch(readFileSync(join(ROOT, 'prompts', 'test', 'prompt.txt'), 'utf8'), /end your turn|still running/);
 });
 
+// ASS-461: generate-automated-tests (grouped and flat) lacked the same rule;
+// agents backgrounded a ~10-30 min compose test run, ended the turn awaiting
+// its notification, the headless session closed and killed it, and
+// automated-tests:record never ran. Same sentence, once, before the record step.
+test('ASS-461: generate-automated-tests and -grouped never end their turn while a command they started is still running, the rule before the first automated-tests:record', () => {
+  for (const name of ['generate-automated-tests-grouped', 'generate-automated-tests']) {
+    const t = readFileSync(join(ROOT, 'prompts', name, 'prompt.txt'), 'utf8');
+    assert.equal(t.split(NO_BACKGROUND_AT_TURN_END).length, 2, `${name}: the rule exactly once, verbatim`);
+    const record = t.indexOf('automated-tests:record');
+    assert.notEqual(record, -1, `${name}: names automated-tests:record`);
+    assert.ok(t.indexOf(NO_BACKGROUND_AT_TURN_END) < record, `${name}: the rule before the first automated-tests:record`);
+  }
+});
+
 // ASS-317: an unfinished test run (the suite cut short within the turn) read
 // as a rejection and cost a Build round and a Test visit. test-grouped's
 // output gains a third verdict, did-not-finish, on which v2's Test re-runs;

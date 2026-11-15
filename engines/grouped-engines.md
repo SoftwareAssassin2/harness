@@ -371,6 +371,13 @@ written on the branch for CI but left out of `automated-tests-<variation>.json`,
 so Automated Testing does not block on it. The flat `generate-automated-tests`
 prompt is unchanged.
 
+Both it and the flat `generate-automated-tests` never end their turn while a
+command they started is still running (ASS-461, test-grouped's ASS-304 rule
+verbatim, ahead of `automated-tests:record`): a long test run goes in the
+foreground with a long enough timeout, or in the background polled until it
+exits, then recorded. A backgrounded run left behind at turn end died with the
+headless session, and nothing got recorded.
+
 A recorded test stays current with the code it tests (ASS-353). A `run`
 command bringing a docker compose stack up starts it from a fresh database:
 `docker compose down -v` first, or a per-run-unique `COMPOSE_PROJECT_NAME`;
