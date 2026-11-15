@@ -21,6 +21,13 @@ set -euo pipefail
 # status but Answered, Answer Accepted or Assumed — and not flagged blocking:
 # false, so one asked before the flag counts), naming each: it is not
 # committed until the operator answers. A non-blocking question never holds it.
+#
+# <state> is checked against the project's execution engine first of all
+# (ASS-449, require_step), before any other check or write: a state it has no
+# step for is refused, writing nothing — no sync, so an off-board ticket is not
+# brought in, and no variation moves — naming the engine and the state, with
+# ` did you mean <id> (<name>)?` when it is a step's display name or a
+# mis-cased id. A display name is never a state.
 here="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
 source "$here/../sprint.bash"
 source "$here/../ticket-system.bash"
@@ -30,6 +37,8 @@ agent="$here/../../../agent.sh"
 key="$(tr '[:lower:]' '[:upper:]' <<< "$2")" state="$3"
 # The ticket's own project: an off-board key (ASS-n) lives in the harness's project, whichever project raised it.
 project="$(home_project ticket:join-sprint "$1" "$key")"
+engine="$(jq -r '.["execution-state-engine"] // empty' "$projects/$project/project.json" 2>/dev/null || true)"
+require_step ticket:join-sprint "$engine" "$project" "$state" || exit 1
 sprint="$(sprint_file ticket:join-sprint "$project")"
 questions="$projects/$project/work/$key/questions-and-answers.json"
 if [[ -s "$questions" ]]; then

@@ -48,6 +48,33 @@ test('the fix ticket raised from p goes to the harness project: off-board in h\'
   assert.deepEqual([f.ass1().variations[0]['harness-status'].state, f.ass1().variations[0]['ai-feedback-short']], ['blocked-for-human', 'Add the token']);
 });
 
+// ASS-449: join-sprint refuses an unknown <state> before any other check or write — no ticket:sync, nothing brought into the sprint, no move.
+test('ticket:join-sprint refuses, writing nothing, a <state> that is not a step id of the project engine, before any sync or move; nothing is pulled in (AC2, ASS-449)', async () => {
+  const f = await withHarness();
+  const sprintFile = f.at('projects', 'h', 'sprints', 'sprint-1', 'sprint.json');
+  const offBoardFile = f.at('off-board', 'h', 'ASS-1.md');
+  const sprintBefore = readFileSync(sprintFile, 'utf8');
+  const offBoardBefore = readFileSync(offBoardFile, 'utf8');
+  await assert.rejects(f.agent('ticket:join-sprint', 'p', 'ASS-1', 'nope'), e => /ticket:join-sprint: example-development has no step nope/.test(e.stderr));
+  assert.ok(!f.keys('h').includes('ASS-1'));
+  assert.equal(readFileSync(sprintFile, 'utf8'), sprintBefore);
+  assert.equal(readFileSync(offBoardFile, 'utf8'), offBoardBefore);
+  await f.agent('ticket:join-sprint', 'p', 'ASS-1', 'self-healing');
+  const sprintAfterJoin = readFileSync(sprintFile, 'utf8');
+  await assert.rejects(f.agent('ticket:join-sprint', 'p', 'ASS-1', 'bogus'), e => /ticket:join-sprint: example-development has no step bogus/.test(e.stderr));
+  assert.equal(readFileSync(sprintFile, 'utf8'), sprintAfterJoin);
+});
+
+// ASS-449: join-sprint's hint on a mis-cased id whose step has no name falls back to `<id> (<id>)` rather than crashing jq; the value stays refused.
+test('ticket:join-sprint refuses a mis-cased id with a `did you mean` hint; a step without a name falls back to <id> (<id>) (AC3, ASS-449)', async () => {
+  const f = await withHarness();
+  const offBoardFile = f.at('off-board', 'h', 'ASS-1.md');
+  const offBoardBefore = readFileSync(offBoardFile, 'utf8');
+  await assert.rejects(f.agent('ticket:join-sprint', 'p', 'ASS-1', 'SELF-HEALING'), e => /has no step SELF-HEALING did you mean self-healing \(self-healing\)\?/.test(e.stderr));
+  assert.ok(!f.keys('h').includes('ASS-1'));
+  assert.equal(readFileSync(offBoardFile, 'utf8'), offBoardBefore);
+});
+
 test('ticket:join-sprint renumbers the backlog: the joined ticket keeps its backlog entry and last priority, the rest close up; it arrives with manual-priority null (ASS-84, ASS-100 AC3)', async () => {
   const f = await withHarness();
   write(f.at('projects', 'h', 'backlog.json'), { tickets: [
