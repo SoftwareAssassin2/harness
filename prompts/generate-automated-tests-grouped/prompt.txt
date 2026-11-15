@@ -2,6 +2,8 @@ Write the automated tests for ticket {ticket}, following its test plan ({ticket-
 
 {where}
 
+Never end your turn while a command you started is still running: run a long one (a full test suite, say) in the foreground with a timeout long enough for it, or, when it may outlast the tool's foreground limit, in the background, polling it until it exits — then write your results and finish.
+
 1. Write one test per behavior in the test plan's "Automated" list, never its one-off verification, using the project's existing test framework and conventions. Where an existing test or target already covers a behavior, record it instead of writing a new one. Write a new test only where the repo's own CI runs it (in a file its existing runner picks up); never hard-code an upstream commit SHA or a local path in it.
 2. The feature isn't built yet, so the new tests should fail — but they must run. Fix any test that errors instead of failing.
 3. Don't write the implementation.
