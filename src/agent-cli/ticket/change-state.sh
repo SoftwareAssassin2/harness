@@ -53,9 +53,14 @@ if in_backlog ticket:change-state "$1" "$2"; then
   [[ "$5" != "$done_step" ]] || "$here/../../../agent.sh" ticket:announce-ready "$1" "$2" >/dev/null
   exit 0
 fi
-# The engine the variation runs in, as ticket:requirements-changed resolves it.
-IFS=$'\t' read -r engine state < <(variation_status ticket:change-state "$1" "$2" "$3" | head -n 1) || true
-[[ -n "${state:-}" ]] || exit 1
+# The engine the variation runs in: its harness-status's state-engine, else
+# the project's execution engine. variation_status prints "<engine>\t<state>"
+# with an empty engine when the variation names none, so the field is cut off
+# the line rather than read with IFS, which would strip the leading tab and
+# hide the empty engine (ASS-449).
+status="$(variation_status ticket:change-state "$1" "$2" "$3" | head -n 1)" || true
+[[ -n "$status" ]] || exit 1
+engine="${status%%$'\t'*}"
 [[ -n "$engine" ]] || engine="$(jq -r '.["execution-state-engine"] // empty' "$projects/$1/project.json" 2>/dev/null || true)"
 require_step ticket:change-state "$engine" "$1" "$5" || exit 1
 if [[ "$start" != - ]]; then

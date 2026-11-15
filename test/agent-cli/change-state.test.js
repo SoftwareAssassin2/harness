@@ -108,6 +108,19 @@ test('ticket:change-state refuses, writing nothing, a sprint <to-state> that is 
   assert.equal(readFileSync(sprintFile(dir), 'utf8'), before);
 });
 
+// ASS-449: a variation whose harness-status names no state-engine falls back to the project's execution engine, so it still moves and is still checked.
+test('ticket:change-state resolves a variation without a state-engine against the project\'s execution engine, moving it and refusing a bogus <to-state> (AC1, AC4, ASS-449)', async () => {
+  const dir = projects();
+  const sprint = JSON.parse(readFileSync(sprintFile(dir), 'utf8'));
+  sprint.features[0].variations[1]['harness-status'] = { state: 'backlog' };   // as ticket:sync writes it, with no state-engine
+  writeFileSync(sprintFile(dir), JSON.stringify(sprint, null, 4));
+  const before = readFileSync(sprintFile(dir), 'utf8');
+  await assert.rejects(move(dir, 'p', 'ABC-3', 'B', 'backlog', 'nope-not-a-step'), /ticket:change-state: example-development has no step nope-not-a-step/);
+  assert.equal(readFileSync(sprintFile(dir), 'utf8'), before);
+  await move(dir, 'p', 'ABC-3', 'B', 'backlog', 'committed');
+  assert.deepEqual(variations(dir)[1]['harness-status'], { state: 'committed', 'state-engine': null });   // the sprint path leaves the engine as it found it
+});
+
 // ASS-449: a display name or mis-cased id is refused with a `did you mean <id> (<name>)?` hint (shared helper, backlog and sprint).
 test('ticket:change-state refuses a display name or mis-cased id with a did-you-mean hint on sprint and backlog paths; the value is never accepted (AC3, ASS-449)', async () => {
   const dir = projects();
