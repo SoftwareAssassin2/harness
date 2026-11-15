@@ -40,3 +40,19 @@ test('assignments:status-update fails, writing nothing, for an agent with no ass
   await assert.rejects(update(file, 'Spock'), /usage/);
   assert.equal(readFileSync(file, 'utf8'), before);
 });
+
+// ASS-463 AC3: the update from a file, so a host agent's call stays one bare command line whatever the text holds.
+test('ASS-463: assignments:status-update --from <file> writes that file\'s text, its trailing newline dropped; a missing file, an over-long text or a stray argument fails, writing nothing', async () => {
+  const file = assignments();
+  const dir = mkdtempSync(join(tmpdir(), 'su-from-'));
+  const text = join(dir, 'update.txt');
+  writeFileSync(text, 'it\'s "$HOME" & `x`; ok\n');
+  await update(file, 'Spock', '--from', text);
+  assert.equal(read(file).assignments[0]['ai-status-update-short'], 'it\'s "$HOME" & `x`; ok');
+  const before = readFileSync(file, 'utf8');
+  await assert.rejects(update(file, 'Spock', '--from', join(dir, 'none.txt')), /assignments:status-update: no file/);
+  writeFileSync(text, 'y'.repeat(35));
+  await assert.rejects(update(file, 'Spock', '--from', text), /longer than 34 characters/);
+  await assert.rejects(update(file, 'Spock', 'a', 'b'), /usage/);
+  assert.equal(readFileSync(file, 'utf8'), before);
+});

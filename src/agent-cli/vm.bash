@@ -7,7 +7,11 @@
 #   recorded_vm <command> <project> <key> <variation>  # the VM recorded on the variation (ticket:set-vm), as machine.bash names a machine; fails, naming why, without one
 #   running_vm <command> <project> <key> <variation>   # that VM when it is running (machine_status); fails, naming why, else
 #   $setup_marker                             # the file in a VM whose Setup finished (ASS-68: vm:mark-setup-complete, vm:setup-complete)
-#   free_port                                 # a TCP port free on the Mac's loopback now: a clone's ssh.localPort
+#   free_port                                 # a TCP port free on the Mac's loopback now that no instance pins: a clone's ssh.localPort (under lock_ports)
+#   lock_ports <command> / unlock_ports       # the harness-wide ssh port lock (descriptor 4): from choosing a port until it is written to lima.yaml
+#   pinned_ports                              # "<instance>\t<port>" for every instance under LIMA_HOME whose lima.yaml pins ssh.localPort
+#   ports_in_use <port…>                      # those of the ports something listens on now, on the Mac's loopback
+#   ssh_repin <command> <vm>                  # a stopped VM whose pinned port another instance pins, or something holds now, re-pinned to a free one (ASS-467)
 #
 # A project's VMs and their disk (ASS-75):
 #   lock_vms <command> <project>              # the project's VM lock (descriptor 8) until unlock_vms or exit: every start, stop, clone and delete
@@ -84,7 +88,64 @@ running_vm() {
   echo "$vm"
 }
 
-free_port() { node -e 'const s = require("net").createServer().listen(0, "127.0.0.1", () => { console.log(s.address().port); s.close(); })'; }
+# ASS-467: every VM keeps an ssh port (ssh.localPort in its lima.yaml) no
+# other instance under LIMA_HOME pins — running or stopped, any project's, a
+# golden image's or a vm:test-repos VM's — so a stopped VM's port, free on the
+# Mac while it is down, is never handed to another, which would then hold it
+# (Lima's host agent listens on it) and keep the first from starting. A port
+# is chosen and written to the instance's lima.yaml (limactl clone or edit)
+# under lock_ports, so two choosing at once cannot take the same one. The
+# lock is harness-wide, vm-ports.lock beside harness.json, taken after a
+# project's VM lock (lock_vms) where both are held, and let go before a VM
+# starts (its host agent would inherit it). VM_PORT_TRY, space-separated
+# ports, are tried first (tests); then the kernel's ephemeral ones.
+lock_ports() { lock_on 4 "$disk_data_folder/vm-ports.lock" "$1" "${VM_LOCK_TIMEOUT:-600}"; }
+unlock_ports() { exec 4>&-; }
+
+pinned_ports() {
+  local yaml name
+  for yaml in "$LIMA_HOME"/*/lima.yaml; do
+    name="$(basename "$(dirname "$yaml")")"
+    [[ -f "$yaml" && "$name" != _* ]] || continue
+    awk -v vm="$name" '/^ssh:/ { s = 1; next } /^[^[:space:]#]/ { s = 0 }
+      s && /^[[:space:]]+localPort:/ { p = $2; gsub(/[^0-9]/, "", p); if (p + 0 > 0) print vm "\t" p + 0; exit }' "$yaml"
+  done
+}
+
+ports_in_use() {
+  [[ $# -gt 0 ]] || return 0
+  node -e 'const net = require("net");
+    (async () => { for (const p of process.argv.slice(1)) await new Promise(done => { const s = net.createServer()
+      .once("error", () => { console.log(p); done(); }).listen(Number(p), "127.0.0.1", () => s.close(done)); }); })();' "$@"
+}
+
+free_port() {
+  node -e 'const net = require("net"), taken = new Set(process.argv.slice(1).map(Number));
+    const tries = (process.env.VM_PORT_TRY || "").split(/\s+/).filter(Boolean).map(Number);
+    const attempt = n => { if (n >= 200) { console.error("free_port: no free ssh port found"); process.exit(1); }
+      const want = n < tries.length ? tries[n] : 0;
+      if (want && taken.has(want)) return attempt(n + 1);
+      const s = net.createServer().once("error", () => attempt(n + 1)).listen(want, "127.0.0.1", () => {
+        const p = s.address().port; s.close(); if (taken.has(p)) attempt(n + 1); else console.log(p); }); };
+    attempt(0);' $(pinned_ports | cut -f2)
+}
+
+ssh_repin() {
+  local command="$1" vm="$2" pins port others why="" port_new
+  lock_ports "$command" || return 1
+  pins="$(pinned_ports)"
+  port="$(awk -F'\t' -v vm="$vm" '$1 == vm { print $2 }' <<< "$pins")"
+  if [[ -n "$port" ]]; then
+    others="$(awk -F'\t' -v vm="$vm" -v p="$port" '$1 != vm && $2 == p { print $1 }' <<< "$pins" | paste -sd, - | sed 's/,/, /g')"
+    if [[ -n "$others" ]]; then why="pinned by $others too"
+    elif [[ -n "$(ports_in_use "$port")" ]]; then why="held by another process now"; fi
+  fi
+  [[ -n "$why" ]] || { unlock_ports; return 0; }
+  port_new="$(free_port)" && limactl edit --tty=false "$vm" --set ".ssh.localPort = $port_new" >/dev/null 2>&1 \
+    || { unlock_ports; echo "$command: $vm's ssh port $port is $why, and it could not be re-pinned to a free one" >&2; return 1; }
+  unlock_ports
+  echo "$command: $vm's ssh port $port is $why; re-pinned to $port_new" >&2
+}
 
 # The inventory: data/projects/<project>/vms.json (untracked), one entry per VM of
 # the project's — { "<vm>": { ticket, variation, state, disk-bytes,

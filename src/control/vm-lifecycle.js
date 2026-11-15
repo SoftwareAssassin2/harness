@@ -119,9 +119,16 @@
 // VM_WAIT; then it is, as it stands — unless it waits for a slot, when it is
 // not judged until it holds one and its VM is up, or its start is still queued
 // or under way (ASS-387: VM jobs run one at a time per project, so a start can
-// wait minutes behind a vm:delete), when it is not judged until the VM is up,
-// or the variation goes to Blocked once it has waited vmUpCeilingMs (neverUp,
-// as dispatch's ceiling does). A finished plan (ASS-362)
+// wait minutes behind a vm:delete) — or failed and to be tried again after its
+// backoff (ASS-464: a start that failed 84 s in, on a slow disk, was taken for
+// none, so a ticket Resolved onto Build had its step judged at VM_WAIT and
+// sent back to Blocked) — when it is not judged until the VM is up, or the
+// variation goes to Blocked once it has waited vmUpCeilingMs (neverUp, as
+// dispatch's ceiling does), its health naming the last failed start. VM_WAIT
+// then only bounds the wait for a VM nobody is starting (notStarting: the
+// disk hold on, or the lifecycle not wanting it running); the log says which
+// ("waits for its VM <vm>'s start, queued/under way N s" or "not running after
+// 2m and not starting (<why>): judged as it stands"). A finished plan (ASS-362)
 // needs no VM to move on to Build: its step is judged with its VM stopped,
 // and the move, once a seat is free, starts it. Nor, under the same wait, is an agent
 // dispatched into it (dispatch.js vmDown, ASS-159) — nor after it, until the
@@ -201,11 +208,13 @@ const rateHealth = (id, key, limit) => ({
 // end at VM_WAIT, logged once each. ASS-387: past VM_WAIT, a VM whose start is
 // still pending (startPending) is waited for on — said once — and, once the
 // wait reaches vmUpCeilingMs, NEVER_UP is returned (truthy: still not
-// judged), for the caller to send the variation to Blocked (neverUp).
+// judged), for the caller to send the variation to Blocked (neverUp);
+// ASS-464: pending includes a failed start to be tried again (notStarting).
 // memory.vmsUp: the names control has
 // reached — seen Running by limactl list and reached by a probe (ASS-169),
 // or that it started or recreated itself; memory.vmWaits: name → { since, over,
-// pending (ASS-387: its wait past VM_WAIT on a pending start logged),
+// pending (ASS-387: its wait past VM_WAIT on a pending start logged — ASS-464:
+// as the failed tries it counted then, logged again as another fails),
 // dispatching (dispatch.js vmDown's own wait past VM_WAIT logged, ASS-348) },
 // dropped once the VM is up or should not run.
 //
@@ -236,13 +245,19 @@ export function awaitsVm(ctx, state, project, variation, who) {
   let w = waits.get(name);
   if (!w) { waits.set(name, w = { since: now, over: false }); ctx.log(PHASE, `${who}: waits for its VM ${name} to be running`); }
   if (now - w.since < VM_WAIT) return true;
-  if (startPending(ctx, state, project, name)) {   // ASS-387: its start queued or under way — waited for, up to the ceiling
+  const why = notStarting(ctx, state, project, name);
+  if (!why) {   // ASS-387, ASS-464: its start queued, under way or to be tried again — waited for, up to the ceiling
     const ceiling = vmUpCeilingMs(state);
     if (now - w.since >= ceiling) return NEVER_UP;
-    if (!w.pending) { w.pending = true; ctx.log(PHASE, `${who}: its VM ${name} is not running after ${held(VM_WAIT)}, its start still queued or under way; waits on, up to ${held(ceiling)}`); }
+    const failures = ctx.memory.vms.get(project.id).held.get(name)?.failures ?? 0;
+    if (w.pending !== failures) {   // said once, and again each time a try fails meanwhile
+      w.pending = failures;
+      const tries = failures ? `; ${failures} tr${failures > 1 ? 'ies' : 'y'} failed so far, tried again after its backoff` : '';
+      ctx.log(PHASE, `${who}: waits for its VM ${name}'s start, queued/under way ${Math.round((now - w.since) / 1000)}s${tries}; not judged until it is up, at most ${held(ceiling)}`);
+    }
     return true;
   }
-  if (!w.over) { w.over = true; ctx.log(PHASE, `${who}: its VM ${name} is not running after ${held(VM_WAIT)}; judged as it stands`); }
+  if (!w.over) { w.over = true; ctx.log(PHASE, `${who}: its VM ${name} is not running after ${held(VM_WAIT)} and not starting (${why}): judged as it stands`); }
   return false;
 }
 
@@ -278,12 +293,22 @@ function workstationWait(ctx, state, project, variation, who) {
   return true;
 }
 
-// startPending(ctx, state, project, name) — ASS-387: whether the VM's start
-// (wanted: awaitsVm's checks passed) is still queued behind the project's
-// other VM jobs or under way — or Running but not yet reached — rather than
-// failed and backed off (match's held, its failures counted) or held by the
-// disk hold: one of those is judged at VM_WAIT as it stands (ASS-133).
-const startPending = (ctx, state, project, name) => !diskHeld(state) && !ctx.memory.vms?.get(project.id)?.held.get(name)?.failures;
+// notStarting(ctx, state, project, name) — why nobody is starting the VM
+// (awaitsVm's checks passed: its step wants it running), or null while its
+// start is pending: the lifecycle wants it running this tick (superviseVms'
+// `wants`: vmsOf's run) — its start queued behind the project's other VM
+// jobs (ASS-387), under way, Running but not yet reached, or failed and to be
+// tried again after its backoff (ASS-464: a start that failed once — 84 s in,
+// on a slow disk — was taken for none, the step judged at VM_WAIT, its script
+// failing "not running", the ticket Blocked). Not starting: the disk hold is
+// on (no VM started, ASS-288), or the lifecycle does not want it running (a
+// project it has not supervised yet, or one it holds stopped) — judged at
+// VM_WAIT as it stands (ASS-133).
+function notStarting(ctx, state, project, name) {
+  if (diskHeld(state)) return 'the disk is nearly full, so no VM is started';
+  if (!ctx.memory.vms?.get(project.id)?.wants?.has(name)) return 'control is not starting it';
+  return null;
+}
 
 // vmUpCeilingMs(state) — how long a VM may take to come up before its
 // variation goes to Blocked (dispatch.js vmDown, ASS-348; awaitsVm, ASS-387), in ms: harness.json's
@@ -308,7 +333,9 @@ export async function neverUp(ctx, phase, at, name, ceiling) {
   if (backlog || isManual(ticket) || from === 'blocked-for-human' || !stepOf(engine, to)) return;
   const why = `its VM ${name} never came up`;
   const short = `VM ${name} never came up: not running and reachable after ${held(ceiling)}`;
-  const long = `${short}. Control dispatches no agent into a VM until it has seen it running and reached it (ASS-348), nor judges a step that needs it running while its start is queued or under way (ASS-387), so no agent was sent and no step run against it; look at the VM's starts in the control log (vm:start failing, or still starting).`;
+  const failed = ctx.memory.vms?.get(project.id)?.held.get(name);
+  const last = failed?.failures ? ` Its start failed ${failed.failures} time${failed.failures > 1 ? 's' : ''} in a row, the last: ${failed.error}.` : '';
+  const long = `${short}. Control dispatches no agent into a VM until it has seen it running and reached it (ASS-348), nor judges a step that needs it running while its start is queued, under way or to be tried again (ASS-387, ASS-464), so no agent was sent and no step run against it.${last} Look at the VM's starts in the control log (vm:start failing, or still starting) and its ha.stderr.log.`;
   await ctx.attempt(phase, `${ticket.key} ${variation.name}`, async () => {
     if (!await moveTicket(ctx, phase, project, ticket, variation, to, why)) return;
     ctx.memory.vmWaits?.delete(name);
@@ -387,7 +414,9 @@ const statuses = ctx => machineStatuses({ env: ctx.env }).catch(error => { throw
 // the Mac asleep — is waited for (awaitsVm) before this tick's steps or
 // dispatch use it (ASS-159: ASS-158's agents were sent into a VM control
 // still took for up); then starts, for each project with a VM and no job
-// running, its job (match); memory.vms: id → { job, held: name → { failures, until } }.
+// running, its job (match); memory.vms: id → { job, held: name → { failures,
+// until, error (the last failure, ASS-464) }, wants (ASS-464: the VMs vmsOf
+// says run, read again every tick — awaitsVm's notStarting) }.
 export async function superviseVms(ctx, state) {
   const jobs = (ctx.memory.vms ??= new Map());
   // ASS-398: a memory hold lifts by itself once there is room; ASS-404: the state loaded again when its record went or its held variations changed, so the seats (plan.js) follow at once.
@@ -405,6 +434,7 @@ export async function superviseVms(ctx, state) {
   for (const [project, vms] of projects) {
     const r = jobs.get(project.id) ?? { job: null, held: new Map() };
     jobs.set(project.id, r);
+    r.wants = new Set([...vms].filter(([, vm]) => vm.run).map(([name]) => name));   // ASS-464: the VMs it is to start or keep running (awaitsVm's notStarting)
     r.job ??= match(ctx, project.id, vms, r, status, diskHeld(state), stampEvery, (name, vm) => memoryShort(ctx, state, project, name, vm.ticket && vm.variation ? { key: vm.ticket, variation: vm.variation, state: vm.state } : null)).catch(error => ctx.log('error', `${PHASE} ${project.id}: ${error.message}`)).finally(() => { r.job = null; });
   }
 }
@@ -568,6 +598,7 @@ async function match(ctx, id, vms, r, status, diskHold = false, stampEvery = CRE
     } catch (error) {
       const wait = backoffDelay(++h.failures);
       h.until = now + wait;
+      h.error = `${doing.join(' ')}: ${error.message}`;   // ASS-464: named in the health of a variation it never came up for (neverUp)
       r.held.set(name, h);
       ctx.log('error', `${PHASE} ${id} ${name}: ${doing.join(' ')} failed (${h.failures} in a row; next try in ${held(wait)}): ${error.message}`);
     }

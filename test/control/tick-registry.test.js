@@ -82,6 +82,19 @@ test('registry:refresh-credentials then registry:sweep run on the first pass and
   assert.equal(maintenance().length, 4);
 });
 
+test('ASS-466: a project declaring arm64-images also gets registry:arm64-build every 30 minutes, after the sweep; its failure is logged', async t => {
+  const r = await registry(t, { fail: args => args[0] === 'registry:arm64-build' && 'registry:arm64-build: example-gcp-project/containers/example-db:18.6.19: the linux/arm64 build failed' });
+  const file = join(r.f.dir, 'projects', 'p', 'project.json');
+  writeFileSync(file, JSON.stringify({ ...JSON.parse(readFileSync(file, 'utf8')), 'arm64-images': [{ image: 'us-central1-docker.pkg.dev/example-gcp-project/containers/example-db', 'base-swap': { base: 'postgres:18', copy: ['/x'] } }] }));
+  await r.zotUp();
+  const maintenance = () => r.calls.filter(c => /^registry:(refresh-credentials|sweep|arm64-build) p$/.test(c));
+  await r.pass();
+  assert.deepEqual(maintenance(), ['registry:refresh-credentials p', 'registry:sweep p', 'registry:arm64-build p']);
+  assert.ok(r.f.lines.some(l => l.startsWith('error registry p registry:arm64-build: ') && l.includes('the linux/arm64 build failed')), r.f.lines.join('\n'));
+  r.later(30 * 60e3); await r.pass();
+  assert.equal(maintenance().length, 6);
+});
+
 test('a failed credential refresh (gcloud logged out) is logged, and the sweep still runs', async t => {
   const r = await registry(t, { fail: args => args[0] === 'registry:refresh-credentials' && 'registry:refresh-credentials: gcloud is not logged in on this Mac' });
   await r.zotUp();

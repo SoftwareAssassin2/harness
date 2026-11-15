@@ -62,6 +62,6 @@ lima_start() {
 (allow default)
 (deny network-outbound (remote ip \"*:*\"))
 (allow network-outbound$allowed)"
-  # Its host agent outlives this shell: started without the VM lock's descriptor (vm.bash lock_vms), or it would hold the lock.
-  LIMA_HOME="$home" sandbox-exec -p "$profile" limactl start --tty=false "$vm" >/dev/null 2>&1 8>&- || { echo "$command: $vm would not start (see $home/$vm/ha.stderr.log)" >&2; return 1; }
+  # Its host agent outlives this shell: started without the VM lock's descriptor (vm.bash lock_vms) or the ssh port lock's (lock_ports), or it would hold them.
+  LIMA_HOME="$home" sandbox-exec -p "$profile" limactl start --tty=false "$vm" >/dev/null 2>&1 8>&- 4>&- || { echo "$command: $vm would not start (see $home/$vm/ha.stderr.log)" >&2; return 1; }
 }

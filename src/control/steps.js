@@ -276,7 +276,7 @@ async function runVariation(ctx, state, project, key, name) {
     }
     const vmWait = awaitsVm(ctx, state, project, variation, who);
     if (vmWait === NEVER_UP) await neverUp(ctx, PHASE, at, variation.vm.name, vmUpCeilingMs(state));   // ASS-387: its start pending past the ceiling: Blocked
-    if (vmWait) return;   // its VM still starting (ASS-133), or its start still queued (ASS-387)
+    if (vmWait) return;   // its VM still starting (ASS-133), or its start still queued or to be tried again (ASS-387, ASS-464)
     const facts = ticketFacts(ctx, project, ticket, variation, undefined, runsInVm(step) ? machineOf(variation) : undefined);
     const changes = levelChanges(variation);
     switch (step.action?.type) {
@@ -429,7 +429,7 @@ async function runTransient(ctx, state, id) {
     }
     const vmWait = awaitsVm(ctx, state, project, variation, who);
     if (vmWait === NEVER_UP) await neverUp(ctx, PHASE, place, variation.vm.name, vmUpCeilingMs(state));   // ASS-387
-    if (vmWait) return;   // its ticket's VM still starting (ASS-133), or its start still queued (ASS-387)
+    if (vmWait) return;   // its ticket's VM still starting (ASS-133), or its start still queued or to be tried again (ASS-387, ASS-464)
     const facts = { ...(ticket && variation ? ticketFacts(ctx, project, ticket, variation, undefined, runsInVm(step) ? machineOf(variation) : undefined) : {}), structuredOutput: run['structured-output'], agentNeedsWork: true };
     // Its steps' visits are the run's own (ASS-66): counted over its moves, none from an earlier run or its parent.
     const changes = run['state-changes'] ?? [];

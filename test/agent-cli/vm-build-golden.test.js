@@ -574,3 +574,38 @@ test('ASS-287 AC3: a build with less free space on LIMA_HOME\'s volume than gold
   assert.equal(s.calls()[0], 'delete -f ass-1-a');
   assert.ok(existsSync(join(s.lima, 'ass-2-a')));
 });
+
+test('ASS-466 AC4: an arm64 variant built for an image of images.txt is in the image\'s inputs, so it is baked in — a new one makes the image stale and the next build pulls it; one that cannot be built never stops the build', async () => {
+  const db = 'us-central1-docker.pkg.dev/example-gcp-project/containers/example-db';
+  const s = setup({ images: `${db}:18.6.19\nus-central1-docker.pkg.dev/x/y:1\n` });
+  writeFileSync(join(s.dir, 'zot-up'), '');
+  const file = join(s.dir, 'projects', 'p', 'project.json');
+  writeFileSync(file, JSON.stringify({ ...JSON.parse(readFileSync(file, 'utf8')), 'arm64-images': [{ image: db, 'base-swap': { base: 'postgres:18', copy: ['/docker-entrypoint-initdb.d'] } }] }));
+  // The build runs registry:arm64-build first; the fake zot answers nothing, so the variant fails, said, and the build goes on.
+  const first = await s.build();
+  assert.match(first.stderr, /registry:arm64-build: .*example-db:18\.6\.19: p's registry answered no manifest .* VMs pull it as amd64 \(emulated\)/);
+  assert.match(first.stderr, /vm:build-golden: an arm64 variant could not be built \(above\); that image is baked as amd64/);
+  assert.match(first.stdout, /vm:build-golden: arm64 variant of .*example-db:18\.6\.19: failed/);
+  assert.ok(s.calls().includes('rename golden-p-build golden-p'));
+  assert.ok(!s.label().inputs.some(l => l.startsWith('arm64 ')));
+  const stale = async () => JSON.parse((await run(AGENT, ['vm:golden-stale', 'p'], { env: s.env })).stdout);
+  assert.equal((await stale()).stale, false);
+
+  // registry:arm64-build made the variant (as control's maintenance does): the image is stale, naming it.
+  const digest = `sha256:${'a'.repeat(64)}`;
+  mkdirSync(join(s.dir, 'projects', 'p', 'registry'), { recursive: true });
+  writeFileSync(join(s.dir, 'projects', 'p', 'registry', 'arm64.json'), JSON.stringify({ [db]: { tag: '18.6.19', digest, index: `sha256:${'b'.repeat(64)}`, amd64: `sha256:${'c'.repeat(64)}`, 'built-at': '2026-11-15T21:00:00Z' } }));
+  const now = await stale();
+  assert.equal(now.stale, true);
+  assert.deepEqual(now.why, [`added arm64 ${db}:18.6.19 ${digest}`]);
+  // The next build bakes it: the images step pulls the pinned name, which the project's zot answers with the arm64 variant.
+  s.reset();
+  await s.build();
+  assert.ok(s.calls().includes('shell golden-p-build images.sh '));
+  assert.equal(s.logOf('stdin.images.sh'), `${db}:18.6.19\nus-central1-docker.pkg.dev/x/y:1\n`);
+  assert.ok(s.label().inputs.includes(`arm64 ${db}:18.6.19 ${digest}`));
+  assert.equal((await stale()).stale, false);
+  // A variant of a tag no longer pinned is no input.
+  writeFileSync(join(s.def, 'images.txt'), `${db}:18.6.20\n`);
+  assert.ok((await stale()).why.includes(`removed arm64 ${db}:18.6.19 ${digest}`));
+});

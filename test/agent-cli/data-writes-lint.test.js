@@ -66,6 +66,13 @@ const ALLOWED = {
     '"$log"': 'a scratch log of its own',
     '"$storage/sweep.$$"': 'a scratch file of its own',
   },
+  'src/agent-cli/registry/arm64-build.sh': {
+    '"$work/error"': 'a scratch file in its own mktemp work folder (ASS-466)',
+    '"$work/result"': 'a scratch file in its own mktemp work folder',
+    '"$dockerfile"': 'the base swap\'s generated Dockerfile, in its own mktemp work folder',
+    '"$work/index.json"': 'the multi-arch index before its push, in its own mktemp work folder',
+    '"$log"': 'the image\'s build log, one writer under arm64-build.lock',
+  },
   'src/agent-cli/sprint/advance.sh': { '"$tmp"': 'temp renamed over, under the files\' locks (sprint:advance is ASS-178\'s)' },
   'src/agent-cli/ticket/move.sh': {
     '"$tmp"': 'temp renamed over, under both projects\' locks (ASS-172)',

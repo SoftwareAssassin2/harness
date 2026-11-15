@@ -170,7 +170,7 @@ async function reentering(variations, options) {
   l.asked = [];
   l.f.ctx.succeeds = argv => { l.asked.push(argv.join(' ')); return argv[1] === 'vm:setup-complete' && status(`abc-3-${argv[4].toLowerCase()}`) === 'Running'; };
   l.f.ctx.script = async (argv, vm) => { l.calls.push(`${argv.join(' ').replace('./agent.sh ', '')}${vm ? ` in ${vm}` : ''}`); return { exitCode: 0, stdout: '' }; };   // script steps recorded, never run
-  for (const [name, [status]] of Object.entries(variations)) await l.f.agent('transient-state-engine:create', 'p', status['sub-status']['state-engine'], status['sub-status'].state, JSON.stringify({ 'work-item': 'ABC-3', variation: name, 'state-engine': ENGINE, state: status.state }));
+  for (const [name, [status]] of Object.entries(variations)) if (status['sub-status']) await l.f.agent('transient-state-engine:create', 'p', status['sub-status']['state-engine'], status['sub-status'].state, JSON.stringify({ 'work-item': 'ABC-3', variation: name, 'state-engine': ENGINE, state: status.state }));
   // One tick's VM and steps phases, in the tick's order; a start (7–30 s) not done until `settle` lets it finish and awaits the job.
   l.tick = async () => { await superviseVms(l.f.ctx, l.f.ctx.load()); await runSteps(l.f.ctx, l.f.ctx.load()); };
   l.settle = () => { release(); return Promise.all([...l.f.ctx.memory.vms.values()].map(r => r.job)); };
@@ -209,18 +209,23 @@ test('ASS-133 AC3: a ticket with no VM is not delayed: Check Setup Complete is j
   assert.ok(l.calls.includes('vm:create p ABC-3 A'), l.calls.join('\n'));
 });
 
-test('ASS-133 AC1: the wait is bounded — a VM that does not come up in two minutes (its start failing) leaves the step judged as it stands, logged once', async () => {
-  const l = await reentering({ A: [SETTING_UP, 'Stopped'] }, { fail: args => args[0] === 'vm:start' && 'vm:start: abc-3-a would not start' });
+// ASS-464: VM_WAIT bounds only the wait for a VM nobody is starting — here, the disk hold keeping every start back (ASS-288).
+const diskHold = (l, level = 'hold') => writeFileSync(l.f.env.DISK_SPACE_FILE, JSON.stringify({ level, 'free-bytes': 1e9, 'warn-bytes': 50e9, 'hold-bytes': 15e9 }));
+test('ASS-133 AC1, ASS-464 AC3: the wait is bounded — a VM nobody is starting (the disk hold on) that is not up in two minutes leaves the step judged as it stands, logged once with why', async () => {
+  const l = await reentering({ A: [SETTING_UP, 'Stopped'] });
+  diskHold(l);
   await l.tick();
   await l.settle();
+  assert.ok(!l.calls.includes('vm:start p ABC-3 A'), l.calls.join('\n'));
   l.later(VM_WAIT - 1000);
   await l.tick();
   assert.deepEqual(l.asked, []);
   l.later(1000);
-  await l.tick();
+  await l.tick(); await l.tick();
   assert.equal(l.asked[0], './agent.sh vm:setup-complete p ABC-3 A');
-  assert.ok(l.calls.includes('vm:create p ABC-3 A'), l.calls.join('\n'));
-  assert.equal(l.f.lines.filter(x => /its VM abc-3-a is not running after 2m; judged as it stands$/.test(x)).length, 1, l.f.lines.join('\n'));
+  assert.equal(l.trail('A'), 'create-vm', l.f.lines.join('\n'));   // Check Setup Complete judged as it stands: on to Create VM
+  assert.equal(l.f.lines.filter(x => x === 'vm ABC-3 A setup: its VM abc-3-a is not running after 2m and not starting (the disk is nearly full, so no VM is started): judged as it stands').length, 1, l.f.lines.join('\n'));
+  assert.ok(!l.f.lines.some(x => x.includes('queued/under way')), l.f.lines.join('\n'));
 });
 
 // ASS-387: past VM_WAIT a step whose VM's start is still queued behind the
@@ -235,7 +240,7 @@ test('ASS-387 AC1, AC2: a VM-dependent step whose VM start is queued (B, behind 
   assert.ok(l.calls.includes('vm:start p ABC-3 A') && !l.calls.includes('vm:start p ABC-3 B'), l.calls.join('\n'));
   assert.ok(!l.calls.some(c => / in abc-3-[ab]$/.test(c)), l.calls.join('\n'));
   assert.ok(!l.f.lines.some(x => x.includes('judged as it stands')), l.f.lines.join('\n'));
-  for (const name of ['abc-3-a', 'abc-3-b']) assert.ok(l.f.lines.some(x => x.endsWith(`: its VM ${name} is not running after 2m, its start still queued or under way; waits on, up to 30m`)), l.f.lines.join('\n'));
+  for (const name of ['abc-3-a', 'abc-3-b']) assert.ok(l.f.lines.some(x => x.endsWith(`: waits for its VM ${name}'s start, queued/under way 120s; not judged until it is up, at most 30m`)), l.f.lines.join('\n'));
   await l.settle();   // both started, B's after A's
   await l.tick();
   assert.ok(l.calls.some(c => c.endsWith(' in abc-3-a')) && l.calls.some(c => c.endsWith(' in abc-3-b')), l.calls.join('\n'));
@@ -256,6 +261,67 @@ test('ASS-387 AC3: a VM whose start is still under way at vmUpCeilingMs sends it
   assert.ok(!l.calls.some(c => c.endsWith(' in abc-3-a')), l.calls.join('\n'));
   assert.ok(!l.f.lines.some(x => x.includes('judged as it stands')), l.f.lines.join('\n'));
   await l.settle();
+});
+
+// ASS-464: a ticket at Blocked for Human has its VM stopped (ASS-418); the
+// operator's Resolved moves it on to Build, which runs its VM. The VM's start
+// is requested at once, and Build is not judged while it is queued, under way
+// or — the case seen: a 52 GB VM on a slow disk whose start failed 84 s in —
+// to be tried again after its backoff. Before, a failed start was taken for
+// none: at VM_WAIT Build was judged as it stood, its first script failed "not
+// running", and the ticket went back to Blocked, burning a Troubleshoot run.
+test('ASS-464 AC1, AC2, AC4: a ticket at Blocked for Human with its VM stopped, Resolved to Build, has its VM started at once; its first start failing, Build waits past VM_WAIT while the start is tried again, then runs in the VM once it is up — never judged early, never Blocked', async () => {
+  let starts = 0;
+  const l = await reentering({ A: [at('blocked-for-human'), 'Stopped'] }, { fail: args => args[0] === 'vm:start' && ++starts === 1 && 'vm:start: abc-3-a would not start (see abc-3-a/ha.stderr.log)' });
+  const jobs = () => Promise.all([...l.f.ctx.memory.vms.values()].map(r => r.job));
+  await l.tick(); await jobs();
+  assert.ok(!l.calls.some(c => c.startsWith('vm:start')), l.calls.join('\n'));   // stopped at Blocked for Human: not started
+  await l.f.agent('ticket:human-review', 'p', 'ABC-3', 'A', 'blocked-for-human', 'Resolved', 'build');
+  assert.equal(l.f.variation('A')['harness-status'].state, 'build');
+  await l.tick(); await jobs();   // the start requested in the first tick after the move — and failing
+  assert.ok(l.calls.includes('vm:start p ABC-3 A'), l.calls.join('\n'));
+  assert.ok(l.f.lines.some(x => /^error vm p abc-3-a: vm:start p ABC-3 A failed \(1 in a row; next try in 30s\)/.test(x)), l.f.lines.join('\n'));
+  assert.ok(l.f.lines.includes('vm ABC-3 A build: waits for its VM abc-3-a to be running'), l.f.lines.join('\n'));
+  l.later(VM_WAIT); await l.tick();   // past VM_WAIT: the start tried again (under way), Build still not judged
+  l.later(60_000); await l.tick();
+  assert.equal(l.calls.filter(c => c === 'vm:start p ABC-3 A').length, 2, l.calls.join('\n'));
+  assert.ok(!l.calls.some(c => / in abc-3-a$/.test(c) || c.startsWith('vm:refresh-repositories')), l.calls.join('\n'));
+  assert.equal(l.runAt('A'), undefined, JSON.stringify(l.f.assignments()['transient-state-engines']));   // no Build run started against the down VM
+  assert.ok(!l.f.lines.some(x => x.includes('judged as it stands')), l.f.lines.join('\n'));
+  assert.equal(l.f.lines.filter(x => x === 'vm ABC-3 A build: waits for its VM abc-3-a\'s start, queued/under way 120s; 1 try failed so far, tried again after its backoff; not judged until it is up, at most 30m').length, 1, l.f.lines.join('\n'));
+  await l.settle();   // the second start done: the VM is up
+  await l.tick(); await l.tick();   // Build's run started, then its first step judged
+  assert.equal(l.calls.filter(c => c.startsWith('vm:refresh-repositories p ABC-3 A')).length, 1, l.calls.join('\n'));   // Build's first step, run once, against the VM up
+  assert.equal(l.runAt('A'), 'generate-automated-tests', l.f.lines.join('\n'));
+  assert.equal(l.f.variation('A')['harness-status'].state, 'build', l.f.lines.join('\n'));
+  assert.ok(!l.f.lines.some(x => / → blocked/.test(x)), l.f.lines.join('\n'));
+});
+
+test('ASS-464 AC2, AC4: a slow start — several minutes under way — never has its step judged early: no script in the VM, no "judged as it stands", the wait logged once; once it is up the step runs', async () => {
+  const l = await reentering({ A: [TESTING, 'Stopped'] });
+  await l.tick();   // the start under way beside the tick, for minutes
+  for (let minute = 1; minute <= 12; minute++) { l.later(60_000); await l.tick(); }
+  assert.equal(l.calls.filter(c => c === 'vm:start p ABC-3 A').length, 1, l.calls.join('\n'));
+  assert.ok(!l.calls.some(c => / in abc-3-a$/.test(c)), l.calls.join('\n'));
+  assert.ok(!l.f.lines.some(x => x.includes('judged as it stands')), l.f.lines.join('\n'));
+  assert.equal(l.f.lines.filter(x => x.includes('waits for its VM abc-3-a\'s start, queued/under way')).length, 1, l.f.lines.join('\n'));
+  await l.settle();
+  await l.tick();
+  assert.ok(l.calls.some(c => c.endsWith(' in abc-3-a')), l.calls.join('\n'));
+  assert.ok(!l.f.lines.some(x => / → blocked/.test(x)), l.f.lines.join('\n'));
+});
+
+test('ASS-464 AC3, AC4: a VM nobody is starting (the disk hold on) is still judged at VM_WAIT — its Build step run as it stands, said so — not held to the ceiling', async () => {
+  const l = await reentering({ A: [TESTING, 'Stopped'] });
+  diskHold(l);
+  await l.tick(); await l.settle();
+  l.later(VM_WAIT - 1000); await l.tick();
+  assert.ok(!l.calls.some(c => / in abc-3-a$/.test(c)), l.calls.join('\n'));
+  l.later(1000); await l.tick();
+  assert.ok(l.calls.some(c => c.endsWith(' in abc-3-a')), l.calls.join('\n'));
+  assert.ok(!l.calls.includes('vm:start p ABC-3 A'), l.calls.join('\n'));
+  assert.ok(l.f.lines.includes('vm ABC-3 A build: its VM abc-3-a is not running after 2m and not starting (the disk is nearly full, so no VM is started): judged as it stands'), l.f.lines.join('\n'));
+  assert.ok(!l.f.lines.some(x => x.includes('queued/under way')), l.f.lines.join('\n'));
 });
 
 // ASS-418 AC3: a step that needs no VM says vm stopped beneath its running
@@ -421,7 +487,7 @@ test('ASS-348 AC1, AC2, AC4, ASS-387: a VM still starting past VM_WAIT gets no a
     await l.tick(); await l.tick(); await l.tick();
     assert.deepEqual(l.agents(), [], l.f.lines.join('\n'));
     assert.ok(!l.f.lines.some(x => x.includes('judged as it stands')), l.f.lines.join('\n'));
-    assert.equal(l.f.lines.filter(x => x.endsWith(': its VM abc-3-a is not running after 2m, its start still queued or under way; waits on, up to 30m')).length, 1, l.f.lines.join('\n'));
+    assert.equal(l.f.lines.filter(x => x.endsWith(': waits for its VM abc-3-a\'s start, queued/under way 120s; not judged until it is up, at most 30m')).length, 1, l.f.lines.join('\n'));
     await l.settle();   // vm:start done: the VM is up
     assert.ok(l.f.ctx.memory.vmsUp.has('abc-3-a'));
     await l.tick();
@@ -432,20 +498,25 @@ test('ASS-348 AC1, AC2, AC4, ASS-387: a VM still starting past VM_WAIT gets no a
   }
 });
 
-test('ASS-348 AC1, AC3: a VM whose vm:start failed and is backed off gets no agent past VM_WAIT; at VM_UP_CEILING (30 minutes, harness.json vm-up-ceiling-seconds) the variation goes to Blocked, its ai-feedback naming the VM', async () => {
+// ASS-464: a failed start is tried again after its backoff, so its step is not judged at VM_WAIT either — before, it was
+// judged as it stands and only the dispatch wait held its agent; now the step path's ceiling (ASS-387) sends it to Blocked.
+test('ASS-348 AC1, AC3, ASS-464: a VM whose vm:start failed and is backed off gets no agent, its step not judged past VM_WAIT, its start tried again; at VM_UP_CEILING (30 minutes, harness.json vm-up-ceiling-seconds) the variation goes to Blocked, its ai-feedback naming the VM and its last failed start', async () => {
   assert.equal(VM_UP_CEILING, 30 * 60_000);
   assert.equal(vmUpCeilingMs({ harness: {} }), VM_UP_CEILING);
   assert.equal(vmUpCeilingMs({ harness: { 'vm-up-ceiling-seconds': 600 } }), 600_000);
   const l = await dispatching({ A: [GENERATING, 'Stopped'] }, { fail: args => args[0] === 'vm:start' && 'vm:start: limactl list failed' });
+  const jobs = () => Promise.all([...l.f.ctx.memory.vms.values()].map(r => r.job));
   try {
-    await l.tick(); await l.settle();
+    await l.tick(); await jobs();
     assert.ok(l.f.lines.some(x => /^error vm p abc-3-a: vm:start p ABC-3 A failed \(1 in a row; next try in 30s\)/.test(x)), l.f.lines.join('\n'));
     l.later(VM_WAIT);
-    await l.tick(); await l.tick();
+    await l.tick(); await jobs(); await l.tick();
     assert.deepEqual(l.agents(), [], l.f.lines.join('\n'));
-    assert.equal(l.f.lines.filter(x => x === DISPATCH_WAIT).length, 1, l.f.lines.join('\n'));
+    assert.equal(l.calls.filter(c => c === 'vm:start p ABC-3 A').length, 2, l.calls.join('\n'));   // tried again
+    assert.ok(l.f.lines.includes('vm ABC-3 A build: waits for its VM abc-3-a\'s start, queued/under way 120s; 2 tries failed so far, tried again after its backoff; not judged until it is up, at most 30m'), l.f.lines.join('\n'));
+    assert.ok(!l.f.lines.some(x => x.includes('judged as it stands') || x === DISPATCH_WAIT), l.f.lines.join('\n'));
     l.later(VM_UP_CEILING - VM_WAIT - 1000);
-    await l.tick();
+    await l.tick(); await jobs();
     assert.equal(l.f.variation('A')['harness-status'].state, 'build', l.f.lines.join('\n'));
     l.later(1000);
     await l.tick();
@@ -453,10 +524,11 @@ test('ASS-348 AC1, AC3: a VM whose vm:start failed and is backed off gets no age
     const v = l.f.variation('A');
     assert.equal(v['harness-status'].state, 'blocked', l.f.lines.join('\n'));
     assert.equal(v['ai-feedback-short'], 'VM abc-3-a never came up: not running and reachable after 30m');
-    assert.match(v['ai-feedback-long'], /^VM abc-3-a never came up: .*no agent was sent/);
-    assert.ok(l.f.lines.some(x => /^dispatch ABC-3 A build → blocked .*\(its VM abc-3-a never came up\)$/.test(x)), l.f.lines.join('\n'));
-    assert.equal(l.f.lines.filter(x => x === DISPATCH_WAIT).length, 1, l.f.lines.join('\n'));
+    assert.match(v['ai-feedback-long'], /^VM abc-3-a never came up: .*no agent was sent.* Its start failed \d+ times in a row, the last: vm:start p ABC-3 A: vm:start: limactl list failed\./);
+    assert.ok(l.f.lines.some(x => /^steps ABC-3 A build → blocked .*\(its VM abc-3-a never came up\)$/.test(x)), l.f.lines.join('\n'));
+    assert.ok(!l.f.lines.some(x => x.includes('judged as it stands') || x === DISPATCH_WAIT), l.f.lines.join('\n'));
   } finally {
+    await jobs();
     l.f.ctx.stopAgents();
   }
 });

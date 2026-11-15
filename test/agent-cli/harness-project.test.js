@@ -190,7 +190,9 @@ test('a ticket of any other project: the preamble names its code location ({proj
   assert.ok(scope.includes('Its code is /repos/example/: every code change belongs there and nowhere else.'), scope);
   assert.ok(scope.includes(`The harness that runs you, at ${harnessFolder} on the host, is read-only context`), scope);
   // ASS-182 AC3: the harness's data, the ticket's folder among it, changes only through agent.sh — never "beyond the ticket's folder".
-  assert.ok(scope.includes(`The harness's data folder for p — its project.json, sprints and reports — is ${join(f.dir, 'projects', 'p')}: read it, and the ticket's folder ${join(f.dir, 'projects', 'p', 'work', 'ABC-3')}, as you need; change either only through the agent.sh commands you are given, the content on stdin.`), scope);
+  assert.ok(scope.includes(`The harness's data folder for p — its project.json, sprints and reports — is ${join(f.dir, 'projects', 'p')}: read it, and the ticket's folder ${join(f.dir, 'projects', 'p', 'work', 'ABC-3')}, as you need; change either only through the agent.sh commands you are given, each run as a Bash call of its own — agent.sh and its arguments alone on the line — its content given the way "Where you are" says.`), scope);
+  // ASS-463: not "the content on stdin" — host agents redirected into agent.sh, which ran it sandboxed.
+  assert.ok(!scope.includes('the content on stdin'), scope);
   assert.doesNotMatch(scope, /beyond the ticket's folder/);
   assert.doesNotMatch(scope, /changing the harness itself/);
 });

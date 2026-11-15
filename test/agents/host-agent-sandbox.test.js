@@ -16,6 +16,15 @@
 // excludedCommands patterns, a bare command only, as the harness has seen it
 // behave (ABC-1770) — not Claude Code's own matcher. Skipped where
 // sandbox-exec cannot run (not macOS, or already inside a sandbox).
+//
+// ASS-463: claude-rules.js now states Claude Code 2.1.325's matcher as read
+// from its bundled source (every command on the line covered; never a cd, a
+// shell or a wrapper; a heredoc, $(…) or a variable carried between commands
+// sandboxed), and the settings carry the PreToolUse guard (agent-sh-guard.js),
+// run here for real as the hook command the settings name: the lines host
+// agents actually typed on 2026-11-15 run sandboxed and fail, the guard
+// refuses each before it runs and names the bare call, and that bare call —
+// assignments:status-update and assignments:approve among them — writes.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFile, execFileSync } from 'node:child_process';
@@ -24,6 +33,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { confineHostAgent } from '../../src/agents/confinement.js';
 import { runsUnsandboxed, bare } from '../support/claude-rules.js';
+import { guard } from '../../src/agents/agent-sh-guard.js';
 import { fixture } from '../agent-cli/harness-fixture.js';
 import { fakeForge } from '../support/fake-forge.js';
 
@@ -51,13 +61,28 @@ function seatbelt(settings, cwd) {
 (deny file-write* ${subpaths([...fs.denyWrite, ...edits(settings.permissions.deny)])})`;
 }
 
-// asHostAgent(settings, line, { cwd, env }) — runs the command line as the confined agent's Bash tool would: outside
-// the sandbox when the settings exclude it (runsUnsandboxed), else under sandbox-exec with the settings' profile.
-// { sandboxed, code, stdout, stderr }.
-function asHostAgent(settings, line, { cwd, env }) {
+// asHostAgent(settings, line, { cwd, env }, { guarded }) — runs the command line as the confined agent's Bash tool
+// would: outside the sandbox when the settings exclude it (runsUnsandboxed), else under sandbox-exec with the
+// settings' profile. { sandboxed, code, stdout, stderr }. guarded: the settings' PreToolUse hook (agent-sh-guard.js)
+// first — a line it refuses never runs: { denied: <its reason> }.
+async function asHostAgent(settings, line, { cwd, env }, { guarded = false } = {}) {
+  if (guarded) {
+    const denied = await hook(settings, { tool_name: 'Bash', tool_input: { command: line }, cwd });
+    if (denied) return { denied: denied.hookSpecificOutput.permissionDecisionReason };
+  }
   const sandboxed = !runsUnsandboxed(settings, line);
   const [file, args] = sandboxed ? [SANDBOX_EXEC, ['-p', seatbelt(settings, cwd), '/bin/bash', '-c', line]] : ['/bin/bash', ['-c', line]];
   return new Promise(resolve => execFile(file, args, { cwd, env }, (error, stdout, stderr) => resolve({ sandboxed, code: error ? error.code : 0, stdout, stderr })));
+}
+
+// hook(settings, input) — runs the settings' PreToolUse Bash hook command as Claude Code would (a shell command, the
+// hook input JSON on stdin): its JSON output, or null when it printed nothing (the call goes on).
+function hook(settings, input) {
+  const [entry] = settings.hooks.PreToolUse.filter(h => h.matcher === 'Bash');
+  return new Promise((resolve, reject) => {
+    const child = execFile('/bin/sh', ['-c', entry.hooks[0].command], (error, stdout) => (error ? reject(error) : resolve(stdout.trim() ? JSON.parse(stdout) : null)));
+    child.stdin.end(JSON.stringify({ hook_event_name: 'PreToolUse', ...input }));
+  });
 }
 
 // A temp harness data folder (harness-fixture.js: project p, ABC-3's variation A), with p's golden image defined and
@@ -81,7 +106,7 @@ function harness() {
   // The agent's own temp folder, where it stages each command's content.
   const staging = realpathSync(mkdtempSync(join(tmpdir(), 'agent-staging-')));
   const stage = (name, content) => { const file = join(staging, name); writeFileSync(file, content); return file; };
-  return { data, projects, work, golden, env, cwd, settings: JSON.parse(readFileSync(settings, 'utf8')), stage };
+  return { data, projects, work, golden, env, cwd, settings: JSON.parse(readFileSync(settings, 'utf8')), stage, staging };
 }
 
 const sprintOf = h => JSON.parse(readFileSync(join(h.projects, 'p', 'sprints', 'sprint-10', 'sprint.json'), 'utf8'));
@@ -159,4 +184,110 @@ test('ASS-428 AC3: the sandbox profile made from the settings refuses any write 
   assert.match(r.stderr, /Operation not permitted/);
   assert.ok(!existsSync(inData));
   assert.equal(readFileSync(inTemp, 'utf8'), 'y\n');
+});
+
+// ASS-463 — what Classify and Troubleshoot on Host typed on 2026-11-15 (the project's names put generic), each refused
+// by the sandbox: the status update chained to the next step, the approval chained to `echo exit=$?`, the change-log
+// entry's heredoc and its work:append in one Bash call, the path in a shell variable. And variations agents produce.
+const AS_TYPED = (file, stagingDir) => [
+  `${AGENT} assignments:status-update Daredevil "Classifying: image (amd64 pg)"; f=$(python3 -c "print('')" 2>/dev/null); ls ${stagingDir} | grep ^c`,
+  `${AGENT} assignments:status-update Daredevil "reading qa block cause"; python3 -c "print(1)"`,
+  `${AGENT} assignments:approve Daredevil; echo exit=$?`,
+  `f="${stagingDir}/entry.md"; cat > "$f" <<'EOF'\n### Classify (Daredevil)\nClass: project.\nEOF\n${AGENT} work:append p ABC-3 A change-log.md "$f"; echo exit=$?`,
+  `f=${stagingDir}/entry.md; cat > $f <<'EOF'\n### Classify\nEOF\n${AGENT} work:append p ABC-3 A change-log.md $f`,
+  `cd ${stagingDir} && ${AGENT} work:append p ABC-3 A change-log.md ${file}`,
+  `${AGENT} work:append p ABC-3 A change-log.md ${file} 2>&1`,
+  `${AGENT} work:append p ABC-3 A change-log.md ${file} && echo ok`,
+  `cat ${file} | ${AGENT} work:append p ABC-3 A change-log.md`,
+  `${AGENT} work:append p ABC-3 A change-log.md < ${file}`,
+  `env X=1 ${AGENT} work:append p ABC-3 A change-log.md ${file}`,
+  `bash ${AGENT} work:append p ABC-3 A change-log.md ${file}`,
+];
+
+test('ASS-463 AC2: each agent.sh line host agents typed on 2026-11-15, and the variations they produce, runs sandboxed — and the guard refuses it before it runs, naming the bare call', () => {
+  const h = harness();
+  const file = h.stage('entry.md', '- entry\n');
+  for (const line of AS_TYPED(file, h.staging)) {
+    assert.equal(runsUnsandboxed(h.settings, line), false, line);
+    const refused = guard(line, { root: ROOT, cwd: h.cwd });
+    assert.ok(refused, `the guard lets through: ${line}`);
+    assert.match(refused.reason, /would run sandboxed/);
+    assert.match(refused.reason, /Bash call of its own/);
+  }
+  // The bare call each names is one the exclusion matches.
+  const named = line => guard(line, { root: ROOT, cwd: h.cwd }).reason.split('\n').filter(l => l.startsWith(`  ${AGENT} `)).map(l => l.trim());
+  assert.deepEqual(named(AS_TYPED(file, h.staging)[0]), [`${AGENT} assignments:status-update Daredevil 'Classifying: image (amd64 pg)'`]);
+  assert.deepEqual(named(AS_TYPED(file, h.staging)[2]), [`${AGENT} assignments:approve Daredevil`]);
+  assert.deepEqual(named(AS_TYPED(file, h.staging)[5]), [`${AGENT} work:append p ABC-3 A change-log.md ${file}`]);
+  assert.deepEqual(named(AS_TYPED(file, h.staging)[6]), [`${AGENT} work:append p ABC-3 A change-log.md ${file}`]);
+  for (const line of [0, 2, 5, 6].flatMap(i => named(AS_TYPED(file, h.staging)[i]))) {
+    assert.equal(runsUnsandboxed(h.settings, line), true, line);
+    assert.equal(guard(line, { root: ROOT, cwd: h.cwd }), null, line);
+  }
+  assert.match(guard(AS_TYPED(file, h.staging)[3], { root: ROOT, cwd: h.cwd }).reason, /write the content first to a temp file of your own .* then pass that file's absolute path itself/);
+});
+
+test('ASS-463 AC2: the guard lets the bare call through, and every line that names no harness agent.sh call (reading it, grep for it, a heredoc that only mentions it); a relative path to the harness\'s agent.sh is refused, and the exclusion has no relative pattern', () => {
+  const h = harness();
+  const file = h.stage('entry.md', '- entry\n');
+  for (const line of [`${AGENT} work:append p ABC-3 A change-log.md ${file}`, `${AGENT}    assignments:status-update Daredevil "a | b; c > d"`, `${join(ROOT, 'off-board.sh')} ticket:view ASS-1`, `${AGENT} assignments:status-update Daredevil --from ${file}`]) {
+    assert.equal(guard(line, { root: ROOT, cwd: h.cwd }), null, line);
+    assert.equal(runsUnsandboxed(h.settings, line), true, line);
+  }
+  for (const line of [`grep -n agent.sh ${ROOT}/src/agent-cli/work/append.sh | head`, `ls -la ${AGENT}`, `cat ${AGENT}`, `cat > ${file} <<'EOF'\n${AGENT} work:append p ABC-3 A change-log.md x\nEOF`, `/elsewhere/agent.sh run`, 'echo hi; ls'])
+    assert.equal(guard(line, { root: ROOT, cwd: h.cwd }), null, line);
+  const relative = join('..', '..', '..', 'agent.sh');   // from data/projects/p to the harness root's
+  const refused = guard(`${relative} work:append p ABC-3 A change-log.md ${file}`, { root: ROOT, cwd: join(ROOT, 'data', 'projects', 'p') });
+  assert.match(refused.reason, new RegExp(`a path other than ${AGENT.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`));
+  assert.ok(h.settings.sandbox.excludedCommands.filter(p => /agent\.sh|off-board\.sh/.test(p)).every(p => p.startsWith('/')));
+});
+
+test('ASS-463 AC2: the generated settings run the guard as their PreToolUse Bash hook, and the hook command refuses a chained agent.sh line and passes a bare one', async () => {
+  const h = harness();
+  assert.equal(h.settings.hooks.PreToolUse.length, 1);
+  assert.equal(h.settings.hooks.PreToolUse[0].matcher, 'Bash');
+  assert.match(h.settings.hooks.PreToolUse[0].hooks[0].command, /agent-sh-guard\.js/);
+  const out = await hook(h.settings, { tool_name: 'Bash', tool_input: { command: `cd /tmp && ${AGENT} assignments:approve Daredevil` }, cwd: h.cwd });
+  assert.equal(out.hookSpecificOutput.hookEventName, 'PreToolUse');
+  assert.equal(out.hookSpecificOutput.permissionDecision, 'deny');
+  assert.match(out.hookSpecificOutput.permissionDecisionReason, new RegExp(`\\n  ${AGENT.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} assignments:approve Daredevil\\n`));
+  assert.equal(await hook(h.settings, { tool_name: 'Bash', tool_input: { command: `${AGENT} assignments:approve Daredevil` }, cwd: h.cwd }), null);
+  assert.equal(await hook(h.settings, { tool_name: 'Read', tool_input: { file_path: '/x' }, cwd: h.cwd }), null);
+});
+
+const assignment = (h, name) => JSON.parse(readFileSync(join(h.data, 'assignments.json'), 'utf8')).assignments.find(a => a['agent-name'] === name);
+
+test('ASS-463 AC3: assignments:status-update from a host agent — the update as an argument or --from a staged file, a bare call: it runs outside the sandbox and writes data/assignments.json; chained to the next step, as typed on 2026-11-15, it runs sandboxed and the write is refused', { skip: !sandboxRuns && 'sandbox-exec cannot run here' }, async () => {
+  const h = harness();
+  const chained = await asHostAgent(h.settings, `${AGENT} assignments:status-update Daredevil "reading qa block cause"; echo next`, h);
+  assert.equal(chained.sandboxed, true);
+  assert.match(chained.stderr, /Operation not permitted/);
+  assert.equal(assignment(h, 'Daredevil')['ai-status-update-short'], null, 'nothing written');
+  const denied = await asHostAgent(h.settings, `${AGENT} assignments:status-update Daredevil "reading qa block cause"; echo next`, h, { guarded: true });
+  assert.match(denied.denied, /would run sandboxed/);
+
+  const arg = await asHostAgent(h.settings, `${AGENT} assignments:status-update Daredevil "reading qa block cause"`, h, { guarded: true });
+  assert.equal(arg.sandboxed, false);
+  assert.equal(arg.code, 0, arg.stderr);
+  assert.equal(assignment(h, 'Daredevil')['ai-status-update-short'], 'reading qa block cause');
+
+  const file = h.stage('update.txt', 'it\'s "$HOME" and `x`\n');
+  const fromFile = await asHostAgent(h.settings, `${AGENT} assignments:status-update Daredevil --from ${file}`, h, { guarded: true });
+  assert.equal(fromFile.sandboxed, false);
+  assert.equal(fromFile.code, 0, fromFile.stderr);
+  assert.equal(assignment(h, 'Daredevil')['ai-status-update-short'], 'it\'s "$HOME" and `x`');
+
+  const approve = await asHostAgent(h.settings, `${AGENT} assignments:approve Daredevil`, h, { guarded: true });
+  assert.equal(approve.sandboxed, false);
+  assert.equal(approve.code, 0, approve.stderr);
+});
+
+test('ASS-463 AC3: agent-interaction:send-message from a host agent, the message --from a staged file, a bare call: it runs outside the sandbox and queues the message in the other agent\'s inbox under data/agents', { skip: !sandboxRuns && 'sandbox-exec cannot run here' }, async () => {
+  const h = harness();
+  const file = h.stage('message.txt', 'Use the helper in "lib/x.js" — not $(this).\n');
+  const sent = await asHostAgent(h.settings, `${AGENT} agent-interaction:send-message Spock Daredevil --from ${file}`, h, { guarded: true });
+  assert.equal(sent.sandboxed, false);
+  assert.equal(sent.code, 0, sent.stderr);
+  const inbox = execFileSync('/bin/sh', ['-c', `cat ${join(h.data, 'agents')}/Daredevil-*/inbox.jsonl`], { encoding: 'utf8' });
+  assert.ok(inbox.includes('not $(this).'), inbox);
 });

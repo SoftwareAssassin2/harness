@@ -225,6 +225,17 @@ test('agent-interaction:send-message queues the message to the other agent with 
   assert.deepEqual([f.inbox('Daredevil').length, f.inbox('Spock')], [1, []]);
 });
 
+// ASS-463: the message from a file, so a host agent's call stays one bare command line whatever the message holds.
+test('ASS-463: agent-interaction:send-message --from <file> queues that file\'s text; a missing file fails, queuing nothing', async () => {
+  const f = fixture();
+  const file = join(f.dir, 'message.txt');
+  writeFileSync(file, 'Use "lib/x.js" — not $(this).\n');
+  await f.agent('agent-interaction:send-message', 'Spock', 'Daredevil', '--from', file);
+  assert.ok(f.inbox('Daredevil')[0].endsWith('\nUse "lib/x.js" — not $(this).'), f.inbox('Daredevil')[0]);
+  await fails(f.agent('agent-interaction:send-message', 'Spock', 'Daredevil', '--from', join(f.dir, 'none.txt')), /no file/);
+  assert.equal(f.inbox('Daredevil').length, 1);
+});
+
 test('agent:dispatch fills any <placeholder>=<value> given after the name — control passes the agent\'s folder and, in the dev container, where that folder is', async () => {
   const f = fixture();
   writeFileSync(join(f.dir, 'prompts', 'generate-solution', 'prompt.txt'), 'Work in {folder}; the app runs in {dev-container}, where this folder is {dev-container-folder}.\n');

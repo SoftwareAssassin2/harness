@@ -1091,6 +1091,42 @@ sandboxRefusedFeedback`, set by `finish.js` when the agent finishes and by
 `steps.js` when its Blocked run ends). `test/agents/host-agent-sandbox.test.js`
 runs each command both ways under the generated settings.
 
+### Every agent.sh call its own Bash call, and the guard (ASS-463)
+
+After ASS-428 went live, host agents' writes were still refused, and the
+tickets went to the operator ("sandbox refused assignments:status-update",
+"sandbox refused work:append"). What they typed: the status update chained to
+the next step (`agent.sh assignments:status-update <agent> "…"; python3 …`),
+the approval chained to `; echo exit=$?`, and the change-log entry's heredoc
+and its `work:append … "$f"` in one Bash call. None is a bare line. Three
+causes: Classify's and Troubleshoot on Host's prompts have no `{where}`, so
+those agents never saw control's rule (agent:dispatch now puts `where=` first
+in a prompt without `{where}`); the `{code-scope}` preamble said "the content
+on stdin"; and the status/approve wording in the wrappers, the check-in
+(`ask-for-status-update`, supervise.js's nag) and the message and shut-down
+prompts never said to run the command alone. They all say so now:
+`test/workflow/confinement.test.js` fills each of them as the engines name
+them and checks every agent.sh call in them against the sandbox rule.
+
+How Claude Code matches `excludedCommands` (2.1.325, read from its bundled
+matcher, `test/support/claude-rules.js runsUnsandboxed`): it splits the line
+at `;` `&&` `||` `|` `&` and newlines and runs it outside the sandbox only
+when every command on it is covered by a pattern; a `cd`, a shell, `env`,
+`xargs`, `nohup` and the like are never covered, and a heredoc, `$(…)`,
+backquote or a variable set in one command and used in another keeps the
+whole line sandboxed. So no exclusion can make `cd <dir> && agent.sh …`
+work, and a relative `./agent.sh *` pattern would follow the agent's `cd` to a
+folder it can write. Instead the host-agent settings run a PreToolUse hook on
+Bash, `src/agents/agent-sh-guard.js`: a line that calls the harness's
+agent.sh or off-board.sh but is not that call alone, by its absolute path, is
+refused before it runs, and the reason names the bare call to run as its own
+Bash call (and, for content, to write a temp file first). It only refuses;
+lines that do not call agent.sh pass.
+
+`assignments:status-update` and `agent-interaction:send-message` take their
+text as the argument or `--from <file>`, for text with quotes, `$` or
+backquotes; a VM gives the argument (the forwarder's `max-args`).
+
 ## VMs by state, and the disk limit (ASS-75)
 
 - **Running and stopping.** A step's `vm` says whether the variation's VM runs
@@ -1279,15 +1315,23 @@ runs each command both ways under the generated settings.
   on its variation the refresh waits until it is idle, logged once. A VM recording no stamps (not started since ASS-350), or
   an item only one side stamps, is not compared until its next start records
   them.
-- **Waiting for a VM (ASS-133, ASS-159, ASS-348).** A step that runs in the
-  VM is not judged while control has not yet seen the VM up (Running and
-  reached by a probe), for at most 2 minutes; then it is judged as it stands.
-  An agent is never dispatched into it until it is up, however long that
+- **Waiting for a VM (ASS-133, ASS-159, ASS-348, ASS-387, ASS-464).** A step
+  that runs in the VM is not judged while control has not yet seen the VM up
+  (Running and reached by a probe). While control is starting it — the start
+  queued behind the project's other VM jobs, under way, or failed and to be
+  tried again after its backoff — that wait lasts until the VM is up, logged
+  "waits for its VM <vm>'s start, queued/under way N s"; only a VM nobody is
+  starting (the disk hold on) is waited for at most 2 minutes, then the step
+  is judged as it stands, logged "not running after 2m and not starting
+  (<why>): judged as it stands". So a ticket Resolved from Blocked for Human
+  onto Build, its VM stopped there, has Build wait for the VM's start however
+  long it takes. An agent is never dispatched into it until it is up, however long that
   takes: one sent in before `vm:start` has written its credentials fails "Not
   logged in" and spends a try. Its wait is logged once. A VM still not up
   after `vm-up-ceiling-seconds` in harness.json (default 1800: 30 minutes)
   sends its variation to Blocked, or to Blocked for Human from Blocked. The
-  variation's ai-feedback names the VM and says it never came up.
+  variation's ai-feedback names the VM, says it never came up, and gives its
+  last failed start, if any.
 - **On a workstation instead (ASS-435).** A variation placed on a GCP
   workstation (below, "A ticket variation on a GCP workstation") has no VM:
   none of this section's starts, stops, deletes or memory holds apply to it;

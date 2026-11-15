@@ -201,7 +201,9 @@ fill_ticket() {
 # itself on a ticket of the harness project (harness-project.bash; a fix
 # ticket's home project), else the project's code alone, the harness read-only
 # context; and the harness's data, the ticket's folder among it, changed only
-# through agent.sh (ASS-182). Nothing for a record without a ticket, or with no code location.
+# through agent.sh (ASS-182), each call a Bash call of its own, the content as
+# {where} says — by file on the host, on stdin in a VM (ASS-463: "the content
+# on stdin" here had host agents redirect into agent.sh, sandboxing it). Nothing for a record without a ticket, or with no code location.
 code_scope() {
   local ticket project
   ticket="$(jq -r '.["work-item"] // ""' <<< "$1")"
@@ -214,7 +216,7 @@ code_scope() {
   else
     printf '%s' "Whose code: {ticket} is {project}'s ticket, not the harness's. Its code is {project-code-folder}: every code change belongs there and nowhere else. The harness that runs you, at {harness-folder} on the host, is read-only context: read it if it helps, never change it."
   fi
-  printf '%s' " The harness's data folder for {project} — its project.json, sprints and reports — is {project-folder}: read it, and the ticket's folder {ticket-folder}, as you need; change either only through the agent.sh commands you are given, the content on stdin."
+  printf '%s' " The harness's data folder for {project} — its project.json, sprints and reports — is {project-folder}: read it, and the ticket's folder {ticket-folder}, as you need; change either only through the agent.sh commands you are given, each run as a Bash call of its own — agent.sh and its arguments alone on the line — its content given the way \"Where you are\" says."
 }
 
 approve_command() { echo "$agent_sh assignments:approve $1"; }

@@ -58,8 +58,11 @@ log="$(cd "$projects/$project" && pwd -P)/golden-image-tests.log"
 # Epoch seconds, the same in every zone: a unique name, not a day or a time shown (ASS-294).
 vm="test-$project-$(date +%s)"
 trap 'limactl delete -f "$vm" >/dev/null 2>&1 || true' EXIT
-limactl clone --tty=false "$golden" "$vm" --set ".mounts = [] | .ssh.localPort = $(free_port)" >/dev/null 2>&1 \
+lock_ports vm:test-repos || exit 1   # until the clone's lima.yaml pins its port (vm.bash free_port, ASS-467)
+ssh="$(free_port)" || exit 1
+limactl clone --tty=false "$golden" "$vm" --set ".mounts = [] | .ssh.localPort = $ssh" >/dev/null 2>&1 \
   || { echo "vm:test-repos: could not clone $golden into $vm" >&2; exit 1; }
+unlock_ports
 machine_start vm:test-repos "$vm" none $zot
 echo "vm:test-repos: $vm cloned from $golden and started; log: $log" >&2
 

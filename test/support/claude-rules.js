@@ -38,37 +38,73 @@ export function bashWriteAllowed(settings, path, { cwd, tmp }) {
   return !denied.some(p => under(path, p)) && allowed.some(p => under(path, p));
 }
 
-// Bash (sandbox, excludedCommands): a command line runs outside the sandbox
-// only when an excludedCommands pattern covers it — the whole command, or
-// `<start> *`: that start, then a space and anything — and it is one bare
-// command: no pipe, redirect, heredoc, `&&`, `||`, `;`, `&`, `$(…)`,
-// backquote or second line outside quotes. That is what the harness has seen
-// (ASS-182, ASS-298, ASS-428: ABC-1770's `agent.sh vm:golden-write …
-// < provision.sh` and its `work:append` ran sandboxed and their writes under
-// data/ failed with EPERM, while bare agent.sh calls wrote there). Claude
-// Code's own matcher is not run here: this states the rule the harness's
-// prompts follow.
-const OPERATOR = /[|&;<>`\n]|\$\(/;
-// bare(line) — the line is one simple command: no operator outside quotes, no substitution in double quotes either.
-export function bare(line) {
-  let quote = null;
+// Bash (sandbox, excludedCommands): which command lines run outside the
+// sandbox — Claude Code 2.1.325's own rule, read from the matcher bundled in
+// its binary for ASS-463 (its shouldUseSandbox → excluded-command check), and
+// not run here. It parses the line into simple commands, split at ; && || |
+// & and newlines; a line it cannot split safely (a heredoc, $(…), backquote,
+// a control character) runs sandboxed. Then it runs the line outside only
+// when EVERY command on it is covered: not a variable set in one command and
+// used in another; a first word that is no cd/chdir/pushd/popd, no shell or
+// eval/source/exec, no wrapper (env, sudo, xargs, nohup, time, timeout, nice,
+// command, builtin…) and holds no $, quote, backslash or glob; and an
+// excludedCommands pattern matching it — `<prefix> *` the prefix alone or
+// followed by a space and anything, whitespace runs taken as one space;
+// otherwise the whole command. A redirect is modelled as sandboxed: the
+// harness saw ABC-1770's `agent.sh vm:golden-write … < provision.sh` refused
+// (ASS-428) and the 2026-11-15 `agent.sh … ; echo exit=$?` and `f=…; cat >
+// "$f" <<'EOF' … EOF` + `agent.sh work:append … "$f"` lines too (ASS-463),
+// while bare agent.sh calls wrote under data/. Run for real once for ASS-463
+// (claude -p 2.1.325 under the generated settings, a temp data folder): the
+// bare `agent.sh assignments:status-update …` wrote, `…; echo next` and
+// `cd /tmp && …` ran sandboxed and failed with "Operation not permitted";
+// with the guard hook (agent-sh-guard.js) both were refused before running
+// and the agent ran the bare calls it named, which wrote.
+const NEVER = new Set(['cd', 'chdir', 'pushd', 'popd', 'eval', 'source', '.', 'exec', 'fc', 'coproc', 'trap', 'alias', 'let', 'bash', 'sh', 'zsh', 'dash', 'ksh', 'fish',
+  'env', 'sudo', 'doas', 'su', 'xargs', 'sed', 'awk', 'gawk', 'nohup', 'time', 'timeout', 'nice', 'stdbuf', 'command', 'builtin', 'noglob', 'nocorrect', 'watch', 'flock', 'script', 'setsid', 'chroot']);
+// commands(line) — the line's simple commands, or null where it is not split safely (or redirects).
+export function commands(line) {
+  const out = [];
+  let current = '', quote = null;
   for (let i = 0; i < line.length; i++) {
-    const c = line[i];
-    if (quote === "'") { if (c === quote) quote = null; continue; }
-    if (quote === '"') {   // substitution still runs inside double quotes
-      if (c === '"') quote = null; else if (c === '\\') i++; else if (c === '`' || (c === '$' && line[i + 1] === '(')) return false;
+    const c = line[i], next = line[i + 1];
+    if (/[\x00-\x08\x0B-\x1F\x7F]/.test(c)) return null;
+    if (quote === "'") { current += c; if (c === "'") quote = null; continue; }
+    if (quote === '"') {
+      current += c;
+      if (c === '\\') { current += next ?? ''; i++; } else if (c === '"') quote = null; else if (c === '`' || (c === '$' && next === '(')) return null;
       continue;
     }
-    if (c === "'" || c === '"') { quote = c; continue; }
-    if (c === '\\') { i++; continue; }
-    if (OPERATOR.test(c) || (c === '$' && line[i + 1] === '(')) return false;
+    if (c === "'" || c === '"') { quote = c; current += c; continue; }
+    if (c === '\\') { current += c + (next ?? ''); i++; continue; }
+    if (c === '`' || (c === '$' && next === '(') || c === '<' || c === '>' || c === '(' || c === ')') return null;
+    if (c === ';' || c === '\n' || c === '|' || c === '&') {
+      if (current.trim()) out.push(current.trim());
+      current = '';
+      if ((c === '|' || c === '&') && next === c) i++;
+      continue;
+    }
+    current += c;
   }
-  return quote === null;
+  if (quote) return null;
+  if (current.trim()) out.push(current.trim());
+  return out;
 }
+// bare(line) — the line is one simple command Claude Code splits safely.
+export const bare = line => commands(line)?.length === 1;
+const setIn = command => /^([A-Za-z_][A-Za-z0-9_]*)=/.exec(command)?.[1];
+const covered = (command, patterns) => {
+  const first = command.split(/[ \t]+/, 1)[0];
+  if (NEVER.has(first.split('/').pop()) || /[$`\\'"*?[]/.test(first) || /^[^ \t\n/=[]*=/.test(first)) return false;
+  const c = command.replace(/[ \t]+/g, ' ');
+  return patterns.some(p => (p.endsWith(' *') ? c === p.slice(0, -2) || c.startsWith(p.slice(0, -1)) : c === p));
+};
 
 // runsUnsandboxed(settings, line) — whether the sandbox lets the command line run outside it.
 export function runsUnsandboxed(settings, line) {
-  const command = line.trim();
-  if (!bare(command)) return false;
-  return (settings.sandbox?.excludedCommands ?? []).some(p => (p.endsWith(' *') ? command.startsWith(p.slice(0, -1)) : command === p));
+  const parts = commands(line.trim());
+  if (!parts?.length) return false;
+  const set = parts.map(setIn);
+  if (set.some((name, i) => name && parts.some((p, j) => j !== i && new RegExp(`\\$\\{?${name}\\b`).test(p)))) return false;
+  return parts.every(p => covered(p, settings.sandbox?.excludedCommands ?? []));
 }

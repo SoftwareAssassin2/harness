@@ -11,7 +11,8 @@ set -euo pipefail
 # in its variation's VM, ASS-74, ticket-folder and agent-sh, which then stand
 # for the record's own everywhere, the templates' commands too; and
 # project-code-folder, the ticket's code — the wrappers' {code-scope}
-# preamble names it, ASS-106; and, for a harness run about another project's
+# preamble names it, ASS-106; where, the agent's {where}, put first in a
+# prompt that has no {where} of its own, ASS-463; and, for a harness run about another project's
 # ticket, ticket-project, whose folder is then the ticket's, ASS-204), wrapped in the engine's receive-dispatch template for the
 # pen-holder or receive-pair-dispatch for a paired agent ({agent-names} the
 # others on the assignment, {pen-holder}; {step}, {model} and {date}, the
@@ -38,7 +39,13 @@ field() { jq -r --arg key "$1" '.[$key] // ""' <<< "$record"; }
 prompt="$(field prompt)"
 [[ "$prompt" =~ ^[A-Za-z0-9_-]+$ && -f "$prompts_dir/$prompt/prompt.txt" ]] || { echo "agent:dispatch: no prompt $prompt for $name" >&2; exit 1; }
 
-assignment="$(fill_ticket "$(cat "$prompts_dir/$prompt/prompt.txt")" "$record")"
+assignment="$(cat "$prompts_dir/$prompt/prompt.txt")"
+# Control's where= reaches every agent (ASS-463): a prompt without {where} gets it first. Classify and
+# Troubleshoot on Host had none, so a confined host agent never read how to call agent.sh unsandboxed.
+for pair in "$@"; do
+  if [[ "$pair" == where=* && "$assignment" != *"{where}"* && -n "${pair#where=}" ]]; then assignment="{where}"$'\n\n'"$assignment"; fi
+done
+assignment="$(fill_ticket "$assignment" "$record")"
 assignment="$(fill "$assignment" problem "$(field problem)")"
 for pair in "$@"; do assignment="$(fill "$assignment" "${pair%%=*}" "${pair#*=}")"; done
 

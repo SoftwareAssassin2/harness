@@ -29,7 +29,8 @@ zot_bin="${ZOT_DIR:-$HOME/Library/Application Support/harness/zot}/zot-$zot_vers
 # The namespace locally built images are pushed under in zot. It starts with a
 # digit, which no GCP project id can, so the sync's content rule ("[a-z]*/**")
 # never sends it upstream and a pushed image is never replaced by Artifact
-# Registry's image of the same name.
+# Registry's image of the same name. registry:arm64-build (ASS-466) puts its
+# multi-arch variants there too.
 local_namespace=0local
 
 # registry_upstream <command> <project> — the registry zot's sync fetches from,

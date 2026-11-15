@@ -14,7 +14,8 @@ set -euo pipefail
 #   /mnt/ticket (ASS-182: a VM agent writes the ticket's files only through
 #   its agent.sh, the content on stdin) — not the harness repo, not the home
 #   folder, no scratch mount — and an ssh port
-#   of its own (ssh.localPort, for vm:start's sandbox). When it cannot fit
+#   of its own (ssh.localPort, for vm:start's sandbox): free now, and pinned
+#   by no other instance under LIMA_HOME (vm.bash free_port, ASS-467). When it cannot fit
 #   without deleting a VM that runs or whose variation is in flight, nothing
 #   is deleted or cloned: it exits 3, the reason on stderr and, on stdout, as
 #   { ai-feedback-short, ai-feedback-long } — the Setup group sends the
@@ -99,9 +100,11 @@ clone() {
   [[ -z "$why" ]] || echo "vm:create: $vm $why; it is recreated from $golden, and whatever was only on its old disk is lost" >&2
   record_vm "$project" "$vm" "$key" "$variation" Stopped
   mounts="$(jq -nc --arg f "$(ticket_folder vm:create "$project" "$key")" '[{ location: $f, mountPoint: "/mnt/ticket", writable: false }]')"
-  ssh="$(free_port)"
+  lock_ports vm:create || exit 1   # until the clone's lima.yaml pins it (ASS-467)
+  ssh="$(free_port)" || exit 1
   limactl clone --tty=false "$golden" "$vm" --set ".mounts = $mounts | .ssh.localPort = $ssh" >/dev/null 2>&1 \
     || { echo "vm:create: could not clone $golden into $vm" >&2; exit 1; }
+  unlock_ports
   cp "$(dir_of "$golden")/golden-image.json" "$(dir_of "$vm")/" 2>/dev/null || true
   "$agent" ticket:set-vm "$project" "$key" "$variation" "$vm" "" $recreated >/dev/null
   created=true

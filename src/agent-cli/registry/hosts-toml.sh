@@ -10,7 +10,9 @@ source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/registry.bash"
 # /etc/containerd/certs.d, as proven in a clone of a golden image. No image
 # name changes, no credential in the VM: Docker asks the first host, then the
 # next on a 404, and Artifact Registry itself only when zot fails.
-#  1. <zot>/v2/0local — images pushed by registry:push, so a local rebuild wins.
+#  1. <zot>/v2/0local — images pushed by registry:push, so a local rebuild wins,
+#     and registry:arm64-build's multi-arch variants (ASS-466), so an amd64-only
+#     image pulls as arm64.
 #  2. <zot> — the cache, which fetches from Artifact Registry with the Mac's login.
 # "referrers" is needed: without it Docker 29 asks Artifact Registry for each
 # image's referrers, unauthenticated, and the pull fails.

@@ -8,7 +8,10 @@
 // registry:refresh-credentials (the Mac's gcloud login, whose tokens last
 // about an hour; nothing for a project with no upstream) and registry:sweep
 // run; either failing — gcloud logged out, say — is logged, and the next half
-// hour tries again. The work runs beside
+// hour tries again. A project declaring arm64-images (ASS-466) then gets
+// registry:arm64-build, which builds a variant only for a pinned tag that has
+// none (a new tag in images.txt, or one swept away) and says each failure,
+// logged like the others: the image stays amd64 in VMs until a pass builds it. The work runs beside
 // the tick, one job per project at a time, so registry:up's wait for zot (up
 // to 30 seconds) never holds up the agents. Control leaves zot running when
 // it exits: VMs, other controls and the next control use it as it is.
@@ -30,13 +33,13 @@ export function superviseRegistries(ctx, state) {
     if (port == null) continue;
     const r = registries.get(project.id) ?? { job: null, failures: 0, until: 0 };
     registries.set(project.id, r);
-    r.job ??= keep(ctx, project.id, port, r).finally(() => { r.job = null; });
+    r.job ??= keep(ctx, project.id, port, r, project.json['arm64-images']?.length > 0).finally(() => { r.job = null; });
   }
 }
 
 // One project's pass: zot started when it does not answer (not while backed
 // off), then the half-hourly maintenance when due.
-async function keep(ctx, id, port, r) {
+async function keep(ctx, id, port, r, arm64) {
   const now = ctx.now().getTime();
   if (await answers(port)) r.failures = 0;
   else if (now >= r.until) {
@@ -51,5 +54,5 @@ async function keep(ctx, id, port, r) {
     }
   }
   if (!timerDue(ctx.memory, `${id}/registry-maintain`, MAINTAIN_SECONDS, now, 0)) return;
-  for (const command of ['registry:refresh-credentials', 'registry:sweep']) await ctx.attempt(PHASE, `${id} ${command}`, () => ctx.cli([command, id]));
+  for (const command of ['registry:refresh-credentials', 'registry:sweep', ...(arm64 ? ['registry:arm64-build'] : [])]) await ctx.attempt(PHASE, `${id} ${command}`, () => ctx.cli([command, id]));
 }

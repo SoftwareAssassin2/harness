@@ -108,16 +108,19 @@ export function whereText(ctx, folder, container, containerFolder, repository) {
   return `Where you are: this checkout is ${folder} on the host.${one} Edit and read files here; ${join(ctx.root, 'agent.sh')} runs here. The application, its dependencies (node_modules), tooling and database live in the dev container ${container}, where this same folder is ${containerFolder}. Run every app, test, pnpm or database command inside the container, never on the host:\n  docker exec -w ${containerFolder} ${container} <command>`;
 }
 
-// confinedWhereText(folder, code) — the {where} of a confined host agent's
+// confinedWhereText(folder, code, agentSh) — the {where} of a confined host agent's
 // prompt (ASS-108): where it runs, that the project's code is to read, and
 // (ASS-182) that it writes only temp — the harness's data only through
 // agent.sh, as a bare command line, its content by file (ASS-428: the
 // sandbox's agent.sh exclusion, confinement.js, matches only a bare call; a
 // pipe, redirect or heredoc runs it sandboxed and its write under data/ is
 // refused), and a write refused all the same named in its output's
-// sandbox-refused (withSandboxRefused).
-export const confinedWhereText = (folder, code) =>
-  `Where you are: ${folder}, the harness's folder for this project, on the host. The project's code is ${code}: read it, never write it. You may write only temp; Claude Code refuses any other write. Change the harness's data — this folder, a ticket's folder, the backlog and sprints — only through the agent.sh commands you are given, each run as a bare command line: agent.sh and its arguments, nothing else on the line. Give a command its content by file, never on stdin: write it first to a temp file of your own, unique to this run, in a call of its own (your Write tool, or one Bash call that does nothing else), then pass that file's absolute path as the command's file argument (in place of "-", or last). Never a pipe, redirect, heredoc, &&, ; or $(…) on an agent.sh line: it then runs sandboxed, and its write is refused ("Operation not permitted"). Should an agent.sh write be refused all the same, say so: name each such command in sandbox-refused in your final JSON (work:append, say), not a vague "writes are blocked".`;
+// sandbox-refused (withSandboxRefused). ASS-463: each its own Bash call — no
+// cd before it, nothing chained after it, the content file written in an
+// earlier call — status updates and approval too, by the agent.sh path given
+// (agentSh); the guard (agent-sh-guard.js) refuses any other line that calls it.
+export const confinedWhereText = (folder, code, agentSh = 'agent.sh') =>
+  `Where you are: ${folder}, the harness's folder for this project, on the host. The project's code is ${code}: read it, never write it. You may write only temp; Claude Code refuses any other write. Change the harness's data — this folder, a ticket's folder, the backlog and sprints — only through the agent.sh commands you are given, status updates and approval among them, each run as a Bash call of its own and a bare command line: ${agentSh} by that absolute path and its arguments, nothing else on the line — no cd before it, nothing chained after it (not even ; echo $?), no 2>&1. Give a command its content by file, never on stdin: write it first to a temp file of your own, unique to this run, in a call of its own (your Write tool, or one Bash call that does nothing else), then, in the next call, pass that file's absolute path itself — not a shell variable — as the command's file argument (in place of "-", or last). A status update or message (assignments:status-update, agent-interaction:send-message) with quotes, $ or backquotes in it goes the same way: --from <file> in place of the text. Never a pipe, redirect, heredoc, cd, &&, ; or $(…) on an agent.sh line: it then runs sandboxed, and its write is refused ("Operation not permitted"); Claude Code refuses such a line before it runs and names the bare call to run instead. Should an agent.sh write be refused all the same, say so: name each such command in sandbox-refused in your final JSON (work:append, say), not a vague "writes are blocked".`;
 
 // withSandboxRefused(schema) — a confined host agent's output schema (ASS-428
 // AC4) with sandbox-refused: the agent.sh commands whose write the sandbox
@@ -372,7 +375,7 @@ async function startFor(ctx, state, project, record, vm, repository, step, payme
   // On a workstation (ASS-435) the ticket's read-only copy, brought up to date first (AC4), and the setup's agent.sh.
   const vmArgs = vm ? [`ticket-folder=${machinePaths(vm).ticket}`, 'agent-sh=agent.sh'] : [];
   if (onWorkstation(vm)) await syncTicketCopy(vm.slice('workstation:'.length), ticketFolderOf(ctx, vm), { env: ctx.env });
-  await ctx.cli(['agent:dispatch', name, `folder=${folder}`, `where=${vm ? vmWhereText(project, vm, repository) : confined ? confinedWhereText(folder, codeAt) : whereText(ctx, folder, container, containerFolder, repository)}`, `project-code-folder=${codeFolder(project, vm, codeAt, repository)}`, ...vmArgs, ...aboutArgs]);
+  await ctx.cli(['agent:dispatch', name, `folder=${folder}`, `where=${vm ? vmWhereText(project, vm, repository) : confined ? confinedWhereText(folder, codeAt, join(ctx.root, 'agent.sh')) : whereText(ctx, folder, container, containerFolder, repository)}`, `project-code-folder=${codeFolder(project, vm, codeAt, repository)}`, ...vmArgs, ...aboutArgs]);
   const live = { name, project: project.id, record, repository, startedAt: ctx.now(), result: null, exited: null, cost: 0, tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, sessionRecorded: false, rateLimit: null, pending: null, pendingThisTurn: false,
     vm: vm ?? null, payment, kind: payment ? (payment === 'api' ? 'anthropic' : 'claude') : vm ? credentialKindOf(ctx, project.id, vm) : kindOfAccount(account) };
   live.agent = startAgent({

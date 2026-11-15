@@ -2,7 +2,7 @@
 // first on the PATH of the env it returns (`env`, process.env by default,
 // extended), its calls logged. script(name, body) adds a fake to the Mac's
 // PATH, inVm(name, body) one to the VM's (what a `limactl shell` runs finds
-// first); instance(name, status) makes a Lima instance; root is the folder
+// first); instance(name, status, sshPort) makes a Lima instance (its lima.yaml pinning sshPort, when given); root is the folder
 // standing in for the VMs' root; unreachable(name) marks an instance's sshd
 // as not yet accepting connections (ASS-169); calls() lists what limactl was
 // asked, as { vm, workdir, argv } (shell) or { argv }.
@@ -22,6 +22,7 @@ export function fakeVm(base = process.env) {
     mkdirSync(join(instances, name), { recursive: true });
     writeFileSync(join(instances, name, 'status'), status);
     writeFileSync(join(instances, name, 'ssh-port'), sshPort);
+    if (sshPort !== '0') writeFileSync(join(instances, name, 'lima.yaml'), `vmType: vz\nssh:\n  localPort: ${sshPort}\n`);   // pinned, as Lima keeps it (ASS-467)
   };
   const unreachable = name => writeFileSync(join(instances, name, 'unreachable'), '');
   return { dir, bin, root, instances, env, calls, script: fake(bin), inVm: fake(vmBin), instance, unreachable };

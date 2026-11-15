@@ -225,6 +225,83 @@ why. Agents there act as the workstation's user: on the test workstation,
 with the owner's git identity and GitLab key (see
 `engines/grouped-engines.md`, "A ticket variation on a GCP workstation").
 
+## Arm64 builds of images a project publishes for amd64 only
+
+Ticket VMs are arm64 (Lima `vz` on Apple Silicon). An image a project pins
+but publishes for amd64 only runs in them emulated, far slower: a database
+gate replaying hundreds of migrations may not finish within a step. The
+harness can build an arm64 variant of such an image itself and serve it from
+the project's zot under the unchanged pinned name, so VMs run it natively.
+
+Declare each image in `data/projects/<project>/project.json`. `image` is its
+name in the golden image's `images.txt`, without the tag: the tag is always
+the one `images.txt` pins, so bumping the pin there builds the new tag. Give
+exactly one way to build it:
+
+```json
+"arm64-images": [
+  {
+    "image": "us-central1-docker.pkg.dev/example-gcp-project/containers/example-db",
+    "build": {
+      "repository": "example-db-images",
+      "ref": "v{tag}",
+      "context": "db",
+      "dockerfile": "Dockerfile",
+      "args": { "PG_VERSION": "{tag}" }
+    }
+  },
+  {
+    "image": "us-central1-docker.pkg.dev/example-gcp-project/containers/example-tools",
+    "base-swap": { "base": "debian:13-slim", "copy": ["/opt/tools"] }
+  }
+]
+```
+
+- `build`: the image's own Dockerfile. `repository` is the name of one of
+  the project's `repositories`, or any git URL the Mac's git can clone;
+  `ref` a branch, tag or commit; `context` the folder in it (default `.`),
+  `dockerfile` the file in the context (default `Dockerfile`), `args` its
+  build args. `{tag}` in `ref` or an arg is the pinned tag.
+- `base-swap`: for an image that is a thin layer over a multi-arch base. The
+  base's arm64 image with each `copy` path taken from the pinned amd64 image;
+  its command and environment are the base's.
+
+A declaration naming an image `images.txt` does not pin by tag, or giving no
+build source, is refused with every problem named
+(`./agent.sh registry:arm64-status <project>` shows them).
+
+Control runs `./agent.sh registry:arm64-build <project>` every 30 minutes,
+and `vm:build-golden` runs it before it builds. It builds only a pinned tag
+that has no variant yet (a new tag, or one the registry sweep removed), for
+`linux/arm64` with the Mac's Docker (Docker Desktop must be running and able
+to pull the base images, and for a base swap the pinned image:
+`gcloud auth configure-docker <upstream host>`). It pushes into the project's
+zot, as `0local/<path>:<tag>`, a multi-arch index of the upstream amd64 image
+(its manifest unchanged) and the arm64 build. A VM's Docker asks `0local`
+first (`registry:hosts-toml`), gets the index and takes its `linux/arm64`
+image; without a variant it falls through to zot's cache and gets amd64, as
+before. A failed build is reported per image with the end of its build log
+(`<registry storage>/arm64/<path>.log`, in control's log too) and never
+blocks a pull: the image stays amd64 until a later run builds it. The golden
+image counts each variant among its inputs, so a new one makes it stale and
+the next build bakes it in; until then each VM pulls it at its next start.
+
+`./agent.sh registry:arm64-status <project>` prints, per declared image, the
+pinned `tag`, `arm64` (true when the variant is served; false when VMs get
+amd64; null when the zot is not answering), `built-at`, `digest` (the arm64
+image's) and the last build `log`.
+
+**Dropping a ticket's CI-only stopgap.** When a gate was made CI-only for a
+ticket because its image ran emulated (a note in the ticket's execution
+plan), declare the image, then wait until `registry:arm64-status` shows
+`"arm64": true` for the tag the project pins. Remove the note from the
+execution plan so the gate runs in the VM again; the VM has the arm64 image
+from its next start (or at once with `docker pull <image>:<tag>` in it), and
+`docker image inspect --format '{{.Architecture}}' <image>:<tag>` there says
+`arm64`. If the project later publishes a multi-arch image itself, drop the
+declaration: `registry:arm64-build` reports such an image as `upstream` and
+builds nothing.
+
 ## Exporting a project
 
 To share a project you run with a teammate:

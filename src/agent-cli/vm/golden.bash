@@ -11,7 +11,8 @@
 # The inputs (see build-golden.sh): "<sha256>  definition/<path>" for every
 # file of the definition, "<sha256>  shared/<path>" for every shared step,
 # "repository <url>" for every repository, then the registry mirror's
-# hosts.toml, its lines as they are (one empty line when none). Their sha256
+# hosts.toml, its lines as they are (one empty line when none), then "arm64
+# <image>:<tag> <digest>" for each arm64 variant built (golden_arm64). Their sha256
 # is the image's hash; the label records it and, from ASS-149 on, the lines
 # (inputs: the text split at each newline, the last aside — joined with
 # newlines plus one more, they hash to it), so a stale image can say what
@@ -53,7 +54,18 @@ golden_definition() {
 # GCP workstation instead (workstation:setup, ASS-434), never in a VM.
 golden_files() { (cd "$1" && find . -type f ! -name '.*' ! -name tests.json ! -name run-test.sh ! -name ci-checks.json ! -name workstation-tools.sh -print0 | LC_ALL=C sort -z | xargs -0 shasum -a 256 | sed "s|  \./|  $2/|"); }
 
-golden_inputs() { golden_files "$folder" definition; golden_files "$shared" shared; printf 'repository %s\n' "${repos[@]}"; printf '%s\n' "$hosts_toml"; }
+golden_inputs() { golden_files "$folder" definition; golden_files "$shared" shared; printf 'repository %s\n' "${repos[@]}"; printf '%s\n' "$hosts_toml"; golden_arm64; }
+
+# golden_arm64 — "arm64 <image>:<tag> <digest>" for each image of images.txt
+# that registry:arm64-build made an arm64 variant of at that tag (ASS-466: its
+# <storage>/arm64.json), so a new variant makes the image stale and the next
+# build bakes it in; nothing when none (an image's hash as before).
+golden_arm64() {
+  [[ -n "$images" && -n "${storage-}" && -f "$storage/arm64.json" ]] || return 0
+  printf '%s\n' "$images" | jq -Rr --slurpfile s "$storage/arm64.json" '
+    (capture("^\\s*(?<i>[^@\\s]+):(?<t>[A-Za-z0-9_][A-Za-z0-9._-]*)\\s*$") // empty) as $p
+    | ($s[0][$p.i] // empty) | select(.tag == $p.t) | "arm64 \($p.i):\($p.t) \(.digest)"'
+}
 
 golden_label() { echo "$LIMA_HOME/golden-$1/golden-image.json"; }
 

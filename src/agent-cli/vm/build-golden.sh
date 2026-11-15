@@ -16,7 +16,9 @@ set -euo pipefail
 #   template.yaml  the Lima template
 #   provision.sh   the project's setup, run in the VM as its user (passwordless sudo)
 #   images.txt     images to bake in, one per line (# comments), pulled through
-#                  the project's zot, which must be running (registry:up)
+#                  the project's zot, which must be running (registry:up); an
+#                  arm64 variant of one (project.json arm64-images, ASS-466) is
+#                  built first and baked in instead of its amd64 image
 #   warm.sh        optional, run last: warms caches with the cloned repositories;
 #                  stdin as repositories.sh's
 #   tests.json     with run-test.sh, every repository's automated tests, for
@@ -81,6 +83,17 @@ golden_definition vm:build-golden "$project"
 golden="golden-$project" build="golden-$project-build"
 lock_on 7 "$projects/$project/golden-build.lock" vm:build-golden 1 2>/dev/null \
   || { echo "vm:build-golden: $golden is being built already ($projects/$project/golden-build.lock is held); not starting another" >&2; exit 1; }
+# ASS-466: the arm64 variants the project declares (registry:arm64-build)
+# brought up to date first, so the images step bakes them in (a VM's pull of
+# such an image through zot gets the arm64 one) and the hash counts them
+# (golden.bash golden_arm64); one that cannot be built is said, and baked as
+# amd64 — it never stops the build.
+if [[ -n "$images" ]] && jq -e '(.["arm64-images"] // []) | length > 0' "$projects/$project/project.json" >/dev/null 2>&1; then
+  arm64_built="$("$agent" registry:arm64-build "$project")" \
+    || echo "vm:build-golden: an arm64 variant could not be built (above); that image is baked as amd64" >&2
+  jq -r '.[]? | "vm:build-golden: arm64 variant of \(.image):\(.tag): \(.result)"' <<<"${arm64_built:-[]}" 2>/dev/null || true
+  golden_definition vm:build-golden "$project"
+fi
 label="$(golden_label "$project")"
 if [[ -f "$label" && "$(jq -r .hash "$label")" == "$hash" ]]; then
   echo "vm:build-golden: $golden is current (inputs ${hash:0:12}); nothing built"

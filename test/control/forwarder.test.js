@@ -359,7 +359,7 @@ test('ASS-298 AC2: a VM\'s work:write with a 5th argument — a path or "-" — 
 });
 
 // ASS-428: work:append, automated-tests:record, ticket:set-demo-plan and merge-request:create-fix took the same trailing file path, capped the same way.
-const CAPPED = { 'work:write': 4, 'work:append': 4, 'automated-tests:record': 3, 'ticket:set-demo-plan': 3, 'merge-request:create-fix': 6 };
+const CAPPED = { 'work:write': 4, 'work:append': 4, 'automated-tests:record': 3, 'ticket:set-demo-plan': 3, 'merge-request:create-fix': 6, 'assignments:status-update': 2, 'agent-interaction:send-message': 3 };
 test('ASS-298 AC2, ASS-428: the allowlist caps work:write at 4 arguments — { project: 0, ticket: 1, variation: 2, max-args: 4 } — and each other command with a trailing file path at its stdin form\'s count; no other rule carries max-args', () => {
   const allowlist = JSON.parse(readFileSync(join(ROOT, 'src', 'control', 'forwarder-allowlist.json'), 'utf8'));
   assert.deepEqual(allowlist['work:write'], { project: 0, ticket: 1, variation: 2, 'max-args': 4 });
@@ -379,4 +379,13 @@ test('ASS-428: a VM\'s work:append, automated-tests:record, ticket:set-demo-plan
     assert.match(r.refuse ?? '', new RegExp(`${argv[0]} takes at most ${argv.length - 1} arguments`), argv[0]);
   }
   assert.match(may('ticket:add-merge-request', 'harness', 'ASS-74', 'A', '/mnt/ticket/mr.json').refuse ?? '', /stdin|"-"/, 'a path in place of "-" is refused');
+});
+
+test('ASS-463: a VM\'s assignments:status-update or agent-interaction:send-message given --from <file> is refused (max-args: a Mac path never reaches the host); the text as the argument passes', () => {
+  const f = fixture(), { tokens, assignments } = bindings(f.dir);
+  const may = (...argv) => authorize(tokens, assignments, 'harness-token', argv);
+  assert.ok(may('assignments:status-update', 'Hulk', 'reading the plan').argv);
+  assert.match(may('assignments:status-update', 'Hulk', '--from', '/etc/hosts').refuse ?? '', /assignments:status-update takes at most 2 arguments/);
+  assert.ok(may('agent-interaction:send-message', 'Hulk', 'Thor', 'hi').argv);
+  assert.match(may('agent-interaction:send-message', 'Hulk', 'Thor', '--from', '/etc/hosts').refuse ?? '', /agent-interaction:send-message takes at most 3 arguments/);
 });

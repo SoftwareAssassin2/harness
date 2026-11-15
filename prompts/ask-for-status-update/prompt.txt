@@ -1,10 +1,10 @@
-It has been {minutes} minutes since your last update. You are expected to provide an update every 5 minutes. Quickly submit a status update, then continue with your work.
+It has been {minutes} minutes since your last update. You are expected to provide an update every 5 minutes. Quickly submit a status update — its own Bash call, nothing else on the line — then continue with your work in the next call.
 
 Give a status update of 34 characters or fewer every 5 minutes with:
 {status-update-command}
-Longer updates are rejected.
+Longer updates are rejected. Run it as a Bash call of its own, the command alone on the line — nothing before or after it (no cd, ;, &&, | or 2>&1), never chained to your next step — or it runs sandboxed and is refused. An update with quotes, $ or backquotes: write it to a temp file of your own first and give --from <file> in place of the update (on the host; in a VM, the update itself).
 
-When you approve the final result, run:
+When you approve the final result, run, alone on the line as its own Bash call:
 {approve-command}
 
 If you have not yet approved the final result, you should be working on your assignment directly — or indirectly, if you are paired and don't hold the pen: stay in touch with the pen-holder and collaborate to solve the problem properly.

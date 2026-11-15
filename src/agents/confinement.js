@@ -32,8 +32,15 @@ const SETTINGS = 'host-agent-settings.json';
 // proxy takes WebFetch domain rules as its allow-list, `*` every host); and
 // every tool of its project's memory, the hindsight MCP server (ASS-62).
 const TOOLS = ['Bash', 'Read', 'Glob', 'Grep', 'LS', 'WebFetch', 'WebFetch(domain:*)', 'WebSearch', 'TodoWrite', 'Agent', 'Task', 'Skill', 'mcp__hindsight'];
-// Commands run outside the sandbox, matched on the whole command line (every
-// command in it): the harness's own CLIs, which write its data, the VMs and
+// Commands run outside the sandbox, matched on the whole command line: Claude
+// Code (2.1.325, its bundled matcher read for ASS-463) splits the line at ;
+// && || | & and newlines and runs it unsandboxed only when every command on
+// it is covered by a pattern — `<prefix> *` the prefix alone or followed by a
+// space — and never when one is a cd, a shell, a wrapper (env, nohup,
+// xargs, sudo…), or the line has a heredoc, $(…), backquote or a variable set
+// in one command and used in another (test/support/claude-rules.js
+// runsUnsandboxed models it). By absolute path only: a relative `./agent.sh`
+// pattern would follow the agent's cd to a folder it can write. The harness's own CLIs, which write its data, the VMs and
 // the projects' ticket systems by design and are not the agent's to change;
 // the forge and ticket CLIs, Go programs that fail TLS under macOS's sandbox
 // (sandboxing.md, "Go-based CLIs fail TLS verification"); docker's read-only
@@ -43,6 +50,14 @@ const TOOLS = ['Bash', 'Read', 'Glob', 'Grep', 'LS', 'WebFetch', 'WebFetch(domai
 // write through anything runs it sandboxed, and its write is refused.
 const EXCLUDED = root => [`${root}/agent.sh *`, `${root}/off-board.sh *`, 'gh *', 'glab *', 'acli *',
   'docker ps *', 'docker inspect *', 'docker images *', 'docker logs *', 'docker compose ps *', 'docker compose ls *'];
+
+// The PreToolUse hook (ASS-463): agent-sh-guard.js refuses, before it runs,
+// a Bash line that calls agent.sh or off-board.sh but is not that call alone
+// — a cd before it, a command chained after it, a heredoc in the same call —
+// which would run sandboxed and fail its write deep inside agent.sh, and tells
+// the agent the bare call to run as its own Bash call. It only refuses.
+const quote = s => `'${s.replace(/'/g, `'\\''`)}'`;
+const GUARD = root => `${quote(process.execPath)} ${quote(join(root, 'src', 'agents', 'agent-sh-guard.js'))} ${quote(root)}`;
 
 // hostAgentSettings(root, data) — the settings object for the host agents of
 // the harness at root, its data folder `data` (dataDir(root) unless given).
@@ -60,6 +75,7 @@ export function hostAgentSettings(root, data = dataDir(root)) {
       excludedCommands: EXCLUDED(root),
       filesystem: { allowWrite: writable, denyWrite: denied },
     },
+    hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: GUARD(root) }] }] },
   };
 }
 

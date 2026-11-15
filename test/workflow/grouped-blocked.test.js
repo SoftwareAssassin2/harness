@@ -730,9 +730,9 @@ test('ASS-390 AC2: Repair Project\'s prompts — a separate small merge request 
 test('ASS-390 AC3: every Blocked prompt has its agent append to the change log, through work:append, what it found, what it changed (files, commands, merge requests) and why', () => {
   for (const p of BLOCKED_PROMPTS) {
     const t = promptText(p);
-    // ASS-428: a host prompt's agent gives the entry by a staged file's path, a bare call; a VM's on stdin.
+    // ASS-428: a host prompt's agent gives the entry by a staged file's path, a bare call (ASS-463: its own Bash call); a VM's on stdin.
     if (HOST_BLOCKED.has(p)) {
-      assert.ok(t.includes('{ticket-folder}/change-log-{variation}.md (through `{agent-sh} work:append {project} {ticket} {variation} change-log.md <entry-file>`, <entry-file> the absolute path of a temp file of your own holding the entry, a bare call: never a pipe, redirect or heredoc into agent.sh'), p);
+      assert.ok(t.includes('{ticket-folder}/change-log-{variation}.md (through `{agent-sh} work:append {project} {ticket} {variation} change-log.md <entry-file>`, <entry-file> the absolute path of a temp file of your own holding the entry, a bare call, its own Bash call, the file written in an earlier one: never a heredoc, pipe, redirect, cd, `;` or `&&` on the agent.sh line, nor a shell variable for the path'), p);
       assert.match(t, /change-log\.md <entry-file>`[^()]*\) what you (found|checked and found)/, p);
     } else {
       assert.ok(t.includes('{ticket-folder}/change-log-{variation}.md (through `{agent-sh} work:append {project} {ticket} {variation} change-log.md`, the entry on stdin)'), p);

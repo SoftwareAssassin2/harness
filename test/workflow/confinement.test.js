@@ -5,13 +5,16 @@
 // engines' code steps — root-cause analysis among them — run in the VM.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readdirSync, readFileSync, existsSync, realpathSync } from 'node:fs';
+import { readdirSync, readFileSync, existsSync, realpathSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { worksOnCode, confinedWhereText, vmWhereText } from '../../src/control/dispatch.js';
 import { runsInVm } from '../../src/control/vm.js';
 import { hostAgentSettings } from '../../src/agents/confinement.js';
-import { editAllowed, bashWriteAllowed } from '../support/claude-rules.js';
+import { editAllowed, bashWriteAllowed, runsUnsandboxed } from '../support/claude-rules.js';
+import { guard } from '../../src/agents/agent-sh-guard.js';
+import { fixture } from '../agent-cli/harness-fixture.js';
+import { copyFileSync } from 'node:fs';
 import { engineDir, engineNames } from '../support/engine-walk.js';
 
 const ROOT = join(import.meta.dirname, '..', '..');
@@ -75,9 +78,9 @@ test('ASS-182 AC3: a confined host agent is told it writes only temp and the har
   assert.match(host, /You may write only temp; Claude Code refuses any other write\./);
   assert.match(host, /only through the agent\.sh commands you are given/);
   // ASS-428: by file, a bare call — the old "on stdin from a heredoc or a temp file (< file)" ran it sandboxed.
-  assert.match(host, /each run as a bare command line/);
+  assert.match(host, /each run as a Bash call of its own and a bare command line/);
   assert.match(host, /Give a command its content by file, never on stdin/);
-  assert.match(host, /Never a pipe, redirect, heredoc, &&, ; or \$\(…\) on an agent\.sh line/);
+  assert.match(host, /Never a pipe, redirect, heredoc, cd, &&, ; or \$\(…\) on an agent\.sh line/);
   assert.match(host, /name each such command in sandbox-refused/);
   assert.doesNotMatch(host, /<<'EOF'|< file/);
   assert.doesNotMatch(host, /data folders/);
@@ -131,4 +134,65 @@ test('ASS-428 AC2: every host prompt gives agent.sh its content by a staged file
     return found;
   }));
   assert.deepEqual(problems, []);
+});
+
+// ASS-463 AC4: the messages control and other agents send an agent while it works — its dispatch's wrapper, the status
+// check-in (supervise.js's nag: agent:request-status-update), a paired agent's message, the shut-down — as each engine
+// names them, filled for a host agent exactly as agent.sh fills them: every agent.sh call in them is one the host-agent
+// sandbox runs outside it (claude-rules.js runsUnsandboxed, the generated settings) and the guard lets through, each
+// is told to run as a Bash call of its own, and none takes its content on stdin but in a VM.
+const ROLES = { 'receive-dispatch-prompt': ['receive-dispatch', f => f.agent('agent:dispatch', 'Daredevil'), 'Daredevil'],
+  'receive-pair-dispatch-prompt': ['receive-pair-dispatch', f => f.agent('agent:dispatch', 'Spock'), 'Spock'],
+  'receive-message-prompt': ['receive-message-from-another-agent', f => f.agent('agent-interaction:send-message', 'Spock', 'Daredevil', 'the message'), 'Daredevil'],
+  'ask-for-status-update-prompt': ['ask-for-status-update', f => f.agent('agent:request-status-update', 'Daredevil'), 'Daredevil'],
+  'shut-down-prompt': ['shut-down', f => f.agent('agent:shut-down', 'Daredevil'), 'Daredevil'] };
+// agentShCalls(text, agentSh) — each agent.sh call in the text: a line that is one, or one in backquotes; placeholders filled.
+const agentShCalls = (text, agentSh) => [...text.split('\n').filter(l => l.trim().startsWith(agentSh)).map(l => l.trim()),
+  ...[...text.matchAll(/`([^`]*agent\.sh[^`]*)`/g)].map(m => m[1])]
+  .map(c => c.replace(/"<[^>]+>"/g, '"some text"').replace(/<to-agent>/g, 'Daredevil').replace(/<[a-z-]+-file>/g, '/tmp/x.md'));
+test('ASS-463 AC4: every status, check-in, message and shut-down prompt an engine sends a host agent gives agent.sh calls the sandbox runs outside it, each to be run as a Bash call of its own, none on stdin but in a VM', async () => {
+  const settings = hostAgentSettings(ROOT);
+  const agentSh = join(realpathSync(ROOT), 'agent.sh');
+  const templates = Object.fromEntries(Object.keys(ROLES).map(key => [key, new Set([ROLES[key][0], ...Object.values(engines).map(e => e[key]).filter(Boolean)])]));
+  assert.ok(templates['receive-dispatch-prompt'].has('receive-dispatch-grouped'), [...templates['receive-dispatch-prompt']].join());
+  const problems = [];
+  let checked = 0;
+  for (const [key, names] of Object.entries(templates)) {
+    for (const name of names) {
+      const f = fixture();
+      const [slot, send, to] = ROLES[key];
+      copyFileSync(join(ROOT, 'prompts', name, 'prompt.txt'), join(f.dir, 'prompts', slot, 'prompt.txt'));
+      await send(f);
+      const text = f.inbox(to).at(-1);
+      const calls = agentShCalls(text, agentSh);
+      if (key !== 'shut-down-prompt' && !calls.length) problems.push(`${name}: no agent.sh call found in ${text}`);
+      for (const call of calls) {
+        checked++;
+        if (!runsUnsandboxed(settings, call)) problems.push(`${name}: runs sandboxed: ${call}`);
+        if (guard(call, { root: realpathSync(ROOT) })) problems.push(`${name}: the guard refuses: ${call}`);
+      }
+      if (calls.length && !/Bash call of its own|own Bash call/.test(text)) problems.push(`${name}: never says to run agent.sh as a Bash call of its own`);
+      for (const line of text.split('\n')) if (/on stdin/.test(line) && !/in a VM/.test(line)) problems.push(`${name}: content on stdin: ${line}`);
+      if (/;\s*\{?(status-update|approve)-command/.test(readFileSync(join(ROOT, 'prompts', name, 'prompt.txt'), 'utf8'))) problems.push(`${name}: a command chained in the template`);
+    }
+  }
+  assert.ok(checked >= 10, String(checked));
+  assert.deepEqual(problems, []);
+  // The {code-scope} preamble every wrapper starts with no longer says "the content on stdin" (host agents redirected into agent.sh).
+  assert.doesNotMatch(readFileSync(join(ROOT, 'src', 'agent-cli', 'prompt.bash'), 'utf8'), /you are given, the content on stdin/);
+});
+
+// ASS-463 AC2: control's {where} reaches every agent — a prompt without its own {where} (Classify, Troubleshoot on
+// Host) gets it first — so a confined host agent always reads how to call agent.sh.
+test('ASS-463 AC2: agent:dispatch puts control\'s where= first in a prompt without {where}, and in place in one with it', async () => {
+  const f = fixture();
+  const where = confinedWhereText('/h/data/projects/p', '/code', `${ROOT}/agent.sh`);
+  const { stdout } = await f.agent('agent:dispatch', 'Daredevil', `where=${where}`);
+  assert.ok(stdout.includes(`${where}\n\nBuild ABC-3 variation A of p`), stdout);
+  assert.match(where, /each run as a Bash call of its own and a bare command line/);
+  assert.match(where, /no cd before it, nothing chained after it/);
+  writeFileSync(join(f.dir, 'prompts', 'generate-solution', 'prompt.txt'), 'Intro.\n{where}\nBuild.\n');
+  const placed = (await f.agent('agent:dispatch', 'Daredevil', `where=${where}`)).stdout;
+  assert.ok(placed.includes(`Intro.\n${where}\nBuild.`), placed);
+  assert.equal(placed.split(where).length, 2, 'once');
 });

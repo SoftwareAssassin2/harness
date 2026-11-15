@@ -17,7 +17,11 @@ set -euo pipefail
 #     none of this is in the VM (AC6). Started without a display
 #     (video.display none), whatever a demo left it with, or with one given
 #     --display (vz: a window onto its desktop on the Mac, the Demo action's,
-#     ASS-76). A VM running already is taken as it is.
+#     ASS-76). A VM running already is taken as it is. A stopped VM whose
+#     pinned ssh port another instance under LIMA_HOME pins too, or
+#     something on the Mac holds now, is re-pinned to a free port first,
+#     said on stderr (vm.bash ssh_repin, ASS-467), rather than failing to
+#     start.
 #     Under the project's VM lock (vm.bash lock_vms, ASS-75), so control's
 #     start and a step's never race; either way the start is recorded in the
 #     project's inventory (vms.json): the VM was accessed now.
@@ -82,6 +86,8 @@ memory="$(jq -r '.hindsight.port // empty' "$projects/$project/project.json")"
 
 lock_vms vm:start "$project"
 status="$(machine_status "$vm" 2>/dev/null)" || { echo "vm:start: no VM $vm; vm:create makes it" >&2; exit 1; }
+# ASS-467: a stopped VM whose pinned ssh port another instance pins, or something holds, gets a free one first (vm.bash ssh_repin).
+[[ "$status" != Stopped ]] || ssh_repin vm:start "$vm"
 [[ "$status" == Running ]] || machine_start vm:start "$vm" "$display" "$forwarder" $zot $memory
 record_vm "$project" "$vm" "$key" "$variation" Running
 unlock_vms

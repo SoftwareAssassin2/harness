@@ -17,9 +17,12 @@
 //   is none), <f>'s {{.Name}}, {{.Status}}, {{.SSHLocalPort}}, {{.Dir}} (the
 //   folder) and {{.Config.Video.Display}} (its `display`, none by default)
 //   filled; `edit --tty=false <vm> --set '.video.display = "<d>"'` writes
-//   <d> to `display`; `clone --tty=false <from> <to> --set <expr>` makes one, Stopped,
-//   with the expression in `set` and the ssh port it pins (exit 1 when <from>
-//   is missing); `start --tty=false <vm>` makes it Running, `stop` Stopped,
+//   <d> to `display`, and `--set '.ssh.localPort = <p>'` pins <p>; `clone
+//   --tty=false <from> <to> --set <expr>` makes one, Stopped, with the
+//   expression in `set` and the ssh port it pins (exit 1 when <from> is
+//   missing) — a pinned port in `ssh-port` and, as Lima has it, in the
+//   instance's lima.yaml (ssh.localPort, ASS-467); a list skips names
+//   starting . or _, as Lima does; `start --tty=false <vm>` makes it Running, `stop` Stopped,
 //   `delete -f` removes it; `copy -r <from> <to>` copies a file or folder,
 //   either side `<vm>:<path>`, the path under $FAKE_VM_ROOT (ASS-432; exit 1
 //   when the instance or the source is missing).
@@ -34,6 +37,11 @@ const instances = process.env.FAKE_LIMA_INSTANCES ?? '/nonexistent';
 const at = (vm, file) => join(instances, vm, file);
 const read = (vm, file) => readFileSync(at(vm, file), 'utf8').trim();
 const positional = args.slice(1).filter(a => !a.startsWith('-'));
+// pin(vm, port) — the ssh port it pins: `ssh-port`, and ssh.localPort in its lima.yaml (ASS-467), as Lima keeps it.
+const pin = (vm, port) => {
+  writeFileSync(at(vm, 'ssh-port'), String(port));
+  writeFileSync(at(vm, 'lima.yaml'), `vmType: vz\nssh:\n  localPort: ${port}\n  loadDotSSHPubKey: false\n`);
+};
 
 if (args[0] === 'shell') {
   let i = 1, workdir = null;
@@ -59,7 +67,7 @@ if (args[0] === 'shell') {
     const fields = name => ({ Name: name, Status: read(name, 'status'), SSHLocalPort: read(name, 'ssh-port'), Dir: join(instances, name), 'Config.Video.Display': existsSync(at(name, 'display')) ? read(name, 'display') : 'none' });
     const render = name => format.replace(/\{\{\.([\w.]+)\}\}/g, (_, field) => fields(name)[field] ?? '');
     if (vm === undefined) {
-      if (existsSync(instances)) for (const name of readdirSync(instances)) console.log(render(name));
+      if (existsSync(instances)) for (const name of readdirSync(instances)) if (!/^[._]/.test(name)) console.log(render(name));
     } else {
       if (!existsSync(join(instances, vm))) { console.error(`No instance matching ${vm} found.`); process.exit(1); }
       console.log(render(vm));
@@ -70,11 +78,13 @@ if (args[0] === 'shell') {
     mkdirSync(join(instances, to), { recursive: true });
     writeFileSync(at(to, 'status'), 'Stopped');
     writeFileSync(at(to, 'set'), expr);
-    writeFileSync(at(to, 'ssh-port'), /\.ssh\.localPort\s*=\s*(\d+)/.exec(expr)?.[1] ?? '0');
+    pin(to, /\.ssh\.localPort\s*=\s*(\d+)/.exec(expr)?.[1] ?? '0');
   } else if (command === 'edit') {
-    const display = /\.video\.display\s*=\s*"(\w+)"/.exec(args[args.indexOf('--set') + 1] ?? '');
-    if (!existsSync(join(instances, positional[0])) || !display) process.exit(1);
-    writeFileSync(at(positional[0], 'display'), display[1]);
+    const set = args[args.indexOf('--set') + 1] ?? '';
+    const display = /\.video\.display\s*=\s*"(\w+)"/.exec(set), port = /\.ssh\.localPort\s*=\s*(\d+)/.exec(set);
+    if (!existsSync(join(instances, positional[0])) || !(display || port)) process.exit(1);
+    if (display) writeFileSync(at(positional[0], 'display'), display[1]);
+    if (port) pin(positional[0], port[1]);
   } else if (command === 'start' || command === 'stop') {
     writeFileSync(at(positional[0], 'status'), command === 'start' ? 'Running' : 'Stopped');
   } else if (command === 'delete') {

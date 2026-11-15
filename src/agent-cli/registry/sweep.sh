@@ -14,7 +14,11 @@ source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../json-file.bash"
 # images, so the sweep reads zot's log — every manifest GET or HEAD that
 # succeeded — into <storage>/last-pulls.json ({ "<repo>@<tag or digest>": epoch
 # seconds }) and empties the log. An image never seen pulled counts from when
-# it was cached. Prints { size-bytes, max-bytes, deleted: ["<repo>@<digest>"] }.
+# it was cached. In 0local, a multi-arch index (registry:arm64-build's, ASS-466)
+# and the images it names go together, the index first: its size theirs, its
+# last pull its own; never one of its images alone, which would leave VMs an
+# index whose arm64 image is gone (an image another index names too stays).
+# Prints { size-bytes, max-bytes, deleted: ["<repo>@<digest>"] }.
 [[ $# -eq 1 ]] || { echo "usage: registry:sweep <project>" >&2; exit 1; }
 registry_config registry:sweep "$1"
 mkdir -p "$storage/images"
@@ -40,19 +44,41 @@ if (( size > max )); then
   # Every image as "<last pull> <size it names> <repo> <digest>", oldest first.
   while IFS= read -r index; do
     repo="${index#"$storage/images/"}" repo="${repo%/index.json}"
+    # In 0local, the images an index names (registry:arm64-build's multi-arch
+    # images), each with how many of the repository's indexes name it.
+    kids=""
+    if [[ "$repo" == "$local_namespace/"* ]]; then
+      kids="$(jq -r '.manifests[].digest' "$index" | while read -r digest; do
+          blob="$storage/images/$repo/blobs/sha256/${digest#sha256:}"
+          [[ -f "$blob" ]] && jq -r '.manifests[]?.digest' "$blob"
+        done | sort | uniq -c)"
+    fi
     jq -r '.manifests[] | "\(.digest) \(.annotations["org.opencontainers.image.ref.name"] // "")"' "$index" \
       | while read -r digest tag; do
           blob="$storage/images/$repo/blobs/sha256/${digest#sha256:}"
           [[ -f "$blob" ]] || continue
+          [[ "$kids" != *" $digest"* ]] || continue   # goes with its index
           last="$(jq -r --arg d "$repo@$digest" --arg t "$repo@$tag" '[.[$d], .[$t]] | map(select(.)) | max // empty' "$pulls")"
-          echo "${last:-$(date -r "$blob" +%s)} $(jq '[.config.size // 0, (.layers // [])[].size] | add' "$blob") $repo $digest"
+          size="$(jq '[.config.size // 0, (.layers // [])[].size] | add' "$blob")" with=()
+          if [[ -n "$kids" ]] && jq -e '.manifests' "$blob" >/dev/null 2>&1; then
+            # A 0local index: deleted with the images it alone names, which its size counts.
+            for child in $(jq -r '.manifests[].digest' "$blob"); do
+              file="$storage/images/$repo/blobs/sha256/${child#sha256:}"
+              [[ -f "$file" ]] || continue
+              size=$(( size + $(jq '[.config.size // 0, (.layers // [])[].size] | add' "$file") ))
+              if [[ "$(awk -v d="$child" '$2 == d { print $1 }' <<<"$kids")" == 1 ]]; then with+=("$child"); fi
+            done
+          fi
+          echo "${last:-$(date -r "$blob" +%s)} $size $repo $digest ${with[*]-}"
         done
   done < <(find "$storage/images" -mindepth 2 -name index.json -not -path '*/.sync/*') \
     | sort -n > "$storage/sweep.$$"
-  while read -r _ bytes repo digest; do
+  while read -r _ bytes repo digest with; do
     (( size > max )) || break
-    curl -fsS -o /dev/null -X DELETE "http://127.0.0.1:$port/v2/$repo/manifests/$digest"
-    deleted+=("$repo@$digest")
+    for digest in "$digest" $with; do
+      curl -fsS -o /dev/null -X DELETE "http://127.0.0.1:$port/v2/$repo/manifests/$digest"
+      deleted+=("$repo@$digest")
+    done
     size=$(( size - bytes ))
   done < "$storage/sweep.$$"
   rm -f "$storage/sweep.$$"
