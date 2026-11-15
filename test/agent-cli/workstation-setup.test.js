@@ -35,9 +35,19 @@ async function bareImage(extra = []) {
   return dir;
 }
 
-// Project p on workstation ada-dev, running, its forwarder on `forwarder`; tools its golden-image tools, and
-// installer the body of its golden-image/workstation-tools.sh (none when null). cli(...) runs agent.sh.
-function setup({ tools = [], installer = null, forwarder = 7787, env = {} } = {}) {
+// ASS-462: a golden-image folder whose workstation-tools.sh installs mytool from a file it shares with
+// provision.sh (no copy); mytool exits $MYTOOL_EXIT. provision.sh and template.yaml are Lima-only, never shipped.
+const SHARED = {
+  'gate.sh': 'install_gate() { printf \'#!/bin/bash\\nexit ${MYTOOL_EXIT:-0}\\n\' > "$HARNESS_TOOLS/mytool"; chmod 755 "$HARNESS_TOOLS/mytool"; ln -sf "$HARNESS_TOOLS/mytool" "$HARNESS_BIN/mytool"; }\n',
+  'provision.sh': '. "$(dirname "$0")/gate.sh"\ninstall_gate\n',
+  'template.yaml': 'images: []\n',
+};
+const SHARED_INSTALLER = '. "$(dirname "$0")/gate.sh"\ninstall_gate\n';
+
+// Project p on workstation ada-dev, running, its forwarder on `forwarder`; tools its golden-image tools,
+// installer the body of its golden-image/workstation-tools.sh (none when null), and files other files of its
+// golden-image folder (name, possibly with a subfolder, to content). cli(...) runs agent.sh.
+function setup({ tools = [], installer = null, files = {}, forwarder = 7787, env = {} } = {}) {
   const f = fixture(), w = fakeWorkstation(f.env);
   Object.assign(w.env, env);
   const pj = join(f.dir, 'projects', 'p', 'project.json'), hj = join(f.dir, 'harness.json');
@@ -47,6 +57,10 @@ function setup({ tools = [], installer = null, forwarder = 7787, env = {} } = {}
   writeFileSync(pj, JSON.stringify(p));
   mkdirSync(join(f.dir, 'projects', 'p', 'golden-image'), { recursive: true });
   if (installer !== null) writeFileSync(join(f.dir, 'projects', 'p', 'golden-image', 'workstation-tools.sh'), installer);
+  for (const [name, content] of Object.entries(files)) {
+    mkdirSync(dirname(join(f.dir, 'projects', 'p', 'golden-image', name)), { recursive: true });
+    writeFileSync(join(f.dir, 'projects', 'p', 'golden-image', name), content);
+  }
   const h = JSON.parse(readFileSync(hj, 'utf8'));
   h['forwarder-port'] = forwarder;
   writeFileSync(hj, JSON.stringify(h));
@@ -297,4 +311,101 @@ test('rsync missing (example-config\'s image has none): installed with passwordl
   assert.equal((await s.result('workstation:setup', 'p', ID)).code, 1);
   assert.deepEqual(s.entry().setup.failed.map(x => x.what), ['rsync']);
   assert.match(s.entry().setup.error, /^rsync: not installed, and there is no passwordless sudo to install it/);
+});
+
+// ASS-462: machine_run, as in_project runs a ci-check (code.bash), in a variation's folder on the workstation.
+const MACHINE_BASH = join(import.meta.dirname, '..', '..', 'src', 'agent-cli', 'machine.bash');
+const machineRun = (s, cmd) => {
+  const folder = s.at('harness', 'ABC-3-A');
+  mkdirSync(folder, { recursive: true });
+  return run('bash', ['-c', `source "${MACHINE_BASH}" && machine_run --workdir / "workstation:p:${ID}:${folder}" -- bash -c '${cmd}'`], { env: s.w.env })
+    .then(r => ({ code: 0, out: r.stdout, err: r.stderr }), e => ({ code: e.code, out: e.stdout, err: e.stderr }));
+};
+
+test('ASS-462 AC1, AC2: a tool workstation-tools.sh installs from a file it shares with provision.sh is installed, on PATH in a harness session, and a bare run of it through machine_run exits its own status, never 127', async () => {
+  assert.ok(!SHARED_INSTALLER.includes('install_gate()'), 'workstation-tools.sh sources the shared file, holds no copy of it');
+  const s = setup({ tools: ['mytool'], installer: SHARED_INSTALLER, files: { ...SHARED, '.hidden': 'secret\n', 'sub/x.sh': 'true\n' } });
+  writeFileSync(join(dirname(s.w.system(ID)), 'path'), await bareImage(['jq']));
+  await s.cli('workstation:connect', 'p', ID);
+  const before = await machineRun(s, 'mytool');
+  assert.equal(before.code, 127, `not there before setup: ${before.err}`);
+
+  const out = JSON.parse((await s.cli('workstation:setup', 'p', ID)).stdout);
+  assert.equal(out.setup.ok, true, out.setup.error);
+  assert.ok(out.setup.did.some(d => /^ran the project's workstation-tools\.sh for mytool/.test(d)), out.setup.did.join('; '));
+  const found = await s.cli('workstation:ssh', 'p', ID, 'bash', '-c', '. ~/harness/env; command -v mytool');
+  assert.equal(found.stdout.trim(), s.at('harness', 'bin', 'mytool'));
+
+  // Shipped beside the installer in ~/harness/golden-image: the shared file, byte for byte; not Lima's files, dotfiles or subfolders.
+  const gi = s.at('harness', 'golden-image');
+  assert.deepEqual(readdirSync(gi).sort(), ['gate.sh', 'workstation-tools.sh']);
+  assert.equal(readFileSync(join(gi, 'gate.sh'), 'utf8'), SHARED['gate.sh']);
+  assert.equal(readFileSync(join(gi, 'workstation-tools.sh'), 'utf8'), SHARED_INSTALLER);
+  assert.equal(statSync(join(gi, 'gate.sh')).mode & 0o777, 0o600);
+  assert.equal(statSync(join(gi, 'workstation-tools.sh')).mode & 0o777, 0o700);
+  assert.ok(!existsSync(s.at('harness', 'workstation-tools.sh')), 'not at the old place');
+
+  // AC2: bare, as ci-checks:verify runs a check: the tool's own status.
+  const ok = await machineRun(s, 'mytool');
+  assert.equal(ok.code, 0, ok.err);
+  const failed = await machineRun(s, 'MYTOOL_EXIT=1 mytool');
+  assert.equal(failed.code, 1, failed.err);
+});
+
+test('ASS-462 AC1: a rerun with nothing missing leaves ~/harness/golden-image untouched and runs no installer', async () => {
+  const s = setup({ tools: ['mytool'], installer: SHARED_INSTALLER, files: SHARED });
+  await s.cli('workstation:connect', 'p', ID);
+  assert.equal(JSON.parse((await s.cli('workstation:setup', 'p', ID)).stdout).setup.ok, true);
+  const files = snapshot(s.home, []);
+  const out = JSON.parse((await s.cli('workstation:setup', 'p', ID)).stdout);
+  assert.equal(out.setup.ok, true);
+  assert.deepEqual(out.setup.did, []);
+  assert.deepEqual(snapshot(s.home, []), files);
+  assert.ok(existsSync(s.at('harness', 'golden-image', 'gate.sh')));
+});
+
+test('ASS-462 AC1: a golden-image file whose name is not a plain file name fails setup naming it, nothing written', async () => {
+  for (const bad of ['a b.sh', '-x.sh']) {
+    const s = setup({ tools: ['mytool'], installer: SHARED_INSTALLER, files: { ...SHARED, [bad]: 'true\n' } });
+    await s.cli('workstation:connect', 'p', ID);
+    const r = await s.result('workstation:setup', 'p', ID);
+    assert.equal(r.code, 1, bad);
+    assert.ok(r.err.includes(bad), `names ${bad}: ${r.err}`);
+    assert.ok(!existsSync(s.at('harness', 'golden-image')), 'nothing shipped');
+    assert.ok(!existsSync(s.at('harness', 'setup.json')), 'no setup recorded');
+  }
+});
+
+test('ASS-462 AC1: a shared file\'s install failing fails setup naming the tool, with the installer\'s own exit', async () => {
+  const s = setup({ tools: ['mytool'], installer: SHARED_INSTALLER, files: { 'gate.sh': 'install_gate() { echo "no gate" >&2; exit 3; }\n' } });
+  await s.cli('workstation:connect', 'p', ID);
+  const r = await s.result('workstation:setup', 'p', ID);
+  assert.equal(r.code, 1);
+  assert.match(r.err, /no gate/);
+  assert.equal(s.entry().setup.error, 'mytool: could not be installed: not on PATH after the project\'s golden-image/workstation-tools.sh (exit 3)');
+});
+
+test('ASS-462 AC3: the version changes with the golden-image files shipped to workstation-tools.sh, not with Lima\'s; a project without workstation-tools.sh keeps its version', async () => {
+  const s = setup({ tools: ['mytool'], installer: SHARED_INSTALLER, files: SHARED });
+  const gi = join(s.f.dir, 'projects', 'p', 'golden-image');
+  const version = async t => (await t.cli('workstation:setup', 'p', ID, '--version')).stdout.trim();
+  const v1 = await version(s);
+  writeFileSync(join(gi, 'provision.sh'), 'echo changed\n');
+  writeFileSync(join(gi, 'template.yaml'), 'images: [x]\n');
+  assert.equal(await version(s), v1, 'Lima-only files not in the version');
+  writeFileSync(join(gi, 'gate.sh'), `${SHARED['gate.sh']}# changed\n`);
+  const v2 = await version(s);
+  assert.notEqual(v2, v1, 'the shared file changed');
+  writeFileSync(join(gi, 'more.sh'), 'true\n');
+  const v3 = await version(s);
+  assert.notEqual(v3, v2, 'a shared file added');
+  writeFileSync(join(gi, 'gate2.sh'), readFileSync(join(gi, 'gate.sh')));
+  rmSync(join(gi, 'gate.sh'));
+  assert.notEqual(await version(s), v3, 'a shared file renamed');
+
+  // No workstation-tools.sh: its other golden-image files are not shipped, so not in its version.
+  const t = setup({ tools: ['mytool'] });
+  const before = await version(t);
+  writeFileSync(join(t.f.dir, 'projects', 'p', 'golden-image', 'gate.sh'), SHARED['gate.sh']);
+  assert.equal(await version(t), before);
 });

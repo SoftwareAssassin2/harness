@@ -5,7 +5,9 @@
 #   bash -c "<this script>" workstation-setup <version> <forwarder-url> [<tool>…]
 #
 # stdin two lines: in-vm/agent.sh in base64, then the project's
-# golden-image/workstation-tools.sh in base64 (an empty line without one).
+# golden-image/workstation-tools.sh in base64 (an empty line without one);
+# then (ASS-462) one line per golden-image file shipped beside it,
+# `<name> <base64>`.
 # Prints one JSON line, { ok, version, home, runtime, boot-id, did: [what it
 # changed], failed: [{ what, why }] }, each failure said on stderr too, with
 # whatever an installer printed; exits 1 when anything failed.
@@ -17,6 +19,9 @@
 #                     agent.sh (below), and jq and claude when setup installed them
 #   ~/harness/lib     agent.sh itself, in-vm/agent.sh as a VM gets it
 #   ~/harness/tools   what setup and the project's workstation-tools.sh download
+#   ~/harness/golden-image  the project's workstation-tools.sh and the
+#                     golden-image files shipped beside it (ASS-462), so it
+#                     sources a file shared with provision.sh as on the host
 #   ~/harness/env     sourced by the harness's sessions alone (ASS-435): PATH
 #                     with ~/harness/bin first, HARNESS_RUNTIME, and the
 #                     runtime folder's env (the credentials) when it holds one.
@@ -49,8 +54,8 @@
 # so it writes nothing of the owner's); agent.sh; Docker checked (`docker
 # info` answering: whether it works is the workstation config's, so it is
 # never installed); and each of the project's golden-image tools on PATH, the
-# missing ones handed to the project's workstation-tools.sh (run in
-# ~/harness/tools with HARNESS_BIN and HARNESS_TOOLS set, the tools as its
+# missing ones handed to the project's workstation-tools.sh (written to
+# ~/harness/golden-image with its shipped files, run in ~/harness/tools with HARNESS_BIN and HARNESS_TOOLS set, the tools as its
 # arguments; it installs them under $HOME), then checked again. Anything
 # missing after that fails setup, named (AC3).
 #
@@ -101,6 +106,8 @@ first_line() { local l; l="$(printf '%s\n' "$1" | grep -m1 -v '^[[:space:]]*$')"
 
 IFS= read -r agent_b64 || true
 IFS= read -r tools_b64 || true
+files=()
+while IFS=' ' read -r name b64 || [[ -n "${name-}" ]]; do [[ -z "$name" ]] || files+=("$name" "$b64"); done
 mkdir -p "$H" "$B" "$L" "$T" || { bad "$H" "could not be made"; finish; }
 chmod 700 "$H"
 
@@ -217,9 +224,19 @@ if [[ ${#missing[@]} -gt 0 ]]; then
   if [[ -z "$tools_b64" ]]; then
     for t in "${missing[@]}"; do bad "$t" "not on the workstation, and the project has no golden-image/workstation-tools.sh to install it under \$HOME"; done
   else
-    printf '%s' "$tools_b64" | base64 -d | put "$H/workstation-tools.sh" 700 || true
-    (cd "$T" && HARNESS_BIN="$B" HARNESS_TOOLS="$T" bash "$H/workstation-tools.sh" "${missing[@]}" </dev/null >&2)
-    rc=$?
+    G="$H/golden-image" rc=0
+    rm -f "$H/workstation-tools.sh"
+    rm -rf "$G" && mkdir -m 700 "$G" || rc=$?
+    for ((i = 0; rc == 0 && i < ${#files[@]}; i += 2)); do
+      n="${files[i]}"
+      [[ "$n" =~ ^[A-Za-z0-9][A-Za-z0-9._+-]*$ && "$n" != workstation-tools.sh ]] || { echo "workstation setup: '$n' is not a plain golden-image file name" >&2; rc=1; break; }
+      printf '%s' "${files[i+1]}" | base64 -d | put "$G/$n" 600 || rc=$?
+    done
+    [[ $rc -ne 0 ]] || { printf '%s' "$tools_b64" | base64 -d | put "$G/workstation-tools.sh" 700; rc=$?; }
+    if [[ $rc -eq 0 ]]; then
+      (cd "$T" && HARNESS_BIN="$B" HARNESS_TOOLS="$T" bash "$G/workstation-tools.sh" "${missing[@]}" </dev/null >&2)
+      rc=$?
+    fi
     hash -r
     done_ "ran the project's workstation-tools.sh for ${missing[*]} (exit $rc)"
     for t in "${missing[@]}"; do has "$t" || bad "$t" "could not be installed: not on PATH after the project's golden-image/workstation-tools.sh (exit $rc)"; done
