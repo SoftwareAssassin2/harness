@@ -24,6 +24,9 @@ set -euo pipefail
 #   1  bad arguments, an unknown ticket, variation or project (the step's
 #      catch-all: Blocked for Human).
 # Every outcome is logged in the variation's change log (work.bash blocked_log).
+# ASS-474: a block that was a loop which ran out of visits is verified by the
+# step that kept failing in it, not the step it was blocked at
+# (RECHECK_LOOP_PASS: its pass is the repair's proof).
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/golden.bash"
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../vm.bash"
 source "$here_vm/work.bash"
@@ -55,7 +58,7 @@ case "$status" in
 esac
 
 code=0
-out="$(RECHECK_STEP="$title" RECHECK_NEXT_PASS="The ticket resumes." RECHECK_NEXT_FAIL="Blocked for Human." RECHECK_NEXT_NONE="The repair's own run of the failing check stands." "$agent" ticket:recheck-block "$project" "$key" "$variation")" || code=$?
+out="$(RECHECK_LOOP_PASS=1 RECHECK_STEP="$title" RECHECK_NEXT_PASS="The ticket resumes." RECHECK_NEXT_FAIL="Blocked for Human." RECHECK_NEXT_NONE="The repair's own run of the failing check stands." "$agent" ticket:recheck-block "$project" "$key" "$variation")" || code=$?
 on="${vm:-no VM yet}${mine:+, a clone of generation $mine}; $image"
 if [[ $code -eq 0 ]]; then
   blocked_log "$project" "$key" "$variation" "$title" "Verified: the failing check passes on the ticket's fixed VM ($on)."

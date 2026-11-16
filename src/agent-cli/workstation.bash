@@ -21,6 +21,7 @@
 #   workstation_record <project> <id> [jq options…] <filter>  # its entry in the project's workstations.json, rewritten by <filter>
 #   workstation_entry <project> <id>          # that entry as one JSON line, with its id; {"id":…} without one
 #   workstation_error <output>                # sets ws_error_kind (expired, offline, unknown) and ws_error_message (one line, tokens redacted)
+#   ws_live_control <pid>                     # ASS-470: <pid> is a running control (src/control/main.js), below
 #
 # The connection. Each new connection to a workstation goes through Google's
 # workstation tunnel and needs a live Google token; an open one does not, and
@@ -72,9 +73,29 @@
 # disconnected-at, started-at (when workstation:connect last started it),
 # forwards (the ports forwarded), last-error ({ at, kind, message }: the last
 # connect's failure, kind expired, offline or unknown; null once one
-# succeeds), setup (ASS-434: workstation:setup's last run, see setup.sh) } },
+# succeeds), setup (ASS-434: workstation:setup's last run, see setup.sh),
+# control-pid (ASS-470: the control that owns the connection, below) } },
 # written through update_json. Control and the TUI read it
 # (src/control/workstation-connection.js loadWorkstations).
+#
+# ASS-470, who owns a connection. The master outlives whoever opened it (its
+# own session), so the live data says whose it is: control-pid, the pid of
+# the control (src/control/main.js) it belongs to, or null for one opened by
+# hand. Control gives every agent.sh it runs, and so every command those run
+# in turn (vm:create, a step's script, workstation:claim), its own pid as
+# HARNESS_CONTROL_PID; workstation:connect run with it records that pid —
+# before it starts or opens anything, so a control that exits while a connect
+# is under way still finds it its own — unless the connection it finds open
+# is another running control's (ws_live_control), which it leaves that
+# control's. Run without it (the operator's shell), a connect that opens a
+# new master records null, and one that finds the connection open leaves the
+# owner as it is. A connect run for a control that has since exited opens
+# nothing, and closes what it opened should that control exit meanwhile.
+# workstation:disconnect clears it. Control closes the connections it owns
+# whenever it exits, and at its start those whose control-pid names no
+# running control (a crash's, a kill -9's); a hand-opened one (null) neither
+# closes, though a running control's idle disconnect still closes one nothing
+# needs (src/control/workstations.js).
 here_ws="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
 source "$here_ws/json-file.bash"
 source "$here_ws/dev-environments.bash"
@@ -179,6 +200,12 @@ ws_master_pid() {
   local pid
   pid="$(cat "$(ws_pid_file "$1" "$2")" 2>/dev/null)" || return 1
   [[ "$pid" =~ ^[0-9]+$ ]] && ps -o command= -p "$pid" 2>/dev/null | grep -qF -- "$(workstation_control_path "$1" "$2")" && echo "$pid"
+}
+
+# ws_live_control <pid> — whether <pid> is a running control: alive, and its
+# command line runs control/main.js (never a pid reused since by something else).
+ws_live_control() {
+  [[ "$1" =~ ^[0-9]+$ ]] && kill -0 "$1" 2>/dev/null && ps -o command= -p "$1" 2>/dev/null | grep -qF 'control/main.js'
 }
 
 workstation_close() {

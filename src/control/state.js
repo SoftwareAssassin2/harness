@@ -11,6 +11,7 @@ import { switchedOffStepErrors } from '../workflow/validate.js';
 import { obsoleteKeysOf, withoutObsolete } from '../workflow/obsolete.js';
 import { devEnvironments, devEnvironmentsErrors } from './dev-environments.js';
 import { loadWorkstations } from './workstation-connection.js';
+import { loadSeats } from './seat-kinds.js';
 import { readJson, readJsonOnce } from './read.js';
 
 // readJson (read.js, ASS-460): a read that fails because the drive dropped or
@@ -167,7 +168,8 @@ export const readEngines = (dir, obsolete = [], stale = []) => (!existsSync(dir)
 // devEnvironmentsErrors (ASS-431: what is wrong with its dev-environments, each naming the field; [] for none,
 // as for a project without one) and devEnvironments (its { mode, workstations }: dev-environments.js; null while
 // it is wrong), workstations (ASS-433: its workstations.json — each workstation's state, connection and last
-// connect error, workstation-connection.js loadWorkstations — or {}) }, in folder order, contextWindows (the learned
+// connect error, workstation-connection.js loadWorkstations — or {}), seats (ASS-469: its seats.json's records, who
+// holds which in-progress seat, a VM seat or a workstation's: seats.js, seat-kinds.js loadSeats — or []) }, in folder order, contextWindows (the learned
 // context-windows.json — { <model>: tokens } — or {}, ASS-190) and diskSpace
 // (disk-space.json — { level, free-bytes, … }, ASS-288 — or null; one caught
 // half-written reads as null, the next tick reading it again), and
@@ -213,7 +215,7 @@ export function loadState(paths) {
       const devErrors = devEnvironmentsErrors(json);
       return { id, json, engineName, engines: own, switchedOffErrors, engine: own[engineName], refinementName, refinement: own[refinementName], sprintFile, sprint, tickets, backlog, asking: openBlocking(dir, [...tickets, ...backlog]), outside: loadOutside(dir),
         gcloudRequiresReauthentication: requiresReauthentication(dir, 'gcloud'), glabRequiresReauthentication: requiresReauthentication(dir, 'glab'), rateLimit, claudeUsage, credentialsHold, memoryHold, memoryWait,
-        devEnvironmentsErrors: devErrors, devEnvironments: devErrors.length ? null : devEnvironments(json), workstations: loadWorkstations(dir) };
+        devEnvironmentsErrors: devErrors, devEnvironments: devErrors.length ? null : devEnvironments(json), workstations: loadWorkstations(dir), seats: loadSeats(dir) };
     });
   return {
     harness: readJson(paths.harness),

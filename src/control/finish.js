@@ -14,6 +14,7 @@ import { dirname } from 'node:path';
 import { readSession, memoryUse, sessionDir } from '../agents/session.js';
 import { billed } from '../agents/process.js';
 import { readUsage } from '../agents/session-usage.js';
+import { stepCompleted } from './workstation-steps.js';
 
 const PHASE = 'finish';
 
@@ -265,6 +266,9 @@ async function finishOne(ctx, state, live) {
     for (const l of lives) await endAgent(ctx, l);
     return;
   }
+  // ASS-468 AC9: the step completed — its turn ended without error — so at its end on a workstation (or, in
+  // vm+workstation mode, its VM) what it left uncommitted is committed on its branch, not discarded.
+  stepCompleted(ctx, pen);
   const place = placeOf(ctx, state, pen);
   const facts = { turnComplete: true, structuredOutput: penLive.result.structured_output, ...(place?.variation ? ticketFacts(ctx, place.project, place.ticket, place.variation, penLive.startedAt.getTime(), runsInVm(place.step) ? machineOf(place.variation) : undefined) : {}) };
   const next = place?.step ? nextState(place.step, place.engine, facts, place.changes) : null;

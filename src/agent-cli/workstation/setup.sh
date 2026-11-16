@@ -14,14 +14,25 @@ set -euo pipefail
 # ASS-435 puts the forwarder token and credentials beside agent-url. A tool
 # that cannot be installed, Docker not usable, or a golden-image tool still
 # missing fails it, each named (AC3). It is safe to run again: what is there
-# is left alone.
+# is left alone. ASS-468: the folders ASS-435 made per ticket variation,
+# ~/harness/<KEY>-<variation>, are removed (all but the one a holder from
+# before ASS-468 still records, which workstation:release migrates).
 #
 # The setup's version (AC2): the sha256 of on-workstation/setup.sh,
 # in-vm/agent.sh, the project's golden-image/workstation-tools.sh (when it
 # has one), the forwarder's URL on the workstation, project.json's
-# golden-image tools and (ASS-462) each golden-image file shipped beside
+# golden-image tools, (ASS-471) each command the project's CI checks need and
+# the checks needing it, and (ASS-462) each golden-image file shipped beside
 # workstation-tools.sh, its name and sha256, one per line — the script and
 # the tools list, with what the script installs.
+# ASS-471: besides golden-image.tools, setup checks every command the
+# project's golden-image ci-checks.json needs — the first word of each
+# check's command (src/agent-cli/ci-check-commands.js: past NAME=value
+# assignments, keywords and redirections; not builtins, nor a path such as
+# scripts/x.sh) and each name a check declares in "needs" (what its scripts
+# are known to run) — so a command the workstation lacks fails setup, named
+# with the checks that run it, instead of a ticket's CI Checks step exiting
+# 127. Missing ones go to workstation-tools.sh with the missing tools.
 # Shipped beside it (ASS-462), so it can source a file it shares with
 # provision.sh: when the project has a workstation-tools.sh, the golden-image
 # folder's other top-level regular files, not dotfiles nor the Lima- or
@@ -60,6 +71,13 @@ while IFS= read -r t; do
 done < <(jq -r '.["golden-image"].tools[]?' "$json")
 folder="$(jq -r '.["golden-image"].folder // empty' "$json")"
 [[ -z "$folder" || "$folder" == /* ]] || folder="$ws_projects/../$folder"
+# ASS-471: the commands the project's CI checks run (ci-check-commands.js: each check's first words and its
+# declared "needs"), each with the checks that need it, checked on the workstation beside the tools.
+needs=()
+if [[ -n "$folder" && -f "$folder/ci-checks.json" ]]; then
+  lines="$(node "$here/../ci-check-commands.js" "$folder/ci-checks.json")" || { echo "$command: $project's golden-image ci-checks.json could not be read" >&2; exit 1; }
+  while IFS=$'\t' read -r c by; do [[ -z "$c" ]] || needs+=("$c" "$by"); done <<< "$lines"
+fi
 installer=""
 [[ -z "$folder" || ! -f "$folder/workstation-tools.sh" ]] || installer="$folder/workstation-tools.sh"
 shared=()
@@ -73,6 +91,7 @@ if [[ -n "$installer" ]]; then
 fi
 
 version="$( { shasum -a 256 "$script" "$agent_sh" ${installer:+"$installer"} | cut -d' ' -f1; echo "url $url"; printf 'tool %s\n' "${tools[@]+"${tools[@]}"}"
+  for ((i = 0; i < ${#needs[@]}; i += 2)); do printf 'need %s %s\n' "${needs[i]}" "${needs[i+1]}"; done
   for n in "${shared[@]+"${shared[@]}"}"; do printf 'file %s %s\n' "$n" "$(shasum -a 256 < "$folder/$n" | cut -d' ' -f1)"; done; } | shasum -a 256 | cut -d' ' -f1)"
 if [[ $# -eq 3 ]]; then echo "$version"; exit 0; fi
 
@@ -85,7 +104,7 @@ trap 'rm -f "$err"' EXIT
 rc=0
 # Without the lock's descriptor: a setup left hanging past its time is ended (ws_timeout), and holds no lock meanwhile.
 out="$( { b64 "$agent_sh"; b64 "$installer"; for n in "${shared[@]+"${shared[@]}"}"; do printf '%s ' "$n"; b64 "$folder/$n"; done; } | ws_timeout "${WORKSTATION_SETUP_TIMEOUT:-900}" bash -c "source '$here/../workstation.bash' && workstation_ssh \"\$@\"" _ \
-  "$project" "$id" bash -c "$(cat "$script")" workstation-setup "$version" "$url" "${tools[@]+"${tools[@]}"}" 2>"$err" 8>&- 9>&-)" || rc=$?
+  "$project" "$id" env "HARNESS_KEEP_FOLDER=$(workstation_entry "$project" "$id" | jq -r '.holder.folder // ""')" bash -c "$(cat "$script")" workstation-setup "$version" "$url" "${tools[@]+"${tools[@]}"}" ${needs[0]+-- "${needs[@]}"} 2>"$err" 8>&- 9>&-)" || rc=$?
 cat "$err" >&2
 result="$(tail -n 1 <<< "$out")"
 if ! jq -e 'type == "object" and has("ok")' <<< "$result" >/dev/null 2>&1; then

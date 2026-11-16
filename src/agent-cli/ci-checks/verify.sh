@@ -15,8 +15,11 @@ set -euo pipefail
 #         "command": "<bash, run in /repos/<basename>>",
 #         "changes": ["<glob>", …],     optional: run only when the merge request's diff touches one, as CI's rules:changes —
 #                                       ** any folders, * and ? within one, {a,b} either; matched from the repository's root
-#         "baseline": false } ] } }     optional: a check over the merge request's own commits (a secret scan of
+#         "baseline": false,            optional: a check over the merge request's own commits (a secret scan of
 #                                       $CI_CHECK_BASE..HEAD) has no master run to compare with
+#         "needs": ["<command>", …] } ] } }  optional (ASS-471): commands the check's scripts are known to run, which
+#                                       its command line does not show; workstation:setup checks them, with each
+#                                       command's first word, on a workstation before any check runs there
 # A project without the file (or without a golden-image folder) declares no
 # checks, and a repository not in it none: this passes with nothing run —
 # grouped-build is shared by every grouped project. A file that is not this
@@ -44,6 +47,13 @@ set -euo pipefail
 # — passes, as failing as it does on master; any other is new. A baseline:
 # false check is never run on master: red is a new failure. Checks are not
 # re-run: a lint or a scan is not flaky.
+# ASS-474: a baseline: false check scans the merge request's own range
+# (CI_CHECK_BASE..HEAD), so in a repository whose planned merge requests are
+# every one Merged (none Open or Not Created) there is no range left to scan —
+# the checkout is back on master, the range empty, and a scan that refuses an
+# empty range would send a finished ticket round Build for ever. Such a check
+# is skipped there, said so in the results; the repository's other checks run
+# as before (on master, compared with master).
 #
 # Each check's job name, command, exit code and output (its last
 # $TAIL lines; master's too when compared) go to the ticket's folder,
@@ -87,7 +97,8 @@ problem="$(jq -r --argjson repos "$(jq -c '[.repositories[]?.url | sub("\\.git$"
     elif (.command | type) != "string" or .command == "" then "\($at): \"command\" must be a non-empty string"
     elif has("changes") and ((.changes | type) != "array" or .changes == [] or any(.changes[]; type != "string" or . == "")) then "\($at): \"changes\" must be a list of globs"
     elif has("baseline") and (.baseline | type) != "boolean" then "\($at): \"baseline\" must be true or false"
-    elif (keys - ["name", "command", "changes", "baseline"]) != [] then "\($at): unknown key \"\((keys - ["name", "command", "changes", "baseline"])[0])\""
+    elif has("needs") and ((.needs | type) != "array" or any(.needs[]; type != "string" or (test("^[A-Za-z0-9][A-Za-z0-9._+-]*$") | not))) then "\($at): \"needs\" must be a list of command names"
+    elif (keys - ["name", "command", "changes", "baseline", "needs"]) != [] then "\($at): unknown key \"\((keys - ["name", "command", "changes", "baseline", "needs"])[0])\""
     else empty end;
   first(
     if type != "object" or (.repositories | type) != "object" then "ci-checks.json: \"repositories\" must be an object of <repository>: [<check>…]"
@@ -157,12 +168,16 @@ for repo in "${repos[@]}"; do
   master="$(sed -n 1p "$tmp/base")" merge_base="$(sed -n 2p "$tmp/base")"
   sed '1,2d' "$tmp/base" > "$tmp/changed"
   report+=$'\n'"CI_CHECK_BASE for $repo: $merge_base (the merge base of $branch and origin/$base)"$'\n'
+  # ASS-474: every planned merge request in it Merged (none Open or Not Created): no merge request range to scan.
+  all_merged="$(jq -r --arg r "$repo" '[.[] | select(.status != "Closed" and .repository != null and (.repository | sub("\\.git$"; "") | split("/") | last) == $r) | .status]
+    | length > 0 and all(. == "Merged")' <<< "$plan")"
 
   # The branch's runs.
   statuses=() red=()
   for ((i = 0; i < n; i++)); do
     check="$(jq -c ".[$i]" <<< "$checks")"
     globs="$(jq -c '.changes // empty' <<< "$check")"
+    if [[ "$all_merged" == true && "$(jq -r '.baseline == false' <<< "$check")" == true ]]; then statuses[i]=merged; continue; fi
     if [[ -n "$globs" ]] && ! matches "$tmp/changed" "$globs"; then statuses[i]=skip; continue; fi
     statuses[i]="$(run_check "$repo" "$(jq -r .command <<< "$check")" "$merge_base" "$tmp/branch-$i")"
     [[ ${statuses[i]} -eq 0 || "$(jq -r '.baseline != false' <<< "$check")" != true ]] || ! runnable "${statuses[i]}" "$tmp/branch-$i" || red+=("$i")
@@ -199,6 +214,9 @@ for repo in "${repos[@]}"; do
     total=$((total + 1))
     if [[ $status == skip ]]; then
       skipped=$((skipped + 1)); report+=$'\n'"## – $repo: $name (skipped: the merge request changes none of $(jq -r '.changes | join(", ")' <<< "$check"))"$'\n'; continue
+    fi
+    if [[ $status == merged ]]; then
+      skipped=$((skipped + 1)); report+=$'\n'"## – $repo: $name (skipped: every planned merge request of the ticket in $repo is merged — no merge request range to scan)"$'\n'; continue
     fi
     body=$'\n`'"$c"$'`\n'"$(block "$out")"
     if [[ $status -eq 0 ]]; then passed=$((passed + 1)); report+=$'\n'"## ✓ $repo: $name (exit 0)"$'\n'"$body"; continue; fi

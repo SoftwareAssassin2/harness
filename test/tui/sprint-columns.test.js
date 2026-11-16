@@ -495,6 +495,25 @@ test('ASS-357 AC4: 💺 is two cells wide; seated and unseated rows stay aligned
   }
 });
 
+// ASS-469 AC7: in vm+workstation mode, the in-progress seat a variation holds on a workstation (control's seats.json)
+// is ⛅ in the seat column, 💺 a VM seat (or a planning seat); the key explains ⛅ — only for a project on workstations.
+test('ASS-469 AC7: ⛅ for a workstation seat, 💺 for a VM seat, in the same two-cell column; the key lists ⛅ for a project on workstations alone', () => {
+  const ws = { id: 'ws-1', 'gcp-project': 'g', region: 'r', cluster: 'c', config: 'cfg' };
+  const at = '2026-10-01T16:00:00Z';
+  const onWs = { ...seatProject(), devEnvironments: { mode: 'vm+workstation', workstations: [ws] },
+    workstations: { 'ws-1': { connected: true, 'connected-at': at, setup: { ok: true, 'checked-at': at } } },
+    seats: [{ key: 'S-3', variation: 'A', kind: 'workstation', workstation: 'ws-1' }, { key: 'S-11', variation: 'A', kind: 'vm' }, { key: 'S-5', variation: 'A', kind: 'vm' }] };
+  const lines = render(seatState([onWs]), wide);
+  const mark = k => strip(seatRow(lines, k)).slice(LEFT, LEFT + TEXT);
+  assert.ok(mark('S-3').includes('⛅') && !mark('S-3').includes(SEAT), mark('S-3'));
+  for (const k of ['S-11.A', 'S-1', 'S-5']) assert.ok(mark(k).includes(SEAT) && !mark(k).includes('⛅'), k);
+  assert.equal(visible('⛅'), 2);
+  const starts = ['S-3', 'S-5'].map(k => { const c = strip(seatRow(lines, k)); return visible(c.slice(0, c.indexOf(`${k}: `))); });
+  assert.equal(starts[0], starts[1]);
+  assert.ok(keyLines(lines).map(strip).join('  ').split('  ').includes('⛅ holds a workstation seat'));
+  assert.ok(!keyLines(render(seatState(), wide)).map(strip).join('  ').includes('⛅'), 'not for a project in VMs alone');
+});
+
 // ASS-357 with ASS-355: the planner skips a variation its dependencies hold
 // (dependencies.js heldBy), so its row has no 💺 and its seat goes to the next
 // ticket. Capped at two in-progress seats: D-1 waits on D-2 (in the sprint, at

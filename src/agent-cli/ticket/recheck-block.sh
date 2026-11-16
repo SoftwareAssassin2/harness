@@ -33,6 +33,23 @@ set -euo pipefail
 # recheck-passed true — a re-check that failed, Troubleshoot then finding
 # nothing wrong, is none), so a check that passes only on re-check
 # and fails again in the step reaches the operator after 3.
+#
+# ASS-474: a block that is a loop which ran out of visits (recheck-block.js's
+# loop: the step it was blocked at moved on into a step already visited its
+# max-visits times) is never resumed from here: the block is the loop's, not
+# the step it was blocked at's, so that step's passing re-run proves nothing. Instead the
+# step that kept sending the ticket back (the loop's failing-step) is re-run,
+# when it is a check to re-run, for its latest output, and it exits 3 — on to
+# Troubleshoot, whatever that run's exit — printing { rechecked, loop,
+# summary: "A loop: …", recheck: { at, command, exit, output } } (or
+# recheck-why when the failing step is no check), the change log naming the
+# loop: the step that ran out, the steps repeated and the step that kept
+# failing, with its last lines. The loop is kept with the run in the
+# variation's blocks, so Blocked for Human's record names it too, and
+# ticket:fix-attempts counts a loop run that resumed the ticket as an attempt.
+# RECHECK_LOOP_PASS set (vm:image-recheck, verifying a repair) makes the
+# failing step passing there a pass, exit 0 as above: after a repair, the
+# step that kept failing passing is the proof the loop's cause is gone.
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../vm.bash"
 source "$here_vm/code.bash"
 source "$here_vm/work.bash"
@@ -47,6 +64,40 @@ engine="$(jq -r '.["execution-state-engine"] // empty' "$projects/$project/proje
 choice="$(jq -nc --arg project "$project" --arg ticket "$key" --argjson variation "$found" --arg engine "$engine" \
   --argjson files "$(engine_files "$project" | jq -Rsc 'split("\n") | map(select(. != ""))')" \
   '{ project: $project, ticket: $ticket, variation: $variation, engine: $engine, engineFiles: $files }' | node "$here_vm/ticket/recheck-block.js")"
+
+# ASS-474: a loop that ran out of visits: its failing step re-run for its output, then on to Troubleshoot, never resumed.
+if jq -e '.loop != null' <<< "$choice" > /dev/null; then
+  said="$(jq -r '.loop as $l | "\($l["ran-out"]) ran out of visits (\($l.visits) of \($l["max-visits"])) going round \($l.steps | join(" → "))\(if $l["failing-step"] then ", \($l["failing-step"]) sending it back to \($l["sent-back-to"]) \($l["sent-back"]) time\(if $l["sent-back"] == 1 then "" else "s" end)" else "" end)"' <<< "$choice")"
+  short="$(jq -r '.loop as $l | "A loop: \($l["ran-out"]) ran out of visits\(if $l["failing-step"] then "; \($l["failing-step"]) kept failing" else "" end)"' <<< "$choice")"
+  at="$(jq -r .at <<< "$choice")"
+  intro="Not resumed: a loop. $said. Re-running the step it was blocked at ($at) is no check: the block is the loop's, not that step's."
+  why="$(jq -r '.check.why // empty' <<< "$choice")"
+  if [[ -n "$why" ]]; then
+    blocked_log "$project" "$key" "$variation" "$step" "$intro The step that kept failing is not re-checked: $why. $next_fail"
+    jq -c --arg short "$short" '{ rechecked: false, loop, summary: $short, "recheck-why": .check.why }' <<< "$choice"
+    echo "$command: $short" >&2
+    exit 3
+  fi
+  failing="$(jq -r .check.at <<< "$choice")" line="$(jq -r .check.command <<< "$choice")"
+  argv=()
+  while IFS= read -r word; do argv+=("$word"); done < <(jq -r '.check.argv[1:][]' <<< "$choice")
+  code=0
+  output="$("$here_vm/../../agent.sh" "${argv[@]}" 2>&1 < /dev/null)" || code=$?
+  tail_lines="$(tail -n 20 <<< "$output" | cut -c 1-300)"
+  if [[ "$code" -eq 0 && -n "${RECHECK_LOOP_PASS:-}" ]]; then
+    blocked_log "$project" "$key" "$variation" "$step" "$intro Passed on re-check: re-ran \`$line\` (the step that kept failing, $failing): exit 0. $next_pass"
+    jq -c --arg short "$short" --arg at "$failing" --arg line "$line" \
+      '{ "needs-fix": false, rechecked: true, "recheck-passed": true, loop, summary: "Passed on re-check; nothing to fix", recheck: { at: $at, command: $line, exit: 0 } }' <<< "$choice"
+    exit 0
+  fi
+  if [[ "$code" -eq 0 ]]; then ran="Re-ran \`$line\` (the step that kept failing, $failing): exit 0 now — it may pass only here, or the cause may have cleared; Troubleshoot tells which."
+  else ran="Re-ran \`$line\` (the step that kept failing, $failing): it still fails (exit $code)."; fi
+  blocked_log "$project" "$key" "$variation" "$step" "$intro $ran $next_fail Its last lines:"$'\n```\n'"$tail_lines"$'\n```'
+  jq -c --arg short "$short" --arg at "$failing" --arg line "$line" --argjson code "$code" --arg tail "$tail_lines" \
+    '{ rechecked: true, loop, summary: $short, recheck: { at: $at, command: $line, exit: $code, output: $tail } }' <<< "$choice"
+  echo "$command: $short" >&2
+  exit 3
+fi
 
 why="$(jq -r '.why // empty' <<< "$choice")"
 if [[ -n "$why" ]]; then

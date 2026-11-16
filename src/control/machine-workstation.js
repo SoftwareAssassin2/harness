@@ -1,5 +1,6 @@
-// The machine layer's workstation backend (ASS-435; machine.js): a ticket
-// variation's own folder on one of its project's GCP Cloud Workstations,
+// The machine layer's workstation backend (ASS-435; machine.js): a folder on
+// one of a project's GCP Cloud Workstations — since ASS-468 its shared root,
+// <home>/harness, which every ticket variation's steps use in turn —
 // reached over that workstation's one SSH connection (ASS-433,
 // workstation-connection.js sshArgv: a session of its own over the master,
 // never a connection of its own; 255 at once when none is open).
@@ -23,13 +24,13 @@ const WRAP = 'trap \'kill -TERM "$c" 2>/dev/null\' TERM; "$@" <&0 & c=$!; while 
 // parts(name) — { project, id, folder } of a workstation machine's name; throws, naming it, for any other.
 export function parts(name) {
   const [project, id, folder, ...rest] = String(name).split(':');
-  if (rest.length || !/^[A-Za-z0-9_-]+$/.test(project ?? '') || !/^[A-Za-z0-9_-]+$/.test(id ?? '') || !/^\/.*\/harness\//.test(folder ?? '')) {
+  if (rest.length || !/^[A-Za-z0-9_-]+$/.test(project ?? '') || !/^[A-Za-z0-9_-]+$/.test(id ?? '') || !/^\/.*\/harness(\/|$)/.test(folder ?? '')) {
     throw new Error(`workstation:${name}: not a workstation machine (workstation:<project>:<id>:<folder under ~/harness>)`);
   }
   return { project, id, folder };
 }
 
-// wsPath(folder, path) — a VM path as the variation's folder has it: / (or
+// wsPath(folder, path) — a VM path as the machine's folder has it: / (or
 // none) the folder, /repos…, /run/harness… under it, /mnt/ticket… its ticket
 // copy; any other as it is.
 export function wsPath(folder, path) {
@@ -60,7 +61,7 @@ export async function syncTicketCopy(name, ticketFolder, { env = process.env, ti
 
 export const workstation = {
   // command(name, argv, { cwd, marker, env }) — { argv, env } that runs argv
-  // in the variation's folder, in cwd (wsPath; the folder without one), under
+  // in the machine's folder, in cwd (wsPath; the folder without one), under
   // marker when given.
   command: (name, argv, { cwd, marker, env = process.env } = {}) => {
     const { project, id, folder } = parts(name);

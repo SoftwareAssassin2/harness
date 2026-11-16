@@ -28,6 +28,15 @@ set -euo pipefail
 # the message one line with any token redacted. Prints the workstation's
 # entry with its id and started (whether this started it). Fails, naming the
 # step and the kind, otherwise; for expired, with the gcloud auth login to run.
+#
+# ASS-470: run by a control (HARNESS_CONTROL_PID, which control gives every
+# agent.sh it runs), the connection is recorded as that control's
+# (control-pid) — an open one taken as it is, unless another running control
+# owns it; a new one before the workstation is started, so a control exiting
+# meanwhile still closes it — and nothing is done for a control that has
+# exited: refused at once, and a master opened after it exited closed again.
+# Run by hand, a new master is recorded as nobody's (null), and so is an open
+# one no running control owns. workstation.bash says why.
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../workstation.bash"
 
 command=workstation:connect
@@ -54,12 +63,20 @@ printed() { workstation_entry "$project" "$id" | jq -c --argjson started "$1" '.
 
 workstation_lock "$command" "$project" "$id"
 
+me="${HARNESS_CONTROL_PID:-}"
+[[ "$me" =~ ^[0-9]+$ ]] || me=""
+gone() { [[ -n "$me" ]] && ! kill -0 "$me" 2>/dev/null; }
+! gone || { echo "$command: $project's workstation $id: the control that ran it (pid $me) has exited: not connected" >&2; exit 1; }
+
 if workstation_reachable "$project" "$id"; then
-  workstation_record "$project" "$id" '. + { state: "running", connected: true, "checked-at": $at }'
+  owner="$(workstation_entry "$project" "$id" | jq -r '.["control-pid"] // empty')"
+  ws_live_control "$owner" || owner="$me"
+  workstation_record "$project" "$id" --argjson owner "${owner:-null}" '. + { state: "running", connected: true, "checked-at": $at, "control-pid": $owner }'
   printed false
   exit 0
 fi
 workstation_close "$project" "$id"
+workstation_record "$project" "$id" --argjson owner "${me:-null}" '. + { "control-pid": $owner }'
 
 started=false
 state="$(workstation_state "$settings" 2>&1)" || fail "reading its state (gcloud workstations describe)" "$state"
@@ -79,6 +96,12 @@ done
 workstation_record "$project" "$id" '. + { state: "running", "state-at": $at }'
 
 out="$(workstation_open "$project" "$id" "$settings" "${ports[@]}" 2>&1)" || fail "opening its SSH connection (gcloud workstations ssh)" "$out"
+if gone; then
+  workstation_close "$project" "$id"
+  workstation_record "$project" "$id" '. + { connected: false, "disconnected-at": $at, "control-pid": null }'
+  echo "$command: $project's workstation $id: the control that ran it (pid $me) exited while it connected: closed again" >&2
+  exit 1
+fi
 workstation_record "$project" "$id" --argjson forwards "$(printf '%s\n' "${ports[@]}" | jq -sc 'map(tonumber)')" \
   '. + { connected: true, "connected-at": $at, "checked-at": $at, forwards: $forwards, "last-error": null }'
 printed "$started"

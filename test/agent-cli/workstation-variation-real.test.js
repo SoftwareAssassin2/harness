@@ -7,15 +7,16 @@
 // mode with one small public repository (WORKSTATION_TEST_REPO, octocat's
 // Hello-World by default) and a git identity as its only declared credential
 // (a temp VM_CREDENTIALS_FILE: no keychain item is read), the real forwarder
-// on a free port of the Mac's loopback: vm:create places ticket X-1 A on the
-// workstation (connecting and setting it up when needed) and readies its
-// folder, ~/harness/X-1-A — the repository cloned, the ticket's read-only
-// copy, the runtime folder's env and forwarder token; agent.sh there reaches
-// the forwarder through the reverse forward, runs a write for its binding
-// (in the ticket copy as it returns) and is refused for another ticket;
-// workstation:release --force removes the folder and frees the workstation,
-// then the connection is closed. The workstation is left running, to stop
-// itself once idle.
+// on a free port of the Mac's loopback: vm:create records the workstation on
+// ticket X-1 A (connecting and setting it up when needed), and a step's
+// claim (ASS-468: workstation:claim) readies the shared root, ~/harness —
+// the repository cloned into repos/ once and on master, the ticket's
+// read-only copy, the runtime folder's env and forwarder token; agent.sh
+// there reaches the forwarder through the reverse forward, runs a write for
+// its binding (in the ticket copy as it returns) and is refused for another
+// ticket; workstation:release --force ends the step — the repository clean
+// on master — and frees the workstation, then the connection is closed. The
+// workstation is left running, to stop itself once idle.
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
@@ -48,7 +49,7 @@ after(async () => {
   forwarder?.close();
 });
 
-test('a real workstation: a ticket variation placed on it, its folder readied, agent.sh reaching the forwarder for its binding alone, then released', { skip, timeout: 1_200_000 }, async () => {
+test('a real workstation: a ticket variation\'s step claims it, the shared root readied, agent.sh reaching the forwarder for its binding alone, then released', { skip, timeout: 1_200_000 }, async () => {
   const dir = mkdtempSync(join(tmpdir(), 'wsv-real-'));
   const port = await freePort();
   const p = join(dir, 'projects', 'p');
@@ -67,7 +68,9 @@ test('a real workstation: a ticket variation placed on it, its folder readied, a
 
   const created = JSON.parse((await run(AGENT, ['vm:create', 'p', 'X-1', 'A'], { env })).stdout);
   assert.equal(created.name, ws.id);
-  const machine = created.machine;
+  const claimed = JSON.parse((await run(AGENT, ['workstation:claim', 'p', 'X-1', 'A'], { env })).stdout);
+  const machine = claimed.machine;
+  assert.equal(machine, created.machine);
   const sprint = JSON.parse(readFileSync(join(p, 'sprints', 'sprint-1', 'sprint.json'), 'utf8'));
   assert.equal(sprint.features[0].variations[0].vm.kind, 'workstation');
   const there = script => run('bash', ['-c', `source "${MACHINE_BASH}" && machine_run "${machine}" -- bash -c '${script}'`], { env }).then(r => ({ code: 0, out: r.stdout, err: r.stderr }), x => ({ code: x.code, out: x.stdout, err: x.stderr }));
@@ -83,9 +86,9 @@ test('a real workstation: a ticket variation placed on it, its folder readied, a
   assert.equal(refused.code, 77, refused.err);
 
   const released = await run(AGENT, ['workstation:release', 'p', ws.id, '--force'], { env });
-  assert.equal(JSON.parse(released.stdout).holder, undefined);
-  const gone = await run(AGENT, ['workstation:ssh', 'p', ws.id, 'bash', '-c', 'test -e "$HOME/harness/X-1-A" && echo there || echo gone'], { env });
-  assert.equal(gone.stdout.trim(), 'gone');
+  assert.equal(JSON.parse(released.stdout).released.ticket, 'X-1');
+  const clean = await run(AGENT, ['workstation:ssh', 'p', ws.id, 'bash', '-c', 'git -C "$HOME/harness/repos/Hello-World" status --porcelain; test -e "$HOME/harness/X-1-A" && echo there || echo gone'], { env });
+  assert.equal(clean.stdout.trim(), 'gone');
   await run(AGENT, ['workstation:disconnect', 'p', ws.id], { env });
   env = null;
 });

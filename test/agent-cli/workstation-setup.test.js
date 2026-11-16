@@ -116,7 +116,7 @@ test('AC1, AC2, AC4, AC5: a fresh workstation gets jq, the Claude Code CLI, agen
   writeFileSync(join(work, 'jq'), `#!/bin/bash\nexec ${(await run('bash', ['-c', 'command -v jq'])).stdout.trim()} "$@"\n`);
   writeFileSync(join(work, 'install.sh'), `mkdir -p "$HOME/.local/bin" && printf '#!/bin/bash\\necho "2.0.1 (Claude Code)"\\n' > "$HOME/.local/bin/claude" && chmod 755 "$HOME/.local/bin/claude" && echo "$HOME" >> ${join(work, 'claude-installs')}\n`);
   const s = setup({
-    tools: ['bats', 'git'], forwarder: fwd.port,
+    tools: ['kustomize', 'git'], forwarder: fwd.port,
     installer: `set -e\nfor t; do printf '#!/bin/bash\\necho %s\\n' "$t" > "$HARNESS_TOOLS/$t"; chmod 755 "$HARNESS_TOOLS/$t"; ln -sf "$HARNESS_TOOLS/$t" "$HARNESS_BIN/$t"; echo "$t" >> ${join(work, 'tool-installs')}; done\n`,
     env: { HARNESS_WS_JQ_URL: `file://${join(work, 'jq')}`, HARNESS_WS_CLAUDE_INSTALLER: `file://${join(work, 'install.sh')}` },
   });
@@ -138,14 +138,14 @@ test('AC1, AC2, AC4, AC5: a fresh workstation gets jq, the Claude Code CLI, agen
   assert.deepEqual(e.setup.failed, []);
   assert.equal(e.setup['set-up-at'], e.setup['checked-at']);
   assert.ok(workstationUsable(e), 'connected and set up since');
-  for (const what of [/^installed jq/, /^installed the Claude Code CLI/, /^installed agent\.sh /, /^installed agent\.sh's wrapper/, /^wrote the harness's session environment/, /^ran the project's workstation-tools\.sh for bats/, /^made the runtime folder/, /^recorded setup/])
+  for (const what of [/^installed jq/, /^installed the Claude Code CLI/, /^installed agent\.sh /, /^installed agent\.sh's wrapper/, /^wrote the harness's session environment/, /^ran the project's workstation-tools\.sh for kustomize/, /^made the runtime folder/, /^recorded setup/])
     assert.ok(e.setup.did.some(d => what.test(d)), `did ${what}`);
 
   // Everything under ~/harness; the runtime folder the workstation's own, 0700.
-  for (const bin of ['agent.sh', 'jq', 'claude', 'bats']) assert.ok(existsSync(s.at('harness', 'bin', bin)), bin);
+  for (const bin of ['agent.sh', 'jq', 'claude', 'kustomize']) assert.ok(existsSync(s.at('harness', 'bin', bin)), bin);
   assert.equal(readFileSync(s.at('harness', 'lib', 'agent.sh'), 'utf8'), readFileSync(join(import.meta.dirname, '..', '..', 'src', 'agent-cli', 'vm', 'in-vm', 'agent.sh'), 'utf8'));
   assert.equal(readFileSync(join(work, 'claude-installs'), 'utf8').trim(), s.at('harness', 'tools', 'claude'), 'claude\'s installer ran with HOME in ~/harness/tools');
-  assert.equal(readFileSync(join(work, 'tool-installs'), 'utf8'), 'bats\n', 'only the missing tool handed to workstation-tools.sh');
+  assert.equal(readFileSync(join(work, 'tool-installs'), 'utf8'), 'kustomize\n', 'only the missing tool handed to workstation-tools.sh');
   const runtime = join(s.w.runtime(ID), `harness-${process.getuid()}`);
   assert.equal(e.setup.runtime, runtime);
   assert.equal(e.setup.home, s.home);
@@ -165,7 +165,7 @@ test('AC1, AC2, AC4, AC5: a fresh workstation gets jq, the Claude Code CLI, agen
 
 test('AC2, AC5: a rerun with nothing missing does nothing — no installer, no file written — but records that it checked', async () => {
   const work = mkdtempSync(join(tmpdir(), 'wsdl-'));
-  const s = setup({ tools: ['bats'], installer: `for t; do printf '#!/bin/bash\\n' > "$HARNESS_BIN/$t"; chmod 755 "$HARNESS_BIN/$t"; echo "$t" >> ${join(work, 'tool-installs')}; done\n` });
+  const s = setup({ tools: ['kustomize'], installer: `for t; do printf '#!/bin/bash\\n' > "$HARNESS_BIN/$t"; chmod 755 "$HARNESS_BIN/$t"; echo "$t" >> ${join(work, 'tool-installs')}; done\n` });
   await s.cli('workstation:connect', 'p', ID);
   await s.cli('workstation:setup', 'p', ID);
   const first = s.entry().setup;
@@ -179,7 +179,7 @@ test('AC2, AC5: a rerun with nothing missing does nothing — no installer, no f
   assert.notEqual(out.setup['checked-at'], first['checked-at']);
   assert.deepEqual(snapshot(s.home, []), files);
   assert.deepEqual(snapshot(s.w.runtime(ID), []), runtime);
-  assert.equal(readFileSync(join(work, 'tool-installs'), 'utf8'), 'bats\n');
+  assert.equal(readFileSync(join(work, 'tool-installs'), 'utf8'), 'kustomize\n');
 });
 
 test('AC2: after the workstation restarts, setup empties the runtime folder and writes agent-url again, reinstalling nothing; a version rerun leaves the runtime folder alone', async () => {
@@ -408,4 +408,111 @@ test('ASS-462 AC3: the version changes with the golden-image files shipped to wo
   const before = await version(t);
   writeFileSync(join(t.f.dir, 'projects', 'p', 'golden-image', 'gate.sh'), SHARED['gate.sh']);
   assert.equal(await version(t), before);
+});
+
+test('ASS-474 AC3: bats, named in the project\'s tools and missing, is installed by setup from its release tarball under ~/harness/tools/bats, on PATH in a harness session, the project\'s workstation-tools.sh not needed for it; a rerun installs nothing; a project not naming it gets none', async () => {
+  const work = mkdtempSync(join(tmpdir(), 'wsbats-'));
+  // bats-core's tarball, standing in: one top folder, bin/bats finding libexec/ through its link as the real one does.
+  const top = join(work, 'src', 'bats-core-1.11.1');
+  mkdirSync(join(top, 'bin'), { recursive: true }); mkdirSync(join(top, 'libexec', 'bats-core'), { recursive: true });
+  writeFileSync(join(top, 'bin', 'bats'), '#!/bin/bash\nroot="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"\nexec "$root/libexec/bats-core/bats" "$@"\n', { mode: 0o755 });
+  writeFileSync(join(top, 'libexec', 'bats-core', 'bats'), '#!/bin/bash\necho "Bats 1.11.1"\n', { mode: 0o755 });
+  await run('tar', ['-czf', join(work, 'bats.tar.gz'), '-C', join(work, 'src'), 'bats-core-1.11.1']);
+  const s = setup({ tools: ['bats'], env: { HARNESS_WS_BATS_URL: `file://${join(work, 'bats.tar.gz')}` } });
+  writeFileSync(join(dirname(s.w.system(ID)), 'path'), await bareImage(['jq', 'tar', 'gzip', 'readlink']));
+  await s.cli('workstation:connect', 'p', ID);
+  const out = JSON.parse((await s.cli('workstation:setup', 'p', ID)).stdout);
+  assert.equal(out.setup.ok, true, out.setup.error);
+  assert.ok(out.setup.did.includes(`installed bats (${s.at('harness', 'bin', 'bats')})`), out.setup.did.join('; '));
+  assert.ok(!out.setup.did.some(d => /workstation-tools\.sh/.test(d)), 'no project installer run for it');
+  assert.ok(existsSync(s.at('harness', 'tools', 'bats', 'bin', 'bats')));
+  const session = await s.cli('workstation:ssh', 'p', ID, 'bash', '-c', '. ~/harness/env && command -v bats && bats --version');
+  assert.deepEqual(session.stdout.split('\n'), [s.at('harness', 'bin', 'bats'), 'Bats 1.11.1', '']);
+  assert.deepEqual(JSON.parse((await s.cli('workstation:setup', 'p', ID)).stdout).setup.did, [], 'a rerun installs nothing');
+  // Not named: never fetched (its URL here one that would fail).
+  const t = setup({ tools: [], env: { HARNESS_WS_BATS_URL: `file://${join(work, 'none.tar.gz')}` } });
+  writeFileSync(join(dirname(t.w.system(ID)), 'path'), await bareImage(['jq', 'tar', 'gzip']));
+  await t.cli('workstation:connect', 'p', ID);
+  const plain = JSON.parse((await t.cli('workstation:setup', 'p', ID)).stdout);
+  assert.equal(plain.setup.ok, true, plain.setup.error);
+  assert.ok(!plain.setup.did.some(d => /bats/.test(d)));
+  // A tarball without bin/bats fails setup naming bats.
+  const u = setup({ tools: ['bats'], env: { HARNESS_WS_BATS_URL: `file://${join(work, 'none.tar.gz')}` } });
+  writeFileSync(join(dirname(u.w.system(ID)), 'path'), await bareImage(['jq', 'tar', 'gzip']));
+  await u.cli('workstation:connect', 'p', ID);
+  await u.cli('workstation:setup', 'p', ID).catch(() => {});
+  assert.match(u.entry().setup.error, /^bats: could not be installed from file:/);
+});
+
+// ASS-471: ci-checks.json's checks, as a client project's: a gate run bare, scripts run by sh and bash after assignments and
+// an export, a repository script by its path, and a check declaring a command its scripts run (sqlfluff).
+const CHECKS = { repositories: {
+  'example-project': [
+    { name: 'secret-scan-mr', command: 'CI_BASE="$CI_CHECK_BASE" sh scripts/ci/secret-scan.sh', baseline: false },
+    { name: 'static-policy-gate', command: 'mygate', needs: ['sqlfluff'] },
+    { name: 'lint', command: 'export A=/repos/x; bash clusters/a.sh && scripts/b.sh', changes: ['clusters/**'] }],
+  'example-corpus': [{ name: 'static-policy-gate', command: 'mygate', needs: ['sqlfluff'] }],
+} };
+// An installer that installs each command it is handed, logging the names.
+const installing = log => `set -e\nfor t; do printf '#!/bin/bash\\necho %s\\n' "$t" > "$HARNESS_TOOLS/$t"; chmod 755 "$HARNESS_TOOLS/$t"; ln -sf "$HARNESS_TOOLS/$t" "$HARNESS_BIN/$t"; echo "$t" >> ${log}; done\n`;
+
+test('ASS-471 AC1, AC4: a command ci-checks.json\'s checks run, or declare they need, missing from the workstation fails setup naming it and the checks that run it', async () => {
+  const s = setup({ tools: ['git'], files: { 'ci-checks.json': JSON.stringify(CHECKS) } });
+  writeFileSync(join(dirname(s.w.system(ID)), 'path'), await bareImage(['jq']));
+  await s.cli('workstation:connect', 'p', ID);
+  const r = await s.result('workstation:setup', 'p', ID);
+  assert.equal(r.code, 1);
+  const e = s.entry();
+  assert.equal(e.setup.ok, false);
+  assert.deepEqual(e.setup.failed.map(x => x.what), ['mygate', 'sqlfluff'], 'sh and bash are there; export a builtin; scripts/b.sh the repository\'s');
+  assert.equal(e.setup.failed[0].why, 'not on the workstation, and the project has no golden-image/workstation-tools.sh to install it under $HOME; ci-checks.json\'s static-policy-gate (example-project and example-corpus) needs it');
+  assert.match(r.err, /setup failed: mygate: not on the workstation, .*; ci-checks\.json's static-policy-gate \(example-project and example-corpus\) needs it; sqlfluff: /);
+  assert.ok(!workstationUsable(e));
+
+  // A command that is there passes: mygate on the image, sqlfluff still missing.
+  writeFileSync(join(s.w.system(ID), 'mygate'), '#!/bin/bash\n', { mode: 0o755 });
+  await s.result('workstation:setup', 'p', ID);
+  assert.deepEqual(s.entry().setup.failed.map(x => x.what), ['sqlfluff']);
+
+  // An installer that does not install it: named so, with the checks.
+  const t = setup({ files: { 'ci-checks.json': JSON.stringify(CHECKS) }, installer: 'exit 4\n' });
+  writeFileSync(join(dirname(t.w.system(ID)), 'path'), await bareImage(['jq']));
+  await t.cli('workstation:connect', 'p', ID);
+  assert.equal((await t.result('workstation:setup', 'p', ID)).code, 1);
+  assert.equal(t.entry().setup.failed[0].why, 'could not be installed: not on PATH after the project\'s golden-image/workstation-tools.sh (exit 4); ci-checks.json\'s static-policy-gate (example-project and example-corpus) needs it');
+});
+
+test('ASS-471 AC2, AC4: the commands ci-checks.json needs that are missing go to workstation-tools.sh with the missing tools, each once; installed, setup passes and a check runs them bare', async () => {
+  const work = mkdtempSync(join(tmpdir(), 'wsci-'));
+  const s = setup({ tools: ['kustomize', 'mygate'], files: { 'ci-checks.json': JSON.stringify(CHECKS) }, installer: installing(join(work, 'installs')) });
+  writeFileSync(join(dirname(s.w.system(ID)), 'path'), await bareImage(['jq']));
+  await s.cli('workstation:connect', 'p', ID);
+  const out = JSON.parse((await s.cli('workstation:setup', 'p', ID)).stdout);
+  assert.equal(out.setup.ok, true, out.setup.error);
+  assert.ok(out.setup.did.includes('ran the project\'s workstation-tools.sh for kustomize mygate sqlfluff (exit 0)'), out.setup.did.join('; '));
+  assert.equal(readFileSync(join(work, 'installs'), 'utf8'), 'kustomize\nmygate\nsqlfluff\n');
+  // Nothing missing now: a rerun runs no installer.
+  assert.deepEqual(JSON.parse((await s.cli('workstation:setup', 'p', ID)).stdout).setup.did, []);
+  assert.equal(readFileSync(join(work, 'installs'), 'utf8'), 'kustomize\nmygate\nsqlfluff\n');
+  assert.equal((await machineRun(s, 'mygate && sqlfluff')).code, 0, 'run bare, as ci-checks:verify runs a check');
+});
+
+test('ASS-471 AC1: the version changes with the commands ci-checks.json needs, not with the rest of it; a ci-checks.json that is not JSON fails setup', async () => {
+  const s = setup({ tools: ['bats'] });
+  const file = join(s.f.dir, 'projects', 'p', 'golden-image', 'ci-checks.json');
+  const version = async () => (await s.cli('workstation:setup', 'p', ID, '--version')).stdout.trim();
+  const v0 = await version();
+  writeFileSync(file, JSON.stringify(CHECKS));
+  const v1 = await version();
+  assert.notEqual(v1, v0, 'its commands checked now');
+  writeFileSync(file, JSON.stringify({ repositories: { ...CHECKS.repositories, 'example-project': CHECKS.repositories['example-project'].map(c => ({ ...c, changes: ['other/**'] })) } }));
+  assert.equal(await version(), v1, 'a changes glob is not a command');
+  writeFileSync(file, JSON.stringify({ repositories: { ...CHECKS.repositories, 'example-corpus': [{ name: 'static-policy-gate', command: 'mygate', needs: ['sqlfluff', 'uv'] }] } }));
+  assert.notEqual(await version(), v1, 'a command declared');
+  writeFileSync(file, JSON.stringify({ repositories: {} }));
+  assert.equal(await version(), v0, 'no command: as without the file');
+  writeFileSync(file, '{ not json');
+  const r = await s.result('workstation:setup', 'p', ID, '--version');
+  assert.equal(r.code, 1);
+  assert.match(r.err, /ci-checks\.json: not valid JSON/);
 });

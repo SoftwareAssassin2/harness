@@ -13,6 +13,7 @@ import { flattenSprint } from '../../control/rank.js';
 import { spendRecords, daySpend, sprintSpend, spendText } from '../../control/spend.js';
 import { usesWorkstations } from '../../control/dev-environments.js';
 import { workstationState } from '../../control/workstation-machines.js';
+import { lostWhy, seatCapacity } from '../../control/seat-kinds.js';
 import { ellipsis, refining, agentLine, projectAssignments, liveAssignments, viewedSprint, operatorNeeded, restartFixes, markDot, ICONS, since, indent, center, middle, color, green, red, gold, timestamp, sprintTickets } from './shared.js';
 
 // Screens where space pauses and releases the agents.
@@ -58,8 +59,11 @@ function idle(state) {
 // setup failed (ASS-434), the glab login to renew, background work off
 // (ASS-127), the memory and disk holds (ASS-398: any project's
 // memory-hold.json, the disk hold of ASS-288), the landed fixes a restart would
-// load (ASS-393), then idleness (ASS-59); then the banner's: the disk low
-// (ASS-288), the account hold, the rate limit, self-healing and the human's pause.
+// load (ASS-393), then idleness (ASS-59), then the analytics' Jira API token
+// rejected (ASS-475: the downloader's jira-token-rejected.json; it holds no
+// work, but the Performance screen's numbers stop until it is fixed); then the
+// banner's: the disk low (ASS-288), the account hold, the rate limit,
+// self-healing and the human's pause.
 export const IDLE_AFTER_MS = 5 * 60e3;
 export function headerWarnings(state, now = Date.now()) {
   const project = state.projects[state.project];
@@ -78,6 +82,7 @@ export function headerWarnings(state, now = Date.now()) {
     state.disk?.level === 'hold' && warning('out-of-disk-space', 'Out of disk space', `Free disk space: nothing new starts until ${state.disk['warn-bytes'] / 1e9} GB is free`, { chip: true, scope: 'harness' }),
     fixes.length > 0 && warning('restart', restartNotice(fixes.length), `Restart the harness to load ${fixes.join(', ')}`, { chip: true, scope: 'harness' }),
     idle(state) && warning('idle', 'No work in progress', 'No agent is working a sprint ticket: check the sprint', { chip: true, after: IDLE_AFTER_MS }),
+    project?.jiraTokenRejected && warning('jira-token-rejected', 'Jira API token rejected', jiraTokenTodo(project.jiraTokenRejected), { chip: true }),
     state.disk?.level === 'warn' && warning('disk-low', 'Disk low', `Free disk space: ${gib(state.disk['free-bytes'])} GiB free, below the ${state.disk['warn-bytes'] / 1e9} GB warning level`, { scope: 'harness' }),
     account && warning('sign-in', 'Sign in', `Sign in: ${account['config-dir'] ? `CLAUDE_CONFIG_DIR=${account['config-dir']} ` : ''}claude, then /login as ${account.expected}`),
     limit && warning('rate-limited', 'Rate limited', `Wait: control sends its ${limit.kinds.join(' and ')} agents nothing until it resets ${resetText(limit['resets-at'], now)}`),
@@ -86,6 +91,14 @@ export function headerWarnings(state, now = Date.now()) {
     // ASS-460, ASS-457: every project's control down, and this one's waiting for its data (controlTroubles: the red header lines).
     ...controlTroubles(state, now).filter(t => t.scope === 'harness' || t.project === project?.id).map(t => warning(t.id, t.text, t.todo, { scope: t.scope, ...(t.after ? { after: t.after } : {}) })),
   ].filter(Boolean);
+}
+
+// jiraTokenTodo(record) — ASS-475: what to do about the analytics' rejected
+// Jira API token, as the header warning's notification and the Performance
+// screen say it.
+export function jiraTokenTodo(record) {
+  const source = record?.['work-source'] ? `the "${record['work-source']}" jira work source` : 'its jira work source';
+  return `Jira rejects the analytics API token of ${source}${record?.since ? ` since ${String(record.since).replace('T', ' ').replace(/:\d\dZ$/, ' UTC')}` : ''}, so the analytics are not updated: create a new Atlassian API token and put it in project.json as the api-token of ${source}`;
 }
 
 // controlTroubles(state, now) — ASS-460, ASS-457: a red line under the banner
@@ -221,7 +234,8 @@ export const headerLines = (state, columns, now) => (state.screen === 'S' || sta
 // before it. Either ends with the machine's lines and the project's
 // Hindsight (machineLines, ASS-292, ASS-293). The models
 // box, always there for a project, has a "model 🤖xN" line per model its
-// assignments use, most first, then what the project spent (spendLines,
+// assignments use, most first, then (ASS-469, vm+workstation mode) its VM
+// seats used of its VM seats (vmSeatLines), then what the project spent (spendLines,
 // ASS-430: moved here from the header's tiles), then how the project is
 // billed (billingLines, ASS-221), ending with the account. ASS-436: then, in
 // vm+workstation or workstation mode, the gcp workstations box
@@ -242,7 +256,7 @@ export function platform(state, columns, now) {
     ...(control && !down ? [[...box(projectAssignments(state).some(a => a.control === true) ? 'control 🤖' : 'control', { status, 'process-id': control.pid, uptime: since(control.startTime, now) }), ...forgeLines(project), ...machineLines(state.disk, project, state.memoryHealth)]] : []),
     ...(project ? [['models', ...[...models]
       .toSorted(([a, x], [b, y]) => y.length - x.length || String(a).localeCompare(String(b)))
-      .map(([model, list]) => `${model} 🤖x${list.length}`), ...spendLines(state, now), ...billingLines(project, now)]] : []),
+      .map(([model, list]) => `${model} 🤖x${list.length}`), ...vmSeatLines(project), ...spendLines(state, now), ...billingLines(project, now)]] : []),
     ...workstationBox(state, project),
   ];
   const row = boxRow(boxes, columns);
@@ -260,7 +274,9 @@ export function platform(state, columns, now) {
 // live data's holder holds (ASS-435: same ticket, case-insensitive, and
 // variation), 0 with no holder; the state workstationState's word from its
 // workstations.json entry (ASS-433/434; 'stopped' with none yet) — running in
-// green, sign in needed and setup failed in red. An id longer than WS_ID is
+// green, sign in needed and setup failed in red — then its seat (ASS-469: one
+// per workstation, AC9): "<used>/1 seats" as control's seats.json records it,
+// or "seat lost" in red while it can't be used (seat-kinds.js lostWhy). An id longer than WS_ID is
 // cut to it with an ellipsis, so the box stays narrow beside control and
 // models: the longest line, WS_ID + "🤖x99 sign in needed", fits the footer's
 // 120 columns with both.
@@ -275,9 +291,21 @@ function workstationBox(state, project) {
     const count = holder ? agents.filter(a => sameKey(a['work-item'], holder.ticket) && a.variation === holder.variation).length : 0;
     const word = workstationState(entry);
     const shade = word === 'running' ? green : word === 'sign in needed' || word === 'setup failed' ? red : text => text;
-    return `${ellipsis(String(id), WS_ID)} 🤖x${count} ${shade(word)}`;
+    const used = (project.seats ?? []).filter(r => r.kind === 'workstation' && r.workstation === id).length;
+    const seat = lostWhy(entry) ? red('seat lost') : `${used}/1 seats`;
+    return `${ellipsis(String(id), WS_ID)} 🤖x${count} ${shade(word)} ${seat}`;
   };
   return [['gcp workstations', ...settings.workstations.map(line)]];
+}
+
+// vmSeatLines(project) — ASS-469: in the models box, in vm+workstation mode (where a ticket in progress sits in a VM
+// seat or a workstation seat), "vm seats: <used>/<project.json's max-tickets-in-progress>" — "∞" for no limit — as
+// control's seats.json records them; none in other modes (vm: every seat is a VM seat, the sprint's empty seat rows
+// show them, ASS-451; workstation: no VM seats).
+function vmSeatLines(project) {
+  if (project?.devEnvironments?.mode !== 'vm+workstation' || !project.devEnvironments.workstations?.length) return [];
+  const { vm } = seatCapacity({ json: project.limits?.project ?? {}, devEnvironments: project.devEnvironments, workstations: project.workstations });
+  return [`vm seats: ${(project.seats ?? []).filter(r => r.kind === 'vm').length}/${Number.isFinite(vm) ? vm : '∞'}`];
 }
 
 // forgeLines(project) — ASS-307: in the control (not control DOWN) box, the

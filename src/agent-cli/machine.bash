@@ -28,9 +28,12 @@
 # Two backends: Lima (machine-lima.bash) and, since ASS-435, a GCP
 # workstation (machine-workstation.bash), whose machine is named
 # workstation:<project>:<id>:<folder> from the variation's vm { kind:
-# workstation, name: <id>, project, folder } — the variation's own folder on
-# the workstation, standing in for a VM's root (machine-workstation.bash says
-# how). A new one is a machine-<kind>.bash defining <kind>_run,
+# workstation, name: <id>, project, folder } — the folder on the workstation
+# standing in for a VM's root (machine-workstation.bash says how). ASS-468:
+# while one of its steps holds a workstation, the variation's `workstation`
+# { name, project, folder } (workstation:claim) is its machine instead,
+# whatever its vm records — so in vm+workstation mode a variation with a VM
+# runs a step on the workstation when it is free. A new one is a machine-<kind>.bash defining <kind>_run,
 # <kind>_stop_marked, <kind>_copy_in, <kind>_copy_out, <kind>_status,
 # <kind>_start and <kind>_stop as lima_* do, sourced here and named in
 # $machine_backends.
@@ -48,7 +51,7 @@ source "$here_machine/machine-workstation.bash"
 machine_backends="lima workstation"
 
 # shellcheck disable=SC2016
-machine_of='(.vm // {}) as $m | if ($m.name // "") == "" then "" elif ($m.kind // "lima") == "lima" then $m.name
+machine_of='(if (.workstation.name // "") != "" and .workstation.project and .workstation.folder then .workstation + { kind: "workstation" } else .vm // {} end) as $m | if ($m.name // "") == "" then "" elif ($m.kind // "lima") == "lima" then $m.name
   elif $m.kind == "workstation" and $m.project and $m.folder then "workstation:\($m.project):\($m.name):\($m.folder)" else "\($m.kind):\($m.name)" end'
 
 machine_backend() {

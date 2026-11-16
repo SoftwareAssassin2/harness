@@ -43,6 +43,7 @@ import { memoryHeldIn } from './host-memory.js';
 import { isBlockedState, isDoneStep, waitsOnHuman, statusIn, inPlanning, stepOf, isHeld, isActive } from './engine.js';
 import { rankSprint } from './rank.js';
 import { overSpent } from './spend.js';
+import { seatLimits, seatedIn } from './seat-kinds.js';
 
 // memoryWaitIn(project) — ASS-420: whether a variation of the project was
 // refused a seat for want of memory for its VM, by its memory-wait.json
@@ -95,7 +96,9 @@ export function slotKind(step, status = { chain: [{ step }] }) {
 // keys of the tickets an open blocking question holds (state.js, ASS-248); `waitsOn(ticket,
 // variation)`, whether its dependencies hold it (dependencies.js heldBy, ASS-355); `memoryHeld(ticket,
 // variation)`, whether its VM is held for memory (ASS-404: host-memory.js memoryHeldIn); `memoryWaits(ticket, variation)`,
-// whether it was refused a seat for want of memory for its VM (ASS-420: memoryWaitIn). (`transient` is taken
+// whether it was refused a seat for want of memory for its VM (ASS-420: memoryWaitIn); `seated(ticket, variation)`,
+// whether it holds a recorded in-progress seat (ASS-469: seats.js, seat-kinds.js seatedIn — kept ahead of the
+// rest, see below). (`transient` is taken
 // for the record; triggered engines count through agentsRunning.) Returns
 // { dispatch, reserved, planning, inPlanning, ready, readyFull, waiting, memoryHeld, memoryWaiting, held, short, free }: `dispatch`, in rank order, each
 // { key, variation, state, agentCount, planning } to put agents on;
@@ -112,7 +115,8 @@ export function slotKind(step, status = { chain: [{ step }] }) {
 // now; `free`, { planning, progress }: whether a variation holding none could
 // take a slot of each (mayEnter) — planning only while readyFull is not.
 // A variation is in motion — holds a slot of its step's kind (slotKind), the
-// first ones in rank order up to the limits — unless deleted, held (paused,
+// first ones in rank order up to the limits (in progress, those `seated` first,
+// ASS-469) — unless deleted, held (paused,
 // it or its ticket, or worked by hand: isHeld), its ticket waiting on the
 // operator for an answer (`asking`: no seat, as paused), held by its
 // dependencies (`waitsOn`, ASS-355: no slot or seat, as paused), its ticket at its spending limit (overSpent: steps.js
@@ -128,23 +132,38 @@ export function slotKind(step, status = { chain: [{ step }] }) {
 // the one that waits on a human or the outside and that needs an agent; its
 // run's agents go out with the run (dispatch.js), so it is not dispatched
 // here, but it is `held` when it could not be — no slot — or it waits on a human.
-export function planDispatch({ ranked, engine, engines = {}, assignments = [], harness = {}, project = {}, agentsRunning = 0, projectAgentsRunning = 0, reservedElsewhere = 0, planningElsewhere = 0, readyElsewhere = 0, asking = new Map(), running = {}, waitsOn = () => false, memoryHeld = () => false, memoryWaits = () => false }) {
+export function planDispatch({ ranked, engine, engines = {}, assignments = [], harness = {}, project = {}, agentsRunning = 0, projectAgentsRunning = 0, reservedElsewhere = 0, planningElsewhere = 0, readyElsewhere = 0, asking = new Map(), running = {}, waitsOn = () => false, memoryHeld = () => false, memoryWaits = () => false, seated = () => false }) {
   const all = name => harness[name] ?? Infinity, own = name => project[name] ?? Infinity;
   const occupied = (key, name) => assignments.some(a => a['work-item'] === key && (a.variation == null || a.variation === name));
   const slots = { planning: [], progress: [] }, elsewhere = { planning: planningElsewhere, progress: reservedElsewhere };
-  const free = kind => slots[kind].length < own(LIMIT[kind]) && elsewhere[kind] + slots[kind].length < all(LIMIT[kind]);
+  const counts = { planning: 0, progress: 0 };
+  const free = kind => counts[kind] < own(LIMIT[kind]) && elsewhere[kind] + counts[kind] < all(LIMIT[kind]);
   let agents = agentsRunning, projectAgents = projectAgentsRunning;
   const dispatch = [], held = [], short = [], waiting = [], ready = [], memory = [], memoryWaiting = [];
+  // The variations in motion, in rank order, each with the slot kind its step takes.
+  const moving = [];
   for (const t of ranked) for (const v of overSpent(t, harness, project, running[t.key] ?? 0) ? [] : t.variations ?? []) {
-    const status = statusIn(engine, v, engines), { state, step } = status;
-    if (!step || v['is-deleted'] || isHeld(t, v) || asking.has(t.key) || isDoneStep(engine, state) || isBlockedState(engine, state) || waitsOn(t, v)) continue;
-    const deep = status.chain.at(-1), inRun = status.chain.length > 1, at = status.detailStep ?? step;
-    const hold = () => { if (inRun) held.push({ key: t.key, variation: v.name, 'state-engine': deep['state-engine'], state: deep.state }); };
+    const status = statusIn(engine, v, engines), { step } = status;
+    if (!step || v['is-deleted'] || isHeld(t, v) || asking.has(t.key) || isDoneStep(engine, status.state) || isBlockedState(engine, status.state) || waitsOn(t, v)) continue;
+    const at = status.detailStep ?? step;
     if (at['is-done'] !== true && waitsOutside(at)) continue;   // a run done: its group step is about to move on
     const kind = slotKind(step, status);
     if (kind != null && memoryHeld(t, v)) { memory.push({ key: t.key, variation: v.name }); continue; }   // ASS-404: its VM held for memory — no seat, no agent
     if (kind != null && memoryWaits(t, v)) { memoryWaiting.push({ key: t.key, variation: v.name }); continue; }   // ASS-420: refused a seat, its VM not fitting — no seat, no agent
-    const slot = kind != null && free(kind);
+    moving.push({ t, v, status, kind, at });
+  }
+  // The slots: in rank order — but ASS-469: an in-progress seat already recorded (seats.js) is kept ahead of the rest,
+  // so a ticket in progress never loses its seat to a higher-ranked one, and when the seats shrink (a workstation
+  // lost) those taken out of theirs are the ones left waiting.
+  const gets = new Set();
+  for (const m of [...moving.filter(m => m.kind === 'progress' && seated(m.t, m.v)), ...moving.filter(m => m.kind === 'planning' || (m.kind === 'progress' && !seated(m.t, m.v)))]) {
+    if (free(m.kind)) { gets.add(m); counts[m.kind]++; }
+  }
+  for (const m of moving) {
+    const { t, v, status, kind, at } = m, { state, step } = status;
+    const deep = status.chain.at(-1), inRun = status.chain.length > 1;
+    const hold = () => { if (inRun) held.push({ key: t.key, variation: v.name, 'state-engine': deep['state-engine'], state: deep.state }); };
+    const slot = gets.has(m);
     if (status.planned) ready.push({ key: t.key, variation: v.name });   // ASS-362: in the queue for Build, no seat
     if (slot) slots[kind].push({ key: t.key, variation: v.name });
     else if (kind != null) waiting.push({ key: t.key, variation: v.name });
@@ -190,12 +209,16 @@ export function inMotion(projects, engines, state) {
 // whose VM is held for memory (ASS-404: memoryHeldIn), nor those refused a
 // seat for memory (ASS-420: memoryWaitIn);
 // `agents`, { agentsRunning, projectAgentsRunning }, for its dispatches.
+// ASS-469: its in-progress limit is its seats — project.json's
+// max-tickets-in-progress (its VM seats) and its usable workstations' seats,
+// by its mode (seat-kinds.js seatLimits) — and those holding a recorded seat
+// (its seats.json, seatedIn) keep it ahead of the rest.
 export function planFor(state, project, agents = {}) {
   const others = inMotion((state.allProjects ?? state.projects).filter(p => p.id !== project.id), state.engines, state);
   return planDispatch({
     ranked: rankSprint(project.tickets, { engine: project.engine }), engine: project.engine, engines: project.engines ?? state.engines,
     assignments: state.assignments.filter(a => a.project === project.id), transient: state.transient,
-    harness: state.harness, project: project.json, reservedElsewhere: others.progress, planningElsewhere: others.planning, readyElsewhere: others.ready, asking: project.asking, running: state.running?.[project.id] ?? {}, waitsOn: heldBy(state, project), memoryHeld: memoryHeldIn(project), memoryWaits: memoryWaitIn(project), ...agents,
+    harness: state.harness, project: seatLimits(project), reservedElsewhere: others.progress, planningElsewhere: others.planning, readyElsewhere: others.ready, asking: project.asking, running: state.running?.[project.id] ?? {}, waitsOn: heldBy(state, project), memoryHeld: memoryHeldIn(project), memoryWaits: memoryWaitIn(project), seated: seatedIn(project), ...agents,
   });
 }
 
@@ -204,11 +227,13 @@ export function planFor(state, project, agents = {}) {
 // seats too): its limits, project.json's and
 // harness.json's (null for none), and who holds its seats (planFor): "<key>
 // <variation>" in progress and in planning, and over the limits — in motion
-// at a step that takes a seat, with none free.
+// at a step that takes a seat, with none free. ASS-469: the project's
+// in-progress limit is its seats of both kinds (seatLimits: its VM seats and
+// its usable workstations'), as planFor grants them.
 export function seatsOf(state, project) {
   const { reserved, inPlanning, waiting } = planFor(state, project), names = list => list.map(s => `${s.key} ${s.variation}`);
   const limits = json => Object.fromEntries([LIMIT.progress, LIMIT.planning, 'max-agents'].map(name => [name, json?.[name] ?? null]));
-  return { limits: { project: limits(project.json), harness: limits(state.harness) }, 'in-progress': names(reserved), 'in-planning': names(inPlanning), 'over-the-limits': names(waiting) };
+  return { limits: { project: limits(seatLimits(project)), harness: limits(state.harness) }, 'in-progress': names(reserved), 'in-planning': names(inPlanning), 'over-the-limits': names(waiting) };
 }
 
 // mayEnter(state, project, variation, to) — whether the variation may move to

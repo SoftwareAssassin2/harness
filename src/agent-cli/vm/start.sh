@@ -51,19 +51,20 @@ set -euo pipefail
 #     (null when it declares neither).
 # Fails, naming the step, when the VM is missing or any step but 5 fails.
 #
-# ASS-435: a variation whose recorded machine is on a GCP workstation
-# (vm:create placed it there) is readied there instead
-# (workstation-variation.bash wsv_start): the workstation connected and set
-# up when it is not (workstation:connect, workstation:setup) and held by the
-# variation; vm:credentials into the setup's runtime folder (its kind and
-# stamps recorded on the live data's holder, not vms.json); a fresh
+# ASS-435: a variation whose machine is on a GCP workstation is readied
+# there instead (workstation-variation.bash wsv_start) — since ASS-468 only
+# while one of its steps holds the workstation (workstation:claim runs it at
+# each step's start; a variation that does not hold it fails here): the
+# workstation connected and set up when it is not (workstation:connect,
+# workstation:setup); vm:credentials into the setup's runtime folder (its
+# kind and stamps recorded on the live data's holder, not vms.json); a fresh
 # forwarder token there (agent-token beside setup's agent-url, the
 # forwarder on the workstation's loopback), its hash and binding in
 # vm-tokens.json under the machine's name; the ticket's read-only copy
-# brought up to date; each image of images.txt by tag pulled through the
-# project's zot on the workstation's loopback and tagged as named. agent.sh
-# is the setup's, no display, no IP: { name: <workstation id>, ip: null,
-# credential-kind }.
+# brought up to date; each image of images.txt pulled there once per boot of
+# the workstation, straight from Artifact Registry as the workstation's
+# service account, zot the fallback (ASS-472: wsv_pull_images). agent.sh is the setup's, no display, no IP: {
+# name: <workstation id>, ip: null, credential-kind }.
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../vm.bash"
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../registry/registry.bash"
 

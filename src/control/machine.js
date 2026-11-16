@@ -14,8 +14,10 @@
 // (machine-lima.js) and, since ASS-435, a GCP workstation
 // (machine-workstation.js), whose machine is
 // workstation:<project>:<id>:<folder> from the variation's vm { kind:
-// workstation, name: <id>, project, folder } — the variation's own folder on
-// the workstation, standing in for a VM's root (machinePaths). A new one is
+// workstation, name: <id>, project, folder } — or, while one of its steps
+// holds a workstation (ASS-468), its `workstation` { name, project, folder }
+// — the folder the workstation's shared root, <home>/harness, standing in
+// for a VM's root (machinePaths). A new one is
 // a module exporting what `lima` does (command, stopMarked, copyIn, copyOut,
 // statuses, status, stop), added to BACKENDS under its kind.
 //
@@ -30,9 +32,14 @@ import { workstation, parts as workstationParts, wsPath } from './machine-workst
 const BACKENDS = { lima, workstation };
 
 // machineOf(variation) — the variation's machine, as named above; undefined
-// when it has none (its Create VM step has not run).
+// when it has none (its Create VM step has not run). ASS-468: while one of
+// its steps holds a workstation, the variation's `workstation` { name,
+// project, folder } (workstation:claim) is its machine, whatever its vm
+// records — in vm+workstation mode a variation with a VM runs a step on the
+// workstation when one is free.
 export function machineOf(variation) {
-  const { name, kind = 'lima', project, folder } = variation?.vm ?? {};
+  const held = variation?.workstation?.name && variation.workstation.project && variation.workstation.folder ? { ...variation.workstation, kind: 'workstation' } : null;
+  const { name, kind = 'lima', project, folder } = held ?? variation?.vm ?? {};
   if (!name) return undefined;
   if (kind === 'workstation' && project && folder) return `workstation:${project}:${name}:${folder}`;
   return kind === 'lima' ? name : `${kind}:${name}`;
@@ -49,11 +56,11 @@ export function onWorkstation(machine) {
 // repos, the folder holding each repository's checkout (a step's cwd and
 // {folder}); ticket, the ticket folder's read-only view; where, how an agent
 // is told where it is }. A VM's: /repos/ and /mnt/ticket (vm.js REPOS,
-// TICKET_FOLDER); a workstation's: its variation folder's repos/ and ticket.
+// TICKET_FOLDER); a workstation's: its shared root's repos/ and ticket (ASS-468).
 export function machinePaths(machine) {
   const ws = onWorkstation(machine);
   if (!ws) return { repos: '/repos/', ticket: '/mnt/ticket', kind: 'VM', where: `in this ticket variation's own VM, ${machine}` };
-  return { repos: `${wsPath(ws.folder, '/repos')}/`, ticket: wsPath(ws.folder, '/mnt/ticket'), kind: 'workstation', where: `on the GCP workstation ${ws.id}, in this ticket variation's own folder there, ${ws.folder}` };
+  return { repos: `${wsPath(ws.folder, '/repos')}/`, ticket: wsPath(ws.folder, '/mnt/ticket'), kind: 'workstation', where: `on the GCP workstation ${ws.id}, in its shared repositories under ${ws.folder}, checked out on this ticket variation's branches for this step: commit and push your work on its branch before you finish (what a step that does not finish leaves uncommitted is discarded; a commit on master is refused)` };
 }
 
 // parseMachine(machine) — { kind, name }.

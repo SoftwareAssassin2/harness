@@ -413,7 +413,11 @@ and `origin/<base>`); `changes` (optional) runs it only when the merge
 request's diff touches one of the globs (`**` any folders, `*` and `?` within
 one, `{a,b}` either, as CI's `rules:changes`); `baseline: false` (optional)
 marks a check over the merge request's own commits, which has no master run to
-compare with. A check that fails is run on `origin/<base>` too, as Automated
+compare with; in a repository whose planned merge requests are all Merged it is
+skipped (ASS-474: no merge request range is left to scan), said so in the
+results, so a finished ticket is not sent round Build; `needs` (optional, ASS-471) lists commands the check's scripts
+are known to run that its command line does not show, which a workstation's
+setup checks with each command's first word (see "A GCP workstation's setup"). A check that fails is run on `origin/<base>` too, as Automated
 Testing's tests are (ASS-99), and failing as it does on master passes. Exit 0
 (every run check passed, or failed only as on master) goes to Code Review, 3
 (a check could not run, no VM, or the file malformed) to Blocked, any other (a
@@ -422,7 +426,7 @@ the ticket's folder holds each check's job, command, exit code and output, for
 Generate Solution and Security Review. A project without the file, or a ticket
 whose repositories declare none, passes with nothing run.
 
-`ci-checks.json` is not an input of the golden image: changing it rebuilds
+`ci-checks.json` is not an input of the golden image (it is of a workstation's setup, ASS-471): changing it rebuilds
 nothing.
 
 Check Numbered Files (ASS-385; grouped Build only — v2-build and the flat
@@ -676,6 +680,19 @@ does when Troubleshoot finds nothing wrong; still failing, or nothing to
 re-run, Troubleshoot goes on as before. Passes on re-check that block again
 are counted by ticket:fix-attempts (`passed-on-recheck`), so a check that
 only passes when re-checked reaches the operator after three.
+
+A loop is no block of the step it left (ASS-474). When that step moved on
+into a step of the group already visited its `max-visits` times in the
+group's run, so control sent the ticket to that step's `on-max-visits` (the
+done step it was blocked at) instead, the step it left passed and re-running
+it proves nothing. Check First then names the loop (`loop`: the step that ran
+out, the steps repeated, and the step that kept sending the ticket back, with
+how often and where), re-runs that failing step for its output when it is a
+check as above, and goes on to Troubleshoot whatever it exits — never
+resuming the ticket into the same loop. The loop is kept with the run in
+`blocks` (so Blocked for Human's record names it), and a loop run that ended
+with nothing to fix counts as a fix attempt (`loops`). Verify the Repaired
+Image re-checks the failing step too, its pass the repair's proof.
 
 Repair Environment fixes whatever blocks the ticket within its scope (ASS-390
 AC1): in the ticket's VM (or, before it is set up, its own host worktree) —
@@ -1412,19 +1429,45 @@ and the operator's gcloud login lapses after about 16 hours. The commands
 Live data, never project.json: `data/projects/<project>/workstations.json`,
 `{ "<id>": { state, state-at, connected, connected-at, checked-at,
 disconnected-at, started-at, forwards, last-error: { at, kind, message } |
-null } }`, kind `expired`, `offline` or `unknown` as `src/control/login.js`
-reads gcloud's output (ASS-429), the message with any token redacted.
+null, control-pid } }`, kind `expired`, `offline` or `unknown` as
+`src/control/login.js` reads gcloud's output (ASS-429), the message with any
+token redacted.
+
+Who owns a connection (ASS-470): `control-pid`, the pid of the control it
+belongs to, or null for one opened by hand. Control runs every `agent.sh`
+with `HARNESS_CONTROL_PID` set to its pid, and every command those run
+inherits it, so a connection opened by control's own phase and one opened by
+a command it ran (`vm:create`, a step's `workstation:claim`) are both its
+own. `workstation:connect` records that pid before it starts or opens
+anything (a control exiting meanwhile still finds it its own), takes an open
+connection as its control's unless another running control owns it, refuses
+to connect for a control that has exited and closes a master it opened after
+its control exited; run from the operator's shell it records null for a new
+master and for an open one no running control owns. `workstation:disconnect`
+clears it. Whenever control exits — the dashboard's stop, a restart (exit
+75), SIGTERM, SIGINT, SIGHUP, an uncaught exception (70), unreadable data
+(69) — it closes every connection it owns, each `workstation:disconnect` run
+detached so the supervisor's SIGKILL after 20 seconds cannot cut it short
+(process `exit` starts any still owned, whatever the way out; a stop waits
+at most 8 seconds for a tick under way). A connection another running control
+owns, and one opened by hand, are left alone. A control killed outright
+(SIGKILL, a crash of the Mac) closes nothing; the next control, at its
+start and before its first tick, closes each connection of its projects whose
+`control-pid` names no running control, logging it. A hand-opened connection
+nothing needs is still closed by a running control's idle disconnect.
 
 Control (`src/control/workstations.js`, beside the VMs in phase 3) keeps a
-workstation connected while something needs it: an agent of a ticket
-variation that holds it (its `vm` `{ kind: workstation, name: <id> }`) at
-work, that variation at a step with `vm: running` and not held, or a
-`vm:hold` on it. It checks the connection every minute
+workstation connected while something needs it: a step of a ticket
+variation running on it or waiting for it, a holder whose step is to be
+ended, a `vm:hold` on it, or (ASS-469) its seat — held by a ticket in
+progress, between its steps too, or free while a ticket waits for a seat or
+sits in a VM seat to move into it, or lost while tickets in progress would
+take it (so its connect is retried). It checks the connection every minute
 (`workstation:status --connection`; gcloud's ssh sends no keepalives) and
 reconnects one that dropped, or whose workstation stopped (starting it),
 logging each. Once nothing has needed it for harness.json's
 `workstation-idle-disconnect-seconds` (300) it disconnects, and it closes
-the connections it opened as it exits. A failed connect is retried after
+the connections it owns as it exits (ASS-470, above). A failed connect is retried after
 the usual backoff. One that failed because the workstation's gcloud login
 needs reauthentication sets the project's `gcloud-requires-reauthentication`
 (a network failure never does), logs and shows in the TUI the login to run —
@@ -1472,6 +1515,22 @@ handed to the project's optional `golden-image/workstation-tools.sh` (run in
 arguments, to install them under `$HOME`; not an input of the golden image),
 then checked again. Anything missing or unusable fails setup, each named.
 
+ASS-471: so is every command the project's CI checks need, so a missing one
+shows at setup rather than as a ticket's CI Checks step exiting 127 (Blocked):
+the first word of each simple command in each check's `command` in the
+golden-image `ci-checks.json` (`src/agent-cli/ci-check-commands.js`: past
+`NAME=value` assignments, keywords such as `if`/`do`/`!`/`exec` and
+redirections; not bash builtins such as `export`, nor a path such as
+`scripts/ci/x.sh`, nor a word holding `$`, a backquote or a glob), and each
+name a check declares in its optional `"needs": ["sqlfluff", …]` — commands
+its scripts are known to run that its command line does not show. The missing
+ones go to `workstation-tools.sh` with the missing tools; one still missing
+fails setup naming it and the checks that run it, e.g. `example-static-policy-gate:
+not on the workstation, and the project has no golden-image/workstation-tools.sh
+to install it under $HOME; ci-checks.json's static-policy-gate (example-project,
+example-corpus and 24 more) needs it`. A `ci-checks.json` that is not JSON
+fails setup (and `--version`), naming it.
+
 So `workstation-tools.sh` can source a file it shares with `provision.sh`
 (ASS-462) — `. "$(dirname "$0")/<file>"`, no copy — the golden-image folder's
 other top-level regular files are shipped beside it to
@@ -1481,7 +1540,8 @@ other top-level regular files are shipped beside it to
 setup before anything is sent. Without a `workstation-tools.sh` nothing is shipped.
 
 The setup's version is the sha256 of the two scripts, `agent.sh`,
-`workstation-tools.sh`, the forwarder URL, the tools list and each shipped
+`workstation-tools.sh`, the forwarder URL, the tools list, (ASS-471) each
+command the CI checks need with the checks needing it, and each shipped
 file's name and sha256
 (`workstation:setup <project> <id> --version` prints it without a
 connection). It is recorded on the workstation (`setup.json`) and in the live
@@ -1494,83 +1554,101 @@ data's. `workstationUsable` — what ASS-435's placement asks — wants the setu
 ok and checked since the connection opened, so nothing is dispatched to a
 workstation before it is set up. A failed setup is logged naming what
 failed, retried after the usual backoff (at once when the version changes),
-and shown in the TUI as a `Workstation <id> setup failed` chip; VMs carry on
-meanwhile in `vm+workstation` mode.
+and shown in the TUI as a `Workstation <id> setup failed` chip; in
+`vm+workstation` mode steps run on their variations' VMs meanwhile (ASS-468).
+
+### What a grouped client project's provision.sh installs, and how each reaches a workstation (ASS-471)
+
+The client project's VMs (`vm+workstation` mode) get their tools from
+`data/projects/<project>/golden-image/provision.sh`
+(arm64); its workstation (its config's image: Ubuntu 24.04, x86_64) gets each
+from the workstation config's image, from setup itself, or from the project's
+`golden-image/workstation-tools.sh` (under `~/harness/tools`, linked into
+`~/harness/bin`). Change one side, check the other: a tool added to
+`provision.sh` that a check or an agent needs on the workstation needs a line
+here and, when the image lacks it, an install in `workstation-tools.sh`.
+Found on its workstation on 2026-11-16.
+
+| provision.sh installs | On the workstation | Checked by setup |
+|---|---|---|
+| ca-certificates, gnupg, openssh-client | image | — |
+| curl | image | always (ASS-434) |
+| git (>= 2.48, the shared git.sh) | image | always (ASS-434) |
+| jq | image (setup installs its release when missing) | always (ASS-434) |
+| Docker Engine, buildx, compose | image (the config's; never installed) | always (`docker info`) |
+| Node 24, npm, corepack | image | — |
+| pnpm (corepack) | image | golden-image.tools |
+| kustomize, kubectl, kubeconform, conftest, yq | image | golden-image.tools |
+| gitleaks | image | golden-image.tools |
+| promtool, go (gofmt) | image | golden-image.tools |
+| shellcheck, bats | image | golden-image.tools |
+| glab | image | — |
+| Claude Code CLI | image (setup installs it under `~/harness` when missing) | always (ASS-434) |
+| example-static-policy-gate | `workstation-tools.sh` (a copy of provision.sh's, its CI repository found at `$HARNESS_VM_ROOT/repos/<its CI repository>`) | ci-checks.json (its static-policy-gate checks) |
+| uv | `workstation-tools.sh` (astral.sh's installer, `UV_INSTALL_DIR=~/harness/tools/uv/bin`) | — (every run of `workstation-tools.sh` makes sure of it) |
+| sqlfluff 4.2.2 | `workstation-tools.sh` (`uv tool install sqlfluff==4.2.2`, its Python uv's own, all under `~/harness/tools/uv`) | — (likewise; a check's `"needs": ["sqlfluff"]` would check it) |
+| postgresql-client (psql) | not on the workstation: no CI check runs it; tests run it in the dev container | — |
+| @devcontainers/cli (devcontainer) | not on the workstation: no CI check runs it | — |
+| `sh`, `bash` | image | ci-checks.json (secret-scan-mr, validate-mr, flux-bundle-validate) |
+
+`workstation-tools.sh` lives in `data/` (live data, not in git), as
+`provision.sh` does; it installs each command setup hands it that it knows,
+says any it does not (exit 1, so setup names it), and at every run makes sure
+of uv and sqlfluff (only when missing; sqlfluff also when not 4.2.2).
 
 ## A ticket variation on a GCP workstation (ASS-435)
 
 In `workstation` and `vm+workstation` modes (ASS-431) a ticket variation's
-agents run on one of its project's workstations instead of a VM of its own,
-everything else as in a VM.
+steps run on one of its project's workstations instead of a VM of its own,
+everything else as in a VM. ASS-468 (below) changed how long a variation
+holds one: a step at a time, not from Create VM until Done.
 
-- **Placement.** Setup's Create VM (`vm:create`) places a variation that has
-  no machine yet: in list order, the first workstation that is free — no
-  holder, or one whose variation is no longer in flight (Done, set aside,
-  gone from the sprint, at a step that needs no machine, released: its
-  folder removed first, as `make_room` deletes a VM) — whose gcloud login is
-  live; connected (started when stopped) and set up first when it is not,
-  and passed over when that fails. In `vm+workstation` mode a variation
-  gets a VM only when no workstation is free; in `workstation` mode it waits
-  (below). One variation per workstation, recorded in the live data
-  (`workstations.json`'s `holder`, `{ ticket, variation, folder, since,
-  boot-id, started-at, credential-kind, credential-stamps }`, claimed under
-  the project's pool lock, `workstations-pool.lock`) and on the variation
-  by `ticket:set-vm … --kind workstation --folder <folder>`: `vm { name:
-  <id>, kind: workstation, project, folder, created-at }`. A variation stays
-  where it started: one recording a VM keeps its VM, one recording a
-  workstation goes back to it (waiting while another holds it). It keeps the
-  workstation until it is Done or its machine is reclaimed; control frees it
-  (`workstation:release`) once its holder gives it up (Done, set aside, gone
-  from the sprint, a `vm: released` step) with no assignment on it.
-- **The folder.** `~/harness/<KEY>-<variation>` on the workstation, never
-  the owner's `~/workspaces`, stands in for the VM's root: `repos/` (each
-  repository cloned and checked out once, `vm:create`'s
-  `.vm-create-checked-out` marker; Setup's `.setup-complete` marker there),
-  `ticket/` (the ticket folder's read-only copy; `mnt/ticket` links to it)
-  and `run/harness` (a link to the setup's runtime folder). The machine
-  layer (`machine-workstation.bash`, `machine-workstation.js`) names it
-  `workstation:<project>:<id>:<folder>` and runs each command there over the
-  workstation's connection with `HARNESS_VM_ROOT` the folder, its workdir
-  mapped (`/` the folder, `/repos…`, `/run/harness…` and `/mnt/ticket…` under
-  it) and `~/harness/env` sourced; a marker works as in a VM, so `stop()`
-  ends an agent there. So Check Setup Complete, Mark Setup Complete, Refresh
-  the Reference Repositories and the other in-machine scripts run unchanged.
-- **Readied as a VM is.** `vm:start` (by `vm:create`, and by control) on a
-  workstation: `vm:credentials` sends the same contents over the connection
-  into the runtime folder (`env`, its paths the runtime folder's —
+- **Create VM.** Setup's Create VM (`vm:create`) records the pool on the
+  variation, claiming nothing: the first workstation in list order whose
+  gcloud login is live (connected and set up first when no setup has
+  recorded its home yet), by `ticket:set-vm … --kind workstation --folder
+  <home>/harness`: `vm { name: <id>, kind: workstation, project, folder,
+  created-at }`. With none usable, `vm+workstation` falls back to a VM;
+  `workstation` mode fails, naming why. Check Setup Complete and Mark Setup
+  Complete read and write the variation's `vm.setup-complete-at` (the
+  workstation's repositories are every variation's), Mark Setup Complete
+  only once the workstation's setup is ok. `vm:create … --vm` makes or
+  reuses the variation's VM whatever the mode (ASS-468's fallback).
+- **The shared root.** `<home>/harness` on the workstation, never the
+  owner's `~/workspaces`, stands in for a VM's root: `repos/` (the shared
+  repositories), `ticket/` (the holder's ticket folder's read-only copy;
+  `mnt/ticket` links to it) and `run/harness` (a link to the setup's runtime
+  folder). The machine layer (`machine-workstation.bash`,
+  `machine-workstation.js`) names it `workstation:<project>:<id>:<home>/harness`
+  and runs each command there over the workstation's connection with
+  `HARNESS_VM_ROOT` the root, its workdir mapped (`/` the root, `/repos…`,
+  `/run/harness…` and `/mnt/ticket…` under it) and `~/harness/env` sourced;
+  a marker works as in a VM, so `stop()` ends an agent there. While a step
+  holds the workstation the variation records it as its `workstation` `{
+  name, project, folder, since }`, which is its machine then (`machine.js
+  machineOf`, `machine.bash $machine_of`), whatever its `vm` says.
+- **Readied as a VM is**, at each step's claim (`wsv_start`):
+  `vm:credentials` sends the same contents over the connection into the
+  runtime folder (`env`, its paths the runtime folder's —
   `GIT_CONFIG_GLOBAL=<runtime>/gitconfig` and so on — `gitconfig`, `npmrc`;
   no git identity declared, the gitconfig includes the owner's
   `~/.gitconfig`), a fresh forwarder token goes to `agent-token` and its hash
   and binding to `vm-tokens.json` under the machine's name, the ticket's copy
-  is brought up to date, and each image of `images.txt` by tag is pulled
-  through the project's zot at `127.0.0.1:<registry.port>` (the
-  connection's forward) and tagged as named. Its credential kind is recorded
-  on the holder, its stamps by `vm:credentials`, and control refreshes them
-  as a VM's (another kind declared, a keychain item saved again) once idle.
+  is brought up to date, and, once per boot of the workstation
+  (`images-boot-id`), the project's images are pulled there, Artifact
+  Registry first, zot the fallback (ASS-472, below). Its credential kind is
+  recorded on the holder, its stamps by `vm:credentials`.
 - **Agents.** Dispatched over the connection (`ssh -S <socket> …
-  workstation-<id>`) in the folder's `repos/`, under a marker; told where
-  they are (`on the GCP workstation <id>, in this ticket variation's own
-  folder there`), `{ticket-folder}` the copy, their memory at
-  `127.0.0.1:<hindsight.port>` (the forward; a VM's is
-  `host.lima.internal`). The ticket copy is pushed as each agent starts, and
-  the forwarder pushes it again after every call it runs for a workstation
-  binding, before the call returns, so an agent reads its own writes; its
-  calls are authorized against their binding exactly as a VM's.
-- **Waiting (AC7).** A step that needs the machine, and an agent, waits while
-  the variation's machine is not up there (`workstation-machines.js
-  machineUp`: connected, login live, set up, held by the variation, readied
-  since the workstation last started) — with no 2-minute judging and no
-  ceiling: control reconnects, sets up and readies it again (`vm:create`
-  after a restart emptied the runtime folder, or after the folder was
-  released), and the variation's Health says why it waits (not connected,
-  the login to renew, the setup failed, held by another). An unplaced
-  variation in `workstation` mode waits so at Setup, Create VM not run,
-  while no workstation is free. A workstation's agents take none of the
-  Mac's memory: no memory hold or seat check for them.
-- **Release (AC6).** `workstation:release <project> <id> [--force]` removes
-  the holder's folder, the containers working in it or mounting it, and the
-  credentials and token in the runtime folder; nothing else of the
-  workstation's or the owner's.
+  workstation-<id>`) in the root's `repos/`, under a marker; told where they
+  are (`on the GCP workstation <id>, in its shared repositories under <root>,
+  checked out on this ticket variation's branches for this step`),
+  `{ticket-folder}` the copy, their memory at `127.0.0.1:<hindsight.port>`
+  (the forward; a VM's is `host.lima.internal`). The ticket copy is pushed as
+  each agent starts, and the forwarder pushes it again after every call it
+  runs for a workstation binding, before the call returns, so an agent reads
+  its own writes; its calls are authorized against their binding exactly as
+  a VM's. A workstation's agents take none of the Mac's memory: no memory
+  hold or seat check for them.
 - **Isolation.** None of a VM's: no macOS sandbox or pf rules, and agents act
   as the workstation's user — on the test workstation with the operator's
   own git identity and GitLab key where the project declares none (accepted,
@@ -1580,6 +1658,230 @@ For ASS-436's footer: a workstation's agents are the assignments on its
 holder's variation (`workstations.json`'s `holder` ticket and variation),
 and its state `workstation-machines.js workstationState(entry)`: `running`,
 `stopped`, `connecting`, `sign in needed` or `setup failed`.
+
+## A workstation's images (ASS-472)
+
+A workstation pulls its project's images straight from Artifact Registry in
+its own region: a project's first pull through zot on the Mac (the SSH
+reverse forward, ~8 MB/s, 41 images, ~15 GB) took over an hour and loaded
+the Mac's USB drive and tunnel. Once per boot of the workstation
+(`images-boot-id`; Docker's data, `/home/.docker_data`, persists across
+restarts), at a step's claim, `wsv_pull_images`
+(`workstation-variation.bash`) sends
+`src/agent-cli/workstation/on-workstation/pull-images.sh` over the
+connection with every image of the golden image's `images.txt` under the
+project's `registry.upstream` host — digest-pinned ones too, where before
+only those by tag were pulled (comments, blank lines and other registries'
+images passed over) — and it pulls each in turn:
+
+1. **A local rebuild in zot**, when the image is by tag alone and zot holds
+   `0local/<path>:<tag>` (`registry:push`'s): from `127.0.0.1:<registry.port>`
+   (the forward) and tagged as named, winning over Artifact Registry's as a
+   VM's `hosts.toml` makes it win there — so a rebuild, under a tag Artifact
+   Registry lacks or its own, reaches the workstation (AC2).
+2. **Else straight from Artifact Registry** under its own name, as the
+   workstation's **service account**: its token from the metadata server
+   (`computeMetadata/v1/instance/service-accounts/default/token`), asked
+   before every pull and written to a Docker config of the run's own
+   (`DOCKER_CONFIG`, a 0700 temp folder removed at the end). Never a token
+   from the Mac, and never the owner's `~/.docker/config.json`. Found on
+   the test workstation, 2026-11-16 (read-only): its service account (scope
+   `cloud-platform`) gets a token and pulls from the project's Artifact
+   Registry in `us-central1-docker.pkg.dev`; the operator's
+   own gcloud there (the owner's Docker config's `gcloud` credential helper)
+   needed reauthentication — it lapses with Workspace session control — so
+   it is not used.
+3. **Only when that fails, through zot** as before ASS-472
+   (`127.0.0.1:<port>/<path>:<tag>`, or `@<digest>` for a pinned image: zot
+   syncs it from Artifact Registry with the Mac's login), tagged as named
+   when it has a tag, Artifact Registry's error logged as the why. An image
+   that fails both ways leaves the workstation the one it has.
+
+`docker pull`'s own check keeps an image already there at the same digest
+from being downloaded again. Each pull is logged (`vm:start: workstation
+<id>: pulled <image> from Artifact Registry in 4s (downloaded)`, `… through
+zot in 12s (up to date): <why>`, `could not pull <image> (…): <why>`), then
+the run's counts; the workstation's live data (`workstations.json`) records
+the last run as `last-image-pull` `{ at, boot-id, seconds, from-registry,
+from-zot, failed, up-to-date, zot: [{ image, why }], failures: [{ image, why
+}] }` (with `error` when the session itself failed; the images are then
+tried again at the next claim). ASS-473 builds on it: retries, and a
+missing image failing the claim.
+
+## A workstation held one step at a time (ASS-468)
+
+Operator decision, 2026-11-15: a GCP workstation is held only while one of
+a ticket variation's steps runs on it, so a ticket waiting — Blocked, waiting
+for a slot, waiting on a fix — never keeps it from the others (under ASS-435
+one ticket held a project's only workstation for a day, mostly Blocked,
+while every other ticket of the project went to a VM). Every step leaves the repositories clean on
+master with the latest pulled, so the workstation keeps one shared set,
+`~/harness/repos`, every variation uses in turn: cloned once (as `vm:create`
+clones) and kept across steps and restarts (`/home` persists), never a
+folder per variation.
+
+- **Which steps.** A step whose work runs on the variation's machine,
+  top-level or a sub-engine's (`workstation-steps.js machineWork`): a
+  `run-location: vm` prompt or script (Generate Solution's agents, CI
+  Checks' `ci-checks:verify`), or a host script that works in the machine
+  (`vm:refresh-repositories`). No other step needs or waits for a workstation.
+- **The claim (AC1, AC2).** Before such a step's agent is dispatched or its
+  script started (`stepWaits`, asked in `dispatch.js` once every other gate
+  has passed, and in `steps.js` before the script runs), control's
+  workstation job (`tendSteps`, beside the tick) claims a workstation for
+  that step — its visit, so a step left and come back to is another —
+  through `workstation:claim <project> <ticket> <variation>`: under the pool
+  lock the first workstation that is free (no holder) and usable now
+  (connected, its login live, set up since) becomes the variation's (the
+  holder `{ ticket, variation, folder: <home>/harness, since, … }`, the
+  variation's `workstation`); it is readied (above), and the shared
+  repositories are fetched and checked out on the variation's branches
+  (`step-trees.sh start`): each repository with an entry of the merge-request
+  plan not Merged or Closed on its branch (`change/<KEY>-<id>`: the local one
+  fast-forwarded to GitLab's, else GitLab's, else made from the entry's
+  planned `base` — origin's default branch without one — when GitLab has
+  none yet); every other on master at the latest; and each repository's git
+  hooks refuse a commit on master (AC10, below). One holder
+  per workstation; two variations never hold one at once. A step's parallel
+  agents share its claim.
+- **Every step commits its own work (AC9).** Each prompt of a step that
+  changes code commits and pushes it on the ticket's branch before it
+  finishes: Generate Automated Tests and Enrich Automated Test Data commit
+  their tests and test data on the merge request's branch themselves (made
+  from origin/<base> when it is not on origin yet), Generate Solution and
+  Address Merge Request Feedback commit everything and push before they
+  finish (Update Documentation did already). Nothing is carried between
+  steps: uncommitted work is only ever the leftover of a step that did not
+  complete.
+- **Never a commit on master (AC10).** `git-hooks.sh` makes each repository's
+  hooks folder `<git-dir>/harness-hooks` (`core.hooksPath`): a wrapper for
+  every hook git runs, each running the repository's own hook from the
+  folder it named before (kept as `harness.chained-hooks-path`) or its
+  `.git/hooks`, so its own hooks keep working; `pre-commit` and
+  `pre-merge-commit` first refuse a commit while HEAD is the default branch
+  (`harness.default-branch`), naming the ticket's branch to use
+  (`harness.ticket-branch`: the planned one, else `change/<KEY>-<id>`). Set
+  at every claim on the workstation, at `vm:create` and `vm:step-start` in a
+  VM; idempotent.
+- **The end (AC3, AC9, AC10).** Once nothing of the step uses the machine —
+  no assignment of a machine step on the variation, no live agent of it,
+  none being dispatched, no script of the step running — whatever the
+  outcome (success, failure, stop, the agent killed), control runs
+  `workstation:release <project> <id> --force [--completed <step>]`
+  (`step-trees.sh end`, then the cleanup). The step completed when its
+  agent's turn ended without error (`finish.js` → `stepCompleted`) or its
+  script exited 0 (`usingMachine`); anything else — a failed or killed agent,
+  a stop, a script failing — did not. In every repository what is not
+  committed (changes and untracked files, never the ignored dependency and
+  build caches) is, for a completed step on a branch other than master,
+  committed there with a message naming the ticket and the step and pushed,
+  logged as a warning (`warning: <KEY> <v>: its step completed but left …
+  uncommitted on …; committed and pushed by the harness (<files>)`); else
+  discarded (`reset --hard`, `clean -fd`), each file logged per repository.
+  Then each local branch's commits GitLab lacks are pushed to that branch
+  (never forced); master is never pushed — a local master ahead of GitLab's
+  is reset to it, the discarded commits (hash and subject) logged and shown
+  on the variation's Health (`Commits on master were discarded: …`) — and
+  checked out at GitLab's latest. Only once every tree is clean are the
+  step's Docker containers (working in the shared repositories or the ticket
+  copy, or mounting them), their anonymous volumes and their compose
+  projects' volumes and networks removed, the ticket copy emptied, the
+  credentials and token removed from the runtime folder, the binding
+  dropped, and the variation's `workstation` and the holder cleared. A tree
+  that cannot be cleaned keeps the workstation held, retried after the usual
+  backoff. A push that failed (rejected, no access) is logged and shown on
+  the variation's Health (`Could not push its committed work: …`), its
+  commits kept on the local branch and pushed again at the end of its next
+  step.
+- **Busy (AC4; since ASS-469, by seat).** Where a step runs follows its
+  variation's seat (see "VM seats and workstation seats" below): a
+  workstation-seat holder's step claims that workstation
+  (`workstation:claim … --workstation <id>`), and waits, its Health saying
+  why (held by another, starting — about 80 seconds — being set up, its setup
+  failed, its login to renew; AC5), while control connects and sets it up. A
+  VM-seat holder's step runs on the variation's VM — ASS-468's "the
+  workstation first, else the VM" is gone. A step with no seat kind
+  (planning) runs on the VM in `vm+workstation` mode, and in `workstation`
+  mode claims any free workstation no seat-holder's step waits for. The VM
+  is made by the existing VM path when it has none
+  (`vm:create … --vm`, recorded as its `vm` and kept for its later steps),
+  and before the step its
+  repositories are moved to the variation's branches, their hooks set
+  (`vm:step-start`, `step-trees.sh start` there); at the step's end
+  `vm:step-end [--completed <step>]` commits, pushes and cleans them the same
+  way, so a variation
+  moves between its VM and the workstation from step to step without losing
+  work.
+- **Connections (AC5).** Control's phase keeps a workstation connected
+  while a step runs on it, wants it, or a holder is to be ended — and, since
+  ASS-469, while its seat is used (below); with no seat-holder and nobody
+  waiting, the connection's idle disconnect (ASS-433) and the workstation's
+  own idle stop work as before.
+- **Leftovers and migration (AC6, AC7).** `workstation:setup` removes the
+  per-variation folders ASS-435 made (`~/harness/<KEY>-<variation>`), all
+  but the one a holder still records. A holder no step of the running
+  control holds — one from before control restarted, or ASS-435's, which
+  records its own folder — is released once no machine step's assignment is
+  on its variation: its committed work pushed, what it left uncommitted
+  discarded (its step did not complete), and, for ASS-435's, its folder
+  removed with its containers.
+
+## VM seats and workstation seats (ASS-469)
+
+In a project on workstations every ticket variation in progress (each step
+`slotKind` counts as `progress`) sits in exactly one seat: a VM seat or a
+workstation seat (operator decisions, 2026-11-15/16). `project.json`'s
+`max-tickets-in-progress` is the project's VM seats; each workstation in
+`dev-environments.workstations` is exactly one workstation seat (AC9: no
+setting). The planner's in-progress limit for the project is its VM seats
+plus its usable workstations (`src/control/seat-kinds.js` `seatLimits`;
+`vm` mode: VM seats only, as before; `workstation` mode: workstation seats
+only), under `harness.json`'s cap as before. Planning seats have no kinds.
+
+- **Recorded.** Control's tick phase (`src/control/seats.js`, before the
+  memory check and the VMs) records who holds which seat in
+  `data/projects/<p>/seats.json` — `{ seats: [{ key, variation, kind: "vm" }
+  | { key, variation, kind: "workstation", workstation: <id> }, each with
+  since] }` — written atomically when it changes. The planner keeps those
+  recorded seated ahead of the rest, so a ticket in progress never loses its
+  seat to a higher-ranked one.
+- **Taken.** A variation entering progress takes a free workstation seat,
+  else a free VM seat, else waits as before. Logged: `seats <KEY> <v>: takes
+  a workstation seat on <id>` / `takes a VM seat`.
+- **Preferred, moved between steps.** Whenever a workstation seat is free (its
+  ticket done, at a detour, set aside, or the workstation usable again), the
+  highest-ranked variation in a VM seat whose step is not running on its
+  machine moves into it at that tick, logged (`moves from a VM seat to a
+  workstation seat on <id>, between its steps; its VM seat is free for the
+  next ticket`); the freed VM seat goes to the next ticket. One whose step
+  runs on its VM is passed over and moves at a later tick, once that step has
+  ended, if a workstation seat is still free (a newcomer may take the free
+  one meanwhile: the workstation is used first). A VM-seat holder's next
+  step, while a workstation seat is free, waits for that tick rather than
+  start on the VM.
+- **Machines follow seats.** A workstation-seat holder's machine steps run on
+  its workstation (ASS-468's per-step claim, checkout, commit, push and
+  release unchanged), its VM, if it has one, stopped meanwhile and taking
+  none of the Mac's memory; a VM-seat holder's run on its VM.
+- **No bound seats.** While a workstation can't be used — its gcloud login
+  lapsed, its setup failed, its last connect failed (unreachable, or it
+  would not start) — its seat is lost (a workstation merely stopped by its
+  idle stop keeps it). Its holder is taken out of it, logged and shown on its
+  Health (`Lost its workstation seat: …`, cleared once seated again), and
+  takes the next free seat of either kind, ahead of tickets not yet in
+  progress; a step of it mid-run there finishes or fails as any step does,
+  with ASS-468's release. The seat coming back is filled as any freed one.
+- **Kept awake (AC6).** Control keeps the workstation started, connected
+  and set up while its seat is held, while it is free and a ticket waits for
+  an in-progress seat or sits in a VM seat to move, and while it is lost and
+  tickets in progress would take it (its connect retried after the backoff);
+  with no seat-holder and nobody waiting it lets it disconnect and stop
+  itself. A stopped workstation with work for its seat is started at once.
+- **TUI.** The sprint screen's seat column shows 💺 for a VM (or planning)
+  seat and ⛅ for a workstation seat (the key lists ⛅ for a project on
+  workstations); the gcp workstations box shows each workstation's
+  `1/1 seats`, `0/1 seats` or `seat lost`; the models box, in
+  `vm+workstation` mode, `vm seats: <used>/<VM seats>` (∞ with no limit).
 
 ## A finished plan holds no seat (ASS-362)
 

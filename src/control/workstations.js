@@ -7,12 +7,19 @@
 // to its loopback), and each writes the workstation's live data,
 // data/projects/<p>/workstations.json (workstation-connection.js).
 //
-// AC3. A workstation is needed (workstationNeeds) while an agent of a ticket
-// variation that holds it — its `vm` { kind: workstation, name: <id> }, as
-// ASS-435 records a placement — is at work (an assignment on the variation),
-// or that variation is at a step that runs its machine (`vm: running`,
-// vm-lifecycle.js vmUse) and not held (paused, worked by hand), or the
-// operator holds it running (vm:hold, ASS-427). While needed: connected
+// AC3. A workstation is needed (workstationNeeds) while one of a ticket
+// variation's steps runs on it or waits for it (ASS-468,
+// workstation-steps.js: a step claims a workstation for its length), while
+// it has a holder whose step is to be ended, while an agent of the variation
+// recording it as its `workstation` is at work, while the operator holds it
+// running (vm:hold, ASS-427), and — ASS-469 AC6, seats.js seatNeeds — while
+// any of its seats is held by a variation in progress (between its steps
+// too), or it has a free seat and a variation waits for an in-progress seat
+// or sits in a VM seat to move into it, or its seats are lost and tickets in
+// progress would take them (its connect tried again after the backoff). Only
+// with no seat-holders and nobody waiting does it disconnect and stop itself.
+// A stopped workstation with work for its seats is so connected — started —
+// at once. While needed: connected
 // (workstation:connect, which starts a stopped workstation and waits for
 // it), its first connect logged with why it is needed; then checked every
 // CHECK_EVERY (workstation:status --connection: the master up and a command
@@ -29,9 +36,11 @@
 // workstation-idle-disconnect-seconds (300 by default: a connect by hand, a
 // setup between steps, is not cut off at once), logged, so its own idle stop
 // (30 minutes with no SSH session) can happen; control never stops a
-// workstation itself. Control's shutdown closes the connections it opened
-// (disconnectWorkstations): its agents are stopped with it, and a connection
-// left open would keep the workstation running.
+// workstation itself. Whenever control exits it closes the connections it
+// owns, and at its start those a control no longer running left (ASS-470,
+// below: disconnectWorkstations, disconnectAtExit, closeLeftovers): its
+// agents are stopped with it, and a connection left open would keep the
+// workstation running.
 //
 // AC4. A connect that fails because the workstation's gcloud login (its
 // gcloud-config's CLOUDSDK_CONFIG) needs reauthentication — the live data's
@@ -64,48 +73,35 @@
 // data's setup.error). Nothing is dispatched to that workstation meanwhile;
 // VMs, in vm+workstation mode, carry on.
 //
-// ASS-435. A workstation is needed, too, while a variation of the project
-// with no machine yet is at a step that runs one (and not held), for the
-// first workstation free for it — so it is connected and set up before
-// vm:create places the variation (vm+workstation: workstations first) — and
-// while its holder gives it up, so its folder can be removed. After the
-// connections, each pass tends the variations on the project's workstations
-// (tend): a holder that gives its workstation up (Done, set aside, gone from
-// the sprint, at a `vm: released` step: workstation-machines.js givesUp) and
-// has no assignment on it is released (workstation:release: its folder,
-// containers, ticket copy and credentials removed, the workstation free for
-// the next, AC6), logged; a variation that needs its machine running, on a
-// usable workstation that is free or its own, whose machine is not up —
-// its folder released (it came back from QA), or the workstation restarted
-// since vm:start readied it, which emptied the runtime folder — is readied
-// again (vm:create: claimed, its folder made again when it is gone, vm:start),
-// logged, never while it is at its own Create VM step (that step does it);
-// and one up and idle whose credentials changed — another kind declared, or
-// a keychain item saved again since (credential-kind and credential-stamps
-// on its holder, as a VM's vms.json row has them: ASS-215, ASS-350) — has
-// them refreshed (vm:start), logged; each failure backed off as a VM's is.
-// The Health of a variation that waits on its workstation (AC7) says why —
-// not connected, its login to renew (with the command), its setup failed,
-// held by another, being readied — written when it changes and cleared once
-// it is up; that of an unplaced variation of a project in workstation mode
-// with none free says so (WORKSTATION_HEALTH begins both, so only control's
-// own is cleared).
+// ASS-435, ASS-468. After the connections, each pass tends the steps of
+// the project's variations on its workstations (workstation-steps.js
+// tendSteps): a step that wants one placed by its variation's seat (ASS-469)
+// — its seat's workstation claimed once free and usable (workstation:claim:
+// its repositories on the variation's branches), or a VM-seat holder's sent
+// to the variation's VM; a step that ended given
+// back (workstation:release: a completed step's leftovers committed on its
+// branch, an unfinished one's discarded, committed work pushed, master at
+// GitLab's latest, AC3, AC9, AC10); a holder no step of this control holds
+// — one from before a restart, or ASS-435's own-folder holder, the migration
+// — released. The Health of a variation whose step waits for a workstation
+// says why — held by another, starting (about 80 seconds), being set up, its
+// setup failed, its login to renew — written when it changes and cleared
+// once it is no longer waiting (WORKSTATION_HEALTH begins it, so only
+// control's own is cleared).
 //
 // The work runs beside the tick, one job per project at a time (a start
 // takes about 80 seconds), as vm-lifecycle.js's does; memory.workstations:
 // id → { job, ws: workstation id → { up (this control connected it and last
 // found it so), checkedAt, failures, until, idleSince, need, setupFailures,
-// setupUntil, readyFailures, readyUntil } }.
+// setupUntil } }; the steps' leases are memory.workstationSteps (workstation-steps.js).
+import { readdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { isHeld } from './engine.js';
-import { vmUse } from './vm-lifecycle.js';
+import { spawn, spawnSync } from 'node:child_process';
 import { backoffDelay, held } from './backoff.js';
 import { requiresReauthentication } from './state.js';
-import { loadWorkstations, expiredLogins, setUp, workstationUsable } from './workstation-connection.js';
-import { stampsOf, changedKeys, CREDENTIAL_STAMP_INTERVAL, makesMachine } from './vm-lifecycle.js';
-import { statusOf } from './engine.js';
-import { declaredCredentials } from './vm-credentials.js';
-import { busy, givesUp, inFlight, holds, machineUp, whyDown, placementWait } from './workstation-machines.js';
+import { loadWorkstations, expiredLogins, setUp } from './workstation-connection.js';
+import { tendSteps, workstationWants, WORKSTATION_HEALTH } from './workstation-steps.js';
+import { seatNeeds } from './seats.js';
 
 const PHASE = 'workstation';
 export const KIND = 'workstation';
@@ -113,34 +109,24 @@ export const CHECK_EVERY = 60_000;
 export const IDLE_DISCONNECT_SECONDS = 300;
 export const EXPIRED_RETRY = 2 * 60_000;
 
-// workstationNeeds(state, project, entries) — Map workstation id → why it is needed
-// now (see the module comment); a workstation not in it is needed by nothing.
-// `entries` the live data's (ASS-435: holders giving theirs up, and the
-// workstations free for a variation still to be placed).
-export function workstationNeeds(state, project, entries = {}) {
-  const needs = new Map(), unplaced = [];
+// workstationNeeds(state, project, entries, wants, seats) — Map workstation id → why
+// it is needed now (see the module comment); a workstation not in it is
+// needed by nothing. `entries` the live data's (its holders), `wants` the
+// steps' (workstation-steps.js workstationWants), `seats` its seats'
+// (ASS-469: seats.js seatNeeds).
+export function workstationNeeds(state, project, entries = {}, wants = new Map(), seats = new Map()) {
+  const needs = new Map([...seats, ...wants]);
   for (const t of project.tickets ?? []) for (const v of t.variations ?? []) {
     if (v['is-deleted']) continue;
-    const at = v['harness-status']?.state;
-    if (!v.vm?.name) {
-      if (project.devEnvironments?.mode !== 'vm' && !isHeld(t, v) && vmUse(project.engines ?? state.engines, project.engineName, v) === 'running') unplaced.push(`${t.key} ${v.name} at ${at} waits to be placed`);
-      continue;
-    }
-    if (v.vm?.kind !== KIND) continue;
-    const working = state.assignments.some(a => a.project === project.id && a['work-item'] === t.key && a.variation === v.name);
-    if (working) needs.set(v.vm.name, `${t.key} ${v.name}'s agent works on it`);
-    else if (v['vm-hold']) needs.set(v.vm.name, `${t.key} ${v.name} held running for the operator`);
-    else if (!isHeld(t, v) && vmUse(project.engines ?? state.engines, project.engineName, v) === 'running') needs.set(v.vm.name, `${t.key} ${v.name} at ${at}`);
+    const on = v.workstation?.name ?? (v.vm?.kind === KIND ? v.vm.name : null);
+    if (!on || needs.has(on)) continue;
+    const working = v.workstation?.name && state.assignments.some(a => a.project === project.id && a['work-item'] === t.key && a.variation === v.name);
+    if (working) needs.set(on, `${t.key} ${v.name}'s agent works on it`);
+    else if (v['vm-hold'] && v.vm?.kind === KIND) needs.set(v.vm.name, `${t.key} ${v.name} held running for the operator`);
   }
   for (const w of project.devEnvironments?.workstations ?? []) {
     const h = entries[w.id]?.holder;
-    if (h && !needs.has(w.id) && givesUp(state, project, h.ticket, h.variation)) needs.set(w.id, `${h.ticket} ${h.variation}'s folder to remove`);
-  }
-  for (const w of project.devEnvironments?.workstations ?? []) {
-    if (!unplaced.length) break;
-    const h = entries[w.id]?.holder;
-    if (needs.has(w.id) || (h && inFlight(state, project, h.ticket, h.variation))) continue;
-    needs.set(w.id, unplaced.shift());
+    if (h && !needs.has(w.id)) needs.set(w.id, `${h.ticket} ${h.variation}'s step to end`);
   }
   return needs;
 }
@@ -155,7 +141,8 @@ export function superviseWorkstations(ctx, state) {
     if (!settings?.workstations?.length) continue;
     const r = jobs.get(project.id) ?? { job: null, ws: new Map() };
     jobs.set(project.id, r);
-    const needs = workstationNeeds(state, project, loadWorkstations(join(ctx.paths.projects, project.id)));
+    const entries = loadWorkstations(join(ctx.paths.projects, project.id));
+    const needs = workstationNeeds(state, project, entries, workstationWants(ctx, state, project, entries), project.engine ? seatNeeds(state, project) : new Map());
     r.job ??= keep(ctx, state, project, settings, needs, r).catch(error => ctx.log('error', `${PHASE} ${project.id}: ${error.message}`)).finally(() => { r.job = null; });
   }
 }
@@ -211,73 +198,21 @@ async function keep(ctx, state, project, settings, needs, r) {
     }
     await gcloudFlag(ctx, project, settings, dir);
   }
-  await tend(ctx, state, project, settings, dir, r);
+  await tend(ctx, state, project, settings, dir);
 }
 
-// WORKSTATION_HEALTH — what every long Health tend writes begins with, so it knows its own to clear.
-export const WORKSTATION_HEALTH = 'Waiting for its workstation:';
-const healthOf = why => ({ short: `Waiting for its workstation: ${why.length > 90 ? `${why.slice(0, 87)}...` : why}`, long: `${WORKSTATION_HEALTH} ${why}. Its steps that need it wait, and no agent is sent to it, until it is up again; control keeps working on it (connecting, setting up, readying its folder). Only a sign-in or a failed setup needs you.` });
+export { WORKSTATION_HEALTH } from './workstation-steps.js';
+const healthOf = why => ({ short: `Waiting for its workstation: ${why.length > 90 ? `${why.slice(0, 87)}...` : why}`, long: `${WORKSTATION_HEALTH} ${why}. Its step waits, and no agent or script of it starts, until a workstation is claimed for it; control keeps working on it (connecting, starting, setting up). Only a sign-in or a failed setup needs you.` });
 
-// tend(ctx, state, project, settings, dir, r) — ASS-435 (see the module
-// comment): holders released, machines readied again or refreshed, and the
-// Health of those waiting on a workstation written or cleared.
-async function tend(ctx, state, project, settings, dir, r) {
-  const id = project.id;
-  let entries = loadWorkstations(dir);
-  for (const w of settings.workstations) {
-    const h = entries[w.id]?.holder, why = h && givesUp(state, project, h.ticket, h.variation);
-    if (!why || !entries[w.id]?.connected) continue;
-    await ctx.attempt(PHASE, `${id} ${w.id}`, async () => {
-      await ctx.cli(['workstation:release', id, w.id]);
-      ctx.log(PHASE, `${id} ${w.id}: released (${h.ticket} ${h.variation} ${why}): its folder removed; free for the next variation`);
-    });
-  }
-  entries = loadWorkstations(dir);
-  const healthy = new Set();
-  const declared = declaredCredentials(ctx.env, id), kindNow = declared?.anthropic && declared?.claude ? 'both' : declared?.anthropic ? 'anthropic' : declared?.claude ? 'claude' : null;
-  for (const t of project.tickets ?? []) for (const v of t.variations ?? []) {
-    if (v['is-deleted']) continue;
-    const who = `${t.key} ${v.name}`, use = vmUse(project.engines ?? state.engines, project.engineName, v);
-    if (!v.vm?.name) {
-      const wait = placementWait(ctx, state, project, v);
-      if (wait) await health(ctx, project, t, v, wait, healthy);
-      continue;
-    }
-    if (v.vm.kind !== KIND || isHeld(t, v) || use !== 'running') continue;
-    const ws = v.vm.name, e = entries[ws], s = r.ws.get(ws);
-    if (!e || !workstationUsable(e) || (e.holder && !holds(e, t.key, v.name) && inFlight(state, project, e.holder.ticket, e.holder.variation))) {
-      await health(ctx, project, t, v, whyDown(settings, ws, e, t.key, v.name, ctx.env.HOME), healthy);
-      continue;
-    }
-    const at = statusOf(project.engines ?? state.engines, project.engineName, v);
-    const working = busy(state, id, t.key, v.name), now = ctx.now().getTime();
-    let args = null, did;
-    if (!machineUp(e, t.key, v.name)) {
-      if (!makesMachine(at.detailStep)) [args, did] = [['vm:create', id, t.key, v.name], `readied again (${who} at ${at.detail}; ${whyDown(settings, ws, e, t.key, v.name, ctx.env.HOME)})`];
-    } else if (!working && kindNow && e.holder['credential-kind'] !== kindNow) {
-      [args, did] = [['vm:start', id, t.key, v.name], `credentials refreshed (${who} at ${at.detail}; ${e.holder['credential-kind'] ?? 'no recorded kind'} → ${kindNow})`];
-    } else if (!working && Object.keys(e.holder['credential-stamps'] ?? {}).length) {
-      const changed = changedKeys(e.holder['credential-stamps'], await stampsOf(ctx, id, (state.harness?.['credential-stamp-interval-seconds'] ?? CREDENTIAL_STAMP_INTERVAL) * 1000));
-      if (changed.length) [args, did] = [['vm:start', id, t.key, v.name], `credentials refreshed (${who} at ${at.detail}; ${changed.join(', ')} key${changed.length > 1 ? 's' : ''} changed)`];
-    }
-    if (!machineUp(e, t.key, v.name) && !makesMachine(at.detailStep)) await health(ctx, project, t, v, whyDown(settings, ws, e, t.key, v.name, ctx.env.HOME), healthy);
-    if (!args || !s || now < (s.readyUntil ?? 0)) continue;
-    try {
-      await ctx.cli(args);
-      Object.assign(s, { readyFailures: 0, readyUntil: 0 });
-      ctx.log(PHASE, `${id} ${ws}: ${did}`);
-      healthy.delete(`${t.key} ${v.name}`);
-    } catch (error) {
-      s.readyFailures = (s.readyFailures ?? 0) + 1;
-      const wait = backoffDelay(s.readyFailures);
-      s.readyUntil = now + wait;
-      ctx.log('error', `${PHASE} ${id} ${ws}: ${args.join(' ')} failed (${s.readyFailures} in a row; next try in ${held(wait)}): ${error.message}`);
-    }
-  }
+// tend(ctx, state, project, settings, dir, r) — ASS-468 (see the module
+// comment): the steps' claims and releases (workstation-steps.js tendSteps),
+// and the Health of those waiting for a workstation written or cleared.
+async function tend(ctx, state, project, settings, dir) {
+  const healthy = await tendSteps(ctx, project, settings, dir, (t, v, why) => health(ctx, project, t, v, why, new Set()));
   // Cleared from those no longer waiting on a workstation (unless written over since).
-  for (const t of project.tickets ?? []) for (const v of t.variations ?? []) {
+  for (const t of ctx.load().projects.find(p => p.id === project.id)?.tickets ?? []) for (const v of t.variations ?? []) {
     if (v['is-deleted'] || healthy.has(`${t.key} ${v.name}`) || !v['ai-feedback-long']?.startsWith(WORKSTATION_HEALTH)) continue;
-    await ctx.attempt(PHASE, `${t.key} ${v.name}`, () => ctx.cli(['ticket:clear-ai-feedback', id, t.key, v.name, v['ai-feedback-long']]));
+    await ctx.attempt(PHASE, `${t.key} ${v.name}`, () => ctx.cli(['ticket:clear-ai-feedback', project.id, t.key, v.name, v['ai-feedback-long']]));
   }
 }
 
@@ -336,19 +271,111 @@ async function gcloudFlag(ctx, project, settings, dir) {
   }
 }
 
-// disconnectWorkstations(ctx) — control's shutdown: each connection this
-// control opened and last found up closed (workstation:disconnect), logged;
-// a running job's connect waited for first.
-export async function disconnectWorkstations(ctx) {
-  for (const [id, r] of ctx.memory.workstations ?? []) {
-    await r.job;
-    for (const [ws, s] of r.ws) {
-      if (!s.up) continue;
-      await ctx.attempt(PHASE, `${id} ${ws}`, async () => {
-        await ctx.cli(['workstation:disconnect', id, ws]);
-        s.up = false;
-        ctx.log(PHASE, `${id} ${ws}: disconnected as control exits`);
-      });
-    }
+// ASS-470 — control closes the connections it owns whenever it exits, and at
+// its start those a control that is gone left. A connection's owner is the
+// live data's control-pid (agent-cli/workstation.bash says how it is
+// recorded): control runs every agent.sh with HARNESS_CONTROL_PID, its pid, so
+// a connection its phase opened and one a command it ran opened (vm:create's,
+// a step's workstation:claim) are alike its own; one opened by hand is
+// nobody's (null), and one a connect run by a control found owned by another
+// running control stays that control's.
+
+// controlPid(ctx) — this control's pid as its agent.sh calls carry it; null without (a test's context).
+export const controlPid = ctx => Number(ctx.env.HARNESS_CONTROL_PID) || null;
+
+// liveControl(pid) — whether `pid` is a running control (src/control/main.js), by ps.
+export function liveControl(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try { process.kill(pid, 0); } catch (error) { if (error.code !== 'EPERM') return false; }
+  const ps = spawnSync('ps', ['-o', 'command=', '-p', String(pid)], { encoding: 'utf8' });
+  return !ps.error && ps.stdout.includes(join('control', 'main.js'));
+}
+
+// connections(ctx) — [{ project, id, entry }] for every workstation of the
+// live data of ctx's project (or, for a control of every project, of each
+// project folder); a project whose live data cannot be read is logged and
+// passed over, its ids in `unread`.
+function connections(ctx, unread = []) {
+  let projects = [ctx.project];
+  if (!ctx.project) try { projects = readdirSync(ctx.paths.projects); } catch (error) { ctx.log('error', `${PHASE}: the projects folder could not be read: ${error.message}`); return []; }
+  const found = [];
+  for (const project of projects) {
+    let entries;
+    try { entries = loadWorkstations(join(ctx.paths.projects, project)); } catch (error) { ctx.log('error', `${PHASE} ${project}: its workstations.json could not be read: ${error.message}`); unread.push(project); continue; }
+    for (const [id, entry] of Object.entries(entries ?? {})) found.push({ project, id, entry });
+  }
+  return found;
+}
+
+// owned(ctx) — the connections this control owns: the live data's, and,
+// for a project whose live data could not be read, those its phase connected
+// and last found up (memory.workstations), so an exit for unreadable data
+// still closes them.
+function owned(ctx) {
+  const me = controlPid(ctx), unread = [];
+  const mine = me ? connections(ctx, unread).filter(c => c.entry['control-pid'] === me) : [];
+  for (const project of unread) for (const [id, s] of ctx.memory.workstations?.get(project)?.ws ?? []) if (s.up) mine.push({ project, id });
+  return mine.filter(c => !ctx.memory.closing?.has(`${c.project} ${c.id}`));
+}
+
+// closing(ctx, project, id, stdio) — workstation:disconnect started in a
+// session of its own (detached), so neither control's exit nor the
+// supervisor's SIGKILL of control's process group stops it half way: one
+// waiting on the workstation's lock (a connect under way) closes the
+// connection once that connect ends. Returns the child.
+function closing(ctx, project, id, stdio) {
+  (ctx.memory.closing ??= new Set()).add(`${project} ${id}`);
+  const child = spawn(join(ctx.root, 'agent.sh'), ['workstation:disconnect', project, id], { env: ctx.env, detached: true, stdio });
+  child.on('error', () => {});
+  child.unref();
+  return child;
+}
+
+// disconnectWorkstations(ctx, waitMs) — control's shutdown: every connection
+// this control owns closed (workstation:disconnect, see closing), each
+// logged; those still closing after `waitMs` (one waiting for a connect's
+// lock) are logged as closing after control exits, and left to it. Never
+// waits for the workstation job: one mid-way through a step's claim or
+// release could outlast the supervisor's patience (its 20 seconds), and its
+// SIGKILL would then leave the connection open (ASS-470).
+export async function disconnectWorkstations(ctx, waitMs = 10_000) {
+  const runs = owned(ctx).map(({ project, id }) => new Promise(resolve => {
+    const what = `${project} ${id}`, child = closing(ctx, project, id, ['ignore', 'ignore', 'pipe']);
+    ctx.log('cli', `agent.sh workstation:disconnect ${project} ${id}`);
+    let stderr = '';
+    child.stderr?.setEncoding('utf8').on('data', d => { stderr += d; });
+    const timer = setTimeout(() => { child.stderr?.destroy(); ctx.log(PHASE, `${what}: still closing its connection (it waits for a connect under way) as control exits; it closes once that ends`); resolve(); }, waitMs);
+    child.on('close', code => {
+      clearTimeout(timer);
+      if (code === 0) ctx.log(PHASE, `${what}: disconnected as control exits`);
+      else ctx.log('error', `${PHASE} ${what}: workstation:disconnect failed as control exits: ${stderr.trim().replace(/\n/g, ' | ') || `exit ${code}`}`);
+      resolve();
+    });
+  }));
+  await Promise.all(runs);
+}
+
+// disconnectAtExit(ctx) — the last resort, synchronous, for process 'exit'
+// (an exit no shutdown ran before, or one that cut it short): each
+// connection this control still owns has its workstation:disconnect started,
+// detached, to carry on once control has gone.
+export function disconnectAtExit(ctx) {
+  for (const { project, id } of owned(ctx)) closing(ctx, project, id, 'ignore');
+}
+
+// closeLeftovers(ctx, isControl) — control's start, before its first tick
+// decides which workstations it needs: each connection of its projects owned
+// by a control that is not running (a crash's, a kill -9's: control-pid
+// naming no live control) closed, logged. A hand-opened one (no
+// control-pid), and one another running control owns, are left alone.
+export async function closeLeftovers(ctx, isControl = liveControl) {
+  const me = controlPid(ctx);
+  for (const { project, id, entry } of connections(ctx)) {
+    const owner = entry['control-pid'];
+    if (owner == null || owner === me || isControl(owner)) continue;
+    await ctx.attempt(PHASE, `${project} ${id}`, async () => {
+      await ctx.cli(['workstation:disconnect', project, id]);
+      ctx.log(PHASE, `${project} ${id}: closed the connection control ${owner} left (it is no longer running)`);
+    });
   }
 }

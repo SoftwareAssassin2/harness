@@ -27,6 +27,7 @@ import { machineOf, machinePaths, onWorkstation } from './machine.js';
 import { syncTicketCopy } from './machine-workstation.js';
 import { awaitsVm, credentialKindOf, NEVER_UP, neverUp, vmUpCeilingMs } from './vm-lifecycle.js';
 import { awaitsDependencies } from './dependencies.js';
+import { stepWaits, dispatching } from './workstation-steps.js';
 import { repositoryName, nextRepository, visitOf } from './repositories.js';
 import { overSpent, runningOn } from './spend.js';
 import { credentialsHeld } from './credentials.js';
@@ -146,7 +147,7 @@ export function withSandboxRefused(schema) {
 // project.json's "vm-full-checks", how to run the full checks there (ASS-229),
 // when it has one. Throws when the project declares no such repository.
 // ASS-435: on a GCP workstation (`vm` a workstation's machine) the same, its
-// paths its variation folder's (machine.js machinePaths: <folder>/repos/,
+// paths its shared root's (ASS-468; machine.js machinePaths: <folder>/repos/,
 // <folder>/ticket, the ticket's read-only copy) and the agent told it is on
 // the workstation, in that folder.
 const repoName = r => repositoryName(r.url);
@@ -163,7 +164,7 @@ export function vmWhereText(project, vm, repository) {
 }
 
 // vmFolder(vm, repository) — where an agent in the VM starts: /repos/<repo>/ for a step in one repository (ASS-119), else /repos/
-// (a workstation's: its variation folder's repos/, ASS-435).
+// (a workstation's: its shared root's repos/, ASS-435, ASS-468).
 const vmFolder = (vm, repository) => { const { repos } = machinePaths(vm); return repository ? `${repos}${repository}/` : repos; };
 
 // codeFolder(project, vm, folder, repository) — the {project-code-folder} of
@@ -619,10 +620,13 @@ export async function dispatch(ctx, state) {
       continue;
     }
     if (!workspaceFree(ctx, state, step, project, context.workItem ?? run.id.slice(0, 8), context.variation ?? '-')) continue;
+    // ASS-468: a workstation (or, in vm+workstation mode, its VM) claimed for the step before its agent goes there.
+    if (!waits.backlog && stepWaits(ctx, state, project, waits.ticket, waits.variation, step, `run ${run['state-engine']} ${run.id.slice(0, 8)} ${run.state}`)) continue;
     // The ticket it works for (the fix ticket once made); the variation only when that is the context's own,
     // and in the run's own project (a harness run about another project's ticket logs no dispatch on it).
     const ticket = ticketOf(run, state.transient);
     const elsewhere = (ticketProjectOf(state, run.id) ?? run.project) !== run.project;
+    const done = waits.ticket && waits.variation ? dispatching(ctx, run.project, waits.ticket.key, waits.variation.name) : () => {};
     await ctx.attempt(PHASE, `run ${run.id.slice(0, 8)}`, heldOnFailure(ctx, key, async () => {
       const where = nextRepository(ctx.memory, step, found(state, { project: run.project, 'work-item': context.workItem, variation: context.variation }).variation, visitOf({ run, changes: run['state-changes'] ?? [] }));
       if (where?.skip) return skip(ctx, step, engineSteps(enginesFor(state, run.project), run['state-engine']), run['state-changes'] ?? [], `run ${run.id.slice(0, 8)} ${run.state}`, to => moveRun(ctx, PHASE, run, to));
@@ -630,7 +634,7 @@ export async function dispatch(ctx, state) {
       await takeWorkspace(ctx, step, project, context.workItem, context.variation);
       const records = await create(ctx, [run.project, run['state-engine'], run.state, step.action.prompt, String(count), String(inContainer(step, project)), ticket ?? '-', (ticket === context.workItem && !elsewhere ? context.variation : undefined) ?? '-', run.id, problemOf(run, state.transient, { harness: state.harness, project: ticketProjectOf(state, run.id) ?? run.project, history: blockHistory(found(state, { project: run.project, 'work-item': context.workItem, variation: context.variation }).variation) })], step, state.harness);
       for (const record of records) await startFor(ctx, state, project, record, vm, where?.repository, step, pays.payment);
-    }));
+    })).finally(done);
     state = ctx.load();
   }
   for (const project of state.projects) {
@@ -678,6 +682,8 @@ export async function dispatch(ctx, state) {
       const pays = await paymentFor(ctx, limited, project, step, item.key, item.variation);
       if (!pays) continue;
       if (!workspaceFree(ctx, state, step, project, item.key, item.variation)) continue;
+      if (stepWaits(ctx, state, project, at.ticket, at.variation, step, who)) continue;   // ASS-468: a workstation (or its VM) claimed for the step first
+      const done = dispatching(ctx, project.id, item.key, item.variation);
       await ctx.attempt(PHASE, `${item.key} ${item.variation}`, heldOnFailure(ctx, key, async () => {
         const { ticket, variation } = at;
         const where = nextRepository(ctx.memory, step, variation, visitOf({ project, ticket, variation, changes: levelChanges(variation) }));
@@ -686,7 +692,7 @@ export async function dispatch(ctx, state) {
         await takeWorkspace(ctx, step, project, item.key, item.variation);
         const records = await create(ctx, [project.id, project.engineName, item.state, step.action.prompt, String(item.agentCount), String(inContainer(step, project)), item.key, item.variation, '-'], step, state.harness);
         for (const record of records) await startFor(ctx, state, project, record, vm, where?.repository, step, pays.payment);
-      }));
+      })).finally(done);
       state = ctx.load();
     }
   }

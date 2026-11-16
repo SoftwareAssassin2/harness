@@ -175,7 +175,8 @@ them, it never creates them):
 
 - `mode`: `vm` (VMs only, as without `dev-environments`; the default when
   missing), `workstation` (workstations only) or `vm+workstation`
-  (a free workstation first, a VM only when none is free).
+  (both: a free workstation seat first, a VM seat otherwise — see "Seats"
+  below).
 - `workstations`: the pool, each with its workstation `id`, `gcp-project`,
   `region`, `cluster` and `config`, and optionally `gcloud-config`, the
   `CLOUDSDK_CONFIG` folder of the gcloud login that reaches it (a leading `~`
@@ -203,7 +204,9 @@ minutes.
 Once connected, control sets the workstation up for the harness's agents —
 `./agent.sh workstation:setup <project> <id>` does it by hand — installing
 what is missing under `~/harness` only (agent.sh, jq, the Claude Code CLI)
-and checking git, curl, Docker and the project's `golden-image.tools`. A
+and checking git, curl, Docker, the project's `golden-image.tools` and
+(ASS-471) every command its `ci-checks.json` checks run or declare in
+`needs`, a missing one named with the checks that need it. A
 tool the workstation lacks is installed by the project's optional
 `golden-image/workstation-tools.sh`, given the missing tools' names and
 `HARNESS_BIN` to put them in; the golden-image folder's other top-level
@@ -212,18 +215,134 @@ it can source one it shares with `provision.sh`. Until setup succeeds nothing is
 the workstation and the dashboard shows `Workstation <id> setup failed` (see
 `engines/grouped-engines.md`, "A GCP workstation's setup").
 
-In those modes Setup's Create VM places each ticket variation on a free
-workstation (one variation per workstation; a VM only when none is free in
-`vm+workstation` mode, a wait in `workstation` mode) and readies its own
-folder there, `~/harness/<KEY>-<variation>`: the repositories, a read-only
-copy of the ticket folder kept up to date, the credentials and forwarder
-token in the setup's runtime folder. Its agents run there over the
-connection; it keeps the workstation until it is Done, when control removes
-the folder (`./agent.sh workstation:release <project> <id>` does it by hand).
-While the workstation cannot be used the ticket waits and its Health says
-why. Agents there act as the workstation's user: on the test workstation,
-with the owner's git identity and GitLab key (see
-`engines/grouped-engines.md`, "A ticket variation on a GCP workstation").
+In those modes a workstation is held only while one of a ticket's steps runs
+on it (ASS-468). Setup's Create VM records the workstation on the ticket
+variation, claiming nothing; then each step that runs on the machine — an
+agent's, or a script's such as CI Checks — claims a free workstation as it
+starts (`./agent.sh workstation:claim <project> <ticket> <variation>`):
+the workstation's one shared set of repositories, `~/harness/repos`
+(cloned once, kept across steps and restarts), is fetched and checked out on
+the ticket's branches (each planned `change/<KEY>-<id>`, made from its base
+when GitLab has none yet; every other repository on master at the latest),
+and the ticket's read-only copy, credentials and forwarder token are written.
+Every step commits and pushes its own work on the ticket's branch before it
+finishes, and no repository takes a commit on master: a git hook refuses one,
+naming the ticket's branch. When the step ends, whatever its outcome, control
+gives the workstation back (`./agent.sh workstation:release <project> <id>`):
+what a completed step left uncommitted is committed on its branch and pushed
+(logged as a warning), what a step that did not complete left is discarded
+(each file logged), committed work is pushed (never forced), a local master
+ahead of GitLab's is reset to it (the discarded commits logged and on the
+ticket's Health), every repository goes back to master at the latest, and
+the step's containers, credentials and token are removed. A push that fails
+is logged and shown on the ticket's Health. So a ticket waiting — Blocked,
+waiting for a slot or a fix — never keeps the workstation from the others.
+Agents there act as the workstation's user: on the test workstation, with
+the owner's git identity and GitLab key (see `engines/grouped-engines.md`, "A
+ticket variation on a GCP workstation" and "A workstation held one step at a
+time").
+
+**Seats (ASS-469).** A project has VM seats and workstation seats:
+`project.json`'s `max-tickets-in-progress` is its VM seats, and each
+workstation in its list is exactly one workstation seat (there is no setting
+for it). Its tickets in progress are at most its VM seats plus its usable
+workstations (`harness.json`'s `max-tickets-in-progress` still caps every
+project together); `vm` mode has VM seats only, `workstation` mode
+workstation seats only. Each ticket entering progress takes a free
+workstation seat first, else a free VM seat, else waits as before; planning
+has no seat kinds and runs on VMs. A ticket in a VM seat moves into a
+workstation seat as soon as one frees, between its steps (never while a step
+runs), and the VM seat it leaves goes to the next ticket. Machines follow
+seats: a workstation-seat ticket's steps run on its workstation, a VM-seat
+ticket's on its VM (made when it has none). There are no bound seats: while
+a workstation can't be used — its gcloud login lapsed, its setup failed, it
+could not be reached or started — its seat is lost, the ticket in it is
+taken out (logged and on its Health) and takes the next free seat of either
+kind; the seat comes back when the workstation does. Control keeps a
+workstation started, connected and set up while its seat is held or a ticket
+waits for a seat it could take, and lets it stop itself (its 30-minute idle
+stop) only when nobody needs it. Who holds which seat is in
+`data/projects/<project>/seats.json`; the sprint screen marks a VM seat 💺
+and a workstation seat ⛅, the footer's gcp workstations box shows each
+workstation's `1/1 seats` (or `seat lost`), and the models box, in
+`vm+workstation` mode, `vm seats: <used>/<VM seats>`.
+
+## Arm64 builds of images a project publishes for amd64 only
+
+Ticket VMs are arm64 (Lima `vz` on Apple Silicon). An image a project pins
+but publishes for amd64 only runs in them emulated, far slower: a database
+gate replaying hundreds of migrations may not finish within a step. The
+harness can build an arm64 variant of such an image itself and serve it from
+the project's zot under the unchanged pinned name, so VMs run it natively.
+
+Declare each image in `data/projects/<project>/project.json`. `image` is its
+name in the golden image's `images.txt`, without the tag: the tag is always
+the one `images.txt` pins, so bumping the pin there builds the new tag. Give
+exactly one way to build it:
+
+```json
+"arm64-images": [
+  {
+    "image": "us-central1-docker.pkg.dev/example-gcp-project/containers/example-db",
+    "build": {
+      "repository": "example-db-images",
+      "ref": "v{tag}",
+      "context": "db",
+      "dockerfile": "Dockerfile",
+      "args": { "PG_VERSION": "{tag}" }
+    }
+  },
+  {
+    "image": "us-central1-docker.pkg.dev/example-gcp-project/containers/example-tools",
+    "base-swap": { "base": "debian:13-slim", "copy": ["/opt/tools"] }
+  }
+]
+```
+
+- `build`: the image's own Dockerfile. `repository` is the name of one of
+  the project's `repositories`, or any git URL the Mac's git can clone;
+  `ref` a branch, tag or commit; `context` the folder in it (default `.`),
+  `dockerfile` the file in the context (default `Dockerfile`), `args` its
+  build args. `{tag}` in `ref` or an arg is the pinned tag.
+- `base-swap`: for an image that is a thin layer over a multi-arch base. The
+  base's arm64 image with each `copy` path taken from the pinned amd64 image;
+  its command and environment are the base's.
+
+A declaration naming an image `images.txt` does not pin by tag, or giving no
+build source, is refused with every problem named
+(`./agent.sh registry:arm64-status <project>` shows them).
+
+Control runs `./agent.sh registry:arm64-build <project>` every 30 minutes,
+and `vm:build-golden` runs it before it builds. It builds only a pinned tag
+that has no variant yet (a new tag, or one the registry sweep removed), for
+`linux/arm64` with the Mac's Docker (Docker Desktop must be running and able
+to pull the base images, and for a base swap the pinned image:
+`gcloud auth configure-docker <upstream host>`). It pushes into the project's
+zot, as `0local/<path>:<tag>`, a multi-arch index of the upstream amd64 image
+(its manifest unchanged) and the arm64 build. A VM's Docker asks `0local`
+first (`registry:hosts-toml`), gets the index and takes its `linux/arm64`
+image; without a variant it falls through to zot's cache and gets amd64, as
+before. A failed build is reported per image with the end of its build log
+(`<registry storage>/arm64/<path>.log`, in control's log too) and never
+blocks a pull: the image stays amd64 until a later run builds it. The golden
+image counts each variant among its inputs, so a new one makes it stale and
+the next build bakes it in; until then each VM pulls it at its next start.
+
+`./agent.sh registry:arm64-status <project>` prints, per declared image, the
+pinned `tag`, `arm64` (true when the variant is served; false when VMs get
+amd64; null when the zot is not answering), `built-at`, `digest` (the arm64
+image's) and the last build `log`.
+
+**Dropping a ticket's CI-only stopgap.** When a gate was made CI-only for a
+ticket because its image ran emulated (a note in the ticket's execution
+plan), declare the image, then wait until `registry:arm64-status` shows
+`"arm64": true` for the tag the project pins. Remove the note from the
+execution plan so the gate runs in the VM again; the VM has the arm64 image
+from its next start (or at once with `docker pull <image>:<tag>` in it), and
+`docker image inspect --format '{{.Architecture}}' <image>:<tag>` there says
+`arm64`. If the project later publishes a multi-arch image itself, drop the
+declaration: `registry:arm64-build` reports such an image as `upstream` and
+builds nothing.
 
 ## Arm64 builds of images a project publishes for amd64 only
 

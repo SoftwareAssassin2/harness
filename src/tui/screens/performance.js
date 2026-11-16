@@ -11,7 +11,7 @@
 import { performance, COLUMNS, cellLines, activeSprint, dateIn } from '../../analytics/performance.js';
 import { visible, pad, wrap } from '../text.js';
 import { thumb } from '../table.js';
-import { below, headerLines, platform } from './frame.js';
+import { below, headerLines, platform, jiraTokenTodo } from './frame.js';
 import { clamp, red, gray } from './shared.js';
 
 export const HEADERS = ['Developer', ...COLUMNS.map(c => c.title)];
@@ -141,13 +141,16 @@ function layout(state, size) {
   const keys = form ? `From ${field('from')}   to ${field('to')}   (dates in ${zoneOf(size)})`
     : `${KEYS}${state.focus === 'performance' ? FOCUSED_KEYS : ''}`;
   const third = form ? 'type   tab next field   enter sets the span   esc cancels' : state.performanceMessage ? red(state.performanceMessage) : '';
-  const message = text => ({ head: [text, ...(third ? [third] : [])], grid: null, notice: [], height: 0, last: 0 });
+  // ASS-475: while Jira rejects the analytics token, a red line first: the numbers stop at the last good read.
+  const through = loaded?.data?.tickets?.['fetched-through'];
+  const warn = project?.jiraTokenRejected ? wrap(`${jiraTokenTodo(project.jiraTokenRejected)}.${through ? ` These numbers stop at ${String(through).slice(0, 16).replace('T', ' ')} UTC.` : ''}`, Math.max(20, columns || Infinity)).map(red) : [];
+  const message = text => ({ head: [...warn, text, ...(third ? [third] : [])], grid: null, notice: [], height: 0, last: 0 });
   if (!project) return message('No project selected.');
   if (!loaded) return message(`loading ${project.id}'s analytics…`);
   if (loaded.error) return message(red(loaded.error));
   if (!loaded.data) return message(`No analytics data for ${project.name ?? project.id} yet: the grid fills once its tickets are downloaded (analytics/tickets.json).`);
   const result = worked(state, loaded.data, size);
-  const head = [result.header, keys, third];   // third: the form's keys or a message, else the blank line over the grid
+  const head = [...warn, result.header, keys, third];   // third: the form's keys or a message, else the blank line over the grid
   const notice = noticeLines(result, columns);
   if (!result.rows.length) return { head: [...head, 'No developer moved a ticket or sub-task to Done, merged a merge request or has work in progress in this span.'], grid: null, notice, height: 0, last: 0 };
   const table = grid(result.rows, loaded.data.accountId ?? OPERATOR_ID);

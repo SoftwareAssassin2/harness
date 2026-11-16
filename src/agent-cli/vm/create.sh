@@ -42,43 +42,50 @@ set -euo pipefail
 #   the first time; /repos/.vm-create-checked-out marks it done, so a reused
 #   VM's working trees (Generate Solution's branches) are never touched,
 #   while a checkout that failed part way is tried again.
+# - Then (ASS-468 AC10) each repository's git hooks set to refuse a commit
+#   on its default branch, naming the ticket's branch
+#   (workstation/on-workstation/git-hooks.sh), every time.
 # - Then ticket:set-vm records { name, ip, created-at } on the variation.
 # All of it under the project's VM lock (vm.bash lock_vms), which the
 # vm:start it runs shares. Prints { name, ip, created } — created whether
 # this run cloned it. Fails (1) naming why otherwise.
 #
-# ASS-435: a project whose dev-environments mode is workstation or
-# vm+workstation (dev-environments.bash) places a variation that has no
-# machine yet on a free GCP workstation of its pool first
-# (workstation-variation.bash wsv_place: claimed in the live data, connected
-# and set up when it is not), and a variation that records one there stays
-# on it (wsv_claim). There, instead of the clone, the variation's own folder,
-# ~/harness/<KEY>-<variation>, is made and readied as a VM is (wsv_create:
-# repositories cloned and checked out once, the ticket's read-only copy,
-# vm:start's credentials and forwarder token; agent.sh is the workstation's
-# setup's), recorded through ticket:set-vm with kind workstation, and it
-# prints { name: <workstation id>, machine, ip: null, created }. With none
-# free, vm+workstation falls back to a VM, as below; workstation mode fails,
-# naming why each is not free (control keeps a variation from reaching this
-# while none is: src/control/workstation-machines.js). A variation that
-# records a VM stays in its VM, whatever the mode.
+# ASS-435, ASS-468: a project whose dev-environments mode is workstation or
+# vm+workstation (dev-environments.bash) runs a variation's steps on its GCP
+# workstations, each step claiming a free one for its length and giving it
+# back at its end (workstation:claim, workstation:release; control's
+# src/control/workstation-steps.js), so Create VM claims nothing: it records
+# the pool on the variation — the first workstation in list order whose
+# gcloud login is live, connected and set up first when no setup has
+# recorded its home folder yet (workstation-variation.bash wsv_place) —
+# through ticket:set-vm with kind workstation and the workstation's shared
+# root, <home>/harness, as its folder, and prints { name: <workstation id>,
+# machine, ip: null, created }. With none usable, vm+workstation falls back
+# to a VM, as below; workstation mode fails, naming why each is not. A
+# variation that records a VM stays in its VM here, whatever the mode (its
+# steps run where its seat is, ASS-469: a workstation seat's on that
+# workstation). --vm makes or reuses the variation's VM whatever the mode:
+# control's way to give a vm+workstation variation a VM for a step it runs
+# there — it holds a VM seat, or the step is a planning one (ASS-468 AC4,
+# ASS-469); the VM is recorded as its vm and kept for its later steps.
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../vm.bash"
 
-[[ $# -eq 3 ]] || { echo "usage: vm:create <project> <ticket-key> <variation>" >&2; exit 1; }
-project="$1" key="$(tr '[:lower:]' '[:upper:]' <<< "$2")" variation="$3"
+[[ $# -eq 3 || ( $# -eq 4 && "$4" == --vm ) ]] || { echo "usage: vm:create <project> <ticket-key> <variation> [--vm]" >&2; exit 1; }
+project="$1" key="$(tr '[:lower:]' '[:upper:]' <<< "$2")" variation="$3" force_vm="${4:-}"
 variation_exists vm:create "$project" "$key" "$variation"
 
-recorded="$(recorded_vm vm:create "$project" "$key" "$variation" 2>/dev/null || true)"
+recorded="$(variation_status vm:create "$project" "$key" "$variation" >/dev/null && jq -r --arg key "$key" --arg name "$variation" 'first((.features, .bugs, .spikes) // [] | .[] | select(.key | ascii_downcase == ($key | ascii_downcase)))
+  | first(.variations // [] | .[] | select(.name == $name and (.["is-deleted"] | not))) | .vm // {} | if (.name // "") == "" then "" elif (.kind // "lima") == "workstation" then "workstation:" else .name end' "$(sprint_file vm:create "$project")")"
 mode="$(dev_environments_mode vm:create "$project")"
-if [[ "$recorded" == workstation:* ]]; then
-  wsm_parts "${recorded#workstation:}" || exit 1
-  rc=0; wsv_claim "$project" "$key" "$variation" "$wsm_id" || rc=$?
-  [[ $rc -eq 0 ]] || { echo "vm:create: $key $variation stays on the workstation it started on, and $wsv_why" >&2; exit 1; }
-  wsv_create "$project" "$key" "$variation" "$recorded"
-  exit
-elif [[ -z "$recorded" && "$mode" != vm ]]; then
+if [[ -z "$force_vm" && "$mode" != vm && ( -z "$recorded" || "$recorded" == workstation:* ) ]]; then
   rc=0; wsv_place "$project" "$key" "$variation" || rc=$?
-  if [[ $rc -eq 0 ]]; then wsv_create "$project" "$key" "$variation" "$wsv_machine"; exit; fi
+  if [[ $rc -eq 0 ]]; then
+    wsm_parts "${wsv_machine#workstation:}" || exit 1
+    "$agent" ticket:set-vm "$project" "$key" "$variation" "$wsm_id" "" --kind workstation --folder "$wsm_folder" >/dev/null
+    echo "vm:create: $key $variation runs its steps on $project's workstation $wsm_id, each claiming it while it runs" >&2
+    jq -nc --arg n "$wsm_id" --arg m "$wsv_machine" --argjson c "$( [[ -z "$recorded" ]] && echo true || echo false )" '{ name: $n, machine: $m, ip: null, created: $c }'
+    exit 0
+  fi
   [[ "$mode" != workstation ]] || { echo "vm:create: $project runs its tickets on workstations alone, and $wsv_why" >&2; exit 1; }
   echo "vm:create: $wsv_why; $key $variation gets a VM" >&2
 fi
@@ -148,6 +155,14 @@ for name in "${names[@]}"; do
 done
 touch "$R/repos/.vm-create-checked-out"
 EOF
+
+# ASS-468 AC10: no commit on a repository's default branch in the VM — its git hooks refuse one, naming the ticket's
+# branch (workstation/on-workstation/git-hooks.sh; vm:step-start sets them again, idempotent).
+slug="$key"; [[ "$variation" == A ]] || slug="$key.$variation"
+names=(); for ((i = 0; i < ${#repos[@]}; i += 2)); do names+=("${repos[i]}"); done
+machine_run --workdir / "$vm" -- bash -s -- install "the ticket's branch for this repository, change/$slug-<id> (agent.sh ticket:merge-request-plan names it)" "${names[@]+"${names[@]}"}" \
+  < "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../workstation/on-workstation/git-hooks.sh" \
+  || { echo "vm:create: could not set $vm's repositories' git hooks" >&2; exit 1; }
 
 "$agent" ticket:set-vm "$project" "$key" "$variation" "$vm" "$ip" >/dev/null
 jq -nc --arg n "$vm" --arg ip "$ip" --argjson c "$created" '{ name: $n, ip: $ip, created: $c }'

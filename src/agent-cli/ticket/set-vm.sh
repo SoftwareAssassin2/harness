@@ -17,10 +17,12 @@ set -euo pipefail
 # ASS-435: with --kind workstation --folder <folder>, a placement on one of
 # the project's GCP workstations (vm:create, workstation-variation.bash):
 # { name: <workstation id>, kind: workstation, project: <project>, folder:
-# <the variation's folder there, absolute>, created-at } — the machine layer
+# <the folder there, absolute: since ASS-468 the workstation's shared root,
+# <home>/harness>, created-at } — the machine layer
 # names it workstation:<project>:<id>:<folder> (machine.bash $machine_of), and
 # control's workstation phase keeps that workstation connected while the
-# variation needs it (src/control/workstations.js). No IP (it is reached over
+# variation needs it (src/control/workstations.js); each of its steps claims
+# the workstation while it runs (ASS-468, workstation:claim). No IP (it is reached over
 # the workstation's connection), so "" is the only one taken. A VM records no
 # kind, as before: one without a kind is a Lima VM. A variation keeps where it
 # started (operator decision, 2026-11-14): created-at is kept while the name
@@ -40,7 +42,7 @@ set -- "${args[@]+"${args[@]}"}"
 [[ $# -eq 5 || ( $# -eq 6 && "$6" == recreated ) ]] || { echo "$usage" >&2; exit 1; }
 if [[ -n "$kind" || -n "$folder" ]]; then
   [[ "$kind" == workstation ]] || { echo "ticket:set-vm: invalid kind '$kind' (workstation, or none for a VM)" >&2; exit 1; }
-  [[ "$folder" == /*/harness/* && "$folder" != *:* ]] || { echo "ticket:set-vm: invalid workstation folder '$folder' (absolute, under ~/harness)" >&2; exit 1; }
+  [[ ( "$folder" == /*/harness || "$folder" == /*/harness/* ) && "$folder" != *:* ]] || { echo "ticket:set-vm: invalid workstation folder '$folder' (absolute, under ~/harness)" >&2; exit 1; }
   [[ "$4" =~ ^[A-Za-z0-9_-]+$ ]] || { echo "ticket:set-vm: invalid workstation id '$4'" >&2; exit 1; }
   [[ -z "$5" ]] || { echo "ticket:set-vm: a workstation records no IP" >&2; exit 1; }
 else

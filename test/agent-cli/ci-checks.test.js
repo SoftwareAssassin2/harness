@@ -182,6 +182,8 @@ test('ASS-249 AC1: a malformed ci-checks.json fails the step (exit 3, Blocked: n
     [{ repositories: { harness: [{ name: 'x', command: 'true', changes: 'src/**' }] } }, /repositories\.harness\[0\]: "changes" must be a list of globs/],
     [{ repositories: { harness: [{ name: 'x', command: 'true', baseline: 'no' }] } }, /repositories\.harness\[0\]: "baseline" must be true or false/],
     [{ repositories: { harness: [{ name: 'x', command: 'true', basline: false }] } }, /repositories\.harness\[0\]: unknown key "basline"/],
+    [{ repositories: { harness: [{ name: 'x', command: 'true', needs: 'sqlfluff' }] } }, /repositories\.harness\[0\]: "needs" must be a list of command names/],   // ASS-471
+    [{ repositories: { harness: [{ name: 'x', command: 'true', needs: ['ok', 'not a name'] }] } }, /repositories\.harness\[0\]: "needs" must be a list of command names/],
     [{ repositories: { 'no-such-repo': [] } }, /names no-such-repo, not one of p's repositories/],
   ]) {
     const s = setup(checks);
@@ -236,4 +238,29 @@ test('ASS-249: with checks declared and no VM on the variation it exits 3, namin
   const e = await s.failure();
   assert.equal(e.code, 3);
   assert.match(e.stderr, /ABC-3 A has no VM/);
+});
+
+test('ASS-474 AC1: with every planned merge request in the repository Merged, a baseline: false check (the merge request\'s own range) is skipped, said so in the results, not failed; the other checks still run; one merge request not merged yet runs it as before', async () => {
+  const s = setup(log => checksFor('harness', [
+    { name: 'secret-scan-mr', command: `echo scanned >> ${log}; [ -n "$(git rev-list "$CI_CHECK_BASE..HEAD")" ] || { echo "no commits in $CI_CHECK_BASE..HEAD -- nothing to scan, refusing to pass"; exit 1; }`, baseline: false },
+    { name: 'hygiene', command: 'echo hygiene ok' },
+  ]));
+  // MR 1 merged: the checkout back on master, its range empty.
+  git(s.own, 'checkout', '-q', 'main');
+  const merged = extra => edit(join(s.f.dir, 'projects', 'p', 'sprints', 'sprint-10', 'sprint.json'), j => {
+    const mrs = j.features[0].variations[0]['merge-request'];
+    mrs[0].status = 'Merged';
+    mrs.push(...extra);
+  });
+  merged([]);
+  assert.deepEqual(JSON.parse((await s.verify()).stdout), { passed: 1, failed: 0, skipped: 1 });
+  assert.deepEqual(s.runs(), [], 'the range scan is never run');
+  assert.match(s.results(), /## – harness: secret-scan-mr \(skipped: every planned merge request of the ticket in harness is merged — no merge request range to scan\)/);
+  assert.match(s.results(), /## ✓ harness: hygiene \(exit 0\)/);
+  // Another merge request in the repository not merged yet (Not Created): the scan runs, and its empty range fails as before.
+  merged([{ id: 3, repository: 'https://github.com/o/harness', branch: 'change/ABC-3-3', base: 'main', contents: 'c', 'depends-on': [], status: 'Not Created', key: null, url: null, 'build-status': null }]);
+  const e = await s.failure();
+  assert.equal(e.code, 1, e.stderr);
+  assert.deepEqual(s.runs(), ['scanned']);
+  assert.match(s.results(), /## ✗ harness: secret-scan-mr \(exit 1\)/);
 });

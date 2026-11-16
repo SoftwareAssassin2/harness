@@ -54,31 +54,30 @@ test('AC1, AC2, AC3: every grouped and v2 step whose forward exit is file-update
   assert.deepEqual(missing, []);
 });
 
-// Enrich Automated Test Data runs in the VM, on the checkout's master, before
-// Generate Solution creates the merge request's branch from origin/<base>
-// (ASS-112): a commit there would never reach that branch, so its test data
-// is left uncommitted, as Generate Automated Tests leaves its tests, and goes
-// onto the branch with them.
-test('ASS-112: enrich-automated-test-data-grouped leaves its test data uncommitted, for Generate Solution to commit on the merge request\'s branch', () => {
-  const text = readFileSync(join(ROOT, 'prompts', 'enrich-automated-test-data-grouped', 'prompt.txt'), 'utf8');
-  assert.doesNotMatch(text, /Commit in the ticket's worktree/);
-  assert.match(text, /Don't commit it: Generate Solution commits it on the merge request's branch, which it makes from origin\./);
-});
-
-// Generate Automated Tests runs in the VM (ASS-113), in /repos/, on the
-// checkout's default branch, before Generate Solution makes the merge
-// request's branch from origin/<base>: its list and run commands are run by
-// automated-tests:* from the folder the agent starts in (/repos/ in a VM, the
-// worktree on the host), not a repository's root, and its tests are left
-// uncommitted, for Generate Solution to carry onto the branch and commit.
-test('ASS-113: generate-automated-tests-grouped is told where it is, records commands run from the folder it starts in, and leaves its tests uncommitted; generate-solution-grouped carries them onto the merge request\'s branch and commits them there', () => {
+// ASS-468 AC9: every step commits and pushes its own work on the ticket's
+// branch before it finishes — a workstation's repositories are cleaned at
+// each step's end, and a commit on master is refused (AC10) — so Enrich
+// Automated Test Data and Generate Automated Tests commit what they write on
+// the merge request's branch (made from origin/<base> when it is not on
+// origin yet) and push it, and Generate Solution finds them committed there
+// (once ASS-112 and ASS-113 left them uncommitted for it to carry).
+test('ASS-468 AC9: enrich-automated-test-data-grouped and generate-automated-tests-grouped commit and push their work on the merge request\'s branch; generate-solution-grouped finds it committed and leaves nothing uncommitted', () => {
+  const data = readFileSync(join(ROOT, 'prompts', 'enrich-automated-test-data-grouped', 'prompt.txt'), 'utf8');
+  assert.doesNotMatch(data, /Don't commit it/);
+  assert.match(data, /3\. Commit it yourself, on the ticket's branch, and push it before you finish/);
   const tests = readFileSync(join(ROOT, 'prompts', 'generate-automated-tests-grouped', 'prompt.txt'), 'utf8');
   assert.match(tests, /\{where\}/);
   assert.doesNotMatch(tests, /from your worktree's root/);
   assert.match(tests, /each run with bash from the folder you start in \(in a VM, \/repos\/: cd into the repository first\)/);
-  assert.match(tests, /Don't commit them: Generate Solution commits them on the merge request's branch, which it makes from origin\./);
+  assert.doesNotMatch(tests, /Don't commit them|write the test uncommitted/);
+  assert.match(tests, /5\. Commit them yourself, on the ticket's branch, and push it before you finish/);
+  assert.match(tests, /create it from origin\/<base> when it is not on origin yet/);
+  assert.match(tests, /Never commit to or push its base \(main\)/);
   const solution = readFileSync(join(ROOT, 'prompts', 'generate-solution-grouped', 'prompt.txt'), 'utf8');
-  assert.match(solution, /Carry onto it the uncommitted tests and test data the earlier steps left in the checkout/);
+  assert.doesNotMatch(solution, /Carry onto it the uncommitted tests/);
+  assert.match(solution, /already committed on it/);
+  assert.match(solution, /before you finish, nothing is left uncommitted/);
+  for (const name of ['check-on-merge-request-grouped', 'check-on-merge-request-build-grouped']) assert.match(readFileSync(join(ROOT, 'prompts', name, 'prompt.txt'), 'utf8'), /commit every change on its branch and push it once; before you finish, nothing is left uncommitted/, name);
   const flat = readFileSync(join(ROOT, 'prompts', 'generate-automated-tests', 'prompt.txt'), 'utf8');
   assert.match(flat, /from your worktree's root/, 'the flat engines\' prompt is unchanged');
 });
@@ -580,7 +579,7 @@ test('ASS-199 AC1: generate-solution-grouped fetches and rebases every existing 
   assert.match(t, /create it from origin\/<base> when it is not there yet/);
   assert.match(t, /when it is there, rebase it onto origin\/<base> and resolve them as Conflicts, below, says\./);
   assert.doesNotMatch(t, /a merge request it depends on merged/);
-  assert.match(t, /git stash first if the checkout or the rebase refuses/);
+  assert.doesNotMatch(t, /git stash/, 'ASS-468 AC9: nothing uncommitted to carry onto the branch');
 });
 
 // ASS-196: the Find Dependencies refinement step (harness only). Its prompt is
@@ -915,6 +914,6 @@ test('ASS-424 AC1/AC3/AC4: Generate Solution, both Address Merge Request Feedbac
     assert.match(said(name), /Never reopen, push to or retarget a merged branch/, name);
   }
   assert.match(said('check-on-merge-request-grouped'), /Don't build or create it here/);
-  assert.match(said('generate-automated-tests-grouped'), /Only plan it/);
+  assert.match(said('generate-automated-tests-grouped'), /make its branch from the latest origin\/<base>.*commit the test there and push it/s, 'ASS-468 AC9: it commits its own test');
   for (const flat of ['generate-solution', 'check-on-merge-request', 'generate-automated-tests']) assert.doesNotMatch(said(flat), /add-merge-request/, flat);
 });

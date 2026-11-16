@@ -2,12 +2,13 @@
 // ids, f }) — the agent-cli fixture `f` (harness-fixture.js; a control
 // fixture's will do) with project p in dev-environments `mode` on the running
 // fake workstations `ids` (test/support/fake-workstation.js), two
-// repositories (local git origins, harness on main and example-corpus on
-// master), its forwarder on 7787 (forwarder: another port), a claude
-// credential and a git identity declared (the keychain a fake `security`),
-// and ABC-3's ticket folder holding plan.md. Returns { f, w, env, cli, result,
-// entry(id), variation(name), folder(name, id), ids, at, tokens() };
-// closeAll() closes every connection the tests opened.
+// repositories (ASS-468: bare local repositories standing in for GitLab,
+// harness on main and example-corpus on master, `origins` their paths), its
+// forwarder on 7787 (forwarder: another port), a claude credential and a
+// git identity declared (the keychain a fake `security`), and ABC-3's ticket
+// folder holding plan.md. Returns { f, w, env, cli, result, entry(id),
+// variation(name), folder(name, id), root(id), repo(name, id), origins,
+// ids, at, tokens() }; closeAll() closes every connection the tests opened.
 import { execFile, execFileSync } from 'node:child_process';
 import { promisify } from 'node:util';
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
@@ -33,7 +34,9 @@ export function wsFixture({ mode = 'workstation', ids = [ID], f = fixture(), for
     execFileSync('git', ['init', '-q', `--initial-branch=${branch}`, work]);
     git(work, 'config', 'user.email', 't@example.com'); git(work, 'config', 'user.name', 'T');
     writeFileSync(join(work, 'README.md'), 'one\n'); git(work, 'add', '.'); git(work, 'commit', '-q', '-m', 'one');
-    origins[name] = work;
+    const bare = `${work}.git`;
+    execFileSync('git', ['clone', '-q', '--bare', work, bare]);
+    origins[name] = bare;
   }
   edit(at('projects', 'p', 'project.json'), p => {
     p.repositories = [{ url: origins.harness, description: 'h' }, { url: origins["example-corpus"], description: "c" }];
@@ -53,7 +56,9 @@ export function wsFixture({ mode = 'workstation', ids = [ID], f = fixture(), for
   const entry = id => JSON.parse(readFileSync(at('projects', 'p', 'workstations.json'), 'utf8'))[id ?? ID];
   const variation = name => f.sprint().features[0].variations.find(v => v.name === name);
   const folder = (name, id = ID) => join(w.home(id), 'harness', `ABC-3-${name}`);
-  const s = { f, w, env, cli, result, entry, variation, folder, ids, at, tokens: () => JSON.parse(readFileSync(join(w.harnessHome, 'vm-tokens.json'), 'utf8')) };
+  const root = (id = ID) => join(w.home(id), 'harness');
+  const repo = (name, id = ID) => join(root(id), 'repos', name);
+  const s = { f, w, env, cli, result, entry, variation, folder, root, repo, origins, ids, at, tokens: () => JSON.parse(readFileSync(join(w.harnessHome, 'vm-tokens.json'), 'utf8')) };
   opened.push(s);
   return s;
 }

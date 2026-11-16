@@ -49,7 +49,7 @@ const ALLOWED = {
     '"$R/ready"': 'runs on a GCP workstation: its runtime folder\'s marker, not the harness\'s data',
   },
   'src/agent-cli/workstation.bash': { '"$log"': 'the workstation SSH master\'s own output log (ASS-433), one writer under the workstation\'s lock' },
-  'src/agent-cli/workstation-variation.bash': { '"$HARNESS_RUNTIME/agent-token"': 'runs on a GCP workstation (ASS-435): its runtime folder\'s forwarder token, as vm:start writes a VM\'s' },
+  'src/agent-cli/workstation-variation.bash': { '"$HARNESS_RUNTIME/agent-token"': 'runs on a GCP workstation (ASS-435): its runtime folder\'s forwarder token, as vm:start writes a VM\'s', '"$tmp/out"': 'a temp folder of its own (mktemp -d): step-trees.sh\'s output (ASS-468)' },
   'src/agent-cli/registry/refresh-credentials.sh': { '"$file.$$"': 'temp beside, renamed over' },
   'src/agent-cli/registry/up.sh': {
     '"$1.$$"': 'temp beside, renamed over',
@@ -119,6 +119,8 @@ const ALLOWED = {
     '"$tmp/next"': 'a temp folder of its own (mktemp -d)',
     '"$out"': 'retried\'s <stdout-file>, always one in its temp folder of its own (mktemp -d)',
   },
+  'src/agent-cli/workstation/on-workstation/pull-images.sh': { '"$config/config.json"': 'runs on a GCP workstation: the run\'s own Docker config, in a temp folder of its own (mktemp -d, 0700), removed at the end (ASS-472)' },
+  'src/agent-cli/workstation/on-workstation/git-hooks.sh': { '"$hd/$name.tmp"': 'run in the machine (a workstation or VM): a repository\'s git hook wrapper, written beside it and renamed over it (ASS-468)' },
   'src/agent-cli/vm/refresh-repositories.sh': { '"$tmp/out"': 'a temp folder of its own (mktemp -d): each attempt\'s output (ASS-396)' },
   'src/agent-cli/project/check-on-master.sh': { '"$why"': 'a temp file of its own' },
   'src/agent-cli/ticket/announce-ready.sh': { '"$note"': 'a mktemp file' },

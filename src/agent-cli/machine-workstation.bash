@@ -1,11 +1,11 @@
 # The machine layer's workstation backend (ASS-435; machine.bash): a ticket
-# variation's folder on one of its project's GCP Cloud Workstations, reached
+# variation's step on one of its project's GCP Cloud Workstations, reached
 # over that workstation's one SSH connection (ASS-433, workstation.bash: a
 # session of its own over the master, never a connection of its own).
 # src/control/machine-workstation.js is the same backend for control.
 #
 #   source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/machine-workstation.bash"
-#   workstation_run <workdir|""> <marker|""> <seconds|""> <name> <argv…>   # argv run in the variation's folder (below)
+#   workstation_run <workdir|""> <marker|""> <seconds|""> <name> <argv…>   # argv run in the machine's folder (below)
 #   workstation_stop_marked <name> <marker>       # SIGTERM, on the workstation, to what runs under the marker
 #   workstation_copy_in <name> <local> <remote>   # rsync -a over the connection (rsync's own naming: a folder
 #   workstation_copy_out <name> <remote> <local>  #   with a trailing / copies its content)
@@ -13,26 +13,29 @@
 #   workstation_start <command> <name> …          # workstation:connect: started when stopped, connected
 #   workstation_stop <name> [force]               # nothing: the harness never stops a workstation (ASS-433: it stops itself once idle)
 #   wsm_parts <name>            # sets wsm_project, wsm_id and wsm_folder from the name; fails, naming it, on any other
-#   wsm_path <folder> <path>    # a VM path as the variation's folder has it (below)
+#   wsm_path <folder> <path>    # a VM path as the machine's folder has it (below)
 #   wsm_sync_ticket <name> <ticket-folder>   # the ticket folder's read-only copy brought up to date (below)
 #
 # A workstation machine is named workstation:<project>:<id>:<folder> (machine.bash
-# $machine_of, from the variation's vm { kind: workstation, name: <id>,
-# project, folder }, as ticket:set-vm records a placement): the backend's name
-# is <project>:<id>:<folder>, the project naming the connection (its socket),
-# the folder the variation's own, ~/harness/<KEY>-<variation> made absolute
-# (workstation-variation.bash). One variation per workstation at a time
-# (ASS-435), and never the owner's ~/workspaces. The folder stands in for a
-# VM's root: <folder>/repos is /repos, <folder>/ticket the ticket's read-only
-# copy (a VM's /mnt/ticket mount; <folder>/mnt/ticket links to it),
-# <folder>/run/harness a link to the setup's runtime folder (a VM's
-# /run/harness: the forwarder token and credentials). So every command run
-# here gets HARNESS_VM_ROOT=<folder> — the in-VM scripts' stand-in for the
-# VM's root ("${HARNESS_VM_ROOT-}/repos/…") — and its workdir as wsm_path
-# maps it: / (or none) the folder, /repos…, /mnt/ticket… and /run/harness…
-# under it, any other path as it is. Each session sources ~/harness/env
-# (ASS-434: ~/harness/bin first on PATH, HARNESS_RUNTIME, and the runtime
-# folder's env, the credentials), as a VM's login shell sources
+# $machine_of, from the variation's `workstation` { name: <id>, project,
+# folder } while one of its steps holds it, ASS-468, else its vm { kind:
+# workstation, name: <id>, project, folder }): the backend's name is
+# <project>:<id>:<folder>, the project naming the connection (its socket),
+# the folder the workstation's shared root, <home>/harness (ASS-468: one set
+# of repositories every variation uses in turn, a step at a time;
+# workstation-variation.bash), or, for a variation placed before ASS-468,
+# its own ~/harness/<KEY>-<variation> (ASS-435) — never the owner's
+# ~/workspaces. The folder stands in for a VM's root: <folder>/repos is
+# /repos, <folder>/ticket the holder's ticket's read-only copy (a VM's
+# /mnt/ticket mount; <folder>/mnt/ticket links to it), <folder>/run/harness
+# a link to the setup's runtime folder (a VM's /run/harness: the forwarder
+# token and credentials). So every command run here gets
+# HARNESS_VM_ROOT=<folder> — the in-VM scripts' stand-in for the VM's root
+# ("${HARNESS_VM_ROOT-}/repos/…") — and its workdir as wsm_path maps it: /
+# (or none) the folder, /repos…, /mnt/ticket… and /run/harness… under it,
+# any other path as it is. Each session sources ~/harness/env (ASS-434:
+# ~/harness/bin first on PATH, HARNESS_RUNTIME, and the runtime folder's env,
+# the credentials), as a VM's login shell sources
 # /etc/profile.d/harness-credentials.sh.
 #
 # A marker works as in a VM (machine-lima.bash's lima_wrap: the process runs
@@ -55,7 +58,7 @@ wsm_enter='d="$1" f="$2"; shift 2; cd "$d" || exit 1; export HARNESS_VM_ROOT="$f
 
 wsm_parts() {
   IFS=: read -r wsm_project wsm_id wsm_folder <<< "$1"
-  [[ "$wsm_project" =~ ^[A-Za-z0-9_-]+$ && "$wsm_id" =~ ^[A-Za-z0-9_-]+$ && "$wsm_folder" == /*/harness/* ]] \
+  [[ "$wsm_project" =~ ^[A-Za-z0-9_-]+$ && "$wsm_id" =~ ^[A-Za-z0-9_-]+$ && ( "$wsm_folder" == /*/harness || "$wsm_folder" == /*/harness/* ) ]] \
     || { echo "workstation:$1: not a workstation machine (workstation:<project>:<id>:<folder under ~/harness>)" >&2; return 1; }
 }
 

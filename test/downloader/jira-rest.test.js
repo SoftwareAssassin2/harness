@@ -3,7 +3,7 @@
 // fetch that answers canned pages and records what it was asked.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { fetchAnalyticsTickets, fetchBoardSprints, analyticsTicket } from '../../src/downloader/jira-rest.js';
+import { fetchAnalyticsTickets, fetchBoardSprints, analyticsTicket, checkSignIn, SignInRejected } from '../../src/downloader/jira-rest.js';
 
 const AUTH = { site: 'https://example.atlassian.net', email: 'ada@example.com', token: 'secret-token' };
 const ada = { accountId: 'acc-ada', displayName: 'Ada Example' };
@@ -146,4 +146,22 @@ test('ASS-406 AC5: a response that is not ok throws, naming the status and path 
     return true;
   });
   await assert.rejects(fetchBoardSprints({ ...AUTH, boardId: 12 }, fetchFn), /HTTP 401/);
+});
+
+test('ASS-475: checkSignIn asks /rest/api/3/myself with basic auth and gives the account id; a 401 or 403, or an anonymous answer, is SignInRejected; a 5xx throws as any failure', async () => {
+  const answer = body => fakeFetch(() => body);
+  const ok = answer({ accountId: 'acc-ada', displayName: 'Ada Example', accountType: 'atlassian' });
+  assert.equal(await checkSignIn(AUTH, ok.fetchFn), 'acc-ada');
+  assert.equal(ok.asked[0].path, '/rest/api/3/myself');
+  assert.deepEqual(ok.asked[0].params, {});
+  assert.equal(ok.asked[0].headers.Authorization, `Basic ${Buffer.from('ada@example.com:secret-token').toString('base64')}`);
+  for (const [body, status] of [[{ status: 401, statusText: 'Unauthorized' }, 401], [{ status: 403 }, 403], [{}, 200], [{ accountId: 'x', accountType: 'anonymous' }, 200]]) {
+    await assert.rejects(checkSignIn(AUTH, answer(body).fetchFn), err => err instanceof SignInRejected && err.status === status && !/secret-token/.test(err.message));
+  }
+  await assert.rejects(checkSignIn(AUTH, answer({ status: 503 }).fetchFn), err => !(err instanceof SignInRejected) && /HTTP 503 for \/rest\/api\/3\/myself/.test(err.message));
+});
+
+test('ASS-475 AC3: a search Jira answers 200 but marks as a failed login (X-Seraph-LoginReason) throws SignInRejected, never an empty list', async () => {
+  const fetchFn = async () => ({ ok: true, status: 200, headers: new Headers({ 'X-Seraph-LoginReason': 'AUTHENTICATED_FAILED' }), json: async () => ({ issues: [], isLast: true }) });
+  await assert.rejects(fetchAnalyticsTickets({ ...AUTH, projectKey: 'PROJ' }, fetchFn), err => err instanceof SignInRejected && err.status === 200);
 });

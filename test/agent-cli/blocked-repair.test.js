@@ -241,3 +241,91 @@ test('ASS-390: ticket:fix-attempts counts a fix merge request\'s wait, and the p
   s.setVariation({ 'state-changes': stay, blocks: [{ 'needs-fix': false, 'ended-at': 'done' }, { 'needs-fix': false, rechecked: true, 'ended-at': 'done' }] });
   assert.deepEqual((await attempts()).out, { 'fix-attempts': 0 }, 'nothing wrong found by Troubleshoot is no attempt, as before — after a re-check that failed too');
 });
+
+// ASS-474: ABC-3 A blocked from a sub-build loop — generate → refresh → check, check failing and sending it back
+// to generate — whose last round's refresh passed and moved on into check, already visited its max-visits (2)
+// times, so control sent it to blocked instead: the step it was blocked at (refresh) passes on re-check.
+// `rounds` how many times check was reached (2: the loop ran out; 1: no loop, refresh's own failure).
+function loopSetup({ rounds = 2, check = './agent.sh ticket:set-paused {project} {ticket} Z false' } = {}) {
+  const s = setup();
+  const passing = './agent.sh ticket:set-paused {project} {ticket} {variation} false';
+  write(s.at('engines', 'sub-build', 'state-engine.json'), { steps: [
+    { id: 'generate', sequence: 1, 'max-visits': 5, 'on-max-visits': 'blocked', action: { type: 'prompt', prompt: 'generate-solution-grouped' }, 'exit-events': [{ condition: { 'turn-complete': true }, 'move-to-state': 'refresh' }] },
+    { id: 'refresh', sequence: 2, action: { type: 'script', command: passing }, 'exit-events': [{ condition: { 'exit-code': 0 }, 'move-to-state': 'check' }, { condition: { not: { 'exit-code': 0 } }, 'move-to-state': 'blocked' }] },
+    { id: 'check', sequence: 3, 'max-visits': 2, 'on-max-visits': 'blocked', action: { type: 'script', command: check }, 'exit-events': [{ condition: { 'exit-code': 0 }, 'move-to-state': 'done' }, { condition: { not: { 'exit-code': 0 } }, 'move-to-state': 'generate' }] },
+    { id: 'done', sequence: 4, 'is-done': true, action: { type: 'none' } },
+    { id: 'blocked', sequence: 5, 'is-done': true, action: { type: 'none' } },
+  ] });
+  const c = (from, to, sub) => ({ 'state-engine': 'dev', 'from-state': from, 'to-state': to, timestamp: '2026-11-12T09:00:00Z', 'agent-dispatch-log': [], ...(sub ? { 'sub-state-change': sub } : {}) });
+  const sb = (from, to) => c('build', 'build', { 'state-engine': 'sub-build', 'from-state': from, 'to-state': to });
+  const round = [sb('generate', 'refresh'), sb('refresh', 'check'), sb('check', 'generate')];
+  s.setVariation({ 'state-changes': [c('committed', 'plan'), c('plan', 'build'), sb(null, 'generate'),
+    ...Array.from({ length: rounds }, () => round).flat(), sb('generate', 'refresh'), sb('refresh', 'blocked'), c('build', 'blocked')] });
+  return s;
+}
+
+test('ASS-474 AC2: a block that is a loop which ran out of visits is not resumed though the step it was blocked at passes on re-check: the step that kept failing is re-run, exit 3 (on to Troubleshoot), the loop named in its output and the change log', async () => {
+  const s = loopSetup();
+  const r = await outcome(s.agent('ticket:recheck-block', 'p', 'ABC-3', 'A'));
+  assert.equal(r.code, 3, r.stderr);
+  assert.equal(r.out['recheck-passed'], undefined, 'no pass on re-check: it is no fix attempt\'s pass');
+  assert.equal(r.out['needs-fix'], undefined);
+  assert.deepEqual(r.out.loop, { 'ran-out': 'build/check', visits: 2, 'max-visits': 2, steps: ['build/generate', 'build/refresh', 'build/check'], 'failing-step': 'build/check', 'sent-back': 2, 'sent-back-to': 'build/generate' });
+  assert.equal(r.out.summary, 'A loop: build/check ran out of visits; build/check kept failing');
+  assert.deepEqual([r.out.rechecked, r.out.recheck.at, r.out.recheck.command, r.out.recheck.exit], [true, 'build/check', './agent.sh ticket:set-paused p ABC-3 Z false', 1]);
+  assert.match(r.out.recheck.output, /Z/);
+  assert.match(s.log(), /### \S+ Blocked, Check First\nNot resumed: a loop\. build\/check ran out of visits \(2 of 2\) going round build\/generate → build\/refresh → build\/check, build\/check sending it back to build\/generate 2 times\. Re-running the step it was blocked at \(build\/refresh\) is no check: the block is the loop's, not that step's\. Re-ran `\.\/agent\.sh ticket:set-paused p ABC-3 Z false` \(the step that kept failing, build\/check\): it still fails \(exit 1\)\. On to Troubleshoot\./);
+  assert.doesNotMatch(s.log(), /Passed on re-check/);
+  // The failing step passing now is still no resume from Check First: Troubleshoot tells whether the cause has gone.
+  const now = loopSetup({ check: './agent.sh ticket:set-paused {project} {ticket} {variation} false' });
+  const p = await outcome(now.agent('ticket:recheck-block', 'p', 'ABC-3', 'A'));
+  assert.equal(p.code, 3, p.stderr);
+  assert.equal(p.out.recheck.exit, 0);
+  assert.equal(p.out['recheck-passed'], undefined);
+  assert.match(now.log(), /exit 0 now — it may pass only here, or the cause may have cleared; Troubleshoot tells which\. On to Troubleshoot\./);
+  // Verifying a repair (vm:image-recheck: RECHECK_LOOP_PASS), the failing step passing is the proof: exit 0.
+  const repaired = await outcome(run(AGENT, ['ticket:recheck-block', 'p', 'ABC-3', 'A'], { env: { ...now.env, RECHECK_LOOP_PASS: '1' } }));
+  assert.equal(repaired.code, 0, repaired.stderr);
+  assert.deepEqual([repaired.out['recheck-passed'], repaired.out.recheck.at, repaired.out.loop['failing-step']], [true, 'build/check', 'build/check']);
+});
+
+test('ASS-474: no loop — the step reached never ran out of visits — re-checks the step it was blocked at as before; a loop whose failing step is no check (an agent\'s) says why, nothing run, exit 3', async () => {
+  const s = loopSetup({ rounds: 1 });
+  const r = await outcome(s.agent('ticket:recheck-block', 'p', 'ABC-3', 'A'));
+  assert.equal(r.code, 0, r.stderr);
+  assert.equal(r.out.recheck.at, 'build/refresh');
+  assert.equal(r.out.loop, undefined);
+  // The loop's failing step an agent's: generate sends it back to itself (generate → generate) each round, check never reached.
+  const t = loopSetup();
+  edit(t.at('engines', 'sub-build', 'state-engine.json'), e => { e.steps[0]['exit-events'] = [{ condition: { 'turn-complete': true }, 'move-to-state': 'refresh' }, { condition: { 'turn-complete': false }, 'move-to-state': 'generate' }]; });
+  const c = (from, to, sub) => ({ 'state-engine': 'dev', 'from-state': from, 'to-state': to, timestamp: '2026-11-12T09:00:00Z', 'agent-dispatch-log': [], ...(sub ? { 'sub-state-change': sub } : {}) });
+  const sb = (from, to) => c('build', 'build', { 'state-engine': 'sub-build', 'from-state': from, 'to-state': to });
+  t.setVariation({ 'state-changes': [c('plan', 'build'), sb(null, 'generate'), sb('generate', 'generate'), sb('generate', 'generate'), sb('generate', 'generate'), sb('generate', 'generate'), sb('generate', 'blocked'), c('build', 'blocked')] });
+  const why = await outcome(t.agent('ticket:recheck-block', 'p', 'ABC-3', 'A'));
+  assert.equal(why.code, 3, why.stderr);
+  assert.equal(why.out.rechecked, false);
+  assert.deepEqual([why.out.loop['ran-out'], why.out.loop['failing-step']], ['build/generate', 'build/generate']);
+  assert.match(why.out['recheck-why'], /build\/generate is no script step/);
+  assert.match(t.log(), /Not resumed: a loop\. build\/generate ran out of visits \(5 of 5\).*The step that kept failing is not re-checked: .*On to Troubleshoot\./);
+});
+
+test('ASS-474: ticket:fix-attempts counts a loop Troubleshoot found nothing to fix in (resumed) as an attempt, so a loop reaches the operator after 3, saying so; the block history names the loop', async () => {
+  const s = setup();
+  const top = (from, to) => ({ 'state-engine': 'dev', 'from-state': from, 'to-state': to });
+  const stay = [top('build', 'blocked'), { ...top('blocked', 'blocked'), 'sub-state-change': { 'state-engine': 'grouped-blocked', 'from-state': null, 'to-state': 'count-attempts' } }];
+  const loop = { 'ran-out': 'build/check', visits: 3, 'max-visits': 3, steps: ['build/generate', 'build/check'], 'failing-step': 'build/check', 'sent-back': 3, 'sent-back-to': 'build/generate' };
+  const looped = { 'needs-fix': false, rechecked: true, loop, summary: 'A loop: build/check ran out of visits; build/check kept failing', 'ended-at': 'done' };
+  const attempts = () => outcome(s.agent('ticket:fix-attempts', 'p', 'ABC-3', 'A'));
+  s.setVariation({ 'state-changes': stay, blocks: [looped] });
+  assert.deepEqual((await attempts()).out, { 'fix-attempts': 1, loops: 1 });
+  s.setVariation({ 'state-changes': stay, blocks: [looped, looped, looped] });
+  const three = await attempts();
+  assert.equal(three.code, 3);
+  assert.deepEqual([three.out['fix-attempts'], three.out.loops], [3, 3]);
+  assert.match(three.out['ai-feedback-long'], /^It ran out of visits in a loop 3 times, Troubleshoot finding nothing to fix, and was resumed \(ASS-474/);
+  // A loop that ended in a fix landing is no failed attempt: the count stops there, as for any other.
+  s.setVariation({ 'state-changes': stay, blocks: [{ ...looped, 'needs-fix': true, key: 'H-1' }] });
+  assert.deepEqual((await attempts()).out, { 'fix-attempts': 0 });
+  const { blockHistory } = await import('../../src/control/facts.js');
+  assert.match(blockHistory({ blocks: [looped] }), /A loop: build\/check ran out of visits, build\/check sending it back each time\. .*Ended: nothing wrong found, resumed — blocked again\./);
+});

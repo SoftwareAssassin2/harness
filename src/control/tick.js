@@ -10,7 +10,10 @@
 //                                memory, memory.js (ASS-62), backed up
 //                                daily, memory-backup.js (ASS-148), its
 //                                Claude spend read, memory-spend.js (ASS-269)
-//   3. seats and memory          seat-memory.js: a seat only when its
+//   3. seats and memory          seats.js: each ticket in progress in a VM
+//                                seat or a workstation seat, a free
+//                                workstation seat taken first (ASS-469);
+//                                seat-memory.js: a seat only when its
 //                                VM fits in the Mac's memory (ASS-420)
 //      VMs by state              vm-lifecycle.js
 //      workstation connections   workstations.js: each GCP workstation's
@@ -66,6 +69,7 @@ import { recordMemorySpend } from './memory-spend.js';
 import { superviseVms } from './vm-lifecycle.js';
 import { superviseWorkstations } from './workstations.js';
 import { seatMemory } from './seat-memory.js';
+import { assignSeats } from './seats.js';
 import { dispatch } from './dispatch.js';
 import { fastTrack } from './fast-track.js';
 import { checkUsage } from './usage.js';
@@ -205,9 +209,9 @@ export function createContext({ root, env = process.env, command, log = () => {}
 
 // The phases that start agents, skipped while a restart drains.
 const NEW_WORK = new Set([fastTrack, refineBacklog, dispatch]);
-const PHASES = [finishEnded, superviseRegistries, followGolden, superviseMemory, backupMemory, recordMemorySpend, seatMemory, superviseVms, superviseWorkstations, fastTrack, runSteps, detectGaps, fireTimers, detectReverts, checkGcloud, checkGlab, checkUsage, checkApiCost, checkPushAccount, raiseDependencies, refineBacklog, superviseAgents, dispatch];
+const PHASES = [finishEnded, superviseRegistries, followGolden, superviseMemory, backupMemory, recordMemorySpend, assignSeats, seatMemory, superviseVms, superviseWorkstations, fastTrack, runSteps, detectGaps, fireTimers, detectReverts, checkGcloud, checkGlab, checkUsage, checkApiCost, checkPushAccount, raiseDependencies, refineBacklog, superviseAgents, dispatch];
 
-// tick(ctx) — the twenty-three phases, in order, each reading the data afresh; a
+// tick(ctx) — the twenty-four phases, in order, each reading the data afresh; a
 // phase that throws is logged under "error" and the next still runs. The
 // rate limits — recorded by the finish phase, so checked after it — are
 // logged and cleared (checkRateLimits), the tick going on; ASS-460: guarded as

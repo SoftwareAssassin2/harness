@@ -313,11 +313,12 @@ export const seatHolders = state => seatPlan(state).holders;
 
 // seatPlan(state) — the selected project's seats as seatHolders asks the planner (seatsOf): `holders`, the
 // "<key> <variation>" holding an in-progress or a planning seat (seatHolders'), `progress` and `planning` those of
-// each kind, and `free`, { progress, planning }, the empty seats of each kind (ASS-451: freeSeats). A past day
+// each kind, `free`, { progress, planning }, the empty seats of each kind (ASS-451: freeSeats), and `kinds` (ASS-469)
+// "<key> <variation>" → 'vm' or 'workstation', the kind of in-progress seat control recorded it in (seats.json). A past day
 // (or no project): nobody, none free — seats are live state.
 export function seatPlan(state) {
   const selected = state.projects[state.project];
-  if (state.day || !selected) return { holders: new Set(), progress: [], planning: [], free: { progress: 0, planning: 0 } };
+  if (state.day || !selected) return { holders: new Set(), progress: [], planning: [], free: { progress: 0, planning: 0 }, kinds: new Map() };
   const projects = state.projects.map(p => planProject(state, p));
   const plan = {
     projects, allProjects: projects, assignments: state.assignments ?? [], harness: selected.limits?.harness ?? {}, running: {},
@@ -327,7 +328,9 @@ export function seatPlan(state) {
   // Every other project's seats, counted against harness.json's limits as planFor counts them (inMotion: its
   // reservedElsewhere and planningElsewhere).
   const elsewhere = inMotion(projects.filter(p => p.id !== projects[state.project].id), plan.engines, plan);
-  return { holders: new Set([...seats['in-progress'], ...seats['in-planning']]), progress: seats['in-progress'], planning: seats['in-planning'], free: freeSeats(seats, elsewhere) };
+  // ASS-469: the kind of each in-progress seat, as control recorded it (seats.json): 'vm' or 'workstation'.
+  const kinds = new Map((selected.seats ?? []).map(r => [`${r.key} ${r.variation}`, r.kind]).filter(([k]) => seats['in-progress'].includes(k)));
+  return { holders: new Set([...seats['in-progress'], ...seats['in-planning']]), progress: seats['in-progress'], planning: seats['in-planning'], free: freeSeats(seats, elsewhere), kinds };
 }
 
 // freeSeats(seats, elsewhere) — { progress, planning }: of seatsOf's answer, the empty seats of each kind (ASS-451),
@@ -360,14 +363,18 @@ export function freeSeats(seats, elsewhere = {}) {
 // memoryHold (ASS-404: control's memory-hold.json, whose held variations
 // hold no seat while their VMs wait for memory) and memoryWait (ASS-420:
 // control's memory-wait.json, the variations refused a seat for want of
-// memory for their VMs: no 💺; their Health says so, control's ai-feedback).
+// memory for their VMs: no 💺; their Health says so, control's ai-feedback),
+// and (ASS-469) devEnvironments, workstations and seats — its seats of both
+// kinds (control/seat-kinds.js: its VM seats and one per usable workstation)
+// and who holds which, seats.json's records kept seated first, as planFor counts them.
 function planProject(state, p) {
   const seen = enginesOf(state.workflows.filter(w => w.project == null || w.project === p.id).toReversed());   // its own listed first: last wins
   const engines = switchOff(seen, (p.switchedOffSteps ?? []).filter(e => !switchedOffStepErrors(e, seen).length));
   const tickets = flattenSprint(p.sprint ?? {});
   const asking = new Set(tickets.filter(t => t['ticket-system-status'] !== 'Done' && (p.questions ?? []).some(q => q.source === t.key && blocksTicket(q))).map(t => t.key));
   const json = { ...p.limits?.project, ...(p.waitForDependencies === true ? { 'wait-for-dependencies': true } : {}) };
-  return { id: p.id, json, engines, engine: engines[p.stateEngine], tickets, backlog: p.backlog ?? [], outside: p.outside ?? [], asking, memoryHold: p.memoryHold ?? null, memoryWait: p.memoryWait ?? null };
+  return { id: p.id, json, engines, engine: engines[p.stateEngine], tickets, backlog: p.backlog ?? [], outside: p.outside ?? [], asking, memoryHold: p.memoryHold ?? null, memoryWait: p.memoryWait ?? null,
+    devEnvironments: p.devEnvironments ?? null, workstations: p.workstations ?? {}, seats: p.seats ?? [] };
 }
 
 // Which of two sprint tickets is closer to done: the higher step sequence at

@@ -217,6 +217,8 @@ const ENDED = {
   retry: b => `fix ticket ${b.key ?? '?'} closed unmerged`,
   'blocked-for-human': b => `handed to the operator (${b['ai-feedback-short'] ?? 'no note'})`,
 };
+// loopWords(loop) — ASS-474: a kept block's loop (ticket:recheck-block), said in a sentence; '' for none.
+const loopWords = loop => (loop && typeof loop === 'object' ? ` A loop: ${loop['ran-out'] ?? '?'} ran out of visits${loop['failing-step'] ? `, ${loop['failing-step']} sending it back each time` : ''}.` : '');
 export function blockHistory(variation) {
   const changes = variation?.['state-changes'] ?? [];
   const entries = changes.flatMap((c, i) => (!c['sub-state-change'] && c['to-state'] === 'blocked' && c['from-state'] !== 'blocked' ? [cameFrom({ 'state-changes': changes.slice(0, i + 1) }, 'blocked') ?? '?'] : []));
@@ -226,7 +228,8 @@ export function blockHistory(variation) {
   return [
     'Earlier blocks of this ticket (oldest first). Learn from them: a fix that did not hold at a step was not the real fix — find the deeper cause; never repeat what already failed.',
     `Entered Blocked ${entries.length} time${entries.length === 1 ? '' : 's'} (this stay included): ${counts.join('; ') || 'not recorded'}.`,
-    ...kept.map(b => `- ${b.timestamp ?? '?'}, from ${b['came-from'] ?? '?'}: ${b.summary ?? 'no analysis'}.${b['root-cause'] ? ` Cause: ${b['root-cause']}.` : ''}${b.issue ? ` Issue: ${b.issue} — ${b.reasoning ?? ''}.` : ''} Ended: ${(ENDED[b['ended-at']] ?? (() => b['ended-at'] ?? '?'))(b)}.`),
+    // ASS-474: a block that was a loop which ran out of visits (Check First's loop) names it.
+    ...kept.map(b => `- ${b.timestamp ?? '?'}, from ${b['came-from'] ?? '?'}: ${b.summary ?? 'no analysis'}.${loopWords(b.loop)}${b['root-cause'] ? ` Cause: ${b['root-cause']}.` : ''}${b.issue ? ` Issue: ${b.issue} — ${b.reasoning ?? ''}.` : ''} Ended: ${(ENDED[b['ended-at']] ?? (() => b['ended-at'] ?? '?'))(b)}.`),
   ].join('\n');
 }
 

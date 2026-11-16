@@ -16,7 +16,9 @@
 // seat, ASS-362, planFor's `ready`, holds none, so its queue costs no RAM) or for a ticket it depends on
 // (ASS-355: dependencies.js heldBy, the predicate control holds it with —
 // stopped as one waiting for a slot is, its agent at work let finish first,
-// and started again once the hold lifts); stopped anywhere else (Release,
+// and started again once the hold lifts) or holds a workstation seat
+// (ASS-469, seats.js: its steps run on that workstation; started again if it
+// moves back to a VM seat); stopped anywhere else (Release,
 // Done, Blocked, Blocked for Human, a sprint that ended). A VM that should run is started (vm:start),
 // or, when it is gone — deleted to make room (vm:create's make_room) —
 // recreated (vm:create, which the variation records); one that should not is
@@ -146,8 +148,7 @@ import { holdOf, heldBy } from './dependencies.js';
 import { backoffDelay, held } from './backoff.js';
 import { runsInVm } from './vm.js';
 import { machineStatuses, runInMachine, machineOf, onWorkstation } from './machine.js';
-import { entriesOf, onWorkstationVariation, machineUp, whyDown, placementWait } from './workstation-machines.js';
-import { controlPath } from './workstation-connection.js';
+import { entriesOf, onWorkstationVariation, onWorkstationSeat } from './workstation-machines.js';
 import { diskHeld } from './disk.js';
 import { memoryShort, memoryHeldVm, liftMemoryHolds, unhold } from './host-memory.js';
 import { humanPause, moveTicket } from './moves.js';
@@ -218,21 +219,17 @@ const rateHealth = (id, key, limit) => ({
 // dispatching (dispatch.js vmDown's own wait past VM_WAIT logged, ASS-348) },
 // dropped once the VM is up or should not run.
 //
-// ASS-435: a variation on a GCP workstation (its vm { kind: workstation })
-// waits so while its machine there is not up (workstation-machines.js
-// machineUp: the workstation connected, its login live, set up, held by the
-// variation and readied since it last started) — and for as long as that
-// takes, with no VM_WAIT and no ceiling: each way a workstation is down is
-// one control works on (connecting it, setting it up, readying the folder,
-// workstations.js) or the operator must (a sign-in, a failed setup), and its
-// Health says which (workstations.js tend, AC7). Its wait is logged once with
-// why. An unplaced variation of a project in workstation mode waits so while
-// no workstation of its pool is free (placementWait), as a ticket waits for
-// its VM: its Create VM step not run until one is.
+// ASS-435, ASS-468: a variation whose steps run on its project's GCP
+// workstations (its vm { kind: workstation }), or that has no machine yet,
+// or (ASS-469) that holds a workstation seat, never waits here: a step of it that runs on its machine waits until a
+// workstation is claimed for it (workstation-steps.js stepWaits, asked by
+// steps.js and dispatch.js where its script or agent would start), and no
+// other step needs one.
 export const VM_WAIT = 2 * 60_000;
 export const NEVER_UP = 'never-up';
 export function awaitsVm(ctx, state, project, variation, who) {
-  if (onWorkstationVariation(variation) || !variation?.vm?.name) return workstationWait(ctx, state, project, variation, who);
+  if (onWorkstationVariation(variation) || !variation?.vm?.name) return false;
+  if (onWorkstationSeat(project, variation)) return false;   // ASS-469: its steps run on its seat's workstation
   const name = variation?.vm?.name;
   if (!name || (ctx.memory.vmsUp ??= new Set()).has(name) || vmUse(project.engines ?? state.engines, project.engineName, variation) !== 'running') return false;
   const ticket = project.tickets.find(t => t.variations?.includes(variation));
@@ -259,38 +256,6 @@ export function awaitsVm(ctx, state, project, variation, who) {
   }
   if (!w.over) { w.over = true; ctx.log(PHASE, `${who}: its VM ${name} is not running after ${held(VM_WAIT)} and not starting (${why}): judged as it stands`); }
   return false;
-}
-
-// makesMachine(step) — the step's command is vm:create, which places a variation and readies its machine.
-export const makesMachine = step => /(^|\s)(\.\/)?agent\.sh vm:create\b/.test(step?.action?.command ?? '');
-
-// workstationWait(ctx, state, project, variation, who) — ASS-435's waits
-// (see awaitsVm): true while the variation's step needs its machine and it
-// is not up on its workstation, or, unplaced in workstation mode, none is
-// free; logged once per wait with why, and once as it ends.
-function workstationWait(ctx, state, project, variation, who) {
-  const ticket = project.tickets.find(t => t.variations?.includes(variation));
-  const key = `${project.id} ${ticket?.key} ${variation?.name}`;
-  const waits = (ctx.memory.workstationWaits ??= new Map());
-  let why = null;
-  if (onWorkstationVariation(variation)) {
-    // Its Create VM step (vm:create) makes the machine up itself: never held for it, so its exit is read as it ends.
-    const status = statusOf(project.engines ?? state.engines, project.engineName, variation);
-    if (vmUse(project.engines ?? state.engines, project.engineName, variation) === 'running' && !makesMachine(status.detailStep)) {
-      const id = variation.vm.name;
-      const entry = entriesOf(ctx, project.id)[id];
-      if (!machineUp(entry, ticket?.key, variation.name)) why = whyDown(project.devEnvironments, id, entry, ticket?.key, variation.name, ctx.env.HOME);
-      // Its connection's socket gone (the master ended: dropped, or the workstation stopped) — down now, before the minute's check notices.
-      else if (!existsSync(controlPath(ctx.env, project.id, id))) why = `workstation ${id}'s connection is not open (it dropped, or the workstation stopped); reconnecting`;
-    }
-  } else why = placementWait(ctx, state, project, variation);
-  const was = waits.get(key);
-  if (!why) {
-    if (was) { waits.delete(key); ctx.log(PHASE, `${who}: no longer waits for a workstation`); }
-    return false;
-  }
-  if (was !== why) { waits.set(key, why); ctx.log(PHASE, `${who}: waits: ${why}`); }
-  return true;
 }
 
 // notStarting(ctx, state, project, name) — why nobody is starting the VM
@@ -395,13 +360,14 @@ function vmsOf(ctx, state, project) {
     const dependsOn = wants && !pause ? holdOf(state, project, t, v).waits : [];   // ASS-355: held by what it depends on, stopped as one waiting for a slot
     const waits = wants && !pause && !dependsOn.length && waitsForSlot(plan ??= planFor(state, project), t, v);
     const rateLimited = wants && !pause && !dependsOn.length && !waits ? rateLimitStop(ctx, state, project, v) : null;   // ASS-400
-    const run = wants && !waits && !dependsOn.length && !pause && !rateLimited;
+    const seated = wants && !pause && !dependsOn.length && !waits && !rateLimited && onWorkstationSeat(project, v);   // ASS-469: machines follow seats — its steps on its seat's workstation, its VM stopped
+    const run = wants && !waits && !dependsOn.length && !pause && !rateLimited && !seated;
     const ready = waits && plan.ready.some(r => r.key === t.key && r.variation === v.name);   // ASS-362: a finished plan, said so
     const paused = wants && pause ? pause : undefined, keep = !!pause && busy;   // ASS-297: paused, stopped once idle, never started
     const hold = !v['is-deleted'] && v['vm-hold'] ? v['vm-hold'] : null;   // ASS-427 AC7: held running for the operator — whatever its step, pause or wait says
     vms.set(v.vm.name, { ...vms.get(v.vm.name), ticket: t.key, variation: v.name, state: v['harness-status']?.state, health: v['ai-feedback-long'] ?? null, hold,
       ...(hold ? { run: true, waits: false, ready: false, dependsOn: [], busy, paused: undefined, keep: false, release: false, rateLimited: null }
-        : { run, waits, ready, dependsOn, busy, paused, keep, release, rateLimited }) });
+        : { run, waits, ready, dependsOn, busy, paused, keep, release, rateLimited, seated }) });
   }
   return vms;
 }
@@ -538,7 +504,7 @@ async function match(ctx, id, vms, r, status, diskHold = false, stampEvery = CRE
     else if (vm.run && s == null) [args, did] = [['vm:create', id, vm.ticket, vm.variation], `recreated (${vm.ticket} ${vm.variation} at ${vm.state}; it had been deleted)`];
     else if (vm.run && s != null && s !== 'Running') [args, did] = [['vm:start', id, vm.ticket, vm.variation], `started (${vm.ticket} ${vm.variation} at ${vm.state}${vm.hold ? '; held for the operator' : ''})`];
     else if (!vm.run && s === 'Running') {
-      const why = `${vm.ticket} ${vm.variation} ${vm.state ? `at ${vm.state}` : vm.unlinked ? 'not linked to its variation' : 'is not in the sprint'}${vm.waits ? (vm.ready ? '; planned, waits for a build seat' : '; waits for a slot') : ''}${vm.dependsOn?.length ? `; waits on ${vm.dependsOn.join(', ')}` : ''}${vm.paused ? `; ${vm.paused === 'all' ? 'all projects are' : `${id} is`} paused` : ''}${vm.rateLimited ? `; rate-limited until ${vm.rateLimited.until}, no API fallback` : ''}`;
+      const why = `${vm.ticket} ${vm.variation} ${vm.state ? `at ${vm.state}` : vm.unlinked ? 'not linked to its variation' : 'is not in the sprint'}${vm.waits ? (vm.ready ? '; planned, waits for a build seat' : '; waits for a slot') : ''}${vm.dependsOn?.length ? `; waits on ${vm.dependsOn.join(', ')}` : ''}${vm.paused ? `; ${vm.paused === 'all' ? 'all projects are' : `${id} is`} paused` : ''}${vm.rateLimited ? `; rate-limited until ${vm.rateLimited.until}, no API fallback` : ''}${vm.seated ? '; it holds a workstation seat, its steps run there' : ''}`;
       if (vm.busy) {   // ASS-349: an assignment on its variation — its agent at work in it — holds the stop till it ends
         if (!ctx.memory.warned.has(holding)) { ctx.memory.warned.add(holding); ctx.log(PHASE, `${id} ${name}: to stop (${why}); waits until its agent finishes`); }
         continue;

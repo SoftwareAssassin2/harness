@@ -47,13 +47,16 @@ const issue = (key, statusName, histories = [], total = histories.length) => ({
   changelog: { total, histories },
 });
 const statusItem = (from, to) => ({ field: 'status', fieldId: 'status', fromString: from, toString: to });
-// fakeFetch(issues, { fail }) — the search answers those issues, the board its sprints; fail() true answers 401. The JQLs asked are kept.
-function fakeFetch(answer) {
+// fakeFetch(answer, myself?) — answer(url) gives the body (401 answers that);
+// the sign-in check (/rest/api/3/myself, ASS-475) answers myself() instead,
+// a signed-in account unless told otherwise. The JQLs asked are kept.
+const SIGNED_IN = () => ({ accountId: 'acc-ada', displayName: 'Ada Example', accountType: 'atlassian' });
+function fakeFetch(answer, myself = SIGNED_IN) {
   const jqls = [], paths = [];
   const fetchFn = async url => {
     const u = new URL(url);
     paths.push(u.pathname);
-    const body = answer(u);
+    const body = u.pathname === '/rest/api/3/myself' ? myself(u) : answer(u);
     if (body === 401) return { ok: false, status: 401, statusText: 'Unauthorized', json: async () => ({}) };
     if (u.pathname === '/rest/api/3/search/jql') jqls.push(u.searchParams.get('jql'));
     return { ok: true, status: 200, json: async () => body };
@@ -83,6 +86,7 @@ test('ASS-406 AC1-AC4: a first read takes every ticket with its changelog (a tru
   const calls = await cycle(r, fetchFn, lines);
   assert.deepEqual(calls, ['ticket:sync', 'analytics:sync-tickets', 'analytics:sync-sprints', 'project:set-last-data-download']);
   assert.deepEqual(jqls, ['project = "PROJ" ORDER BY created ASC']);
+  assert.equal(paths[0], '/rest/api/3/myself');   // ASS-475: the sign-in first
   assert.ok(paths.includes('/rest/agile/1.0/board/12/sprint'));
   const tickets = JSON.parse(readFileSync(r.file('tickets.json'), 'utf8'));
   assert.ok(Date.parse(tickets['fetched-through']) >= before - 1000);
@@ -174,4 +178,101 @@ test('ASS-440 AC1: a tickets.json read before sub-tasks were (no includes-subtas
   await cycle(r, fetchFn);
   assert.match(jqls[1], /AND updated >= "-\d+m"/);
   assert.equal(JSON.parse(readFileSync(r.file('tickets.json'), 'utf8'))['includes-subtasks'], true);
+});
+
+// ASS-475: a rejected API token. Jira's search answers it as an anonymous
+// user — 200, no issues — while /rest/api/3/myself answers 401.
+const ANONYMOUS_SEARCH = { issues: [], isLast: true };
+
+test('ASS-475 AC1/AC3: with a token Jira rejects, a round reads nothing, leaves tickets.json and its fetched-through untouched, never logs "0 tickets updated", records the warning for the dashboard and logs it once', async () => {
+  const r = root();
+  let rejected = false;
+  const { fetchFn, paths } = fakeFetch(u => (rejected ? (u.pathname === '/rest/api/3/search/jql' ? ANONYMOUS_SEARCH : { values: [], isLast: true })
+    : u.pathname === '/rest/api/3/search/jql' ? { issues: [issue('PROJ-1', 'To Do')], isLast: true } : SPRINTS), () => (rejected ? 401 : SIGNED_IN()));
+  await cycle(r, fetchFn);
+  const tickets = readFileSync(r.file('tickets.json'), 'utf8'), sprints = readFileSync(r.file('sprints.json'), 'utf8');
+  rejected = true;
+  paths.length = 0;
+  const lines = [];
+  assert.deepEqual(await cycle(r, fetchFn, lines), ['ticket:sync', 'analytics:record-sign-in', 'project:set-last-data-download']);
+  assert.deepEqual(paths, ['/rest/api/3/myself']);   // nothing searched, no sprints read
+  assert.equal(readFileSync(r.file('tickets.json'), 'utf8'), tickets);
+  assert.equal(readFileSync(r.file('sprints.json'), 'utf8'), sprints);
+  const record = JSON.parse(readFileSync(join(r.project, 'jira-token-rejected.json'), 'utf8'));
+  assert.equal(record.status, 401);
+  assert.equal(record['work-source'], 'J');
+  assert.match(record.problem, /HTTP 401/);
+  assert.match(record.since, /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$/);
+  // A second round: the same, logged once, the record not written again.
+  assert.deepEqual(await cycle(r, fetchFn, lines), ['ticket:sync', 'project:set-last-data-download']);
+  assert.equal(readFileSync(r.file('tickets.json'), 'utf8'), tickets);
+  assert.equal(lines.filter(l => /analytics: Jira rejected the jira work source's api-token \(HTTP 401 Unauthorized for \/rest\/api\/3\/myself\); nothing read, tickets\.json and its fetched-through stay/.test(l)).length, 1, lines.join('\n'));
+  assert.ok(lines.every(l => !/tickets updated/.test(l) && !/secret-token/.test(l)), lines.join('\n'));
+});
+
+test('ASS-475 AC2: with the token fixed, the next round clears the warning and reads every ticket updated since the last good read', async () => {
+  const r = root();
+  let state = 'good', answer = [issue('PROJ-1', 'To Do')];
+  const { fetchFn, jqls } = fakeFetch(u => (u.pathname === '/rest/api/3/search/jql' ? (state === 'bad' ? ANONYMOUS_SEARCH : { issues: answer, isLast: true }) : SPRINTS), () => (state === 'bad' ? 401 : SIGNED_IN()));
+  await cycle(r, fetchFn);
+  const good = JSON.parse(readFileSync(r.file('tickets.json'), 'utf8'));
+  // Back-date the last good read to two days ago: the rounds while the token was rejected must not move it.
+  const lastGood = new Date(Date.now() - 2 * 86_400_000).toISOString();
+  writeFileSync(r.file('tickets.json'), JSON.stringify({ ...good, 'fetched-through': lastGood }));
+  state = 'bad';
+  for (let i = 0; i < 3; i++) await cycle(r, fetchFn);
+  assert.equal(JSON.parse(readFileSync(r.file('tickets.json'), 'utf8'))['fetched-through'], lastGood);
+  assert.ok(existsSync(join(r.project, 'jira-token-rejected.json')));
+  state = 'good';
+  answer = [issue('PROJ-1', 'Done'), issue('PROJ-2', 'In Progress')];
+  const lines = [];
+  const calls = await cycle(r, fetchFn, lines);
+  assert.deepEqual(calls, ['ticket:sync', 'analytics:record-sign-in', 'analytics:sync-tickets', 'analytics:sync-sprints', 'project:set-last-data-download']);
+  assert.equal(existsSync(join(r.project, 'jira-token-rejected.json')), false);
+  // The search reaches back to the last good read (less the overlap), not to the rejected rounds.
+  const minutes = Number(/updated >= "-(\d+)m"/.exec(jqls.at(-1))?.[1]);
+  const wanted = (Date.now() - (Date.parse(lastGood) - ANALYTICS_OVERLAP_MS)) / 60_000;
+  assert.ok(Math.abs(minutes - wanted) <= 2, `${jqls.at(-1)} vs ${wanted}`);
+  const since = new Date(Date.parse(lastGood) - ANALYTICS_OVERLAP_MS).toISOString();
+  assert.ok(lines.some(l => l.includes(`analytics: 2 tickets updated since ${since}`)), lines.join('\n'));
+  assert.ok(lines.some(l => /Jira takes the api-token again/.test(l)), lines.join('\n'));
+  const after = JSON.parse(readFileSync(r.file('tickets.json'), 'utf8'));
+  assert.deepEqual([after.tickets['PROJ-1'].status, after.tickets['PROJ-2'].status], ['Done', 'In Progress']);
+  assert.ok(after['fetched-through'] > lastGood);
+  // Signed in still: nothing to clear, no record-sign-in call.
+  assert.deepEqual(await cycle(r, fetchFn), ['ticket:sync', 'analytics:sync-tickets', 'analytics:sync-sprints', 'project:set-last-data-download']);
+});
+
+test('ASS-475 AC3: /myself answering as an anonymous user, or a search Jira marks as a failed login, is a rejected token, never "0 tickets updated"', async () => {
+  // /myself 200 with no account (an anonymous user).
+  const r = root();
+  const { fetchFn } = fakeFetch(u => (u.pathname === '/rest/api/3/search/jql' ? ANONYMOUS_SEARCH : SPRINTS), () => ({ accountType: 'anonymous' }));
+  const lines = [];
+  assert.deepEqual(await cycle(r, fetchFn, lines), ['ticket:sync', 'analytics:record-sign-in', 'project:set-last-data-download']);
+  assert.equal(existsSync(r.file('tickets.json')), false);
+  assert.equal(JSON.parse(readFileSync(join(r.project, 'jira-token-rejected.json'), 'utf8')).status, 200);
+  assert.ok(lines.every(l => !/tickets updated|tickets read/.test(l)), lines.join('\n'));
+  // A search answered 200 but marked AUTHENTICATED_FAILED (rejected after the check passed).
+  const r2 = root();
+  const seraph = async url => {
+    const u = new URL(url);
+    if (u.pathname === '/rest/api/3/myself') return { ok: true, status: 200, json: async () => SIGNED_IN() };
+    return { ok: true, status: 200, headers: new Headers({ 'X-Seraph-LoginReason': 'AUTHENTICATED_FAILED' }), json: async () => ANONYMOUS_SEARCH };
+  };
+  const lines2 = [];
+  assert.deepEqual(await cycle(r2, seraph, lines2), ['ticket:sync', 'analytics:record-sign-in', 'project:set-last-data-download']);
+  assert.equal(existsSync(r2.file('tickets.json')), false);
+  assert.ok(lines2.some(l => /Jira rejected the jira work source's api-token \(HTTP 200 for \/rest\/api\/3\/search\/jql, the login failed\)/.test(l)), lines2.join('\n'));
+  assert.ok(lines2.every(l => !/tickets updated|tickets read/.test(l)), lines2.join('\n'));
+});
+
+test('ASS-475: a sign-in check that fails another way (a 5xx) reads nothing, is logged once, and leaves no warning', async () => {
+  const r = root();
+  const { fetchFn, paths } = fakeFetch(() => SPRINTS, () => ({ status: 503 }));
+  const down = async (url, init) => (new URL(url).pathname === '/rest/api/3/myself' ? { ok: false, status: 503, statusText: 'Service Unavailable', json: async () => ({}) } : fetchFn(url, init));
+  const lines = [];
+  for (let i = 0; i < 2; i++) assert.deepEqual(await cycle(r, down, lines), ['ticket:sync', 'project:set-last-data-download']);
+  assert.deepEqual(paths, []);
+  assert.equal(lines.filter(l => /analytics: the Jira sign-in could not be checked; nothing read, tickets\.json stays as it is: HTTP 503/.test(l)).length, 1, lines.join('\n'));
+  assert.equal(existsSync(join(r.project, 'jira-token-rejected.json')), false);
 });

@@ -104,6 +104,18 @@ import { dataDir } from '../data-folder.js';
 //    the sprint files or backlog.json. No credentials, or a read (or its
 //    write) that fails, is logged once until that changes, the file it would
 //    have written stays as it was, and the cycle goes on.
+//    ASS-475: first the sign-in (jiraRest.checkSignIn, GET /rest/api/3/myself),
+//    since Jira's search answers a rejected token as an anonymous user with no
+//    issues, which would be recorded as "0 tickets updated" and move
+//    fetched-through on. Rejected (401/403, an anonymous user, or a read Jira
+//    marks as a failed login): nothing is read, tickets.json and its
+//    fetched-through stay, it is logged once, and `analytics:record-sign-in`
+//    records it in jira-token-rejected.json, which the dashboard warns of.
+//    Signed in: that record is cleared (only when there is one), and the read
+//    goes on from the last good read's fetched-through, so it takes every
+//    ticket changed while the token was rejected. A check that fails another
+//    way (a 5xx, the network) reads nothing either, logged once, the record
+//    left as it is.
 // 5b′. Off-board analytics (ASS-413), every cycle, for a project with an
 //    off-board work source, when adapters.offBoard has fetchAnalyticsTickets:
 //    every off-board ticket with its status history (ticket:history) and the
@@ -249,7 +261,7 @@ export async function runCycle({ root, project, now = new Date(), adapters, exec
 
     // 5b. Analytics (ASS-406): its own failures logged, never the cycle's.
     if (source && adapters.jiraRest) {
-      await syncAnalytics({ key: join(projects, project), project, source, board, tickets: join(projects, project, 'analytics', 'tickets.json'), call, rest: adapters.jiraRest, fetchFn, log });
+      await syncAnalytics({ key: join(projects, project), project, source, board, tickets: join(projects, project, 'analytics', 'tickets.json'), rejectedFile: join(projects, project, 'jira-token-rejected.json'), call, rest: adapters.jiraRest, fetchFn, log });
     }
 
     // 5b′. Off-board analytics (ASS-413): the off-board tickets' status histories and the project's own sprints.
@@ -330,11 +342,14 @@ async function syncOutside({ project, board, tickets, recorded, call, jira, exec
 export const ANALYTICS_OVERLAP_MS = 5 * 60_000;
 
 // The last thing syncAnalytics logged that stays until it changes, by
-// projects folder and project, and by part (credentials, tickets, sprints).
+// projects folder and project, and by part (credentials, sign-in, tickets, sprints).
 const analyticsNotes = new Map();
 
+// ASS-475: what to do about a token Jira rejects, as the log and the dashboard say it.
+export const TOKEN_FIX = "create a new Atlassian API token (id.atlassian.com, Security, API tokens) and put it in project.json's jira work source as api-token";
+
 // syncAnalytics: step 5b (ASS-406).
-async function syncAnalytics({ key, project, source, board, tickets, call, rest, fetchFn, log }) {
+async function syncAnalytics({ key, project, source, board, tickets, rejectedFile, call, rest, fetchFn, log }) {
   const note = (part, text) => {
     const at = `${key}\0${part}`;
     if (text === null) return void analyticsNotes.delete(at);
@@ -346,6 +361,31 @@ async function syncAnalytics({ key, project, source, board, tickets, call, rest,
   note('credentials', null);
   const auth = { site: board.site, email, token };
   const reason = err => String(err?.message ?? err).split('\n')[0];
+
+  // ASS-475: the sign-in first; a rejected token reads nothing and moves nothing on.
+  const recorded = () => { try { return JSON.parse(readFileSync(rejectedFile, 'utf8')); } catch { return null; } };
+  const rejected = async err => {
+    note('sign-in', `analytics: Jira rejected the jira work source's api-token (${reason(err)}); nothing read, tickets.json and its fetched-through stay as they are until it signs in — ${TOKEN_FIX}`);
+    const was = recorded(), problem = reason(err);
+    if (was && was.status === err.status && was.problem === problem) return;
+    try { await call(['analytics:record-sign-in', project], { 'signed-in': false, status: err.status, problem, 'work-source': source.name ?? null }); note('sign-in-record', null); } catch (e) {
+      note('sign-in-record', `analytics: the rejected token could not be recorded for the dashboard: ${reason(e)}`);
+    }
+  };
+  try {
+    await rest.checkSignIn(auth, fetchFn);
+  } catch (err) {
+    if (err?.name === 'SignInRejected') return rejected(err);
+    return note('sign-in', `analytics: the Jira sign-in could not be checked; nothing read, tickets.json stays as it is: ${reason(err)}`);
+  }
+  const record = recorded();
+  if (record || analyticsNotes.get(`${key}\0sign-in`)?.startsWith('analytics: Jira rejected')) log('analytics: Jira takes the api-token again; reading every ticket changed since the last good read');
+  note('sign-in', null);
+  if (record) {
+    try { await call(['analytics:record-sign-in', project], { 'signed-in': true }); note('sign-in-record', null); } catch (e) {
+      note('sign-in-record', `analytics: the dashboard's rejected-token warning could not be cleared: ${reason(e)}`);
+    }
+  }
 
   let since = null, backfill = false;
   try {
@@ -362,6 +402,7 @@ async function syncAnalytics({ key, project, source, board, tickets, call, rest,
     await call(['analytics:sync-tickets', project], { 'fetched-through': fetchedThrough, 'includes-subtasks': true, tickets: read });
     note('tickets', null);
   } catch (err) {
+    if (err?.name === 'SignInRejected') return rejected(err);   // ASS-475: rejected since the check
     note('tickets', `analytics: the tickets could not be read; tickets.json stays as it is: ${reason(err)}`);
   }
   try {
@@ -369,6 +410,7 @@ async function syncAnalytics({ key, project, source, board, tickets, call, rest,
     await call(['analytics:sync-sprints', project], { sprints });
     note('sprints', null);
   } catch (err) {
+    if (err?.name === 'SignInRejected') return rejected(err);
     note('sprints', `analytics: the board's sprints could not be read; sprints.json stays as it is: ${reason(err)}`);
   }
 }

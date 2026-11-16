@@ -13,6 +13,7 @@ Earlier blocks (none: -):
 Quote or cite only files and output you have actually read in this run; never attribute a rule to a file you haven't opened.
 
 If nothing is wrong any more (the step would pass now), say so: no fix is needed.
+A loop is something wrong: when Check First's entry in change-log-{variation}.md says "Not resumed: a loop" (a step ran out of visits going round the same steps), the cause is why the step that kept failing failed every round, even if each step passes now; resumed with nothing changed, it goes round again. Needs-fix false then only when that cause has gone.
 
 Finish with JSON: {"needs-fix": <bool>, "summary": "<one line>", "root-cause": "<cause, and how it produces the failure>", "evidence": ["<file:line or command and what it showed>"], "missing-repository": "<its forge url, only when that is the cause>", "failing-repository": "<forge url>", "failing-job": "<CI job>", "failing-assertion": "<test or assertion, or command and exit>", "failing-file": "<path in the repository[:line]>"} — the failing-* only when the cause is in the product's own code.
 

@@ -22,6 +22,7 @@ import { readSession } from '../agents/session.js';
 import { diskHeld, makesDisk } from './disk.js';
 import { memoryShort, startsVm } from './host-memory.js';
 import { needsMacMemory } from './workstation-machines.js';
+import { stepWaits, usingMachine } from './workstation-steps.js';
 import { credentialsHeld } from './credentials.js';
 
 const PHASE = 'steps';
@@ -305,8 +306,9 @@ async function runVariation(ctx, state, project, key, name) {
           if (waiting(ctx.memory, held, ctx.now().getTime()) || (!timer && heldAtGate(variation))) return;
           if (diskWaits(ctx, state, step, who) || setupWaits(ctx, project, step, who)) return;
           if (await memoryWaits(ctx, state, project, step, who, backlog ? null : { key: ticket.key, variation: variation.name, state: stateId })) return;   // ASS-398, ASS-404
+          if (!backlog && stepWaits(ctx, state, project, ticket, variation, step, who)) return;   // ASS-468: a workstation (or its VM) claimed for the step first
           if (!scriptDue(ctx, who, running, visit, step, ctx.now().getTime())) return;
-          startScript(ctx, running, visit, runScriptStep(ctx, step, values, who, variation, backlog ? undefined : scriptEnv(state, project, variation)), who);
+          startScript(ctx, running, visit, usingMachine(ctx, project.id, ticket.key, variation.name, step, runScriptStep(ctx, step, values, who, variation, backlog ? undefined : scriptEnv(state, project, variation))), who);
           wait = ctx.scriptWait ?? SCRIPT_WAIT;
         }
         const exited = await scriptExit(ctx, running, wait);
@@ -453,8 +455,10 @@ async function runTransient(ctx, state, id) {
           if (waiting(ctx.memory, held, ctx.now().getTime()) || (!timer && variation && at && heldAtGate(variation, run['state-engine'], run.state, at.path.length + 1))) return;
           if (diskWaits(ctx, state, step, who) || setupWaits(ctx, project, step, who)) return;
           if (await memoryWaits(ctx, state, project, step, who, ticket && variation && !backlog ? { key: ticket.key, variation: variation.name, state: variation['harness-status']?.state } : null)) return;   // ASS-398, ASS-404
+          if (ticket && variation && !backlog && stepWaits(ctx, state, project, ticket, variation, step, who)) return;   // ASS-468
           if (!scriptDue(ctx, who, running, visit, step, ctx.now().getTime())) return;
-          startScript(ctx, running, visit, runScriptStep(ctx, step, values, who, variation, ticket && variation && !backlog ? scriptEnv(state, project, variation) : undefined), who);
+          const scriptRun = runScriptStep(ctx, step, values, who, variation, ticket && variation && !backlog ? scriptEnv(state, project, variation) : undefined);
+          startScript(ctx, running, visit, ticket && variation && !backlog ? usingMachine(ctx, project.id, ticket.key, variation.name, step, scriptRun) : scriptRun, who);
           wait = ctx.scriptWait ?? SCRIPT_WAIT;
         }
         const exited = await scriptExit(ctx, running, wait);

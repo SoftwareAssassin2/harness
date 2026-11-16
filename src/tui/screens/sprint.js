@@ -5,6 +5,7 @@ import { boxTable, lastStart, tableLayout } from '../table.js';
 import { link, visible, clip } from '../text.js';
 import { workedByHand, tokenSpend, testCounts } from '../ticket.js';
 import { below, headerLines, platform } from './frame.js';
+import { usesWorkstations } from '../../control/dev-environments.js';
 import { NONE, agentLines, liveAssignments, ticketMarks, sprintMark, markDot, GLYPHS, move, green, red, gold, gray, sprintTickets, statusCell, ticketAgents, chatSpend, seatPlan, runsScript } from './shared.js';
 import { openTicket } from './ticket.js';
 import { slotKind } from '../../control/plan.js';
@@ -99,9 +100,10 @@ function layout(state, { columns = 0, rows = Infinity, now = 0 }) {
   const seats = seatPlan(state);
   const { rows: grid, place } = withEmptySeats(tickets, seats);
   const bottom = below(state) + Math.max(1, platform(state, columns, now).length);
-  const key = iconKey(columns);
+  const settings = state.projects[state.project]?.devEnvironments;
+  const key = iconKey(columns, Boolean(usesWorkstations(settings?.mode) && settings.workstations?.length));
   const free = rows - headerLines(state, columns, now).length - bottom - 5 - key.length;
-  const cells = ticketRows(grid, liveAssignments(state), steps, state.projects[state.project]?.collaborations, ticketMarks(state, tickets), seats.holders, t => runsScript(state, t));
+  const cells = ticketRows(grid, liveAssignments(state), steps, state.projects[state.project]?.collaborations, ticketMarks(state, tickets), seats, t => runsScript(state, t));
   const fit = { columns, stretch: 0, min: ticketFloor(cells, grid), shrink: SHRINK };
   const ticketGrid = { rows: tableLayout(TABLE_HEADERS, cells, fit).cells, bodyHeight: free - 4 };
   const [selected, scroll] = gridAt(state, ticketGrid, grid, done, steps);
@@ -278,6 +280,8 @@ export const priorityPrefix = (priority, manual = false) => {
 // A variation holding a planning or in-progress seat (ASS-357): an emoji, two
 // cells wide (text.js visible counts it so), its column two blanks without.
 const SEAT = '💺';
+// ASS-469: a variation in progress holding a workstation seat (control's seats.json): ⛅, two cells too, in 💺's place.
+const WS_SEAT = '⛅';
 
 // The key under the ticket grid (ASS-259): the priority the rows start with
 // (ASS-454), in bright magenta when set by hand, then each of the rows' glyphs as they
@@ -294,9 +298,12 @@ const KEY = [
   [PAUSED, 'paused'], [UNASSIGNED, 'reassigned away'], [gold('AWAITING'), 'a dependency not done yet'], // ASS-364: was WAITING ON
   [gold('AWAITING MERGE'), 'MRs to merge, in order'],
 ].map(([glyph, meaning]) => `${glyph}${dim(` ${meaning}`)}`);
-function iconKey(columns) {
+// ASS-469: ⛅'s entry, after 💺's, only for a project whose tickets run on GCP workstations (`workstations`).
+const WS_KEY = `${WS_SEAT}${dim(' holds a workstation seat')}`;
+function iconKey(columns, workstations = false) {
   const lines = [];
-  for (const entry of KEY) {
+  const entries = workstations ? KEY.flatMap(e => (e.startsWith(SEAT) ? [e, WS_KEY] : [e])) : KEY;
+  for (const entry of entries) {
     const last = lines.at(-1);
     if (last != null && visible(last) + 2 + visible(entry) <= columns) lines[lines.length - 1] = `${last}  ${entry}`;
     else lines.push(entry);
@@ -326,7 +333,9 @@ function iconKey(columns) {
 // while a script step runs on it (`scripts`: runsScript, the progress bar's and S
 // floor's rule — not at its gate, not held, not on a past day), else two blanks; then a
 // two-cell column, 💺 when the variation holds a planning or in-progress seat
-// (ASS-357: `seats`, seatHolders — the planner's, none on a past day). A
+// (ASS-357: `seats`, seatPlan's holders — the planner's, none on a past day),
+// ⛅ instead for an in-progress seat on a GCP workstation (ASS-469: seatPlan's
+// kinds, control's seats.json; 💺 then a VM seat). A
 // paused variation's (is-paused) text starts "PAUSED " in blue; a ticket
 // reassigned away from the operator's account (ASS-345: ticket:sync's
 // reassigned, to another person or to nobody) "UNASSIGNED " in red in its
@@ -342,7 +351,8 @@ function iconKey(columns) {
 // (awaitingMerge). iconKey says what each means, under the grid.
 // An empty seat row (ASS-451, withEmptySeats) is one line: blanks where the priority and icon columns are, a dim 💺
 // in the seat column, then "empty seat" in dim gray; every other cell blank.
-function ticketRows(tickets, assignments, steps, collaborations = {}, marks = { needed: new Set() }, seats = new Set(), scripts = () => false) {
+function ticketRows(tickets, assignments, steps, collaborations = {}, marks = { needed: new Set() }, { holders = new Set(), kinds = new Map() } = {}, scripts = () => false) {
+  const seatMark = id => (!holders.has(id) ? '  ' : kinds.get(id) === 'workstation' ? WS_SEAT : SEAT);
   return tickets.map(t => {
     if (isEmptySeat(t)) return [`${priorityPrefix(null)}${' '.repeat(5)}  ${dim(SEAT)} ${dim(gray(EMPTY_SEAT))}`, ...TABLE_HEADERS.slice(1).map(() => '')];
     // One line per assignment to this ticket and this row's variation (or to no
@@ -354,7 +364,7 @@ function ticketRows(tickets, assignments, steps, collaborations = {}, marks = { 
       GLYPHS[t.kind] ?? '', workedByHand(t) ? GLYPHS.hand : '', t['fast-track'] === true ? GLYPHS.fast : '', sprintMark(marks, t),
     ];
     const working = agents.length ? GLYPHS.agent : scripts(t) ? GLYPHS.script : '  ';
-    const lead = `${priorityPrefix(t['manual-priority'] ?? t.priority, t['manual-priority'] != null)}${icons.map(icon => icon || ' ').join('')}${working}${seats.has(`${t.key} ${t.variation.name}`) ? SEAT : '  '} `;
+    const lead = `${priorityPrefix(t['manual-priority'] ?? t.priority, t['manual-priority'] != null)}${icons.map(icon => icon || ' ').join('')}${working}${seatMark(`${t.key} ${t.variation.name}`)} `;
     const held = t.reassigned ? `${UNASSIGNED} ` : t.variation['is-paused'] === true ? `${PAUSED} ` : '';
     const line = `${lead}${held}${t.url ? link(name, t.url) : name}`;
     const waits = !t.reassigned && t.hold?.waits?.length ? t.hold.waits : null;

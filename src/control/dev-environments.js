@@ -2,7 +2,8 @@
 // { mode, workstations } — says whether its ticket variations run in Lima VMs
 // of their own (vm, today's behavior and the default when it, or its mode, is
 // missing), on GCP Cloud Workstations reached over SSH (workstation), or on
-// both, workstations first and a VM only when none is free (vm+workstation);
+// both (vm+workstation: a free workstation seat first, a VM seat otherwise,
+// ASS-469 seat-kinds.js — each workstation listed is one seat);
 // and which existing workstations it may use: each { id, gcp-project, region,
 // cluster, config } and an optional gcloud-config, the CLOUDSDK_CONFIG folder
 // its gcloud login lives in ("~/.config/example/gcloud" or "$HOME/…": a

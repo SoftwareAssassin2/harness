@@ -15,21 +15,55 @@
 //     is truncated (changelog.total > histories.length).
 //   GET /rest/agile/1.0/board/<id>/sprint?state=active,closed,future&startAt=&maxResults=50
 //     → { values: [{ id, name, state, startDate, endDate }], isLast }
+//   GET /rest/api/3/myself → { accountId, displayName, accountType, … } —
+//     the sign-in check (ASS-475): 401 for an API token Jira rejects.
 // A response that is not ok throws `HTTP <status> …` naming the path (never
 // the credentials); a network failure throws as fetch does.
+// ASS-475: Jira's search does not fail on credentials it rejects — it answers
+// 200 as an anonymous user, with no issues — so a read is only trusted after
+// checkSignIn, and any answer Jira marks as a failed login (its
+// X-Seraph-LoginReason header, AUTHENTICATED_FAILED) throws a SignInRejected
+// error whatever its status.
 
 const DEFAULT_STORY_POINTS_FIELD = 'customfield_10016';
 const DEFAULT_SPRINT_FIELD = 'customfield_10020';
 const PAGE = 100, SPRINT_PAGE = 50;
 
+// SignInRejected — ASS-475: Jira did not take the credentials (a 401 or 403
+// from /myself, an anonymous user, or an answer it marks as a failed login).
+// `status` is the HTTP status (200 for an anonymous answer).
+export class SignInRejected extends Error {
+  constructor(message, status) { super(message); this.name = 'SignInRejected'; this.status = status; }
+}
+
 // get({ site, email, token }, path, params, fetchFn) → the parsed JSON body.
 async function get({ site, email, token }, path, params, fetchFn) {
   const query = new URLSearchParams(Object.entries(params).filter(([, v]) => v !== undefined && v !== null).map(([k, v]) => [k, String(v)]));
-  const res = await fetchFn(`${site}${path}?${query}`, {
+  const res = await fetchFn(`${site}${path}${query.size ? `?${query}` : ''}`, {
     headers: { Authorization: `Basic ${Buffer.from(`${email}:${token}`).toString('base64')}`, Accept: 'application/json' },
   });
-  if (!res.ok) throw new Error(`HTTP ${res.status}${res.statusText ? ` ${res.statusText}` : ''} for ${path}`);
+  const status = `HTTP ${res.status}${res.statusText ? ` ${res.statusText}` : ''} for ${path}`;
+  if (/AUTHENTICATED_FAILED/i.test(res.headers?.get?.('x-seraph-loginreason') ?? '')) throw new SignInRejected(`${status}, the login failed`, res.status);
+  if (!res.ok) throw new Error(status);
   return res.json();
+}
+
+// checkSignIn({ site, email, token }, fetchFn) → the signed-in account's id —
+// ASS-475: GET /rest/api/3/myself, which (unlike the search) fails on
+// credentials Jira rejects. Throws SignInRejected on a 401 or 403, or an
+// answer with no account id or an anonymous account type; any other failure
+// (a 5xx, the network) throws as get does, saying nothing of the token.
+export async function checkSignIn({ site, email, token }, fetchFn) {
+  let me;
+  try {
+    me = await get({ site, email, token }, '/rest/api/3/myself', {}, fetchFn);
+  } catch (err) {
+    const status = Number(/^HTTP (\d+)/.exec(err.message)?.[1]);
+    if (status === 401 || status === 403) throw new SignInRejected(err.message, status);
+    throw err;
+  }
+  if (!me?.accountId || String(me.accountType ?? '').toLowerCase() === 'anonymous') throw new SignInRejected('/rest/api/3/myself answered as an anonymous user', 200);
+  return me.accountId;
 }
 
 // fetchAnalyticsTickets({ site, projectKey, email, token, storyPointsField?,

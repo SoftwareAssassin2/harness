@@ -9,6 +9,7 @@ set -euo pipefail
 # workstation itself is left running: with no SSH session left it stops
 # itself after its idle timeout (30 minutes), as control wants once nothing
 # on it needs it. Nothing to do, and no failure, when no connection is open.
+# ASS-470: its owner (control-pid, workstation.bash) cleared.
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../workstation.bash"
 
 command=workstation:disconnect
@@ -17,5 +18,5 @@ project="$1" id="$2"
 workstation_settings "$command" "$project" "$id" >/dev/null
 workstation_lock "$command" "$project" "$id"
 workstation_close "$project" "$id"
-workstation_record "$project" "$id" '. + { connected: false, "disconnected-at": $at }'
+workstation_record "$project" "$id" '. + { connected: false, "disconnected-at": $at, "control-pid": null }'
 workstation_entry "$project" "$id"

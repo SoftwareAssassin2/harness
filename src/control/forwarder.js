@@ -22,9 +22,12 @@
 // reverse-forwarded there by the workstation's connection (ASS-433) — with a
 // token vm:start put in the setup's runtime folder and bound, in
 // vm-tokens.json, under the variation's machine
-// (workstation:<project>:<id>:<folder>), so every call is authorized against
-// the binding as a VM's is. A workstation has no mount of the ticket folder,
-// only a read-only copy in the variation's folder (<folder>/ticket), so after
+// (workstation:<project>:<id>:<folder>; since ASS-468 <folder> is the
+// workstation's shared root, and the binding is its current holder's alone:
+// workstation:claim writes it for a step, workstation:release drops it), so
+// every call is authorized against the binding as a VM's is. A workstation
+// has no mount of the ticket folder, only a read-only copy under the root
+// (<folder>/ticket, the holder's ticket's), so after
 // each call the forwarder runs for such a binding — every one: a call's
 // writes are not known beforehand — the copy is brought up to date
 // (machine-workstation.js syncTicketCopy: rsync over the connection) before

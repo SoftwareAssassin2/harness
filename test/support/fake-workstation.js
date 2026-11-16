@@ -13,7 +13,9 @@
 // bin folder (system(id), first on its sessions' PATH: fake-ssh.js) holds a
 // `docker` whose `info` answers (unless a `docker-broken` marker says it
 // cannot reach its daemon) and a `claude`; its `boot-id` is set, and runtime(id)
-// is its runtime folder's root (the container's /dev/shm).
+// is its runtime folder's root (the container's /dev/shm). ASS-472: its
+// docker pulls and tags too (DOCKER, below), its images in the workstation
+// folder's `images` file, each pull logged in its `pulls`.
 import { mkdtempSync, mkdirSync, symlinkSync, existsSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -51,8 +53,43 @@ export function fakeWorkstation(base = process.env) {
 }
 
 // The workstation image's docker: `docker info` answers, unless the workstation's docker-broken marker is there.
+// ASS-472: `docker pull <ref>` asks the registry the reference names for its manifest — a 127.0.0.1:<port> one
+// (zot through the connection's forward) as named, any other host at $FAKE_AR_URL (fake-registry.js standing in for
+// Artifact Registry), with the auth DOCKER_CONFIG's config.json holds for the host — and keeps "<name> <digest>"
+// in the workstation's `images` file (its Docker's images): "Image is up to date" when it holds that digest
+// already, else "Downloaded newer image". Every pull is logged to its `pulls` file as "<ref> <auth: yes|no>".
+// `docker tag <src> <dst>` gives dst src's digest. Anything else answers nothing.
 const DOCKER = `#!/bin/bash
-if [ -e "$(dirname "$0")/../docker-broken" ]; then echo "permission denied while trying to connect to the Docker daemon socket at unix:///var/run/docker.sock: Get \\"http://%2Fvar%2Frun%2Fdocker.sock/v1.47/info\\": dial unix /var/run/docker.sock: connect: permission denied" >&2; exit 1; fi
-[ "$1" = info ] && echo 27.3.1
+ws="$(dirname "$0")/.."
+if [ -e "$ws/docker-broken" ]; then echo "permission denied while trying to connect to the Docker daemon socket at unix:///var/run/docker.sock: Get \\"http://%2Fvar%2Frun%2Fdocker.sock/v1.47/info\\": dial unix /var/run/docker.sock: connect: permission denied" >&2; exit 1; fi
+keep() { touch "$ws/images"; awk -v k="$1" '$1 != k' "$ws/images" > "$ws/images.new"; echo "$1 $2" >> "$ws/images.new"; mv "$ws/images.new" "$ws/images"; }
+case "$1" in
+  info) echo 27.3.1 ;;
+  pull)
+    ref="\${@: -1}" name="\${ref%%@*}" digest=""
+    [[ "$ref" != *@* ]] || digest="\${ref#*@}"
+    host="\${name%%/*}" rest="\${name#*/}" tag=latest
+    if [[ "\${rest##*/}" == *:* ]]; then tag="\${rest##*:}" rest="\${rest%:*}"; fi
+    auth="$(sed -n "s/.*\\"$host\\":{\\"auth\\":\\"\\([^\\"]*\\)\\".*/\\1/p" "\${DOCKER_CONFIG:-$HOME/.docker}/config.json" 2>/dev/null)"
+    if [ -n "$auth" ]; then echo "$ref yes"; else echo "$ref no"; fi >> "$ws/pulls"
+    case "$host" in 127.0.0.1:*) url="http://$host" ;; *) url="\${FAKE_AR_URL:-https://$host}" ;; esac
+    h=(); [ -z "$auth" ] || h=(-H "Authorization: Basic $auth")
+    headers="$(curl -sS -D - -o /dev/null "\${h[@]}" "$url/v2/$rest/manifests/\${digest:-$tag}" 2>&1)"
+    code="$(head -n 1 <<< "$headers" | awk '{ print $2 }')"
+    case "$code" in
+      200) ;;
+      401) echo "Error response from daemon: Head \\"https://$host/v2/$rest/manifests/\${digest:-$tag}\\": denied: Unauthenticated request." >&2; exit 1 ;;
+      404) echo "Error response from daemon: manifest for $ref not found: manifest unknown: manifest unknown" >&2; exit 1 ;;
+      *) echo "Error response from daemon: Get \\"https://$host/v2/\\": dial tcp: connect: connection refused" >&2; exit 1 ;;
+    esac
+    d="$(tr -d '\\r' <<< "$headers" | awk 'tolower($1) == "docker-content-digest:" { print $2 }')"
+    echo "\${digest:-$tag}: Pulling from $rest"
+    if grep -qxF "$name $d" "$ws/images" 2>/dev/null; then echo "Status: Image is up to date for $ref"; else keep "$name" "$d"; echo "Status: Downloaded newer image for $ref"; fi
+    echo "$ref" ;;
+  tag)
+    d="$(awk -v k="\${2%%@*}" '$1 == k { print $2 }' "$ws/images" 2>/dev/null)"
+    [ -n "$d" ] || { echo "Error response from daemon: No such image: $2" >&2; exit 1; }
+    keep "$3" "$d" ;;
+esac
 exit 0
 `;

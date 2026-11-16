@@ -2,8 +2,12 @@
 # The workstation's side of workstation:setup (ASS-434), run on a GCP
 # workstation over its one connection, as the workstation's user, in its home:
 #
-#   bash -c "<this script>" workstation-setup <version> <forwarder-url> [<tool>…]
+#   bash -c "<this script>" workstation-setup <version> <forwarder-url> [<tool>…] [-- <command> <needed-by>…]
 #
+# (ASS-471) after --, pairs: a command the project's CI checks need
+# (ci-checks.json, src/agent-cli/ci-check-commands.js) and the checks that
+# need it, e.g. `static-policy-gate (example-project, example-corpus and 24
+# more)`.
 # stdin two lines: in-vm/agent.sh in base64, then the project's
 # golden-image/workstation-tools.sh in base64 (an empty line without one);
 # then (ASS-462) one line per golden-image file shipped beside it,
@@ -53,20 +57,27 @@
 # missing (claude.ai's installer, with HOME pointed at ~/harness/tools/claude
 # so it writes nothing of the owner's); agent.sh; Docker checked (`docker
 # info` answering: whether it works is the workstation config's, so it is
-# never installed); and each of the project's golden-image tools on PATH, the
+# never installed); bats when the project's tools name it (ASS-474: its release
+# tarball, under ~/harness/tools/bats); and each of the project's golden-image tools on PATH, the
 # missing ones handed to the project's workstation-tools.sh (written to
 # ~/harness/golden-image with its shipped files, run in ~/harness/tools with HARNESS_BIN and HARNESS_TOOLS set, the tools as its
 # arguments; it installs them under $HOME), then checked again. Anything
-# missing after that fails setup, named (AC3).
+# missing after that fails setup, named (AC3). ASS-471: so is each command the
+# project's CI checks need, checked and handed to workstation-tools.sh with the
+# tools; one still missing fails setup naming it and the checks that need it,
+# so the gap shows here, not as a ticket's CI Checks step exiting 127.
 #
 # Tests stand a folder in for the workstation (test/support/fake-ssh.js):
 # HARNESS_WS_BOOT_ID, HARNESS_WS_RUNTIME_ROOT, HARNESS_WS_JQ_URL and
 # HARNESS_WS_CLAUDE_INSTALLER replace the boot id, the runtime folder's root
-# and the two download URLs. A real ssh session never carries them.
+# and the two download URLs (HARNESS_WS_BATS_URL bats's, ASS-474). A real ssh session never carries them.
 set -uo pipefail
 umask 077
 version="$1" url="$2"; shift 2
-tools=("$@")
+tools=() needs=() needed_by=()
+while [[ $# -gt 0 && "$1" != -- ]]; do tools+=("$1"); shift; done
+[[ $# -eq 0 ]] || shift
+while [[ $# -ge 2 ]]; do needs+=("$1") needed_by+=("$2"); shift 2; done
 H="$HOME/harness" B="$HOME/harness/bin" L="$HOME/harness/lib" T="$HOME/harness/tools"
 export PATH="$B:$PATH"
 did=() failed=()
@@ -170,6 +181,23 @@ if ! has jq; then
   fi
 fi
 
+# bats (ASS-474), when the project's golden-image tools name it and it is missing: a project's static
+# policy gate runs bats suites (as provision.sh's apt install gives its VMs), and the workstation's image
+# has none. bats-core is bash alone, so its release tarball is unpacked under ~/harness/tools/bats and
+# its bin/bats (which finds its libexec through the link) linked into ~/harness/bin — no root, no
+# workstation-tools.sh of the project's needed for it. HARNESS_WS_BATS_URL replaces the URL in tests.
+if [[ " ${tools[*]-} " == *" bats "* ]] && ! has bats; then
+  bats_url="${HARNESS_WS_BATS_URL:-https://github.com/bats-core/bats-core/archive/refs/tags/v1.11.1.tar.gz}"
+  if ! has curl || ! has tar; then bad bats "not installed, and cannot be without curl and tar"
+  elif out="$(rm -rf "$T/bats.part" && mkdir -p "$T/bats.part" && curl -fsSL --retry 3 "$bats_url" 2>&1 | tar -xzf - -C "$T/bats.part" --strip-components=1 2>&1 \
+      && [[ -x "$T/bats.part/bin/bats" ]] && rm -rf "$T/bats" && mv -f "$T/bats.part" "$T/bats" && ln -sfn "$T/bats/bin/bats" "$B/bats" && hash -r && bats --version 2>&1)"; then
+    done_ "installed bats ($B/bats)"
+  else
+    rm -rf "$T/bats.part"
+    bad bats "could not be installed from $bats_url: $(first_line "${out:-no bin/bats in it}")"
+  fi
+fi
+
 # The Claude Code CLI, when missing: its installer run with HOME at ~/harness/tools/claude.
 if ! has claude; then
   installer="${HARNESS_WS_CLAUDE_INSTALLER:-https://claude.ai/install.sh}"
@@ -217,12 +245,16 @@ else
   [[ $? -eq 0 ]] || bad docker "not usable (docker info failed): $(first_line "$out")"
 fi
 
-# The project's golden-image tools: the missing ones to its workstation-tools.sh, then checked.
+# The project's golden-image tools and (ASS-471) the commands its CI checks need: the missing ones to its
+# workstation-tools.sh, then checked. A command's failure says which checks need it.
 missing=()
-for t in "${tools[@]+"${tools[@]}"}"; do has "$t" || missing+=("$t"); done
+for t in "${tools[@]+"${tools[@]}"}" "${needs[@]+"${needs[@]}"}"; do
+  [[ " ${missing[*]-} " == *" $t "* ]] || has "$t" || missing+=("$t")
+done
+needed() { local i; for ((i = 0; i < ${#needs[@]}; i++)); do [[ "${needs[i]}" != "$1" ]] || { printf "; ci-checks.json's %s needs it" "${needed_by[i]}"; return; }; done; }
 if [[ ${#missing[@]} -gt 0 ]]; then
   if [[ -z "$tools_b64" ]]; then
-    for t in "${missing[@]}"; do bad "$t" "not on the workstation, and the project has no golden-image/workstation-tools.sh to install it under \$HOME"; done
+    for t in "${missing[@]}"; do bad "$t" "not on the workstation, and the project has no golden-image/workstation-tools.sh to install it under \$HOME$(needed "$t")"; done
   else
     G="$H/golden-image" rc=0
     rm -f "$H/workstation-tools.sh"
@@ -239,9 +271,18 @@ if [[ ${#missing[@]} -gt 0 ]]; then
     fi
     hash -r
     done_ "ran the project's workstation-tools.sh for ${missing[*]} (exit $rc)"
-    for t in "${missing[@]}"; do has "$t" || bad "$t" "could not be installed: not on PATH after the project's golden-image/workstation-tools.sh (exit $rc)"; done
+    for t in "${missing[@]}"; do has "$t" || bad "$t" "could not be installed: not on PATH after the project's golden-image/workstation-tools.sh (exit $rc)$(needed "$t")"; done
   fi
 fi
+
+# ASS-468 AC6: the folders ASS-435 gave each ticket variation, ~/harness/<KEY>-<variation>, are no longer made — the
+# variations share ~/harness/repos, a step at a time — so any left over is removed, but the one a holder from
+# before ASS-468 still records (HARNESS_KEEP_FOLDER: workstation:release pushes its committed work first).
+for f in "$H"/*; do
+  n="${f##*/}"
+  [[ -d "$f" && ! -L "$f" && "$n" =~ ^[A-Z][A-Z0-9]*-[0-9]+-[A-Za-z0-9]+$ && "$f" != "${HARNESS_KEEP_FOLDER-}" ]] || continue
+  chmod -R u+w "$f" 2>/dev/null; rm -rf "$f" && done_ "removed $f, a ticket variation's folder from before ASS-468"
+done
 
 [[ ${#failed[@]} -eq 0 ]] || finish
 printf '{"version":%s,"boot-id":%s,"runtime":%s}\n' "$(json_str "$version")" "$(json_str "$boot")" "$(json_str "$R")" \

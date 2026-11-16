@@ -53,6 +53,18 @@
 //   this process; process 'exit' SIGKILLs what is still running, should an
 //   exit come any other way. At start, a pidfile naming a dead process, or a
 //   live one that is not a control (its pid reused), is removed and said so.
+// - ASS-470: on any exit — the supervisor's stop (stdin's end, SIGTERM to its
+//   group), a restart (75), SIGTERM, SIGINT, SIGHUP, an uncaught exception
+//   (70), unreadable data (69) — the GCP workstation connections it owns are
+//   closed: those its phase opened and those a command it ran opened
+//   (workstations.js disconnectWorkstations; the live data's control-pid,
+//   agent-cli/workstation.bash). The closing runs detached, so the
+//   supervisor's SIGKILL cannot cut it short, and process 'exit' starts it for
+//   any connection still owned, whatever the way out; a stop does not wait
+//   past 8 seconds for a tick still running. Only a SIGKILL (or a lost Mac)
+//   skips it: the next control closes, at its start, a connection whose owner
+//   is no running control. One opened by hand, and one another running
+//   control owns, are left alone.
 //
 // For the tests only (ASS-425): with CONTROL_TEST_TICK_LINES=1 it also says
 // "<ISO time> test tick ran" after each tick, so a test counts ticks in the
@@ -68,7 +80,7 @@ import { createContext, tick, startDrain, drained, waitForData, dataRecovered } 
 import { troubleOf } from './read.js';
 import { stopStarted, killStarted } from './stop.js';
 import { startForwarder } from './forwarder.js';
-import { disconnectWorkstations } from './workstations.js';
+import { disconnectWorkstations, disconnectAtExit, closeLeftovers } from './workstations.js';
 import { sessionSpend } from './finish.js';
 import { endTicketHealthRuns } from './triggers.js';
 import { recordControlCommit } from './control-commit.js';
@@ -107,25 +119,40 @@ if (existsSync(pidfile)) {
 }
 writeFileSync(pidfile, `${process.pid}\n`);
 
-const ctx = createContext({ root: ROOT, env: process.env, log: say, project });
-// The pidfile removed, when it still names this process; on 'exit', whatever the way out, with what still runs killed.
+// ASS-470: every agent.sh control runs, and every command that runs in turn, carries its pid (HARNESS_CONTROL_PID), so a
+// workstation connection one of them opens is recorded as this control's (workstation.bash says how).
+const ctx = createContext({ root: ROOT, env: { ...process.env, HARNESS_CONTROL_PID: String(process.pid) }, log: say, project });
+// The pidfile removed, when it still names this process; on 'exit', whatever the way out, with what still runs killed
+// and the workstation connections it still owns closing (ASS-470: detached, they outlive it).
 const removePidfile = () => { try { if (Number(readFileSync(pidfile, 'utf8')) === process.pid) rmSync(pidfile, { force: true }); } catch { /* gone */ } };
-process.on('exit', () => { killStarted(ctx); removePidfile(); });
+process.on('exit', () => { killStarted(ctx); try { disconnectAtExit(ctx); } catch { /* the last resort: nothing more to do */ } removePidfile(); });
 say('startup', `control ${process.pid}, tick every ${tickMs}ms`);
 if (stalePidfile) say('startup', stalePidfile);
 
 // Stopping: stdin's end or a signal ends the wait between ticks and the loop.
+// ASS-470: a tick still running STOP_GRACE_MS (8 seconds) later is not waited
+// for: the shutdown starts then, so it ends inside the supervisor's 20 seconds
+// (src/tui/shutdown.js), whose SIGKILL would skip it — and leave the
+// workstation connections open.
+const STOP_GRACE_MS = 8000;
 let stopping = false, wake = () => {};
-const stop = () => { stopping = true; wake(); };
+let restart = null, exitCode = null;
+const stop = () => {
+  if (!stopping) setTimeout(() => shutdown(exitCode ?? (restart ? 75 : 0)), STOP_GRACE_MS).unref();
+  stopping = true;
+  wake();
+};
 process.stdin.on('end', stop).on('error', stop).resume();
 process.on('SIGTERM', stop);
 process.on('SIGINT', stop);
+process.on('SIGHUP', stop);
 const sleep = ms => new Promise(resolve => { const t = setTimeout(resolve, ms); wake = () => { clearTimeout(t); resolve(); }; });
 
 // Shutting down, once: every script step's command and every agent stopped
-// (stop.js), each workstation connection this control opened closed (ASS-433:
-// a workstation it kept up can stop itself once idle), the forwarder closed,
-// the pidfile removed; then exit with `code`.
+// (stop.js), each workstation connection this control owns closed — opened by
+// its phase or by a command it ran (ASS-433, ASS-470: a workstation it kept up
+// can stop itself once idle; workstations.js disconnectWorkstations) — the
+// forwarder closed, the pidfile removed; then exit with `code`.
 let forwarder = null, retry = null, ending = null;
 const shutdown = code => (ending ??= (async () => {
   await stopStarted(ctx, say);
@@ -198,6 +225,9 @@ for (const record of records) {
 say('startup', `${stale} stale assignment${stale === 1 ? '' : 's'} removed`);
 // ASS-450: a ticket health check run an earlier harness left (removed: never dispatched again) ended, with the runs under it.
 await startupAttempt('ticket health check runs', () => endTicketHealthRuns(ctx));
+// ASS-470: a workstation connection a control no longer running owns (its crash's, its kill -9's) closed, before the
+// first tick decides which workstations are needed (workstations.js closeLeftovers).
+await startupAttempt('workstation connections', () => closeLeftovers(ctx, pid => alive(pid) && isControl(pid)));
 
 let said = false;
 let forwarderPort = null;
@@ -221,7 +251,7 @@ if (forwarderPort != null) await serve();
 // again on the new code.
 const RESTART = join(home, 'restart-requested.json');
 const restartRequested = () => { try { return JSON.parse(readFileSync(RESTART, 'utf8')); } catch { return null; } };
-let restart = null, faults = 0, exitCode = null;
+let faults = 0;
 while (!stopping) {
   try {
     const request = restart ? null : restartRequested();

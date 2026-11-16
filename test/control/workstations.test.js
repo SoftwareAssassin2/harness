@@ -7,18 +7,19 @@
 // workstation:* commands, against test/support/fake-gcloud.js and fake-ssh.js.
 import { test, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { controlFixture } from './control-fixture.js';
 import { fakeWorkstation } from '../support/fake-workstation.js';
-import { superviseWorkstations, workstationNeeds, disconnectWorkstations, CHECK_EVERY, EXPIRED_RETRY } from '../../src/control/workstations.js';
+import { superviseWorkstations, workstationNeeds, disconnectWorkstations, disconnectAtExit, closeLeftovers, CHECK_EVERY, EXPIRED_RETRY } from '../../src/control/workstations.js';
 import { checkGcloud } from '../../src/control/triggers.js';
 import { controlPath, workstationUsable, expiredLogins, loginCommand } from '../../src/control/workstation-connection.js';
 import { loadProjects } from '../../src/tui/load.js';
 import { headerWarnings } from '../../src/tui/screens/frame.js';
 import { initialState } from '../../src/tui/app.js';
+import { until } from '../support/until.js';
 
 const run = promisify(execFile);
 const ID = 'ada-dev';
@@ -42,7 +43,7 @@ function setup({ need = true, check = false } = {}) {
   const hold = on => edit(sprint, s => { const v = s.features[0].variations[0]; v.vm = { name: ID, kind: 'workstation' }; if (on) v['vm-hold'] = { by: 'ada', since: '2026-11-14T00:00:00Z', note: null }; else delete v['vm-hold']; });
   hold(need);
   w.workstation(ID, 'STATE_STOPPED');
-  c.ctx.env = w.env;
+  c.ctx.env = { ...w.env, HARNESS_CONTROL_PID: String(process.pid) };   // ASS-470: as main.js gives it, this test runner standing for the control
   opened.push(w.env);
   let now = Date.parse('2026-11-14T12:00:00Z');
   c.ctx.now = () => new Date(now);
@@ -53,18 +54,18 @@ function setup({ need = true, check = false } = {}) {
   return { c, w, at, pass, hold, entry, flag, gone, socket: controlPath(w.env, 'p', ID), later: ms => { now += ms; }, log: () => c.lines.join('\n') };
 }
 
-test('workstationNeeds: a variation holding the workstation needs it while its agent works, while held for the operator, or at a step that runs its machine and not held; nothing else does', () => {
+test('workstationNeeds (ASS-468): a workstation is needed while a step runs on it or wants it, while a holder\'s step is to end, or while held for the operator — never for a variation merely at a step that runs its machine', () => {
   const engine = { steps: [{ id: 'build', vm: 'running', action: { type: 'prompt' } }, { id: 'qa', action: { type: 'human' } }] };
-  const project = (v, t = {}) => ({ id: 'p', engineName: 'e', engines: { e: engine }, tickets: [{ key: 'ABC-3', ...t, variations: [{ name: 'A', vm: { name: ID, kind: 'workstation' }, ...v }] }] });
+  const project = (v, t = {}) => ({ id: 'p', engineName: 'e', engines: { e: engine }, devEnvironments: { mode: 'workstation', workstations: [{ id: ID }] }, tickets: [{ key: 'ABC-3', ...t, variations: [{ name: 'A', vm: { name: ID, kind: 'workstation' }, ...v }] }] });
   const at = state => ({ 'harness-status': { state, 'state-engine': 'e' } });
   const none = { assignments: [] };
-  assert.equal(workstationNeeds(none, project(at('build'))).get(ID), 'ABC-3 A at build');
-  assert.equal(workstationNeeds(none, project(at('qa'))).size, 0);
-  assert.equal(workstationNeeds(none, project(at('build'), { 'is-paused': true })).size, 0);
+  assert.equal(workstationNeeds(none, project(at('build'))).size, 0, 'AC5: no connection kept between its steps');
+  assert.equal(workstationNeeds(none, project(at('build')), {}, new Map([[ID, 'ABC-3 A wants it for a step']])).get(ID), 'ABC-3 A wants it for a step');
+  assert.equal(workstationNeeds(none, project(at('qa')), { [ID]: { holder: { ticket: 'ABC-3', variation: 'A' } } }).get(ID), "ABC-3 A's step to end");
   assert.equal(workstationNeeds(none, project({ ...at('qa'), 'vm-hold': { by: 'c' } })).get(ID), 'ABC-3 A held running for the operator');
-  assert.equal(workstationNeeds({ assignments: [{ project: 'p', 'work-item': 'ABC-3', variation: 'A' }] }, project(at('qa'))).get(ID), "ABC-3 A's agent works on it");
-  assert.equal(workstationNeeds(none, project({ ...at('build'), vm: { name: 'abc-3-a' } })).size, 0, 'a VM is not a workstation');
-  assert.equal(workstationNeeds(none, project({ ...at('build'), 'is-deleted': true })).size, 0);
+  assert.equal(workstationNeeds({ assignments: [{ project: 'p', 'work-item': 'ABC-3', variation: 'A' }] }, project({ ...at('build'), workstation: { name: ID, project: 'p', folder: '/home/u/harness' } })).get(ID), "ABC-3 A's agent works on it");
+  assert.equal(workstationNeeds(none, project({ ...at('build'), vm: { name: 'abc-3-a' }, 'vm-hold': { by: 'c' } })).size, 0, 'a VM is not a workstation');
+  assert.equal(workstationNeeds(none, project({ ...at('build'), 'is-deleted': true, 'vm-hold': { by: 'c' } })).size, 0);
 });
 
 test('AC3: a needed workstation is started and connected, logged with why; checked no more than every minute; nothing connects one nothing needs', async () => {
@@ -130,9 +131,82 @@ test('AC3: once nothing needs it, the connection is closed after workstation-idl
 test('control\'s shutdown closes the connections it opened', async () => {
   const s = setup();
   await s.pass();
+  assert.equal(s.entry()['control-pid'], process.pid, 'ASS-470: recorded as its control\'s');
   await disconnectWorkstations(s.c.ctx);
   assert.ok(!existsSync(s.socket));
+  assert.equal(s.entry().connected, false);
+  assert.equal(s.entry()['control-pid'], null);
   assert.match(s.log(), /workstation p ada-dev: disconnected as control exits/);
+});
+
+// ASS-470: who owns a connection (the live data's control-pid), and what control closes as it exits and as it starts.
+const connect = (env, extra = {}) => run(AGENT, ['workstation:connect', 'p', ID], { env: { ...env, ...extra } });
+const fakeControl = () => { const p = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1e6)', '/x/src/control/main.js'], { stdio: 'ignore' }); kills.push(p); return p; };
+const kills = [];
+afterEach(() => { for (const p of kills.splice(0)) p.kill('SIGKILL'); });
+
+test('ASS-470 AC1: a connection a command control ran opened (workstation:connect under its HARNESS_CONTROL_PID, as vm:create or a step\'s claim runs it) is closed as control exits, though its phase never connected it', async () => {
+  const s = setup({ need: false });
+  await connect(s.c.ctx.env);
+  assert.equal(s.entry()['control-pid'], process.pid);
+  assert.ok(existsSync(s.socket));
+  await disconnectWorkstations(s.c.ctx);
+  assert.ok(!existsSync(s.socket));
+  assert.equal(s.entry().connected, false);
+  assert.match(s.log(), /^workstation p ada-dev: disconnected as control exits$/m);
+});
+
+test('ASS-470 AC1: process \'exit\'s last resort starts the disconnect detached, and it ends the connection after control has gone', async () => {
+  const s = setup();
+  await s.pass();
+  disconnectAtExit(s.c.ctx);
+  await s.gone(s.socket);
+  assert.ok(!existsSync(s.socket));
+  assert.ok(await until(() => s.entry().connected === false));
+  disconnectAtExit(s.c.ctx);   // nothing owned any more, nothing started twice
+});
+
+test('ASS-470 AC1, AC3: a connection opened by hand, and one another running control owns, are left open as control exits and at its start', async () => {
+  const s = setup({ need: false });
+  await connect(s.w.env);   // the operator's shell: no HARNESS_CONTROL_PID
+  assert.equal(s.entry()['control-pid'], null);
+  await disconnectWorkstations(s.c.ctx);
+  await closeLeftovers(s.c.ctx);
+  assert.ok(existsSync(s.socket), 'opened by hand: left open');
+  // Another control takes it as its own; this control's phase, finding it open, leaves it that control's.
+  const other = fakeControl();
+  await connect(s.w.env, { HARNESS_CONTROL_PID: String(other.pid) });
+  assert.equal(s.entry()['control-pid'], other.pid);
+  s.hold(true);
+  await s.pass();
+  assert.equal(s.entry()['control-pid'], other.pid, 'not taken from a running control');
+  await disconnectWorkstations(s.c.ctx);
+  await closeLeftovers(s.c.ctx);
+  assert.ok(existsSync(s.socket), 'another running control\'s: left open');
+  assert.doesNotMatch(s.log(), /disconnected as control exits|closed the connection/);
+  // That control dies (a kill -9): at the next start its connection is a leftover, closed and logged.
+  other.kill('SIGKILL');
+  await until(() => { try { process.kill(other.pid, 0); return false; } catch { return true; } });
+  await closeLeftovers(s.c.ctx);
+  assert.ok(!existsSync(s.socket));
+  assert.equal(s.entry().connected, false);
+  assert.equal(s.entry()['control-pid'], null);
+  assert.match(s.log(), new RegExp(`^workstation p ada-dev: closed the connection control ${other.pid} left \\(it is no longer running\\)$`, 'm'));
+});
+
+test('ASS-470: a hand connect takes over a connection no running control owns; a connect for a control that has exited opens nothing', async () => {
+  const s = setup({ need: false });
+  const gone = fakeControl();
+  await connect(s.w.env, { HARNESS_CONTROL_PID: String(gone.pid) });
+  gone.kill('SIGKILL');
+  await until(() => { try { process.kill(gone.pid, 0); return false; } catch { return true; } });
+  await connect(s.w.env);   // the operator connects by hand: now theirs
+  assert.equal(s.entry()['control-pid'], null);
+  await closeLeftovers(s.c.ctx);
+  assert.ok(existsSync(s.socket));
+  await run(AGENT, ['workstation:disconnect', 'p', ID], { env: s.w.env });
+  await assert.rejects(connect(s.w.env, { HARNESS_CONTROL_PID: String(gone.pid) }), /the control that ran it \(pid \d+\) has exited: not connected/);
+  assert.ok(!existsSync(s.socket));
 });
 
 test('AC4: an expired login sets gcloud-requires-reauthentication, says the login to run with its CLOUDSDK_CONFIG, holds the workstation from dispatch, retries every 2 minutes at most, and clears once it connects', async () => {
@@ -248,4 +322,22 @@ test('ASS-434 AC3: a setup that fails (Docker not usable) is logged naming it, h
   assert.match(s.log(), /^workstation p ada-dev: set up again/m);
   const [q] = loadProjects(join(s.c.dir, 'projects'));
   assert.equal(headerWarnings({ ...initialState({ projects: [q], workflows: [], assignments: [] }), project: 0 }).find(w => w.id === `workstation-setup:${ID}`), undefined);
+});
+
+test('ASS-469 AC6: a stopped workstation whose seat a ticket holds is started at once and kept connected between its steps; with no seat-holder and nobody waiting it is disconnected after the idle time, to stop itself', async () => {
+  const s = setup({ need: false });
+  const seats = s.at('projects', 'p', 'seats.json');
+  writeFileSync(seats, JSON.stringify({ seats: [{ key: 'ABC-3', variation: 'A', kind: 'workstation', workstation: ID, since: '2026-11-16T00:00:00Z' }] }));
+  await s.pass();
+  assert.equal(s.w.state(ID), 'STATE_RUNNING');
+  assert.match(s.log(), /^workstation p ada-dev: connected \(the workstation had stopped; started it\), the forwarder, Hindsight and zot forwarded to its loopback \(its seat: ABC-3 A\)$/m);
+  s.later(10 * 60_000);   // no step on it all this while: its seat keeps it
+  await s.pass();
+  assert.ok(existsSync(s.socket), 'kept while its seat is held');
+  writeFileSync(seats, JSON.stringify({ seats: [] }));
+  await s.pass();
+  s.later(301_000);
+  await s.pass();
+  assert.ok(!existsSync(s.socket), s.log());
+  assert.match(s.log(), /ada-dev: disconnected: nothing on it has needed it for 5m/);
 });
