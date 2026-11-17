@@ -134,7 +134,11 @@ work_folder() {
 # found in neither, or of another project (ticket_home: its own agents keep
 # it). A temp file renamed over the last one. Written on dispatch alone, it
 # says so (ASS-240): its "snapshot" names when, and that the active sprint
-# has the ticket as it stands later.
+# has the ticket as it stands later. ticket.json is the ticket's, so on a
+# ticket built more than one way (ASS-499, ticket:add-variation) it holds
+# whichever variation was dispatched last: a record naming its variation also
+# gets the same written to ticket-<variation>.json, which only that
+# variation's dispatches rewrite — the one its agents read.
 write_ticket_json() {
   local record="$1" ticket project variation folder sprint number json
   ticket="$(jq -r '.["work-item"] // ""' <<< "$record")"
@@ -156,6 +160,7 @@ write_ticket_json() {
       snapshot: "Written at \($at), when an agent was last dispatched on the ticket; not rewritten as it moves on: its step, ticket system status and merge requests now are in the project'"'"'s active sprint." }' "${files[@]}")"
   [[ -n "$json" && "$json" != null ]] || return 0
   jq . <<< "$json" | replace_file "$folder/ticket.json"
+  [[ ! "$variation" =~ ^[A-Za-z0-9_-]+$ ]] || jq . <<< "$json" | replace_file "$folder/ticket-$variation.json"
 }
 
 fill_ticket() {

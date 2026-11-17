@@ -150,6 +150,22 @@ selects that project.
 - `"operator-needed-notifications": false` turns these off for that project
   too.
 
+## Building a ticket two ways
+
+To have a sprint ticket built a second way — say, following the other answer
+to one of its questions — add a variation with its own brief:
+
+```sh
+./agent.sh ticket:add-variation <project> <ticket-key> --brief brief.md   # {"key":"ABC-123","variation":"B","state":"committed"}
+```
+
+The new variation (B, then C, …) starts at Committed (or `--at <state>`) and is
+built beside A in its own VM, on its own branches. Its brief is kept as
+`variation-brief-B.md` in the ticket's work folder; its agents read it first,
+and where it conflicts with the ticket's answered questions it wins, for B
+only. At Variation Selection, pick the one to keep (ticket:select-variation).
+See "Building a ticket two ways" in `engines/grouped-engines.md`.
+
 ## Where a project's tickets run: VMs, GCP workstations and cloud VMs
 
 By default each ticket variation runs in a Lima VM of its own. A project can

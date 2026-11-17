@@ -178,6 +178,20 @@ test('ASS-282: answersGap reads an exit on the ticket system status built with a
   }
 });
 
+// ASS-499: a ticket built more than one way has one ticket system status, set by whichever variation moved last.
+test('ASS-499: pairedByAnother — the status is another live variation\'s when one of the others (not deleted) is at a step pairing with it; never the variation\'s own', () => {
+  const engine = { steps: [{ id: 'committed', 'paired-ticket-system-status': 'To Do' }, { id: 'build', 'paired-ticket-system-status': 'In Progress' }, { id: 'review', 'paired-ticket-system-status': 'In Review' }] };
+  const at = (name, state, extra = {}) => ({ name, 'harness-status': { state }, ...extra });
+  const ticket = { variations: [at('A', 'build'), at('B', 'committed'), at('C', 'review', { 'is-deleted': true })] };
+  const [a, b] = ticket.variations;
+  assert.equal(control.pairedByAnother(engine, ticket, b, 'In Progress'), true);    // A's
+  assert.equal(control.pairedByAnother(engine, ticket, a, 'To Do'), true);          // B's
+  assert.equal(control.pairedByAnother(engine, ticket, a, 'In Progress'), false);   // its own, no other's
+  assert.equal(control.pairedByAnother(engine, ticket, a, 'In Review'), false);     // a deleted variation's
+  assert.equal(control.pairedByAnother(engine, ticket, b, 'Done'), false);
+  assert.equal(control.pairedByAnother(engine, { variations: [a] }, a, 'To Do'), false);
+});
+
 test('evaluateCondition throws on an unknown leaf', () => {
   assert.throws(() => evaluateCondition({ 'no-such-leaf': true }, {}), /no-such-leaf/);
 });

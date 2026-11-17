@@ -57,7 +57,10 @@ test('ASS-228 AC3: every grouped/v2 prompt from the return step onward reads ope
   assert.deepEqual(run.filter(p => flatPrompts.has(p)), [], 'no grouped/v2 prompt is shared with a flat engine');
   for (const p of flatPrompts) assert.doesNotMatch(read('prompts', p, 'prompt.txt'), /operator-review/, `${p}: a flat engine's prompt is unchanged`);
   const copy = read('prompts', 'review-root-cause-analysis-grouped', 'prompt.txt');
-  assert.equal(copy.replace(`${READ_NOTES}\n\n`, ''), read('prompts', 'review-root-cause-analysis', 'prompt.txt'), 'the copy is the flat prompt plus the notes');
+  // ASS-499: and the variation's brief, its second paragraph, as every grouped prompt reading the questions and answers has it.
+  const brief = /\n\nVariation \{variation\}'s brief: [^\n]*\n/;
+  assert.match(copy, brief);
+  assert.equal(copy.replace(`${READ_NOTES}\n\n`, '').replace(brief, '\n'), read('prompts', 'review-root-cause-analysis', 'prompt.txt'), 'the copy is the flat prompt plus the notes and the brief');
   assert.deepEqual(JSON.parse(read('prompts', 'review-root-cause-analysis-grouped', 'prompt.json')).output, JSON.parse(read('prompts', 'review-root-cause-analysis', 'prompt.json')).output);
   assert.ok(existsSync(join(ROOT, 'prompts', 'review-root-cause-analysis-grouped', 'prompt.json')));
   assert.ok(readdirSync(join(ROOT, 'prompts')).includes('review-plan-grouped'), 'ASS-231\'s copy reused');

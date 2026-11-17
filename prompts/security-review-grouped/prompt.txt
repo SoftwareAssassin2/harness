@@ -1,5 +1,7 @@
 Review the code changes for ticket {ticket}, variation {variation} of project {project}, for security problems.
 
+Variation {variation}'s brief: if {ticket-folder}/variation-brief-{variation}.md exists, read it before anything else — it says how this variation is to be built, the ticket being built more than one way. Where it conflicts with the ticket's answered questions ({ticket-folder}/questions-and-answers.json) or its description, the brief wins, for variation {variation} only. Another variation's brief, or its files (named -<variation>), are not yours. No brief: go by the ticket and its answers as they are.
+
 {where}
 
 The changes are in every merge request not Closed: {agent-sh} ticket:merge-request-plan {project} {ticket} {variation} lists each one's id, repository, branch and base. Review them all in one pass: in each one's repository checkout, git fetch origin, then its changes are git diff origin/<base>...origin/<branch>.

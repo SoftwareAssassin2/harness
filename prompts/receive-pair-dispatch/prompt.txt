@@ -15,7 +15,7 @@ Give a status update of 34 characters or fewer every 5 minutes with:
 {status-update-command}
 Longer updates are rejected. Run it as a Bash call of its own, the command alone on the line — nothing before or after it (no cd, ;, &&, | or 2>&1), never chained to your next step — or it runs sandboxed and is refused. An update with quotes, $ or backquotes: write it to a temp file of your own first and give --from <file> in place of the update (on the host; in a VM, the update itself).
 
-Before you start, get up to date on the work: read everything in {ticket-folder}/ — ticket.json (the ticket as it stands now: its details, acceptance criteria, status and history) and whatever agents before you left there (plans, reviews, reports, change-log).
+Before you start, get up to date on the work: read everything in {ticket-folder}/ — ticket.json (the ticket as it stands now: its details, acceptance criteria, status and history; on a variation's work, ticket-{variation}.json is the same with your variation, while ticket.json holds whichever variation was dispatched last) and whatever agents before you left there (plans, reviews, reports, change-log). A ticket can be built more than one way: files named for another variation (-<variation>) are that variation's work, not yours.
 
 Here is your assignment:
 {assignment}

@@ -271,8 +271,13 @@ update_json "$json" --slurpfile in "$file" --arg target "$target" --arg state "$
               # A planned merge request (ASS-80) on its branch is filled from it.
               .[$p]["merge-request"] |= (first(to_entries[] | select(.value | planned) | .key) as $j | .[$j] += ($m | { key, url, "build-status", status }))
             else
-              # Else it goes to the variation on its branch (its build branch, else change/<key>[.<name>]), else the first.
-              (first($live[] as $i | select((.[$i].build.branch // ("change/" + $key + (if .[$i].name == "A" then "" else "." + .[$i].name end)) | lc) == $b) | $i) // $live[0]) as $v
+              # Else it goes to the variation on its branch — its build branch, else the one named for it,
+              # change/<key>[.<name>] — or on one of its -<id> or -fix-<n> branches (merge
+              # requests are planned on change/<KEY>-<id> for A, change/<KEY>.<name>-<id> for another:
+              # ASS-499, a variation added by ticket:add-variation gets its own) — else the first.
+              def on_branch($v): ($v.build.branch // ("change/" + $key + (if $v.name == "A" then "" else "." + $v.name end)) | lc) as $own
+                | $b == $own or ($b | startswith($own + "-") and (.[($own | length) + 1:] | test("^(fix-)?[0-9]+$")));
+              (first($live[] as $i | select(on_branch(.[$i])) | $i) // $live[0]) as $v
               | .[$v]["merge-request"] = ((.[$v]["merge-request"] // []) + [$m])
             end)
       end;

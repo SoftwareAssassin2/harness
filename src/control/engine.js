@@ -441,6 +441,16 @@ export const waitsOnTicketSystem = step => step?.action?.type === 'none' && step
 export const answersGap = (engine, variation, status, engines) => statusIn(engine, variation, engines).chain.slice(1)
   .some(({ step }) => step?.['is-done'] === true || (step?.['exit-events'] ?? []).some(e => statusExit(e.condition, status)));
 
+// pairedByAnother(engine, ticket, variation, status) — ASS-499: the ticket
+// system's `status` is another live variation's: the ticket is built more than
+// one way (ticket:add-variation) and one of its other variations not deleted
+// is at a top-level step that pairs with it. A ticket has one status and each
+// variation's moves set it (sprint.bash sync_paired_status), so it follows
+// whichever moved last: a variation whose own step pairs otherwise is then in
+// no gap — runSteps moves it and detectGaps leaves it be.
+export const pairedByAnother = (engine, ticket, variation, status) => (ticket?.variations ?? [])
+  .some(o => o.name !== variation?.name && !o['is-deleted'] && pairedStatus(engine, o['harness-status']?.state) === status);
+
 // waitsOnHuman(engine, variation, engines) — the variation waits for a human:
 // at a human step, or at a step its gate-when-leaving-state lists (gateName)
 // once the latest change, into that step at its level, has work-is-done — at

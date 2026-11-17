@@ -4,7 +4,7 @@
 // its dependencies hold (dependencies.js awaitsDependencies, ASS-355), and
 // every run under it, is left where it is: no move, script, sub-engine run or
 // VM wait, at any step but a done or a person's one.
-import { stepOf, engineSteps, nextState, pairedStatus, isManual, isDoneStep, isActive, answersGap, ownBranchFix, awaitsDependency, clearCause, resumeAt, resumeSubAt, whyNotResume, statusIn, mergesAwaited } from './engine.js';
+import { stepOf, engineSteps, nextState, pairedStatus, isManual, isDoneStep, isActive, answersGap, pairedByAnother, ownBranchFix, awaitsDependency, clearCause, resumeAt, resumeSubAt, whyNotResume, statusIn, mergesAwaited } from './engine.js';
 import { enginesFor } from './state.js';
 import { rankSprint, rankBacklog } from './rank.js';
 import { planFor, slotKind } from './plan.js';
@@ -641,7 +641,7 @@ export async function runSteps(ctx, state) {
     for (const ticket of rankSprint(project.tickets, { engine: project.engine })) for (const v of ticket.variations ?? []) {
       if (v['is-deleted'] || isPaused(state, project.id, ticket.key, v.name)) continue;
       const stateId = v['harness-status']?.state, paired = pairedStatus(project.engine, stateId), status = ticket['ticket-system-status'];
-      if (paired != null && status != null && status !== paired && !answersGap(project.engine, v, status, enginesFor(state, project.id))) { warnOnce(ctx, `gap/${project.id}/${ticket.key}/${v.name}/${stateId}`, `${ticket.key} ${v.name} ${stateId}: the ticket system says ${status}, the step pairs ${paired}; left to gap resolution`); continue; }
+      if (paired != null && status != null && status !== paired && !answersGap(project.engine, v, status, enginesFor(state, project.id)) && !pairedByAnother(project.engine, ticket, v, status)) { warnOnce(ctx, `gap/${project.id}/${ticket.key}/${v.name}/${stateId}`, `${ticket.key} ${v.name} ${stateId}: the ticket system says ${status}, the step pairs ${paired}; left to gap resolution`); continue; }
       await ctx.attempt(PHASE, `${ticket.key} ${v.name}`, () => runVariation(ctx, ctx.load(), project, ticket.key, v.name));
     }
   }

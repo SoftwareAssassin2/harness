@@ -1,5 +1,7 @@
 Test ticket {ticket}'s changes against the app running locally, for every acceptance criterion of variation {variation}.
 
+Variation {variation}'s brief: if {ticket-folder}/variation-brief-{variation}.md exists, read it before anything else — it says how this variation is to be built, the ticket being built more than one way. Where it conflicts with the ticket's answered questions ({ticket-folder}/questions-and-answers.json) or its description, the brief wins, for variation {variation} only. Another variation's brief, or its files (named -<variation>), are not yours. No brief: go by the ticket and its answers as they are.
+
 {where}
 
 1. Read {ticket-folder}/test-plan-{variation}.md: how each criterion is tested, automatically and by hand, and what a pass means. {ticket-folder}/demo-plan-{variation}.json, when there is one, shows how to bring the change up.

@@ -2562,6 +2562,51 @@ Root Cause Analysis among them) reads the operator-review file and
 addresses each note; the next pass's explanation quotes the reason and
 says how that pass answers it.
 
+## Building a ticket two ways (ASS-499)
+
+A sprint ticket is built a second way by adding a variation to it:
+
+```sh
+./agent.sh ticket:add-variation <project> <ticket-key> [--brief <file>] [--at <state>]
+# {"key":"ABC-123","variation":"B","state":"committed"}
+```
+
+It adds the next letter no variation of the ticket has had (B, then C; a
+deleted one's name is never reused), fresh as ticket:sync makes A (no build,
+merge requests, acceptance criteria or state changes, not paused), at the
+execution engine's `committed` step, or at `--at <state>`, a top-level step id
+of it. It refuses, writing nothing, a ticket not in the active sprint (a
+backlog ticket joins with ticket:join-sprint first), a deleted or done ticket,
+and an unknown state. Control then takes the new variation like any other: its
+own seat and VM (`<key>-<variation>`), its branches (`change/<KEY>.<variation>-<id>`,
+A's being `change/<KEY>-<id>`), its own `<report>-<variation>.md` files; A is
+left as it is. The ticket has one ticket system status, which follows whichever
+variation moved last; a variation whose step pairs with another status is in
+no gap while another live variation's step pairs with the ticket's
+(`pairedByAnother`, `src/control/engine.js`).
+
+`--brief <file>` is what the variation does differently — another answer to
+one of the ticket's questions, say. It is written as
+`variation-brief-<variation>.md` in the ticket's folder, the operator's alone
+(work:write refuses it). Every grouped prompt that reads the ticket's
+questions and answers — Enrich AC, Root Cause Analysis and its review, Write
+Execution Plan, Write Test Plan, Review Plan, Generate Solution, Generate
+Automated Tests, Code Review, Security Review, Test, and Requirements Changed's
+Revise Acceptance Criteria and Judge — reads its variation's brief first and
+is told that where it conflicts with the answered questions or the
+description, the brief wins, for that variation only. Questions and answers
+stay the ticket's; a variation with no brief goes by them as before.
+
+`ticket.json` in the ticket's folder is the ticket as dispatched, with the
+variation last dispatched on; each variation's dispatch also writes
+`ticket-<variation>.json`, which the prompts reading a variation's own
+criteria, status or rejection reason read instead. When the variations reach
+Variation Selection (grouped-review; `has-variations` is true with two live
+ones) the operator compares them and picks one on the ticket screen
+(ticket:select-variation); the others are set aside. ticket:sync keeps the
+added variation, and files a merge request found on `change/<KEY>.<variation>`
+or `change/<KEY>.<variation>-<id>` on that variation.
+
 ## Switching a project, and rolling back
 
 Each project switches on its own:

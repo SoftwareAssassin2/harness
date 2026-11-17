@@ -1,5 +1,7 @@
 Write the test plan for ticket {ticket}.
 
+Variation {variation}'s brief: if {ticket-folder}/variation-brief-{variation}.md exists, read it before anything else — it says how this variation is to be built, the ticket being built more than one way. Where it conflicts with the ticket's answered questions ({ticket-folder}/questions-and-answers.json) or its description, the brief wins, for variation {variation} only. Another variation's brief, or its files (named -<variation>), are not yours. No brief: go by the ticket and its answers as they are.
+
 1. Read the ticket's acceptance criteria and {ticket-folder}/execution-plan-{variation}.md.
 2. Write {ticket-folder}/test-plan-{variation}.md (through `{agent-sh} work:write {project} {ticket} {variation} test-plan.md`, the whole file on stdin), listing for each acceptance criterion:
    - "Automated (committed, run by the repo's CI)": the tests that will prove it, with the behavior each checks; where an existing CI test or target already covers a behavior, name it instead of planning a new test

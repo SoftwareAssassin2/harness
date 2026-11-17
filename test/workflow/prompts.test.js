@@ -303,9 +303,9 @@ test('ASS-116: explain-the-change replaces the whole of any "## Summary" section
 // Explain the Change read it, so the plan the rejection was about came back
 // re-checked unchanged and was built again. The grouped copy reads it too;
 // the flat engines' write-execution-plan is unchanged.
-test('ASS-116: write-execution-plan-grouped answers the operator\'s rejection at Human Review — the variation\'s rejection-reason in ticket.json — and the flat write-execution-plan is unchanged', () => {
+test('ASS-116: write-execution-plan-grouped answers the operator\'s rejection at Human Review — the variation\'s rejection-reason in its ticket-{variation}.json (ASS-499) — and the flat write-execution-plan is unchanged', () => {
   const text = readFileSync(join(ROOT, 'prompts', 'write-execution-plan-grouped', 'prompt.txt'), 'utf8');
-  assert.match(text, /If the variation in ticket\.json has a "rejection-reason", the operator rejected an earlier pass at Human Review for it: revise the plan to answer it, and say how under "## What changed"\. Already answered there, keep the answer\./);
+  assert.match(text, /If the variation in \{ticket-folder\}\/ticket-\{variation\}\.json has a "rejection-reason", the operator rejected an earlier pass at Human Review for it: revise the plan to answer it, and say how under "## What changed"\. Already answered there, keep the answer\./);
   assert.doesNotMatch(readFileSync(join(ROOT, 'prompts', 'write-execution-plan', 'prompt.txt'), 'utf8'), /rejection-reason/);
 });
 

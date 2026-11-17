@@ -1,5 +1,7 @@
 Review ticket {ticket}'s execution plan ({ticket-folder}/execution-plan-{variation}.md), test plan ({ticket-folder}/test-plan-{variation}.md) and variation {variation}'s demo plan before any code is written. Read the demo plan with: {agent-sh} ticket:demo-plan {project} {ticket} {variation}
 
+Variation {variation}'s brief: if {ticket-folder}/variation-brief-{variation}.md exists, read it before anything else — it says how this variation is to be built, the ticket being built more than one way. Where it conflicts with the ticket's answered questions ({ticket-folder}/questions-and-answers.json) or its description, the brief wins, for variation {variation} only. Another variation's brief, or its files (named -<variation>), are not yours. No brief: go by the ticket and its answers as they are.
+
 Check that:
 - The execution plan covers every acceptance criterion and fixes the root cause in {ticket-folder}/root-cause-analysis-{variation}.md
 - The test plan would catch a build that missed any acceptance criterion

@@ -4,7 +4,7 @@
 // At most one run of each kind goes at a time per
 // project — per ticket for gap resolution and appeal (plan.js
 // triggerAllowed); such runs count toward max-agents, never max-tickets-in-progress.
-import { pairedStatus, waitsOnHuman, stepOf, isHumanStep, isDoneStep, isHeld, isManual, answersGap } from './engine.js';
+import { pairedStatus, waitsOnHuman, stepOf, isHumanStep, isDoneStep, isHeld, isManual, answersGap, pairedByAnother } from './engine.js';
 import { triggerAllowed } from './plan.js';
 import { firstStepId, isPaused, BACKGROUND, backgroundOff, weeklyHeld, found, moveTicket, endRun } from './moves.js';
 import { rankBacklog } from './rank.js';
@@ -35,7 +35,8 @@ export async function startTrigger(ctx, state, phase, project, kind, parent) {
 // detectGaps(ctx, state) — for each sprint variation not deleted, held
 // (isHeld: paused, or worked by hand, ASS-166) or waiting on a human, whose ticket's ticket-system-status is known and is not
 // its step's paired-ticket-system-status, and not one its own sub-engine run
-// answers (engine.js answersGap, ASS-224): the engine's gap-resolution-steps
+// answers (engine.js answersGap, ASS-224) or another of the ticket's live
+// variations' steps pairs with (pairedByAnother, ASS-499): the engine's gap-resolution-steps
 // started with { trigger: "gap-resolution", work-item, variation }.
 export async function detectGaps(ctx, state) {
   for (const project of state.projects) {
@@ -44,7 +45,7 @@ export async function detectGaps(ctx, state) {
       if (v['is-deleted'] || isHeld(ticket, v) || waitsOnHuman(project.engine, v, project.engines ?? state.engines)) continue;
       const paired = pairedStatus(project.engine, v['harness-status']?.state);
       const status = ticket['ticket-system-status'];
-      if (paired == null || status == null || status === paired || answersGap(project.engine, v, status, project.engines ?? state.engines)) continue;
+      if (paired == null || status == null || status === paired || answersGap(project.engine, v, status, project.engines ?? state.engines) || pairedByAnother(project.engine, ticket, v, status)) continue;
       if (await startTrigger(ctx, state, 'gap', project, 'gap-resolution', { 'work-item': ticket.key, variation: v.name })) state = ctx.load();
     }
   }
