@@ -3,7 +3,7 @@
 // tells control back — its session id and each turn's end with its cost.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, existsSync } from 'node:fs';
+import { mkdtempSync, readFileSync, existsSync, appendFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -213,4 +213,52 @@ test('ASS-216 AC1: the agent says what its session is billed to from its init ev
   assert.equal(billed({ billing: null }, 0.5), 0.5);   // no init event: its cost as today
   await subscription.stopped();
   await api.stopped();
+});
+
+// ASS-504 AC2, AC4: an inbox line { prompt, interrupt: true } (machine:restart-imminent) interrupts the turn under
+// way — a long tool call included — with the stream-json interrupt control request, then sends the prompt; the
+// interrupted turn's result reaches onEvent but not onResult, so the caller never takes it for the agent finishing,
+// and the prompt's own turn is the next result, its cost including the interrupted turn's.
+test('ASS-504 AC2, AC4: an interrupt line in the inbox stops the long tool call under way and sends its prompt; the interrupted turn\'s result is not a result for onResult, the prompt\'s turn is', async t => {
+  const root = mkdtempSync(join(tmpdir(), 'root-'));
+  const results = [], events = [], interrupts = [];
+  const agent = started(t, { name: 'Hulk', root, command: ['node', FAKE], env: { ...process.env, FAKE_LONG_TOOL: '1' },
+    onEvent: e => events.push(e), onResult: e => results.push({ ...e, before: agent.lastTotalCost }), onInterrupt: text => interrupts.push(text) });
+  const inbox = join(agent.dir, 'inbox.jsonl');
+  appendFileSync(inbox, `${JSON.stringify({ prompt: 'run validate.sh' })}\n`);
+  assert.ok(await until(() => events.some(e => e.type === 'assistant' && e.message.content.some(c => c.name === 'Bash'))));   // deep in its tool call
+  assert.equal(agent.interrupted, null);
+  const at = Date.now();
+  appendFileSync(inbox, `${JSON.stringify({ prompt: 'RESTART IMMINENT', interrupt: true })}\n`);
+  assert.ok(await until(() => results.length === 1));
+  assert.ok(Date.now() - at < 2000, `the prompt's turn ended ${Date.now() - at} ms after the line was queued`);
+  assert.deepEqual(interrupts, ['RESTART IMMINENT']);
+  assert.match(agent.interrupted, /^\d{4}-\d\d-\d\dT/);
+  assert.equal(results[0].subtype, 'success', 'the first result onResult sees is the prompt\'s turn');
+  assert.equal(results[0].before, 0, 'the interrupted turn moved no cost on: the prompt\'s turn carries it');
+  assert.ok(events.some(e => e.type === 'result' && e.subtype === 'error_during_execution'), 'the interrupted turn did end, seen by onEvent');
+  assert.ok(events.some(e => e.type === 'control_response' && e.response.request_id === 'interrupt-1'), 'the CLI answered the control request');
+  await agent.stopped();
+  const log = readSession(agent.dir);
+  const i = log.indexOf('[interrupt]');
+  assert.ok(i > 0, log.join('\n'));
+  assert.ok(log.indexOf('[the interrupted turn ended]') > i, log.join('\n'));
+  assert.ok(log.indexOf('> RESTART IMMINENT') > i, log.join('\n'));
+  assert.ok(log.some(l => l.startsWith('You said RESTART IMMINENT')), log.join('\n'));
+});
+
+test('ASS-504: an interrupt line for an agent with no turn under way (its last result in) ends nothing: the prompt is sent and its turn\'s result is onResult\'s', async t => {
+  const root = mkdtempSync(join(tmpdir(), 'root-'));
+  const results = [];
+  const agent = started(t, { name: 'Hulk', root, command: ['node', FAKE], onResult: e => results.push(e) });
+  const inbox = join(agent.dir, 'inbox.jsonl');
+  appendFileSync(inbox, `${JSON.stringify({ prompt: 'one' })}\n`);
+  assert.ok(await until(() => results.length === 1));
+  appendFileSync(inbox, `${JSON.stringify({ prompt: 'RESTART IMMINENT', interrupt: true })}\n`);
+  assert.ok(await until(() => results.length === 2));
+  assert.equal(results[1].total_cost_usd, 1);
+  await agent.stopped();
+  const log = readSession(agent.dir);
+  assert.ok(log.includes('[interrupt: no turn under way]'), log.join('\n'));
+  assert.ok(!log.includes('[the interrupted turn ended]'), log.join('\n'));
 });

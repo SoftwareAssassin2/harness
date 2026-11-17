@@ -418,6 +418,15 @@ async function startFor(ctx, state, project, record, account, vm, repository, st
         if (info?.contextWindow) unawaited(ctx, `${name}: ${model}'s context window`, () => ctx.cli(['harness:set-context-window', model, String(info.contextWindow)]));
       }
     },
+    // ASS-504: its machine is about to go down (machine:restart-imminent): its turn interrupted and the restart
+    // prompt sent. What it ended before (a result held for pending work) is no turn ending now: finish.js ends it,
+    // its step not completed, once the prompt's turn is over.
+    onInterrupt: () => {
+      live.result = null;
+      live.pending = null;
+      live.pendingThisTurn = false;
+      ctx.log(PHASE, `${name}: restart imminent${vm ? ` on ${vm}` : ''}: its turn interrupted and the restart prompt sent (commit and push now)`);
+    },
     onExit: (code, signal) => { live.exited = { code, signal }; },
   });
   ctx.agents.set(name, live);

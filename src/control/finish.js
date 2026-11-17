@@ -169,7 +169,9 @@ async function holdForRateLimit(ctx, state, live) {
 // holds its project's agents of its credential kind (holdForRateLimit);
 // one whose assignment is gone is ended, its cost recorded on its dispatch all
 // the same (endUnassigned); one paused or shutting down, or that exited
-// without a result, is just ended (the step runs again), with what it cost;
+// without a result, is just ended (the step runs again), with what it cost —
+// as is, uncounted, one interrupted because its machine is about to go down
+// (ASS-504: process.js interrupt), once its restart-imminent turn ends or it exits;
 // a group whose any live member's last turn left background work pending
 // (ASS-334) is held — nothing of it ended — up to pendingWaitMs, logged once
 // per span, then finished anyway with a timeout line (also once per span)
@@ -230,6 +232,13 @@ async function finishOne(ctx, state, live) {
     return;
   }
   if (isPaused(state, record.project, record['work-item'], record.variation, record['transient-state-engine']) || ['Shutting Down', 'Killed'].includes(record.status)) return endAgent(ctx, live);
+  // ASS-504: told its machine is about to go down (process.js interrupt), it committed and pushed and its turn
+  // ended — or it died with the machine: ended, its step not completed and no failure counted, so the step runs
+  // again, picking up from what it pushed, once the machine is back.
+  if (live.agent.interrupted) {
+    ctx.log(PHASE, `${live.name}: ${live.result ? 'its restart-imminent turn ended' : 'exited after its restart-imminent interrupt'}; ended without completing its step, which runs again`);
+    return endAgent(ctx, live);
+  }
   // A failure: the step is tried again once its hold is over (backoff.js), longer each time.
   counted(ctx.memory, recordKey(record), live.agent, live.result);   // a failed start, or not (ASS-167)
   const retry = what => { const { until } = failed(ctx.memory, recordKey(record), ctx.now().getTime(), what); ctx.log(PHASE, `${what}; tried again in ${held(until - ctx.now().getTime())}`); };

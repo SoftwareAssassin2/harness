@@ -19,7 +19,10 @@ set -euo pipefail
 # before ASS-468 still records, which workstation:release migrates).
 #
 # The setup's version (AC2): the sha256 of on-workstation/setup.sh,
-# in-vm/agent.sh, (ASS-477) on-workstation/docker-credential-harness, the
+# in-vm/agent.sh, (ASS-477) on-workstation/docker-credential-harness, (ASS-504)
+# on-workstation/restart-watcher.sh — the watcher setup starts there, whose own
+# sha256 it is given (HARNESS_WS_WATCHER_VERSION) to replace a running one of
+# another version — the
 # project's golden-image/workstation-tools.sh (when it has one), the
 # forwarder's URL on the workstation, (ASS-477) the project's Artifact
 # Registry host (its registry's upstream, whose credentials the agents'
@@ -62,7 +65,7 @@ command=workstation:setup
 project="$1" id="$2"
 workstation_settings "$command" "$project" "$id" >/dev/null
 here="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
-script="$here/on-workstation/setup.sh" agent_sh="$here/../vm/in-vm/agent.sh" helper="$here/on-workstation/docker-credential-harness"
+script="$here/on-workstation/setup.sh" agent_sh="$here/../vm/in-vm/agent.sh" helper="$here/on-workstation/docker-credential-harness" watcher="$here/on-workstation/restart-watcher.sh"
 json="$ws_projects/$project/project.json"
 ports="$(workstation_ports "$command" "$project")"
 forwarder="${ports%%$'\n'*}"
@@ -97,7 +100,7 @@ if [[ -n "$installer" ]]; then
   done < <(find "$folder" -mindepth 1 -maxdepth 1 -type f ! -name '.*' | LC_ALL=C sort)
 fi
 
-version="$( { shasum -a 256 "$script" "$agent_sh" "$helper" ${installer:+"$installer"} | cut -d' ' -f1; echo "url $url"; echo "registry $registry"; printf 'tool %s\n' "${tools[@]+"${tools[@]}"}"
+version="$( { shasum -a 256 "$script" "$agent_sh" "$helper" "$watcher" ${installer:+"$installer"} | cut -d' ' -f1; echo "url $url"; echo "registry $registry"; printf 'tool %s\n' "${tools[@]+"${tools[@]}"}"
   for ((i = 0; i < ${#needs[@]}; i += 2)); do printf 'need %s %s\n' "${needs[i]}" "${needs[i+1]}"; done
   for n in "${shared[@]+"${shared[@]}"}"; do printf 'file %s %s\n' "$n" "$(shasum -a 256 < "$folder/$n" | cut -d' ' -f1)"; done; } | shasum -a 256 | cut -d' ' -f1)"
 if [[ $# -eq 3 ]]; then echo "$version"; exit 0; fi
@@ -110,8 +113,8 @@ err="$(mktemp "${TMPDIR:-/tmp}/workstation-setup.XXXXXX")"
 trap 'rm -f "$err"' EXIT
 rc=0
 # Without the lock's descriptor: a setup left hanging past its time is ended (ws_timeout), and holds no lock meanwhile.
-out="$( { b64 "$agent_sh"; b64 "$installer"; b64 "$helper"; for n in "${shared[@]+"${shared[@]}"}"; do printf '%s ' "$n"; b64 "$folder/$n"; done; } | ws_timeout "${WORKSTATION_SETUP_TIMEOUT:-900}" bash -c "source '$here/../workstation.bash' && workstation_ssh \"\$@\"" _ \
-  "$project" "$id" env "HARNESS_KEEP_FOLDER=$(workstation_entry "$project" "$id" | jq -r '.holder.folder // ""')" "HARNESS_WS_REGISTRY=$registry" bash -c "$(cat "$script")" workstation-setup "$version" "$url" "${tools[@]+"${tools[@]}"}" ${needs[0]+-- "${needs[@]}"} 2>"$err" 8>&- 9>&-)" || rc=$?
+out="$( { b64 "$agent_sh"; b64 "$installer"; b64 "$helper"; b64 "$watcher"; for n in "${shared[@]+"${shared[@]}"}"; do printf '%s ' "$n"; b64 "$folder/$n"; done; } | ws_timeout "${WORKSTATION_SETUP_TIMEOUT:-900}" bash -c "source '$here/../workstation.bash' && workstation_ssh \"\$@\"" _ \
+  "$project" "$id" env "HARNESS_KEEP_FOLDER=$(workstation_entry "$project" "$id" | jq -r '.holder.folder // ""')" "HARNESS_WS_REGISTRY=$registry" "HARNESS_WS_WATCHER_VERSION=$(shasum -a 256 < "$watcher" | cut -d' ' -f1)" bash -c "$(cat "$script")" workstation-setup "$version" "$url" "${tools[@]+"${tools[@]}"}" ${needs[0]+-- "${needs[@]}"} 2>"$err" 8>&- 9>&-)" || rc=$?
 cat "$err" >&2
 result="$(tail -n 1 <<< "$out")"
 if ! jq -e 'type == "object" and has("ok")' <<< "$result" >/dev/null 2>&1; then

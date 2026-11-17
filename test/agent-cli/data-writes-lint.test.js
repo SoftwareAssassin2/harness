@@ -47,6 +47,12 @@ const ALLOWED = {
   'src/agent-cli/workstation/on-workstation/setup.sh': {   // ASS-434
     '"$tmp"': 'runs on a GCP workstation: a temp file beside the target in ~/harness, renamed over it',
     '"$R/ready"': 'runs on a GCP workstation: its runtime folder\'s marker, not the harness\'s data',
+    '"$H/restart-watcher.log"': 'runs on the machine: the restart watcher\'s own output log under ~/harness (ASS-504)',
+  },
+  'src/agent-cli/workstation/on-workstation/restart-watcher.sh': {   // ASS-504
+    '"$fired_file"': 'runs on the machine: its runtime folder\'s once-a-boot marker, not the harness\'s data',
+    '"$out"': 'runs on the machine: the metadata flag curl answered, in its runtime folder',
+    '"$pidfile.$$"': 'runs on the machine: its pid file, written beside and renamed over',
   },
   'src/agent-cli/workstation.bash': { '"$log"': 'the workstation SSH master\'s own output log (ASS-433), one writer under the workstation\'s lock' },
   'src/agent-cli/workstation-variation.bash': { '"$HARNESS_RUNTIME/agent-token"': 'runs on a GCP workstation (ASS-435): its runtime folder\'s forwarder token, as vm:start writes a VM\'s', '"$tmp/out"': 'a temp folder of its own (mktemp -d): step-trees.sh\'s output (ASS-468)' },

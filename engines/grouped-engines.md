@@ -2178,6 +2178,24 @@ the workstation path above.
   name): its status, started if it stopped itself, a command run, a file
   copied in and out and one small Artifact Registry image pulled, all under
   a scratch folder removed after.
+- **Restart imminent (ASS-504).** A Spot VM gets about 30 seconds' notice
+  before its ACPI shutdown; its disk survives and control restarts the VM
+  and the step. Setup keeps one restart watcher running on the machine
+  (`on-workstation/restart-watcher.sh`, part of setup's version), which, on
+  the metadata server's `instance/preempted` turning TRUE or a SIGTERM or
+  SIGHUP, runs `agent.sh machine:restart-imminent` once a boot. The
+  forwarder appends the token's binding and machine (allowlist
+  `from-binding`) and logs the command's `restart imminent on <machine>:
+  told <agents>` (`logged`). Each agent of that ticket variation gets an
+  interrupt line in its inbox: the supervisor sends the stream-json
+  interrupt control request (stopping a long tool call), then
+  `prompts/restart-imminent/prompt.txt`; the interrupted turn's result is
+  swallowed, and once the prompt's turn ends, or the agent dies with the
+  machine, finish ends it without completing the step or counting a
+  failure. Tests: `test/agent-cli/workstation-setup.test.js` (ASS-504),
+  `test/agent-cli/restart-imminent.test.js`,
+  `test/control/forwarder.test.js`, `test/agents/process.test.js` and
+  `test/control/restart-imminent.test.js`.
 
 ## The local virtual machines box (ASS-486, ASS-489, ASS-491)
 

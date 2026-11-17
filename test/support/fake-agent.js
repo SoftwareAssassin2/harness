@@ -35,7 +35,14 @@
 // result, as an agent killed or dying mid-turn. Ends when stdin does — but
 // with FAKE_OUTLIVE_STDIN (ASS-425) it does not: as a Claude mid-turn in a VM
 // whose `limactl shell` has gone, it runs on until signalled, or until its
-// parent is gone (orphaned, so a test that kills that parent leaks nothing). Under test/support/, which npm test's pattern
+// parent is gone (orphaned, so a test that kills that parent leaks nothing). ASS-504: a
+// control_request interrupt on stdin is answered at once, as Claude Code
+// 2.1.326 answers it: a control_response; with FAKE_LONG_TOOL (a turn number)
+// that turn says a Bash tool_use and runs it until interrupted — then, as the
+// real CLI, its tool_result rejected, "[Request interrupted by user for tool
+// use]" and a result error_during_execution (is_error) — any message sent
+// meanwhile answered after it; an interrupt with no turn under way ends
+// nothing. Under test/support/, which npm test's pattern
 // (test/**/*.test.js) leaves alone: run as a test it would wait on stdin forever.
 import { existsSync } from 'node:fs';
 // `auth status`, as claude auth status answers it: logged in as fake@example.com;
@@ -70,12 +77,20 @@ say({ type: 'assistant', message: { content: [{ type: 'text', text: `args ${proc
 say({ type: 'assistant', message: { content: [{ type: 'text', text: `config ${process.env.CLAUDE_CONFIG_DIR ?? '-'}` }] } });
 process.stdin.setEncoding('utf8');
 const held = () => process.env.FAKE_HOLD && existsSync(process.env.FAKE_HOLD);
-const answerWhenFree = lines => (held() ? setTimeout(answerWhenFree, 20, lines) : answer(lines));
+// ASS-504: the long tool call under way (FAKE_LONG_TOOL), a promise its interrupt resolves.
+let running = null, stopRunning = null;
+const answerWhenFree = lines => (held() ? setTimeout(answerWhenFree, 20, lines) : running ? running.then(() => answerWhenFree(lines)) : answer(lines));
 process.stdin.on('data', chunk => {
   buffer += chunk;
   const lines = buffer.split('\n');
   buffer = lines.pop();
-  answerWhenFree(lines);
+  const control = line => { try { return JSON.parse(line).type === 'control_request'; } catch { return false; } };
+  for (const line of lines.filter(control)) {
+    const { request_id: id, request } = JSON.parse(line);
+    say({ type: 'control_response', response: { subtype: 'success', request_id: id, response: { still_queued: [] } } });
+    if (request?.subtype === 'interrupt' && stopRunning) stopRunning();
+  }
+  answerWhenFree(lines.filter(l => !control(l)));
 });
 // The MCP tool calls FAKE_MEMORY lists, made on --mcp-config's hindsight server, in order.
 async function remember() {
@@ -102,6 +117,16 @@ async function answer(lines) {
       say({ type: 'assistant', parent_tool_use_id: null, message: { model, content: [{ type: 'tool_use', id: `p${turns}`, ...PENDING_TOOLS[process.env.FAKE_PENDING] }] } });
     }
     if (process.env.FAKE_EXIT) process.exit(1);
+    if (Number(process.env.FAKE_LONG_TOOL) === turns) {
+      say({ type: 'assistant', parent_tool_use_id: null, message: { model, content: [{ type: 'tool_use', id: `long${turns}`, name: 'Bash', input: { command: './validate.sh' } }] } });
+      running = new Promise(resolve => { stopRunning = resolve; });
+      await running;
+      running = stopRunning = null;
+      say({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: `long${turns}`, is_error: true, content: "The user doesn't want to proceed with this tool use. The tool use was rejected." }] } });
+      say({ type: 'user', message: { content: [{ type: 'text', text: '[Request interrupted by user for tool use]' }] } });
+      say({ type: 'result', subtype: 'error_during_execution', is_error: true, duration_ms: 3000, total_cost_usd: turns * 0.5, usage: { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } });
+      continue;
+    }
     if (process.env.FAKE_ERROR) {
       say({ type: 'result', subtype: 'error_during_execution', is_error: true, duration_ms: 500, total_cost_usd: turns * 0.5, usage: { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } });
       continue;

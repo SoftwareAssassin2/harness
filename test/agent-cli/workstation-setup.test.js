@@ -11,7 +11,8 @@ import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { createServer } from 'node:http';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fixture, AGENT } from './harness-fixture.js';
@@ -28,7 +29,7 @@ afterEach(async () => {
 });
 
 // The commands a bare workstation image has: no jq and no claude (the Mac's own are left off its PATH).
-const BASE = ['bash', 'sh', 'mkdir', 'chmod', 'cat', 'sed', 'id', 'rm', 'mktemp', 'cmp', 'mv', 'ln', 'base64', 'grep', 'uname', 'curl', 'git', 'rsync', 'cp', 'dirname', 'tr', 'head', 'env'];   // rsync: ASS-435
+const BASE = ['bash', 'sh', 'sleep', 'mkdir', 'chmod', 'cat', 'sed', 'id', 'rm', 'mktemp', 'cmp', 'mv', 'ln', 'base64', 'grep', 'uname', 'curl', 'git', 'rsync', 'cp', 'dirname', 'tr', 'head', 'env'];   // rsync: ASS-435
 async function bareImage(extra = []) {
   const dir = mkdtempSync(join(tmpdir(), 'wsimg-'));
   for (const c of [...BASE, ...extra]) symlinkSync((await run('bash', ['-c', `command -v ${c}`])).stdout.trim(), join(dir, c));
@@ -515,4 +516,155 @@ test('ASS-471 AC1: the version changes with the commands ci-checks.json needs, n
   const r = await s.result('workstation:setup', 'p', ID, '--version');
   assert.equal(r.code, 1);
   assert.match(r.err, /ci-checks\.json: not valid JSON/);
+});
+
+// ASS-504: the restart watcher. watchers(s) — the pids of the processes running a watcher for the workstation's
+// runtime folder (the fake runs them on this Mac); pidFile(s) — its restart-watcher.pid, [pid, version] or null.
+const runtimeOf = s => join(s.w.runtime(ID), `harness-${process.getuid()}`);
+const watchers = async s => (await run('pgrep', ['-f', `restart-watcher.sh ${runtimeOf(s)} `]).catch(() => ({ stdout: '' }))).stdout.split('\n').filter(Boolean).map(Number);
+const pidFile = s => (existsSync(join(runtimeOf(s), 'restart-watcher.pid')) ? readFileSync(join(runtimeOf(s), 'restart-watcher.pid'), 'utf8').trim().split(' ') : null);
+const gone = pid => { try { process.kill(pid, 0); return false; } catch { return true; } };
+const waitFor = async (check, ms = 5000) => { for (const end = Date.now() + ms; Date.now() < end; await new Promise(r => setTimeout(r, 25))) if (await check()) return true; return check(); };
+const WATCHER = join(import.meta.dirname, '..', '..', 'src', 'agent-cli', 'workstation', 'on-workstation', 'restart-watcher.sh');
+// warm(s) — the installed agent.sh and its wrapper run once, at a forwarder nothing listens on: macOS checks a newly
+// written executable on its first run, which under load takes seconds (a Linux VM has no such check), and the 2 s
+// budget is the watcher's, not this Mac's.
+const warm = s => run(s.at('harness', 'bin', 'agent.sh'), ['warm-up'], { env: { ...s.w.env, HOME: s.home, AGENT_FORWARDER_URL: 'http://127.0.0.1:9/run' } }).catch(() => {});
+const watcherVersion = () => createHash('sha256').update(readFileSync(WATCHER)).digest('hex');
+
+// A metadata server: instance/preempted answers `flag` (FALSE until set) to a request with Metadata-Flavor: Google
+// (403 without); with ?wait_for_change=true it answers when the flag changes, or after timeout_sec as it is.
+async function metadata() {
+  const m = { flag: 'FALSE', asked: [], waiting: [] };
+  const server = createServer((req, res) => {
+    const url = new URL(req.url, 'http://x');
+    m.asked.push({ path: url.pathname, flavor: req.headers['metadata-flavor'] ?? null, wait: url.searchParams.get('wait_for_change') });
+    if (req.headers['metadata-flavor'] !== 'Google' || url.pathname !== '/computeMetadata/v1/instance/preempted') { res.writeHead(403).end(); return; }
+    if (url.searchParams.get('wait_for_change') !== 'true') { res.end(m.flag); return; }
+    const was = m.flag, answer = () => { clearTimeout(timer); m.waiting = m.waiting.filter(w => w !== answer); if (!res.writableEnded) res.end(m.flag); };
+    const timer = setTimeout(answer, Number(url.searchParams.get('timeout_sec') ?? 60) * 1000);
+    m.waiting.push(() => { if (m.flag !== was) answer(); });
+  });
+  await new Promise(r => server.listen(0, '127.0.0.1', r));
+  servers.push(server);
+  m.url = `http://127.0.0.1:${server.address().port}/computeMetadata/v1/instance/preempted`;
+  m.set = flag => { m.flag = flag; for (const w of [...m.waiting]) w(); };
+  return m;
+}
+
+test('ASS-504 AC1: setup starts exactly one restart watcher, as the workstation user, its pid and version in the runtime folder; a second setup starts no second; after a restart setup starts it again', async () => {
+  const s = setup();
+  await s.cli('workstation:connect', 'p', ID);
+  const first = JSON.parse((await s.cli('workstation:setup', 'p', ID)).stdout).setup;
+  assert.equal(first.ok, true, first.error);
+  assert.ok(first.did.some(d => d === `installed the restart watcher (${s.at('harness', 'lib', 'restart-watcher.sh')})`), first.did.join('\n'));
+  const [pid, version] = pidFile(s);
+  assert.ok(first.did.includes(`started the restart watcher (pid ${pid})`), first.did.join('\n'));
+  assert.equal(version, watcherVersion());
+  assert.deepEqual(await watchers(s), [Number(pid)]);
+  assert.equal((await run('ps', ['-o', 'user=', '-p', pid])).stdout.trim(), (await run('id', ['-un'])).stdout.trim(), 'the ssh user\'s own');
+  assert.equal(readFileSync(s.at('harness', 'lib', 'restart-watcher.sh'), 'utf8'), readFileSync(WATCHER, 'utf8'));
+
+  const again = JSON.parse((await s.cli('workstation:setup', 'p', ID)).stdout).setup;
+  assert.deepEqual(again.did, []);
+  assert.deepEqual(await watchers(s), [Number(pid)], 'still the one');
+
+  // A restart: its processes gone (the fake's watcher ends itself once the runtime folder is emptied), a new boot.
+  s.w.setState(ID, 'STATE_STOPPED');
+  for (let i = 0; i < 50 && existsSync(join(s.w.harnessHome, 'workstations', `p-${ID}.sock`)); i++) await new Promise(r => setTimeout(r, 100));
+  await s.cli('workstation:connect', 'p', ID);
+  assert.ok(await waitFor(() => gone(Number(pid))), 'the old watcher is gone with its boot');
+  const after = JSON.parse((await s.cli('workstation:setup', 'p', ID)).stdout).setup;
+  const [pid2] = pidFile(s);
+  assert.notEqual(pid2, pid);
+  assert.ok(after.did.includes(`started the restart watcher (pid ${pid2})`), after.did.join('\n'));
+  assert.deepEqual(await watchers(s), [Number(pid2)]);
+});
+
+test('ASS-504 AC6: setup\'s version changes with the restart watcher; a watcher of another version is replaced, quietly — not fired — and one runs', async () => {
+  const fwd = await forwarder();
+  const s = setup({ forwarder: fwd.port });
+  // A copy of the agent-cli commands whose watcher differs (AGENT_CLI_DIR), beside the rest of src/ (linked).
+  const src = join(import.meta.dirname, '..', '..', 'src'), tree = join(mkdtempSync(join(tmpdir(), 'cli-')), 'src'), copy = join(tree, 'agent-cli');
+  mkdirSync(tree);
+  for (const name of readdirSync(src)) if (name !== 'agent-cli') symlinkSync(join(src, name), join(tree, name));
+  cpSync(join(src, 'agent-cli'), copy, { recursive: true });
+  const changed = { ...s.w.env, AGENT_CLI_DIR: copy };
+  const version = async env => (await run(AGENT, ['workstation:setup', 'p', ID, '--version'], { env })).stdout.trim();
+  const v1 = await version(s.w.env);
+  assert.equal(await version(changed), v1, 'the same files, the same version');
+  writeFileSync(join(copy, 'workstation', 'on-workstation', 'restart-watcher.sh'), `${readFileSync(WATCHER, 'utf8')}# changed\n`);
+  assert.notEqual(await version(changed), v1);
+
+  await s.cli('workstation:connect', 'p', ID);
+  await s.cli('workstation:setup', 'p', ID);
+  const [pid] = pidFile(s);
+  const out = JSON.parse((await run(AGENT, ['workstation:setup', 'p', ID], { env: changed })).stdout).setup;
+  const [pid2, version2] = pidFile(s);
+  assert.notEqual(pid2, pid);
+  assert.equal(version2, createHash('sha256').update(readFileSync(join(copy, 'workstation', 'on-workstation', 'restart-watcher.sh'))).digest('hex'));
+  assert.ok(out.did.includes(`started the restart watcher (pid ${pid2}, replacing pid ${pid} (version ${watcherVersion().slice(0, 12)}))`), out.did.join('\n'));
+  assert.ok(await waitFor(() => gone(Number(pid))));
+  assert.deepEqual(await watchers(s), [Number(pid2)]);
+  assert.deepEqual(fwd.bodies, [], 'the replaced watcher told the Mac nothing');
+});
+
+test('ASS-504 AC2: when the metadata server\'s preempted flag turns TRUE, the watcher calls agent.sh machine:restart-imminent with the runtime folder\'s token at once, and once', async () => {
+  const fwd = await forwarder(), m = await metadata();
+  const s = setup({ forwarder: fwd.port, env: { HARNESS_WS_METADATA_URL: m.url } });
+  await s.cli('workstation:connect', 'p', ID);
+  await s.cli('workstation:setup', 'p', ID);
+  writeFileSync(join(runtimeOf(s), 'agent-token'), 'tok504\n');
+  await warm(s);
+  const [pid] = pidFile(s);
+  assert.ok(await waitFor(() => m.waiting.length > 0), 'it waits on the flag');
+  assert.ok(m.asked.every(a => a.flavor === 'Google'));
+  assert.deepEqual(fwd.bodies, []);
+  const at = Date.now();
+  m.set('TRUE');
+  assert.ok(await waitFor(() => fwd.bodies.length > 0, 2000), 'the Mac told within 2 s');
+  assert.ok(Date.now() - at < 2000, `${Date.now() - at} ms`);
+  assert.deepEqual(fwd.bodies, [{ url: '/run', body: { token: 'tok504', argv: ['machine:restart-imminent'] } }]);
+  assert.ok(existsSync(join(runtimeOf(s), 'restart-watcher.fired')));
+  // The shutdown that follows tells it nothing more.
+  process.kill(Number(pid), 'SIGTERM');
+  assert.ok(await waitFor(() => gone(Number(pid))));
+  assert.equal(fwd.bodies.length, 1);
+  const log = readFileSync(s.at('harness', 'restart-watcher.log'), 'utf8');
+  assert.match(log, /watching for a preemption or the shutdown signal/);
+  assert.match(log, /restart imminent \(preempted\): telling the agents on this machine/);
+});
+
+test('ASS-504 AC3, AC5: with no metadata server the watcher says so as a note, nothing alarming, and SIGTERM (a shutdown) tells the Mac at once; SIGHUP too, once a boot', async () => {
+  const fwd = await forwarder();
+  const s = setup({ forwarder: fwd.port });
+  await s.cli('workstation:connect', 'p', ID);
+  await s.cli('workstation:setup', 'p', ID);
+  writeFileSync(join(runtimeOf(s), 'agent-token'), 'tok504\n');
+  await warm(s);
+  const [pid] = pidFile(s);
+  const at = Date.now();
+  process.kill(Number(pid), 'SIGTERM');
+  assert.ok(await waitFor(() => fwd.bodies.length > 0, 2000), 'the Mac told within 2 s');
+  assert.ok(Date.now() - at < 2000);
+  assert.deepEqual(fwd.bodies.map(b => b.body.argv), [['machine:restart-imminent']]);
+  assert.ok(await waitFor(() => gone(Number(pid))));
+  assert.equal(pidFile(s), null, 'its pid file removed as it ends');
+  const log = readFileSync(s.at('harness', 'restart-watcher.log'), 'utf8');
+  assert.match(log, /watching for the shutdown signal alone: no metadata server at .* \(a GCP workstation, or not a GCP VM\)/);
+  assert.match(log, /restart imminent \(shutdown signal SIGTERM\)/);
+  assert.doesNotMatch(log, /error|fail|cannot|could not|curl:/i);
+
+  // Started again in the same boot (setup rerun), it never fires a second time; on a new boot (the marker gone) SIGHUP fires.
+  await s.cli('workstation:setup', 'p', ID);
+  let [again] = pidFile(s);
+  process.kill(Number(again), 'SIGTERM');
+  assert.ok(await waitFor(() => gone(Number(again))));
+  assert.equal(fwd.bodies.length, 1, 'once a boot');
+  rmSync(join(runtimeOf(s), 'restart-watcher.fired'));
+  await s.cli('workstation:setup', 'p', ID);
+  [again] = pidFile(s);
+  process.kill(Number(again), 'SIGHUP');
+  assert.ok(await waitFor(() => fwd.bodies.length === 2, 2000));
+  assert.match(readFileSync(s.at('harness', 'restart-watcher.log'), 'utf8'), /restart imminent \(shutdown signal SIGHUP\)/);
 });

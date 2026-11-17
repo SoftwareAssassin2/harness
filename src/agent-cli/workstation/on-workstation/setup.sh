@@ -11,6 +11,7 @@
 # stdin three lines: in-vm/agent.sh in base64, then the project's
 # golden-image/workstation-tools.sh in base64 (an empty line without one),
 # then (ASS-477) on-workstation/docker-credential-harness in base64;
+# then (ASS-504) on-workstation/restart-watcher.sh in base64;
 # then (ASS-462) one line per golden-image file shipped beside it,
 # `<name> <base64>`.
 # Prints one JSON line, { ok, version, home, runtime, boot-id, did: [what it
@@ -41,6 +42,8 @@
 #                     service account's token from the metadata server), its
 #                     other entries linked (docker-credential-harness
 #                     configure); removed when the project has no upstream.
+#   ~/harness/lib/restart-watcher.sh  (ASS-504) the restart watcher, below
+#   ~/harness/restart-watcher.log  what it did
 #   ~/harness/setup.json  the setup last completed: { version, boot-id, runtime }
 # Each file is written only when its content differs, and each tool installed
 # only when it is not on PATH already, so a rerun with nothing missing changes
@@ -76,6 +79,17 @@
 # project's CI checks need, checked and handed to workstation-tools.sh with the
 # tools; one still missing fails setup naming it and the checks that need it,
 # so the gap shows here, not as a ticket's CI Checks step exiting 127.
+#
+# The restart watcher (ASS-504): exactly one runs, as this user, detached
+# (setsid -f where there is setsid, else a background subshell), its pid and
+# version in the runtime folder's restart-watcher.pid, written by it once it has
+# looked for the metadata server (setup waits up to 20 s for it). A rerun
+# leaves one of this version (HARNESS_WS_WATCHER_VERSION, its sha256, from
+# workstation:setup) running alone; one of another version is ended quietly
+# (SIGUSR1) and replaced; after a restart the runtime folder is new, so it is
+# started again. It tells the Mac at once (agent.sh machine:restart-imminent)
+# when a Spot preemption is announced or the machine shuts down: see
+# restart-watcher.sh. One that does not start fails setup, naming it.
 #
 # Tests stand a folder in for the workstation (test/support/fake-ssh.js):
 # HARNESS_WS_BOOT_ID, HARNESS_WS_RUNTIME_ROOT, HARNESS_WS_JQ_URL and
@@ -128,6 +142,7 @@ first_line() { local l; l="$(printf '%s\n' "$1" | grep -m1 -v '^[[:space:]]*$')"
 IFS= read -r agent_b64 || true
 IFS= read -r tools_b64 || true
 IFS= read -r helper_b64 || true
+IFS= read -r watcher_b64 || true
 files=()
 while IFS=' ' read -r name b64 || [[ -n "${name-}" ]]; do [[ -z "$name" ]] || files+=("$name" "$b64"); done
 mkdir -p "$H" "$B" "$L" "$T" || { bad "$H" "could not be made"; finish; }
@@ -308,6 +323,34 @@ if [[ ${#missing[@]} -gt 0 ]]; then
     hash -r
     done_ "ran the project's workstation-tools.sh for ${missing[*]} (exit $rc)"
     for t in "${missing[@]}"; do has "$t" || bad "$t" "could not be installed: not on PATH after the project's golden-image/workstation-tools.sh (exit $rc)$(needed "$t")"; done
+  fi
+fi
+
+# ASS-504: the restart watcher, installed, and running — one, of this version.
+# watcher_alive <pid> — a live process of this user's, the watcher (where /proc says what it runs).
+watcher_alive() {
+  [[ "$1" =~ ^[0-9]+$ ]] && kill -0 "$1" 2>/dev/null || return 1
+  [[ ! -r "/proc/$1/cmdline" ]] || tr '\0' ' ' < "/proc/$1/cmdline" | grep -q restart-watcher
+}
+if [[ -z "$watcher_b64" ]]; then bad restart-watcher "workstation:setup sent no restart-watcher.sh"
+else
+  printf '%s' "$watcher_b64" | base64 -d | put "$L/restart-watcher.sh" 755 && done_ "installed the restart watcher ($L/restart-watcher.sh)"
+  wv="${HARNESS_WS_WATCHER_VERSION:-unknown}" wpid="" wver="" replaced=""
+  read -r wpid wver _ 2>/dev/null < "$R/restart-watcher.pid"
+  if ! watcher_alive "$wpid" || [[ "$wver" != "$wv" ]]; then
+    if watcher_alive "$wpid"; then kill -USR1 "$wpid" 2>/dev/null; replaced=", replacing pid $wpid (version ${wver:0:12})"; fi
+    rm -f "$R/restart-watcher.pid"
+    if has setsid; then setsid -f bash "$L/restart-watcher.sh" "$R" "$wv" </dev/null >>"$H/restart-watcher.log" 2>&1
+    else ( bash "$L/restart-watcher.sh" "$R" "$wv" </dev/null >>"$H/restart-watcher.log" 2>&1 & )
+    fi
+    wpid=""
+    for ((i = 0; i < 200; i++)); do
+      read -r wpid _ 2>/dev/null < "$R/restart-watcher.pid" && watcher_alive "$wpid" && break
+      wpid=""; sleep 0.1
+    done
+    if [[ -n "$wpid" ]]; then done_ "started the restart watcher (pid $wpid$replaced)"
+    else bad restart-watcher "did not start: $(first_line "$(tail -n 3 "$H/restart-watcher.log" 2>/dev/null)")"
+    fi
   fi
 fi
 

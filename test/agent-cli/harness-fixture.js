@@ -87,6 +87,7 @@ export function fixture() {
   write(at('prompts', 'receive-message-from-another-agent', 'prompt.txt'), 'FROM {agent-name}; reply: {reply-command}; approve: {approve-command}\n{message}\n');
   write(at('prompts', 'ask-for-status-update', 'prompt.txt'), '{minutes} minutes; update: {status-update-command}; approve: {approve-command}\n');
   write(at('prompts', 'shut-down', 'prompt.txt'), 'STOP NOW\n');
+  write(at('prompts', 'restart-imminent', 'prompt.txt'), 'RESTART NOW\n');   // ASS-504's, engine-independent
   write(at('prompts', 'generate-solution', 'prompt.txt'), 'Build {ticket} variation {variation} of {project} in {ticket-folder} with {agent-sh}. Keep {assignment} literal.\n');
   write(at('prompts', 'generate-solution', 'prompt.json'), { persona: 'developer', 'input-arguments': [{ name: 'ticket' }], output: '' });
   write(at('prompts', 'find-existing-ticket', 'prompt.txt'), 'Find a ticket in {project} for: {problem}\n');

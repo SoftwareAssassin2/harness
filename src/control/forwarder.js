@@ -36,6 +36,7 @@
 // exit code the command's own.
 import http from 'node:http';
 import { spawn } from 'node:child_process';
+import { createInterface } from 'node:readline';
 import { readFileSync } from 'node:fs';
 import { createHash, timingSafeEqual } from 'node:crypto';
 import { homedir } from 'node:os';
@@ -66,6 +67,12 @@ const same = (a, b) => typeof a === 'string' && a.length === b.length && timingS
 // (ASS-151: vm:build-golden-start, vm:golden-status — a golden-image rebuild
 // ticket's work on the Mac) runs only for a binding fastTracked(binding)
 // says is fast-tracked (none, unless given).
+// ASS-504: a rule with "from-binding": true (machine:restart-imminent, the
+// restart watcher's call, which knows no ticket) has the binding's project,
+// ticket and variation and the VM's machine name appended to its arguments
+// (max-args 0: the VM gives none), so a VM only ever names its own; with
+// "logged": true (`logged` in the result) the forwarder writes the command's
+// stdout lines to control's log.
 export function authorize(tokens, assignments, token, argv, fastTracked = () => false) {
   if (typeof token !== 'string' || !token) return { refuse: 'no token' };
   const hash = sha(token);
@@ -86,7 +93,8 @@ export function authorize(tokens, assignments, token, argv, fastTracked = () => 
     if (!assignments.some(ours)) return { vm, refuse: `agent ${JSON.stringify(args[i] ?? null)} has no assignment on ${binding.ticket} ${binding.variation}` };
   }
   for (const i of rule.stdin ?? []) if (args[i] !== '-') return { vm, refuse: `${JSON.stringify(args[i] ?? null)} must be "-": the content goes on stdin` };
-  return { vm, binding, argv: [command, ...args] };
+  const appended = rule['from-binding'] === true ? [binding.project, binding.ticket, binding.variation, vm] : [];
+  return { vm, binding, argv: [command, ...args, ...appended], logged: rule.logged === true };
 }
 
 const readJson = (file, fallback) => { try { return JSON.parse(readFileSync(file, 'utf8')); } catch { return fallback; } };
@@ -107,7 +115,8 @@ function isFastTracked(projects, binding) {
 // default) and assignments.json (ASSIGNMENTS_FILE, else <root>/data's) as they
 // are then — and, for a command only a fast-tracked ticket may call, its
 // sprint (PROJECTS_DIR, else <root>/data's projects; isFastTracked) — logged under "forwarder" as RUN or REFUSE with the VM and argv
-// (never the token, nor stdin), and run as `<root>/agent.sh <argv>` with `env`, in the
+// (never the token, nor stdin) — and, for a "logged" rule (ASS-504), each line
+// of the command's stdout — and run as `<root>/agent.sh <argv>` with `env`, in the
 // ticket's folder, its stdin the call's stdin decoded (refused over
 // STDIN_CAP), else none (ignored, as before ASS-181); a call whose client goes away is
 // SIGTERMed. Rejects when the port cannot be bound.
@@ -136,6 +145,7 @@ export function startForwarder({ root, env = process.env, port, log = () => {} }
       if (stdin) { child.stdin.on('error', () => {}); child.stdin.end(stdin); }
       const send = key => data => res.write(`${JSON.stringify({ [key]: data.toString('base64') })}\n`);
       child.stdout.on('data', send('o'));
+      if (a.logged) createInterface({ input: child.stdout }).on('line', line => log('forwarder', `${a.vm}: ${line}`));
       child.stderr.on('data', send('e'));
       child.on('error', error => res.end(`${JSON.stringify({ e: Buffer.from(`${error.message}\n`).toString('base64'), exit: 127 })}\n`));
       const exit = (code, signal) => `${JSON.stringify({ exit: code ?? (signal === 'SIGKILL' ? 137 : 143) })}\n`;

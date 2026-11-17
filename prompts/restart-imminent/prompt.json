@@ -1,0 +1,16 @@
+{
+    "description": "Template that tells every agent on a cloud VM about to go down (a Spot preemption or a shutdown, ASS-504) to commit and push its work, change log and notes at once; engine-independent, sent by machine:restart-imminent after interrupting the agent's turn",
+    "supported-command-line-interfaces": [
+        "claude"
+    ],
+    "supported-models": [
+        "claude-opus-5-5",
+        "claude-opus-5",
+        "claude-sonnet-5",
+        "claude-opus-4-8",
+        "claude-opus-4-7"
+    ],
+    "persona": "developer",
+    "input-arguments": [],
+    "output": ""
+}

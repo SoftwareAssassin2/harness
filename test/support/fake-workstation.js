@@ -17,9 +17,18 @@
 // is its runtime folder's root (the container's /dev/shm). ASS-472: its
 // docker pulls and tags too (DOCKER, below), its images in the workstation
 // folder's `images` file, each pull logged in its `pulls`.
-import { mkdtempSync, mkdirSync, symlinkSync, existsSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
+// ASS-504: setup starts each workstation's restart watcher (a process on this
+// Mac, detached): it finds no metadata server (HARNESS_WS_METADATA_URL a port
+// nothing listens on, unless a test sets its own) and checks every second
+// (HARNESS_WS_WATCHER_SECONDS) that its pid file still names it; when the test
+// process exits, every fake workstation's runtime folder is removed, so each
+// watcher still running ends by itself within a second, never firing.
+import { mkdtempSync, mkdirSync, symlinkSync, existsSync, readFileSync, readdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+
+const made = [];
+process.once('exit', () => { for (const dir of made) for (const id of existsSync(dir) ? readdirSync(dir) : []) rmSync(join(dir, id, 'run'), { recursive: true, force: true }); });
 
 export function fakeWorkstation(base = process.env) {
   const dir = mkdtempSync(join(tmpdir(), 'ws-'));
@@ -28,7 +37,8 @@ export function fakeWorkstation(base = process.env) {
   symlinkSync(join(import.meta.dirname, 'fake-gcloud.js'), join(bin, 'gcloud'));
   symlinkSync(join(import.meta.dirname, 'fake-ssh.js'), join(bin, 'ssh'));
   const home = mkdtempSync('/tmp/wsh-');
-  const env = { ...base, PATH: `${bin}:${base.PATH}`, FAKE_WS_DIR: workstations, FAKE_GCLOUD_LOG: join(dir, 'gcloud.log'), FAKE_SSH_LOG: join(dir, 'ssh.log'), HARNESS_HOME: home, WORKSTATION_POLL_SECONDS: '0.1' };
+  made.push(workstations);
+  const env = { HARNESS_WS_METADATA_URL: 'http://127.0.0.1:9/computeMetadata/v1/instance/preempted', HARNESS_WS_WATCHER_SECONDS: '1', ...base, PATH: `${bin}:${base.PATH}`, FAKE_WS_DIR: workstations, FAKE_GCLOUD_LOG: join(dir, 'gcloud.log'), FAKE_SSH_LOG: join(dir, 'ssh.log'), HARNESS_HOME: home, WORKSTATION_POLL_SECONDS: '0.1' };
   const lines = file => (existsSync(file) ? readFileSync(file, 'utf8').trim().split('\n').filter(Boolean).map(l => JSON.parse(l)) : []);
   const at = (id, ...rest) => join(workstations, id, ...rest);
   return {

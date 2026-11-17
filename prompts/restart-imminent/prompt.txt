@@ -1,0 +1,1 @@
+RESTART IMMINENT — under 30 seconds. Stop what you are doing now. Immediately commit and push your work in progress on this branch, with your change log and notes saying where you got to and what is next. You will be started again on this machine shortly to pick up from there. Do nothing else.

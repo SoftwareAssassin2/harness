@@ -69,7 +69,18 @@ export const billed = (agent, usd) => (agent.billing === 'subscription' ? 0 : us
 // marker of its own (`marker`, returned too); stop then also ends it in the VM,
 // which the local signal never reaches. Each complete line appended to <dir>/inbox.jsonl is
 // sent as send sends it, checked for every INBOX_MS.
-export function startAgent({ name, root, dir: given, cwd, vm, command, model, jsonSchema, mcpConfig, resume, systemPrompt, confinedBy, startTime = new Date().toISOString(), env = process.env, usage, onEvent = () => {}, onResult = () => {}, onExit = () => {} }) {
+// ASS-504: an inbox line { prompt, interrupt: true } (machine:restart-imminent)
+// is sent by interrupt(prompt) instead: the stream-json interrupt control
+// request — { type: control_request, request_id, request: { subtype:
+// interrupt } }, which Claude Code 2.1.326 answers with a control_response and,
+// when a turn is under way, ends it at once, a running tool call stopped, with
+// a result (error_during_execution); idle, it ends nothing and says no result —
+// then the prompt, run as the next turn. The interrupted turn's result is not
+// a turn ending for the caller: onEvent sees it, onResult does not, and
+// lastTotalCost stays, so the next turn's cost includes it. `interrupted` (the
+// ISO time of the last interrupt, else null) says one came;
+// onInterrupt(prompt) is called with it, before the prompt is sent.
+export function startAgent({ name, root, dir: given, cwd, vm, command, model, jsonSchema, mcpConfig, resume, systemPrompt, confinedBy, startTime = new Date().toISOString(), env = process.env, usage, onEvent = () => {}, onResult = () => {}, onInterrupt = () => {}, onExit = () => {} }) {
   startTime = startTime.replace(/\.\d+Z$/, 'Z');
   const dir = given ?? sessionDir(root, name, startTime);
   mkdirSync(dir, { recursive: true });
@@ -80,8 +91,10 @@ export function startAgent({ name, root, dir: given, cwd, vm, command, model, js
   const run = vm ? machineCommand(vm, argv, { cwd: cwd ?? machinePaths(vm).repos, marker, env }) : { argv, env };
   const [file, ...args] = run.argv;
   const child = spawn(file, args, { cwd: vm ? undefined : cwd, env: run.env, detached: true, stdio: ['pipe', 'pipe', 'pipe'] });
-  const agent = { pid: child.pid, startTime, dir, sessionId: null, billing: null, lastTotalCost: 0, marker, send, stop };
+  const agent = { pid: child.pid, startTime, dir, sessionId: null, billing: null, lastTotalCost: 0, interrupted: null, marker, send, interrupt, stop };
   let used = initialUsage();
+  // busy: a message sent and its turn's result not yet seen; swallow: results still to come of turns interrupted.
+  let busy = false, swallow = 0, requests = 0;
   createInterface({ input: child.stdout }).on('line', line => {
     write(eventLines(line));
     let event;
@@ -94,6 +107,8 @@ export function startAgent({ name, root, dir: given, cwd, vm, command, model, js
     if (next) writeUsage(dir, toUsageJson(used = next));
     onEvent(event);
     if (event.type === 'result') {
+      busy = false;
+      if (swallow > 0) { swallow--; write(['[the interrupted turn ended]']); return; }
       onResult(event);
       agent.lastTotalCost = event.total_cost_usd ?? agent.lastTotalCost;
     }
@@ -104,6 +119,15 @@ export function startAgent({ name, root, dir: given, cwd, vm, command, model, js
   function send(text) {
     write(text.split('\n').map((l, i) => (i ? '  ' : '> ') + l));
     child.stdin.write(`${JSON.stringify({ type: 'user', message: { role: 'user', content: text } })}\n`);
+    busy = true;
+  }
+  function interrupt(text) {
+    write([`[interrupt${busy ? '' : ': no turn under way'}]`]);
+    child.stdin.write(`${JSON.stringify({ type: 'control_request', request_id: `interrupt-${++requests}`, request: { subtype: 'interrupt' } })}\n`);
+    if (busy) swallow++;
+    agent.interrupted = new Date().toISOString();
+    onInterrupt(text);
+    send(text);
   }
   function stop() {
     try { process.kill(-child.pid, 'SIGTERM'); } catch { /* already gone */ }
@@ -123,7 +147,11 @@ export function startAgent({ name, root, dir: given, cwd, vm, command, model, js
     const end = bytes.lastIndexOf(0x0a) + 1;
     partial = bytes.subarray(end);
     for (const line of bytes.subarray(0, end).toString('utf8').split('\n').filter(Boolean)) {
-      try { send(JSON.parse(line).prompt); } catch { write([`[inbox] not a prompt: ${line}`]); }
+      let queued;
+      try { queued = JSON.parse(line); } catch { queued = null; }
+      if (typeof queued?.prompt !== 'string') write([`[inbox] not a prompt: ${line}`]);
+      else if (queued.interrupt === true) interrupt(queued.prompt);
+      else send(queued.prompt);
     }
   }, INBOX_MS);
   child.once('close', (code, signal) => {

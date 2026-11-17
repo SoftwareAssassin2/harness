@@ -328,6 +328,38 @@ lost seat, and the sprint screen marks a cloud VM seat 🌐 (see
 ticket holding the machine, `💻` while it runs a script step there (the
 sprint screen's 💻), nothing when idle — e.g. `ws-1 💻 running`.
 
+**Restart imminent (ASS-504).** A cloud VM about to go down — a GCP Spot
+preemption, about 30 seconds ahead, or any shutdown — tells every agent on
+it at once to commit and push its work, change log and notes, so the agent
+started there again when it is back picks up where it left off.
+`workstation:setup` installs a restart watcher
+(`~/harness/lib/restart-watcher.sh`, from
+`src/agent-cli/workstation/on-workstation/restart-watcher.sh`) and keeps
+exactly one running as the SSH user, detached, its pid and version in the
+runtime folder (`restart-watcher.pid`): a rerun leaves it alone, a new
+version replaces it, a reboot's setup starts it again, and it is part of
+setup's version, so machines set up before pick it up at their next check.
+It waits on the metadata server's `instance/preempted` (`wait_for_change`,
+`Metadata-Flavor: Google`) and traps SIGTERM and SIGHUP; where there is no
+metadata server (a GCP workstation, any other machine) it watches the
+signals alone. Once a boot, on firing, it runs `agent.sh
+machine:restart-imminent` through the forwarder, which appends the token's
+ticket variation and machine itself (a VM names no ticket of its own) and
+logs the command's line — `restart imminent on <machine>: told <agents>`
+— in control's log; what the watcher did is in
+`~/harness/restart-watcher.log`. The command queues
+`prompts/restart-imminent/prompt.txt` (engine-independent) for every agent on
+that ticket variation as an interrupt line in its inbox; the supervisor
+(`src/agents/process.js`) sends Claude Code's stream-json interrupt control
+request, which stops the turn under way, a long tool call included, then
+the prompt, within about a second. The interrupted turn's result is not a
+turn ending (no SIGTERM, no step completion); once the prompt's turn ends —
+or the agent dies with the machine — control ends the agent without
+completing its step or counting a failure (`finish ... its restart-imminent
+turn ended`), and the step runs again when the machine is back. It can be
+run by hand: `./agent.sh machine:restart-imminent <project> <ticket>
+<variation>`.
+
 **Local virtual machines (ASS-486, ASS-489, ASS-491).** In `vm` and
 `vm+workstation` mode the footer's rightmost box, `local virtual machines`,
 has one line per seat that uses a local Lima VM. First the in-progress VM

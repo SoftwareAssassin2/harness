@@ -369,7 +369,7 @@ test('ASS-298 AC2: a VM\'s work:write with a 5th argument — a path or "-" — 
 });
 
 // ASS-428: work:append, automated-tests:record, ticket:set-demo-plan and merge-request:create-fix took the same trailing file path, capped the same way.
-const CAPPED = { 'work:write': 4, 'work:append': 4, 'automated-tests:record': 3, 'ticket:set-demo-plan': 3, 'merge-request:create-fix': 6, 'assignments:status-update': 2, 'agent-interaction:send-message': 3 };
+const CAPPED = { 'machine:restart-imminent': 0, 'work:write': 4, 'work:append': 4, 'automated-tests:record': 3, 'ticket:set-demo-plan': 3, 'merge-request:create-fix': 6, 'assignments:status-update': 2, 'agent-interaction:send-message': 3 };
 test('ASS-298 AC2, ASS-428: the allowlist caps work:write at 4 arguments — { project: 0, ticket: 1, variation: 2, max-args: 4 } — and each other command with a trailing file path at its stdin form\'s count; no other rule carries max-args', () => {
   const allowlist = JSON.parse(readFileSync(join(ROOT, 'src', 'control', 'forwarder-allowlist.json'), 'utf8'));
   assert.deepEqual(allowlist['work:write'], { project: 0, ticket: 1, variation: 2, 'max-args': 4 });
@@ -398,4 +398,31 @@ test('ASS-463: a VM\'s assignments:status-update or agent-interaction:send-messa
   assert.match(may('assignments:status-update', 'Hulk', '--from', '/etc/hosts').refuse ?? '', /assignments:status-update takes at most 2 arguments/);
   assert.ok(may('agent-interaction:send-message', 'Hulk', 'Thor', 'hi').argv);
   assert.match(may('agent-interaction:send-message', 'Hulk', 'Thor', '--from', '/etc/hosts').refuse ?? '', /agent-interaction:send-message takes at most 3 arguments/);
+});
+
+// ASS-504: a cloud VM's restart watcher knows no ticket: machine:restart-imminent takes no arguments from the VM, and
+// the forwarder appends its token's binding and machine, so a VM only ever tells its own ticket variation's agents.
+test('ASS-504 AC2: machine:restart-imminent from a VM gets its binding\'s project, ticket, variation and machine appended; any argument of its own is refused', () => {
+  const f = fixture(), { tokens, assignments } = bindings(f.dir);
+  const may = (token, ...argv) => authorize(tokens, assignments, token, argv);
+  assert.deepEqual(may('harness-token', 'machine:restart-imminent'), { vm: 'ass-74-a', binding: tokens['ass-74-a'], argv: ['machine:restart-imminent', 'harness', 'ASS-74', 'A', 'ass-74-a'], logged: true });
+  assert.deepEqual(may('example-token', 'machine:restart-imminent').argv, ['machine:restart-imminent', 'example', 'EX-9', 'B', 'ex-9-b']);
+  assert.match(may('harness-token', 'machine:restart-imminent', 'example', 'EX-9', 'B').refuse, /^machine:restart-imminent takes at most 0 arguments/);
+  assert.equal(may('harness-token', 'ticket:questions-answered', 'harness', 'ASS-74').logged, false, 'only a "logged" rule\'s output is logged');
+});
+
+test('ASS-504 AC2: through the forwarder, the VM\'s agent.sh machine:restart-imminent queues the interrupt and restart prompt for its variation\'s agents alone, and control\'s log says which machine and which agents were told', async () => {
+  const { f, server, client, lines } = await served();
+  try {
+    const json = f.assignments();
+    json.assignments.push({ ...json.assignments[1], 'agent-name': 'Thor', variation: 'B' });
+    writeFileSync(join(f.dir, 'assignments.json'), JSON.stringify(json));
+    const told = await client('machine:restart-imminent');
+    assert.equal(told.code, 0, told.stderr);
+    assert.equal(told.stdout, 'restart imminent on abc-3-a: told Daredevil Spock\n');
+    for (const name of ['Daredevil', 'Spock']) assert.deepEqual(f.inbox(name), ['RESTART NOW'], name);
+    assert.deepEqual(f.inbox('Thor'), []);
+    assert.ok(lines.includes('forwarder RUN abc-3-a ["machine:restart-imminent"]'), lines.join('\n'));
+    assert.ok(lines.includes('forwarder abc-3-a: restart imminent on abc-3-a: told Daredevil Spock'), lines.join('\n'));
+  } finally { server.close(); }
 });
