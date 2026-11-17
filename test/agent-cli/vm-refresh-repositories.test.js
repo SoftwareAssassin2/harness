@@ -8,7 +8,7 @@
 // main, example-corpus on master, origin one commit ahead of each).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { writeFileSync, readFileSync, renameSync, rmSync } from 'node:fs';
+import { writeFileSync, readFileSync, renameSync, rmSync, existsSync, realpathSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import { lima, git, edit } from './vm-fixture.js';
@@ -187,4 +187,131 @@ test('ASS-396 AC2: a fetch failing for want of a repository is not retried: left
   renameSync(work, `${work}.gone`);
   assert.match((await s.refresh()).stdout, /^example-corpus: left as is: could not fetch$/m);
   assert.equal(s.shells(), 1);
+});
+
+// ASS-503: after a refresh, each repository whose pnpm-lock.yaml differs from the one its node_modules was installed
+// from (the harness's stamp, node_modules/.harness-installed-lock.yaml) gets `pnpm install --frozen-lockfile`, a line
+// on stderr per pnpm repository saying installed or skipped; a failed install fails the command, naming the repository.
+// The VM's pnpm a stub: logs "<cwd>|<args>|CI=<CI>", makes node_modules, exits per <dir>/pnpm-exit-<repo> or <dir>/pnpm-exit.
+function pnpmStub(v) {
+  const log = join(v.dir, 'pnpm.log');
+  v.inVm('pnpm', `echo "$PWD|$*|CI=\${CI-}" >> '${log}'; mkdir -p node_modules
+rc=$(cat "${v.dir}/pnpm-exit-$(basename "$PWD")" 2>/dev/null || cat '${v.dir}/pnpm-exit' 2>/dev/null || echo 0)
+[ "$rc" -eq 0 ] || echo "ERR_STUB_PNPM: lockfile broken in $(basename "$PWD")" >&2
+exit "$rc"`);
+  const calls = () => (existsSync(log) ? readFileSync(log, 'utf8').trim().split('\n').map(l => { const [cwd, args, ci] = l.split('|'); return { cwd, args, ci }; }) : []);
+  const fail = (code, repo) => writeFileSync(join(v.dir, repo ? `pnpm-exit-${repo}` : 'pnpm-exit'), String(code));
+  return { calls, fail };
+}
+// lockfile(dir, text): pnpm-lock.yaml (node_modules ignored, as a pnpm repository has it) committed in dir.
+function lockfile(dir, text) {
+  writeFileSync(join(dir, 'pnpm-lock.yaml'), text); writeFileSync(join(dir, '.gitignore'), 'node_modules\n');
+  git(dir, 'add', '.'); git(dir, '-c', 'user.name=T', '-c', 'user.email=t@example.com', 'commit', '-q', '-m', 'lockfile');
+}
+const STAMP = ['node_modules', '.harness-installed-lock.yaml'];
+const deps = s => { const p = pnpmStub(s.v); return { ...s, ...p, stamp: r => join(r, ...STAMP), lock: r => readFileSync(join(r, 'pnpm-lock.yaml'), 'utf8') }; };
+
+test('ASS-503 AC1: a reference repository whose pnpm-lock.yaml changed (no stamp) gets `pnpm install --frozen-lockfile` with CI=true, logged "installed", its stamp the lockfile; a repository with no lockfile gets nothing', async () => {
+  const s = deps(setup());
+  lockfile(s.origins['example-corpus'].work, 'lockfileVersion: 9.0\n');
+  const { stderr } = await s.refresh();
+  assert.deepEqual(s.calls(), [{ cwd: realpathSync(s.ref), args: 'install --frozen-lockfile', ci: 'CI=true' }]);
+  assert.match(stderr, /example-corpus: deps installed \(pnpm-lock\.yaml changed\)/);
+  assert.doesNotMatch(stderr, /harness: deps/);
+  assert.equal(readFileSync(s.stamp(s.ref), 'utf8'), s.lock(s.ref));
+});
+
+test('ASS-503 AC1: the ticket\'s own repository, its lockfile changed, is installed too, its checkout untouched', async () => {
+  const s = deps(setup());
+  lockfile(s.own, 'lockfileVersion: 9.0\nown: 1\n');
+  const before = s.head(s.own);
+  const { stderr } = await s.refresh();
+  assert.deepEqual(s.calls(), [{ cwd: realpathSync(s.own), args: 'install --frozen-lockfile', ci: 'CI=true' }]);
+  assert.match(stderr, /harness: deps installed \(pnpm-lock\.yaml changed\)/);
+  assert.deepEqual(s.head(s.own), before);
+  assert.equal(readFileSync(s.stamp(s.own), 'utf8'), s.lock(s.own));
+});
+
+test('ASS-503 AC1: a lockfile edited since its stamp is installed again, the stamp updated; node_modules removed (stamp gone), installed again', async () => {
+  const s = deps(setup()), work = s.origins['example-corpus'].work;
+  lockfile(work, 'lockfileVersion: 9.0\n');
+  await s.refresh();
+  lockfile(work, 'lockfileVersion: 9.0\nchanged: 1\n');
+  const { stderr } = await s.refresh();
+  assert.equal(s.calls().length, 2);
+  assert.match(stderr, /example-corpus: deps installed \(pnpm-lock\.yaml changed\)/);
+  assert.equal(readFileSync(s.stamp(s.ref), 'utf8'), 'lockfileVersion: 9.0\nchanged: 1\n');
+  rmSync(join(s.ref, 'node_modules'), { recursive: true });
+  assert.match((await s.refresh()).stderr, /example-corpus: deps installed \(pnpm-lock\.yaml changed\)/);
+  assert.equal(s.calls().length, 3);
+  assert.equal(readFileSync(s.stamp(s.ref), 'utf8'), s.lock(s.ref));
+});
+
+test('ASS-503 AC2: a second refresh with no lockfile change skips the repository, logged "skipped", no install; its stamp is its lockfile', async () => {
+  const s = deps(setup());
+  lockfile(s.origins['example-corpus'].work, 'lockfileVersion: 9.0\n');
+  await s.refresh();
+  assert.equal(s.calls().length, 1);
+  const { stderr } = await s.refresh();
+  assert.equal(s.calls().length, 1, 'no second install');
+  assert.match(stderr, /example-corpus: deps skipped \(pnpm-lock\.yaml unchanged\)/);
+  assert.equal(readFileSync(s.stamp(s.ref), 'utf8'), s.lock(s.ref));
+});
+
+test('ASS-503 AC3: a failing install exits 1 (not waiting, blocked or retried), stderr naming the repository, the VM and pnpm\'s own error; no stamp, so the next run tries again', async () => {
+  const s = deps(setup());
+  lockfile(s.origins['example-corpus'].work, 'lockfileVersion: 9.0\n');
+  s.fail(1);
+  const e = await s.refresh().then(() => assert.fail('it passed'), e => e);
+  assert.equal(e.code, 1, e.stderr);
+  assert.match(e.stderr, /example-corpus: pnpm install --frozen-lockfile failed/);
+  assert.match(e.stderr, /dependencies could not be installed in abc-3-a/);
+  assert.match(e.stderr, /ERR_STUB_PNPM: lockfile broken in example-corpus/);
+  assert.ok(!existsSync(s.stamp(s.ref)), 'no stamp');
+  s.fail(0);
+  await s.refresh();
+  assert.equal(s.calls().length, 2, 'tried again');
+  assert.equal(readFileSync(s.stamp(s.ref), 'utf8'), s.lock(s.ref));
+});
+
+test('ASS-503 AC3: of two repositories to install, one failing: the other is still installed and stamped, exit 1, only the failing one named', async () => {
+  const s = deps(setup());
+  lockfile(s.origins['example-corpus'].work, 'lockfileVersion: 9.0\n');
+  lockfile(s.own, 'lockfileVersion: 9.0\nown: 1\n');
+  s.fail(1, 'example-corpus');
+  const e = await s.refresh().then(() => assert.fail('it passed'), e => e);
+  assert.equal(e.code, 1, e.stderr);
+  assert.equal(s.calls().length, 2);
+  assert.match(e.stderr, /example-corpus: pnpm install --frozen-lockfile failed/);
+  assert.doesNotMatch(e.stderr, /harness: pnpm install --frozen-lockfile failed/);
+  assert.match(e.stderr, /harness: deps installed \(pnpm-lock\.yaml changed\)/);
+  assert.equal(readFileSync(s.stamp(s.own), 'utf8'), s.lock(s.own));
+  assert.ok(!existsSync(s.stamp(s.ref)));
+});
+
+test('ASS-503 AC1: a project with no repositories reaches the VM no more than before; a listed repository with no checkout gets no line and no failure', async () => {
+  const s = deps(setup());
+  const project = join(s.f.dir, 'projects', 'p', 'project.json');
+  const shells = () => s.v.calls().filter(c => c.vm === 'abc-3-a').length;
+  edit(project, p => { p.repositories = []; });
+  await s.refresh();
+  assert.equal(shells(), 0, 'no shell into the VM');
+  edit(project, p => { p.repositories = [{ url: 'https://github.com/o/harness' }, { url: 'https://gitlab.com/g/example-corpus.git' }, { url: 'https://github.com/o/missing' }]; });
+  lockfile(s.origins['example-corpus'].work, 'lockfileVersion: 9.0\n');
+  const { stderr } = await s.refresh();
+  assert.doesNotMatch(stderr, /missing: (deps|pnpm)/);
+  assert.match(stderr, /example-corpus: deps installed/);
+});
+
+test('ASS-503 AC1: a refresh that waits (exit 2) or is Blocked (exit 3) installs nothing', async () => {
+  const s = hiccups(), p = pnpmStub(s.v);
+  lockfile(s.own, 'lockfileVersion: 9.0\n');
+  s.atStep('refresh-repositories', 0);
+  s.v.unreachable('abc-3-a');
+  assert.equal((await s.failure()).code, 2);
+  rmSync(join(s.v.instances, 'abc-3-a', 'unreachable'));
+  s.atStep('refresh-repositories', 31);
+  s.failFetches(100);
+  assert.equal((await s.failure()).code, 3);
+  assert.deepEqual(p.calls(), []);
 });

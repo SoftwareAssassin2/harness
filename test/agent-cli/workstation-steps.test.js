@@ -457,3 +457,69 @@ test('ASS-480 AC4: at a step\'s start another ticket\'s stray branch is set asid
   assert.equal(remote(s.origins.harness, 'refs/heads/change/ABC-3.B-1'), gitlab);
   assert.notEqual(remote(s.origins.harness, 'refs/heads/change/ABC-9-1'), stray);
 });
+
+// ASS-503: after vm:step-start moves its VM's checkouts, each repository whose pnpm-lock.yaml differs from the one its
+// node_modules was installed from (node_modules/.harness-installed-lock.yaml) gets `pnpm install --frozen-lockfile`,
+// a "vm:step-start: <repo>: deps installed|skipped" line on stderr; stdout stays the summary; a failed install fails it.
+// The VM's pnpm a stub: logs "<cwd>|<args>|CI=<CI>", makes node_modules, exits per <dir>/pnpm-exit.
+function depsVm() {
+  const l = lima();
+  l.v.instance('abc-3-a', 'Running');
+  l.mount();
+  edit(l.f.dir + '/projects/p/sprints/sprint-10/sprint.json', sp => {
+    Object.assign(sp.features[0].variations[0], { vm: { name: 'abc-3-a', ip: '192.168.64.9', 'created-at': '2026-10-19T00:00:00Z' }, 'merge-request': [{ id: 1, repository: 'https://github.com/o/harness', branch: 'change/ABC-3-1', status: 'Open' }] });
+  });
+  const log = join(l.v.dir, 'pnpm.log'), exit = join(l.v.dir, 'pnpm-exit');
+  l.v.inVm('pnpm', `echo "$PWD|$*|CI=\${CI-}" >> '${log}'; mkdir -p node_modules
+rc=$(cat '${exit}' 2>/dev/null || echo 0); [ "$rc" -eq 0 ] || echo "ERR_STUB_PNPM: lockfile broken" >&2; exit "$rc"`);
+  const calls = () => (existsSync(log) ? readFileSync(log, 'utf8').trim().split('\n').map(x => { const [cwd, args, ci] = x.split('|'); return { cwd, args, ci }; }) : []);
+  const ref = l.vmFile('repos', 'example-corpus');
+  // The lockfile moved on master since the golden build (node_modules ignored, as a pnpm repository has it).
+  const work = l.origins['example-corpus'].work;
+  writeFileSync(join(work, 'pnpm-lock.yaml'), 'lockfileVersion: 9.0\n'); writeFileSync(join(work, '.gitignore'), 'node_modules\n');
+  git(work, 'add', '.'); git(work, '-c', 'user.name=T', '-c', 'user.email=t@example.com', 'commit', '-q', '-m', 'lockfile');
+  const stamp = join(ref, 'node_modules', '.harness-installed-lock.yaml');
+  return { ...l, ref, calls, stamp, fail: code => writeFileSync(exit, String(code)), lock: () => readFileSync(join(ref, 'pnpm-lock.yaml'), 'utf8'), start: () => l.cli('vm:step-start', 'p', 'ABC-3', 'A') };
+}
+
+test('ASS-503 AC1: vm:step-start installs a repository whose lockfile changed (CI=true, --frozen-lockfile), says so on stderr, its stdout still the summary', async () => {
+  const s = depsVm();
+  const { stdout, stderr } = await s.start();
+  assert.deepEqual(s.calls(), [{ cwd: realpathSync(s.ref), args: 'install --frozen-lockfile', ci: 'CI=true' }]);
+  assert.match(stderr, /^vm:step-start: example-corpus: deps installed \(pnpm-lock\.yaml changed\)$/m);
+  assert.doesNotMatch(stderr, /harness: deps/);
+  assert.doesNotThrow(() => JSON.parse(stdout), 'stdout parses as the summary');
+  assert.equal(readFileSync(s.stamp, 'utf8'), s.lock());
+});
+
+test('ASS-503 AC2: a second vm:step-start with no lockfile change skips it, no install; the installed lockfile is the checkout\'s (verify-deps-style)', async () => {
+  const s = depsVm();
+  await s.start();
+  const { stderr } = await s.start();
+  assert.equal(s.calls().length, 1, 'no second install');
+  assert.match(stderr, /^vm:step-start: example-corpus: deps skipped \(pnpm-lock\.yaml unchanged\)$/m);
+  assert.equal(readFileSync(s.stamp, 'utf8'), s.lock());
+});
+
+test('ASS-503 AC2: installed by vm:refresh-repositories, a vm:step-start after it skips the repository (one stamp)', async () => {
+  const s = depsVm();
+  await s.cli('vm:refresh-repositories', 'p', 'ABC-3', 'A');
+  assert.equal(s.calls().length, 1);
+  const { stderr } = await s.start();
+  assert.equal(s.calls().length, 1);
+  assert.match(stderr, /example-corpus: deps skipped \(pnpm-lock\.yaml unchanged\)/);
+});
+
+test('ASS-503 AC3: vm:step-start with a failing install exits non-zero, stderr naming the repository; once pnpm succeeds, a rerun installs and exits 0', async () => {
+  const s = depsVm();
+  s.fail(1);
+  const e = await s.start().then(() => assert.fail('it passed'), e => e);
+  assert.notEqual(e.code, 0);
+  assert.match(e.stderr, /example-corpus: pnpm install --frozen-lockfile failed/);
+  assert.match(e.stderr, /dependencies could not be installed in abc-3-a/);
+  assert.ok(!existsSync(s.stamp));
+  s.fail(0);
+  const { stderr } = await s.start();
+  assert.match(stderr, /example-corpus: deps installed/);
+  assert.equal(s.calls().length, 2);
+});
