@@ -14,8 +14,10 @@ set -euo pipefail
 # commit and not yet answered by the harness (mr_review_comments,
 # merge-requests.bash), each id what merge-request:reply takes to answer it
 # — and failed-jobs: [{ name, url, log? }] — on GitLab its head pipeline's
-# failed jobs (an allowed failure aside), each with its log's last 60 lines;
-# on GitHub its failing checks }.
+# failed jobs (an allowed failure aside), each with its log's last 60 lines,
+# then its failed bridges and their downstream pipeline's failed jobs with
+# their logs (mr_failed_bridges, ASS-482), the pipeline the one mr_view judges
+# (GITLAB_VIEW: head_pipeline, else pipeline); on GitHub its failing checks }.
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../merge-requests.bash"
 
 [[ $# -eq 4 ]] || { echo "usage: merge-request:view <project> <ticket-key> <variation> <id>" >&2; exit 1; }
@@ -37,12 +39,13 @@ if on_github "$url"; then
 else
   mr="$(lab "$command" "$url" "/merge_requests/$iid")"
   discussions="$(lab "$command" "$url" "/merge_requests/$iid/discussions?per_page=100")"
-  pipeline="$(jq -r '.head_pipeline.id // empty' <<< "$mr")" jobs='[]'
+  pipeline="$(jq -r "$GITLAB_VIEW"' | .pipeline.id // empty' <<< "$mr")" jobs='[]'
   if [[ -n "$pipeline" ]]; then
     jobs="$(lab "$command" "$url" "/pipelines/$pipeline/jobs?per_page=100" | jq -c '[.[] | select(.status == "failed" and (.allow_failure | not)) | { id, name, url: .web_url }]')"
     for job in $(jq -r '.[].id' <<< "$jobs"); do
       jobs="$(jq -c --argjson job "$job" --arg log "$(lab "$command" "$url" "/jobs/$job/trace" | tail -n 60)" 'map(if .id == $job then .log = $log else . end)' <<< "$jobs")"
     done
+    jobs="$(jq -c --argjson b "$(mr_failed_bridges "$command" "$url" "$pipeline" --logs)" '. + $b' <<< "$jobs")"
   fi
   jq -c --argjson id "$4" --argjson d "$discussions" --argjson jobs "$jobs" --argjson comments "$comments" '{ id: $id, url: .web_url, state: ({ opened: "Open", merged: "Merged" }[.state] // "Closed"),
     draft: (.draft == true), base: .target_branch, branch: .source_branch, title, description,

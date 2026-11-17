@@ -1482,3 +1482,164 @@ test('ASS-388 AC2/AC3: the check records each Open MR\'s head as checked-head; m
   f.record({ 1: { status: 'Merged' }, 2: { status: 'Merged' } });
   assert.deepEqual(await round(), { changed: true, 'merge-requests': [] });
 });
+
+// ASS-482: GitLab bridge (trigger) jobs — left out of /pipelines/<id>/jobs,
+// read from /pipelines/<id>/bridges — and a failed bridge's downstream
+// pipeline (99, in project 42) with its failed job (77) and that job's log.
+const BRIDGE_URL = `${APP}/-/jobs/31`, DOWNSTREAM_JOB_URL = 'https://gitlab.com/g/ci/-/jobs/77';
+const bridge = (id, name, status = 'failed', v = {}) => ({ id, name, status, allow_failure: false, web_url: `${APP}/-/jobs/${id}`, downstream_pipeline: null, ...v });
+const REVIEW_APP = bridge(31, 'review-app', 'failed', { downstream_pipeline: { id: 99, project_id: 42, status: 'failed', web_url: 'https://gitlab.com/g/ci/-/pipelines/99' } });
+// A failed bridge that counts, one allowed to fail and one passed: only review-app is shown.
+const BRIDGES = [REVIEW_APP, bridge(32, 'optional-app', 'failed', { allow_failure: true }), bridge(33, 'docs', 'success')];
+const DOWNSTREAM_JOBS = [{ id: 77, name: 'deploy', status: 'failed', allow_failure: false, web_url: DOWNSTREAM_JOB_URL }, { id: 78, name: 'lint', status: 'failed', allow_failure: true }, { id: 79, name: 'ok', status: 'success' }];
+const DEPLOY_LOG = 'helm upgrade review-app\nError: timed out waiting for the condition';
+const LONG_LOG = Array.from({ length: 70 }, (_, i) => `deploy line ${i + 1}`).join('\n');   // > 60 lines: only its last 60 shown
+// Pipeline `id` of g/<repo>: its jobs and bridges as given (any query string), one not given left unrouted (the call fails);
+// downstream (true or { jobs, log }) routes project 42's pipeline 99 jobs and job 77's trace.
+function pipelineOf(f, repo, id, { jobs, bridges, downstream } = {}) {
+  const at = list => new RegExp(`^api projects/g%2F${repo}/pipelines/${id}/${list}(\\?[^ ]*)? --hostname gitlab.com$`);
+  if (jobs) f.forge.route('glab', at('jobs'), { out: jobs });
+  if (bridges) f.forge.route('glab', at('bridges'), { out: bridges });
+  if (downstream) {
+    f.forge.route('glab', /^api projects\/42\/pipelines\/99\/jobs(\?[^ ]*)? --hostname gitlab.com$/, { out: downstream.jobs ?? DOWNSTREAM_JOBS });
+    f.forge.route('glab', /^api projects\/42\/jobs\/77\/trace --hostname gitlab.com$/, { out: downstream.log ?? DEPLOY_LOG });
+  }
+}
+
+// MR 1 (app !7, Open) viewed with its MR as `v` says and its discussions none; then merge-request:view's output.
+async function viewed(v) {
+  const f = await planned([{ id: 1, repository: APP }]);
+  f.record({ 1: { status: 'Open', key: '!7', base: 'master' } });
+  view(f, 'app', 7, v);
+  f.forge.route('glab', /^api projects\/g%2Fapp\/merge_requests\/7\/discussions\?per_page=100 --hostname gitlab.com$/, { out: [] });
+  return f;
+}
+const failedJobs = async f => JSON.parse((await f.agent('merge-request:view', 'p', 'ABC-5', 'A', '1')).stdout)['failed-jobs'];
+const SUCCESS_ONLY = [{ id: 11, name: 'build', status: 'success', allow_failure: false }];
+
+test('ASS-482 AC1: merge-request:view lists a failed bridge and its downstream pipeline\'s failed jobs with logs', async () => {
+  const f = await viewed({ description: 'D', source_branch: 'change/ABC-5-1', head_pipeline: { id: 50, status: 'failed' } });
+  pipelineOf(f, 'app', 50, { jobs: SUCCESS_ONLY, bridges: BRIDGES, downstream: true });
+  assert.deepEqual(JSON.parse((await f.agent('merge-request:view', 'p', 'ABC-5', 'A', '1')).stdout), {
+    id: 1, url: `${APP}/-/merge_requests/7`, state: 'Open', draft: true, base: 'master', branch: 'change/ABC-5-1', title: 'Draft: ABC-5: Close the account', description: 'D',
+    threads: [], comments: [],
+    // jobs, then the bridge, then its downstream pipeline's; the allowed failures and the passed ones left out
+    'failed-jobs': [{ name: 'review-app', url: BRIDGE_URL }, { name: 'review-app > deploy', url: DOWNSTREAM_JOB_URL, log: DEPLOY_LOG }],
+  });
+  // A downstream job's log longer than 60 lines: its last 60 only.
+  const long = await viewed({ head_pipeline: { id: 50, status: 'failed' } });
+  pipelineOf(long, 'app', 50, { jobs: SUCCESS_ONLY, bridges: BRIDGES, downstream: { log: LONG_LOG } });
+  assert.equal((await failedJobs(long))[1].log, LONG_LOG.split('\n').slice(-60).join('\n'));
+  // A bridge with no downstream pipeline: listed alone, no downstream pipeline asked.
+  const alone = await viewed({ head_pipeline: { id: 50, status: 'failed' } });
+  pipelineOf(alone, 'app', 50, { jobs: SUCCESS_ONLY, bridges: [bridge(31, 'review-app')] });
+  assert.deepEqual(await failedJobs(alone), [{ name: 'review-app', url: BRIDGE_URL }]);
+  assert.ok(!alone.forge.log('glab').some(l => /^api projects\/\d+\/pipelines\//.test(l)), alone.forge.log('glab').join('\n'));
+  // The downstream pipeline unreadable (another project, no route): the bridge still listed, the view still printed.
+  const unread = await viewed({ head_pipeline: { id: 50, status: 'failed' } });
+  pipelineOf(unread, 'app', 50, { jobs: SUCCESS_ONLY, bridges: BRIDGES });
+  assert.deepEqual(await failedJobs(unread), [{ name: 'review-app', url: BRIDGE_URL }]);
+});
+
+test('ASS-482 AC1: await-dependencies names a failed bridge in build-failed feedback', async () => {
+  const f = await dependedOn({ draft: false, head_pipeline: { id: 55, status: 'failed' } });
+  pipelineOf(f, 'lib', 55, { jobs: [], bridges: [REVIEW_APP], downstream: true });
+  const r = await awaiting(f);
+  assert.equal(r.code, 4, r.err);
+  assert.deepEqual(r.out.waiting[0].needs, ['build-failed']);
+  assert.match(variationOf(f)['ai-feedback-long'], /its pipeline failed \([^)]*review-app[^)]*\)/);
+  assert.match(variationOf(f)['ai-feedback-long'], /review-app > deploy/);
+  assert.ok(f.notes().some(l => /build-failed, and another repository's merge request of this ticket waits on it: to Address Merge Request Feedback/.test(l)), f.notes().join('\n'));
+  // Only an allowed failure among the jobs, no bridge: nothing to show — not sent to Address Merge Request Feedback (AC2).
+  const allowed = await dependedOn({ draft: false, head_pipeline: { id: 55, status: 'failed' } });
+  pipelineOf(allowed, 'lib', 55, { jobs: [{ name: 'x', status: 'failed', allow_failure: true }], bridges: [] });
+  const a = await awaiting(allowed);
+  assert.equal(a.code, 2, a.err);
+  assert.match(variationOf(allowed)['ai-feedback-long'], /no failed job or bridge to show/);
+  // A job and a bridge of the same name: named once.
+  const twice = await dependedOn({ draft: false, head_pipeline: { id: 55, status: 'failed' } });
+  pipelineOf(twice, 'lib', 55, { jobs: [{ name: 'review-app', status: 'failed', allow_failure: false }], bridges: [bridge(31, 'review-app')] });
+  assert.equal((await awaiting(twice)).code, 4);
+  assert.match(variationOf(twice)['ai-feedback-long'], /its pipeline failed \(review-app\)/);
+});
+
+test('ASS-482 AC2: a build-failed dependency with no failed job or bridge to show polls, the operator told its pipeline URL', async () => {
+  const P = `${LIB}/-/pipelines/55`;
+  const quiet = async (f, code = 2) => {
+    const r = await awaiting(f);
+    assert.equal(r.code, code, r.err);
+    assert.deepEqual(r.out.waiting[0].needs.filter(n => n === 'build-failed'), ['build-failed']);
+    return variationOf(f);
+  };
+  const notSent = (f, told) => {
+    assert.doesNotMatch(told['ai-feedback-short'], /Address Merge Request Feedback/);
+    assert.ok(!f.notes().some(l => /Address Merge Request Feedback/.test(l)), f.notes().join('\n'));
+  };
+  const f = await dependedOn({ draft: false, head_pipeline: { id: 55, status: 'failed', web_url: P } });
+  pipelineOf(f, 'lib', 55, { jobs: [], bridges: [] });
+  const told = await quiet(f);
+  assert.deepEqual((await awaiting(f)).out.waiting[0].needs, ['build-failed']);
+  assert.match(told['ai-feedback-long'], /no failed job or bridge to show/);
+  assert.ok(told['ai-feedback-long'].includes(P), told['ai-feedback-long']);
+  notSent(f, told);
+  // The bridges endpoint unreadable (no route): the same, no error.
+  const unread = await dependedOn({ draft: false, head_pipeline: { id: 55, status: 'failed', web_url: P } });
+  pipelineOf(unread, 'lib', 55, { jobs: [] });
+  const u = await quiet(unread);
+  assert.ok(u['ai-feedback-long'].includes(P), u['ai-feedback-long']);
+  notSent(unread, u);
+  // No pipeline URL known: still said, never "(null)" or "()".
+  const nourl = await dependedOn({ draft: false, head_pipeline: { id: 55, status: 'failed' } });
+  pipelineOf(nourl, 'lib', 55, { jobs: [], bridges: [] });
+  const n = await quiet(nourl);
+  assert.match(n['ai-feedback-long'], /no failed job or bridge to show/);
+  assert.doesNotMatch(n['ai-feedback-long'], /\(null\)|\(\)|null/);
+  // A canceled pipeline with no failed job: polled too.
+  const canceled = await dependedOn({ draft: false, head_pipeline: { id: 56, status: 'canceled', web_url: P } });
+  pipelineOf(canceled, 'lib', 56, { jobs: [], bridges: [] });
+  notSent(canceled, await quiet(canceled));
+  // With a rebase needed too: exit 4 for the rebase, the build-failed still naming the pipeline URL.
+  const rebase = await dependedOn({ draft: false, has_conflicts: true, head_pipeline: { id: 55, status: 'failed', web_url: P } });
+  pipelineOf(rebase, 'lib', 55, { jobs: [], bridges: [] });
+  const rb = await quiet(rebase, 4);
+  assert.match(rb['ai-feedback-long'], /no failed job or bridge to show/);
+  assert.ok(rb['ai-feedback-long'].includes(P), rb['ai-feedback-long']);
+  // A draft beside it: polled, as a draft alone is.
+  const draft = await dependedOn({ draft: true, head_pipeline: { id: 55, status: 'failed', web_url: P } });
+  pipelineOf(draft, 'lib', 55, { jobs: [], bridges: [] });
+  notSent(draft, await quiet(draft));
+});
+
+test('ASS-482 AC3: merge-request:view and await-dependencies show failures of the pipeline that was judged, not the latest one listed', async () => {
+  const other = (f, repo) => {
+    f.forge.route('glab', new RegExp(`^api projects/g%2F${repo}/merge_requests/7/pipelines --hostname gitlab.com$`), { out: [{ id: 60, status: 'failed' }, { id: 50, status: 'failed' }] });
+    pipelineOf(f, repo, 60, { jobs: [{ id: 61, name: 'other-unit', status: 'failed', allow_failure: false, web_url: `${APP}/-/jobs/61` }], bridges: [bridge(62, 'other-bridge')] });
+    f.forge.route('glab', new RegExp(`^api projects/g%2F${repo}/jobs/61/trace --hostname gitlab.com$`), { out: 'other log' });
+  };
+  const asked60 = f => f.forge.log('glab').filter(l => /\/pipelines\/60\//.test(l));
+  // The view's head pipeline 50 is judged: its bridge shown, pipeline 60 never asked.
+  const f = await viewed({ head_pipeline: { id: 50, status: 'failed' } });
+  other(f, 'app');
+  pipelineOf(f, 'app', 50, { jobs: SUCCESS_ONLY, bridges: [bridge(31, 'review-app')] });
+  assert.deepEqual(await failedJobs(f), [{ name: 'review-app', url: BRIDGE_URL }]);
+  assert.deepEqual(asked60(f), []);
+  // No head_pipeline, its pipeline 50 (head_pipeline // pipeline, as the build-failed decision reads it): 50's failures.
+  const p = await viewed({ head_pipeline: null, pipeline: { id: 50, status: 'failed' } });
+  other(p, 'app');
+  pipelineOf(p, 'app', 50, { jobs: SUCCESS_ONLY, bridges: [bridge(31, 'review-app')] });
+  assert.deepEqual(await failedJobs(p), [{ name: 'review-app', url: BRIDGE_URL }]);
+  assert.deepEqual(asked60(p), []);
+  // await-dependencies on the same stub: the feedback names 50's failures only.
+  const d = await dependedOn({ draft: false, head_pipeline: { id: 50, status: 'failed' } });
+  other(d, 'lib');
+  pipelineOf(d, 'lib', 50, { jobs: [], bridges: [bridge(31, 'review-app')] });
+  const r = await awaiting(d);
+  assert.equal(r.code, 4, r.err);
+  assert.match(variationOf(d)['ai-feedback-long'], /its pipeline failed \(review-app\)/);
+  assert.doesNotMatch(variationOf(d)['ai-feedback-long'], /other-/);
+  assert.deepEqual(asked60(d), []);
+  // No pipeline at all: no failed jobs, no jobs or bridges asked.
+  const none = await viewed({ head_pipeline: null });
+  assert.deepEqual(await failedJobs(none), []);
+  assert.ok(!none.forge.log('glab').some(l => /\/(jobs|bridges)/.test(l)), none.forge.log('glab').join('\n'));
+});
