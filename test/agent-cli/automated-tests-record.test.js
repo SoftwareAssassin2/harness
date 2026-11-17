@@ -173,3 +173,20 @@ test('ASS-428 AC1: automated-tests:record <project> <ticket> <variation> <file> 
   assert.ok(!existsSync(file(folder, 'B')));
   assert.match((await cli(dir, '', 'automated-tests:record', 'p', 'ABC-5', 'A', staged, 'extra')).stderr, /usage: automated-tests:record .*\[<file>\]/);
 });
+
+// ASS-498 AC1: an entry may name its merge request — "merge-request": <id> — when two share a repository; the id is a positive integer.
+test('ASS-498 AC1: automated-tests:record accepts an entry naming its "merge-request" verbatim, and refuses one that is not a positive integer, naming the field, nothing written', async () => {
+  const { dir, folder } = projects();
+  const list = '[{"list":"a","run":"b","merge-request":2},{"list":"c","run":"d"}]';
+  const r = await cli(dir, list, 'automated-tests:record', 'p', 'ABC-5', 'A');
+  assert.equal(r.code, 0, r.stderr);
+  assert.equal(readFileSync(file(folder, 'A'), 'utf8'), list);
+  const before = snapshot(folder);
+  for (const bad of ['0', '"1"', '1.5', '-1', 'true']) {
+    const res = await cli(dir, `[{"list":"a","run":"b","merge-request":${bad}}]`, 'automated-tests:record', 'p', 'ABC-5', 'A');
+    assert.equal(res.code, 1, `merge-request ${bad}: expected exit 1 — got ${JSON.stringify(res)}`);
+    assert.match(res.stderr, /merge-request/, bad);
+    assert.match(res.stderr, /left as it was/, bad);
+  }
+  assert.equal(snapshot(folder), before, 'nothing on disk changed');
+});

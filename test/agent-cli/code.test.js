@@ -310,6 +310,52 @@ test('automated-tests:verify-exist-and-runnable runs each test\'s list command i
   }
 });
 
+// ASS-498: two merge requests in one repository — an entry's "merge-request": <id> has its list command run with that MR's branch checked out.
+const HEAD = f => git(f.worktree, 'rev-parse', '--abbrev-ref', 'HEAD');
+
+test('ASS-498 AC2: automated-tests:verify-exist-and-runnable lists two MR branches\' tests, each only on its own branch, one entry per merge-request; the worktree is back on its branch after', async () => {
+  const f = await withMergeRequestBranches([{ list: 'ls a.test.js', run: 'true', 'merge-request': 1 }, { list: 'ls b.test.js', run: 'true', 'merge-request': 2 }]);
+  const { stdout } = await f.agent('automated-tests:verify-exist-and-runnable', 'p', 'ABC-3', 'A');
+  assert.deepEqual(JSON.parse(stdout), { tests: 2, listed: ['a.test.js', 'b.test.js'] });
+  assert.equal(HEAD(f), 'change/ABC-3');
+});
+
+test('ASS-498 AC1: automated-tests:verify-exist-and-runnable runs a tagged entry\'s list on its MR\'s branch, an untagged one on the worktree\'s own branch, and restores the branch', async () => {
+  const where = 'git rev-parse --abbrev-ref HEAD';
+  const f = await withMergeRequestBranches([{ list: where, run: 'true', 'merge-request': 1 }, { list: where, run: 'true', 'merge-request': 2 }]);
+  assert.deepEqual(JSON.parse((await f.agent('automated-tests:verify-exist-and-runnable', 'p', 'ABC-3', 'A')).stdout).listed, ['change/ABC-3-1', 'change/ABC-3-2']);
+  assert.equal(HEAD(f), 'change/ABC-3');
+  const g = await withMergeRequestBranches([{ list: where, run: 'true', 'merge-request': 1 }, { list: where, run: 'true' }]);   // no leak between entries
+  assert.deepEqual(JSON.parse((await g.agent('automated-tests:verify-exist-and-runnable', 'p', 'ABC-3', 'A')).stdout).listed, ['change/ABC-3-1', 'change/ABC-3']);
+  assert.equal(HEAD(g), 'change/ABC-3');
+});
+
+test('ASS-498 AC1: automated-tests:verify-exist-and-runnable fails on an unplanned merge-request, a branch in no repository, a checkout with uncommitted changes, or a list failing on the MR\'s branch — the worktree left on its branch', async () => {
+  const unplanned = await withMergeRequestBranches([{ list: 'echo a.test.js', run: 'true', 'merge-request': 9 }]);
+  await fails(unplanned.agent('automated-tests:verify-exist-and-runnable', 'p', 'ABC-3', 'A'), /\b9\b/);
+  assert.equal(HEAD(unplanned), 'change/ABC-3');
+
+  const missing = await withMergeRequestBranches([{ list: 'echo b.test.js', run: 'true', 'merge-request': 2 }]);
+  const file = join(missing.dir, 'projects', 'p', 'sprints', 'sprint-10', 'sprint.json');
+  const sprint = JSON.parse(readFileSync(file, 'utf8'));
+  sprint.features[0].variations[0]['merge-request'][1].branch = 'change/ABC-3-7';
+  writeFileSync(file, JSON.stringify(sprint, null, 4));
+  await fails(missing.agent('automated-tests:verify-exist-and-runnable', 'p', 'ABC-3', 'A'), /no repository has change\/ABC-3-7/);
+  assert.equal(HEAD(missing), 'change/ABC-3');
+
+  const dirty = await withMergeRequestBranches([{ list: 'ls a.test.js', run: 'true', 'merge-request': 1 }]);
+  writeFileSync(join(dirty.worktree, 'README.md'), 'changed\n');
+  await fails(dirty.agent('automated-tests:verify-exist-and-runnable', 'p', 'ABC-3', 'A'), /has changes not committed/);
+  assert.equal(HEAD(dirty), 'change/ABC-3');
+  assert.equal(readFileSync(join(dirty.worktree, 'README.md'), 'utf8'), 'changed\n');
+
+  for (const [list, message] of [['ls b.test.js', /list command failed \(exit \d+\): ls b\.test\.js/], ['true', /found no test: true/]]) {
+    const g = await withMergeRequestBranches([{ list: 'ls a.test.js', run: 'true', 'merge-request': 1 }, { list, run: 'true', 'merge-request': 1 }]);
+    await fails(g.agent('automated-tests:verify-exist-and-runnable', 'p', 'ABC-3', 'A'), message);
+    assert.equal(HEAD(g), 'change/ABC-3', `restored after: ${list}`);
+  }
+});
+
 // ASS-49: a manual-only test plan records [] — a deliberate "no automated tests", not a missing file.
 test('a recorded [] — a manual-only test plan — passes both automated-tests gates with no tests; a missing file still fails', async () => {
   const f = await withTests([]);
