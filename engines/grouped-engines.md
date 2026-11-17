@@ -1518,7 +1518,14 @@ reconnects one that dropped, or whose workstation stopped (starting it),
 logging each. Once nothing has needed it for harness.json's
 `workstation-idle-disconnect-seconds` (300) it disconnects, and it closes
 the connections it owns as it exits (ASS-470, above). A failed connect is retried after
-the usual backoff. One that failed because the workstation's gcloud login
+the usual backoff. ASS-502: one whose seats are lost because it could not be
+reached or started (a failed connect, or a cloud VM's start that timed out)
+is retried after that backoff even when nothing needs it — its holder taken
+out of its seat, nothing else would ever connect it and clear its
+`last-error` — so it comes back by itself once the cause is gone: logged
+`back`, set up, its seat usable, a waiting ticket seated on it at the next
+tick; if nothing needs it then, the idle disconnect closes it as usual. An
+expired login (below) and a failed setup are not retried so. One that failed because the workstation's gcloud login
 needs reauthentication sets the project's `gcloud-requires-reauthentication`
 (a network failure never does), logs and shows in the TUI the login to run —
 `CLOUDSDK_CONFIG=~/.config/example/gcloud gcloud auth login` — is retried
@@ -1563,7 +1570,10 @@ installed (a rerun with nothing missing writes nothing):
   otherwise.
 
 git, curl and base64 are checked (the workstation config's image must have
-them), Docker is checked (`docker info`; it is the config's to give), and each
+them), Docker is checked (`docker info`; it is the config's to give — but
+ASS-500: when no `dockerd` is running, setup starts it once with `sudo -n
+service docker start` and waits up to 60 s for it to answer, else fails with
+the end of `/var/log/docker.log`; a running one is never restarted), and each
 of project.json's `golden-image.tools` must be on PATH: the missing ones are
 handed to the project's optional `golden-image/workstation-tools.sh` (run in
 `~/harness/tools` with `HARNESS_BIN` and `HARNESS_TOOLS` set and the tools as

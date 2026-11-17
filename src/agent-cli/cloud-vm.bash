@@ -16,6 +16,7 @@
 #   cvm_banner <settings>       # one probe: the guest's SSH banner answers through the IAP tunnel within
 #                               # CLOUD_VM_PROBE_SECONDS (10)
 #   cvm_open <project> <id> <settings> <port…>   # the master connection opened, as workstation_open (below)
+#   cvm_session <settings> <argv…>   # ASS-501: argv run on the VM over a short session of its own, no forwards
 #
 # The connection (AC2). A VM has no `gcloud workstations ssh` doing tunnel and
 # master in one process; it has IAP's start-iap-tunnel, which speaks the
@@ -106,16 +107,32 @@ cvm_banner() {
   [[ "$line" == SSH-* ]]
 }
 
-# cvm_master_argv <project> <id> <settings> <port…> — cvm_argv, the master's ssh (above).
-cvm_master_argv() {
-  local project="$1" id="$2" settings="$3" user port; shift 3
-  user="$(cvm_user "$settings")" || return 1
-  cvm_argv=(ssh -M -S "$(workstation_control_path "$project" "$id")" -N -T -o ExitOnForwardFailure=yes -o BatchMode=yes
-    -o ServerAliveInterval=30 -o ServerAliveCountMax=4 -o "ProxyCommand=$(cvm_iap_command "$settings")"
+# cvm_ssh_options <settings> — cvm_options, how ssh reaches the VM through IAP as its user (above): the master's,
+# and ASS-501's short session's (cvm_session).
+cvm_ssh_options() {
+  local user
+  user="$(cvm_user "$1")" || return 1
+  cvm_options=(-o BatchMode=yes -o ServerAliveInterval=30 -o ServerAliveCountMax=4 -o "ProxyCommand=$(cvm_iap_command "$1")"
     -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR
     -i "${CLOUD_VM_SSH_KEY:-$HOME/.ssh/google_compute_engine}" -o IdentitiesOnly=yes -l "$user")
+}
+
+# cvm_master_argv <project> <id> <settings> <port…> — cvm_argv, the master's ssh (above).
+cvm_master_argv() {
+  local project="$1" id="$2" settings="$3" port; shift 3
+  cvm_ssh_options "$settings" || return 1
+  cvm_argv=(ssh -M -S "$(workstation_control_path "$project" "$id")" -N -T -o ExitOnForwardFailure=yes "${cvm_options[@]}")
   for port in "$@"; do cvm_argv+=(-R "127.0.0.1:$port:127.0.0.1:$port"); done
   cvm_argv+=("cloud-vm-$id")
+}
+
+# cvm_session <settings> <argv…> — ASS-501: argv run on the VM over an SSH session of its own through IAP, apart from
+# the master: no forward (ClearAllForwardings), no ControlMaster, no terminal; its stdout and exit code passed through.
+cvm_session() {
+  local settings="$1" id; shift
+  cvm_ssh_options "$settings" || return 1
+  id="$(jq -r .id <<< "$settings")"
+  (cvm_exec "$settings" ssh -T -o ClearAllForwardings=yes -o ControlMaster=no -o ControlPath=none "${cvm_options[@]}" "cloud-vm-$id" -- "$(ws_quote "$@")")
 }
 
 # cvm_exec <settings> <argv…> — argv exec'd under the VM's CLOUDSDK_CONFIG (the master's ProxyCommand runs under it).

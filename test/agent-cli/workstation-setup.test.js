@@ -258,6 +258,73 @@ test('AC3: Docker not usable, or not there, fails setup naming it; so does the C
   assert.match(t.entry().setup.error, /^claude: the Claude Code CLI could not be installed from file:\/\/\/nonexistent\/install\.sh: curl: /);
 });
 
+// ASS-500: sudo and `service` on the workstation, as its /etc/init.d/docker answers `service docker start`: each call
+// logged to <work>/service; it starts dockerd in the background, which answers a second later (the docker-stopped
+// marker gone) — unless a docker-wont-start marker says it dies again. A no-sudo file in <work> takes passwordless
+// sudo away. HARNESS_WS_DOCKER_LOG is <work>/docker.log and the wait 2 s.
+function dockerService(s) {
+  const work = mkdtempSync(join(tmpdir(), 'wsdocker-')), sys = s.w.system(ID), ws = dirname(sys);
+  writeFileSync(join(sys, 'sudo'), `#!/bin/bash\n[ "$1" = -n ] && shift\n[ -e ${join(work, 'no-sudo')} ] && { echo "sudo: a password is required" >&2; exit 1; }\nexec "$@"\n`, { mode: 0o755 });
+  writeFileSync(join(sys, 'service'), `#!/bin/bash\necho "service $*" >> ${join(work, 'service')}\n[ "$*" = "docker start" ] || exit 1\necho "Starting Docker: docker."\n[ -e ${join(ws, 'docker-wont-start')} ] || (sleep 1; rm -f ${join(ws, 'docker-stopped')}) > /dev/null 2>&1 &\n`, { mode: 0o755 });
+  Object.assign(s.w.env, { HARNESS_WS_DOCKER_LOG: join(work, 'docker.log'), HARNESS_WS_DOCKER_WAIT: '2' });
+  const calls = () => (existsSync(join(work, 'service')) ? readFileSync(join(work, 'service'), 'utf8').trim().split('\n') : []);
+  return { work, calls, log: join(work, 'docker.log') };
+}
+
+test('ASS-500 AC1, AC2, AC4: Docker\'s daemon not running (no dockerd), setup starts it once, waits for docker info and passes, saying so in did; a rerun with Docker answering starts nothing', async () => {
+  const s = setup();
+  const d = dockerService(s);
+  await s.cli('workstation:connect', 'p', ID);
+  s.w.mark(ID, 'docker-stopped');
+  const out = JSON.parse((await s.cli('workstation:setup', 'p', ID)).stdout);
+  assert.equal(out.setup.ok, true, out.setup.error);
+  assert.deepEqual(out.setup.did.filter(x => /Docker \(/.test(x)), ['started Docker (sudo -n service docker start): docker info failed and no dockerd was running (Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?)']);
+  assert.deepEqual(d.calls(), ['service docker start']);
+  assert.ok(existsSync(s.at('harness', 'setup.json')), 'setup recorded');
+  // AC4: Docker answering — never restarted.
+  const again = JSON.parse((await s.cli('workstation:setup', 'p', ID)).stdout);
+  assert.equal(again.setup.ok, true);
+  assert.deepEqual(again.setup.did, []);
+  assert.deepEqual(d.calls(), ['service docker start']);
+});
+
+test('ASS-500 AC2: Docker started but still not answering after the wait fails setup as before, the end of docker.log in its error; so does starting it without passwordless sudo', async () => {
+  const s = setup();
+  const d = dockerService(s);
+  await s.cli('workstation:connect', 'p', ID);
+  s.w.mark(ID, 'docker-stopped');
+  s.w.mark(ID, 'docker-wont-start');
+  writeFileSync(d.log, ['time="2026-11-17T22:23:01Z" level=info msg="Starting up"', '', 'time="2026-11-17T22:23:01Z" level=info msg="waiting for response from boltdb open" plugin=bolt',
+    'failed to start containerd: timeout waiting for containerd to start', ''].join('\n'));
+  const r = await s.result('workstation:setup', 'p', ID);
+  assert.equal(r.code, 1);
+  const e = s.entry();
+  assert.deepEqual(e.setup.failed.map(x => x.what), ['docker']);
+  assert.equal(e.setup.error, 'docker: not usable (docker info failed): Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?; '
+    + 'no dockerd was running, and after starting it (sudo -n service docker start) docker info still failed for 2 s: Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?; '
+    + `${d.log} ends: time="2026-11-17T22:23:01Z" level=info msg="Starting up" | time="2026-11-17T22:23:01Z" level=info msg="waiting for response from boltdb open" plugin=bolt | failed to start containerd: timeout waiting for containerd to start`);
+  assert.match(r.err, /failed to start containerd: timeout waiting for containerd to start/);
+  assert.deepEqual(d.calls(), ['service docker start'], 'started once');
+  assert.ok(!existsSync(s.at('harness', 'setup.json')), 'no setup recorded on the workstation');
+
+  // Without passwordless sudo: Docker is not started, and the error says so, with the log's end.
+  writeFileSync(join(d.work, 'no-sudo'), '');
+  await s.result('workstation:setup', 'p', ID);
+  assert.match(s.entry().setup.error, /^docker: not usable \(docker info failed\): Cannot connect to the Docker daemon at .*; no dockerd was running, and starting it \(sudo -n service docker start\) failed \(exit 1\): sudo: a password is required; .*docker\.log ends: .*failed to start containerd/);
+  assert.deepEqual(d.calls(), ['service docker start']);
+});
+
+test('ASS-500 AC3, AC4: a running dockerd that docker info cannot reach (permissions) is never restarted, setup failing as before; nor is one that answers', async () => {
+  const s = setup();
+  const d = dockerService(s);
+  await s.cli('workstation:connect', 'p', ID);
+  assert.equal(JSON.parse((await s.cli('workstation:setup', 'p', ID)).stdout).setup.ok, true);
+  s.w.mark(ID, 'docker-broken');
+  assert.equal((await s.result('workstation:setup', 'p', ID)).code, 1);
+  assert.match(s.entry().setup.error, /^docker: not usable \(docker info failed\): permission denied while trying to connect to the Docker daemon socket [^;]*$/);
+  assert.deepEqual(d.calls(), []);
+});
+
 test('AC2: the version is a hash of the setup script, agent.sh, workstation-tools.sh, the forwarder URL and the tools list — asked without a connection; setup without one fails', async () => {
   const s = setup({ tools: ['bats'] });
   const version = async () => (await s.cli('workstation:setup', 'p', ID, '--version')).stdout.trim();

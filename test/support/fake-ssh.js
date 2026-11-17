@@ -19,6 +19,10 @@
 //   reads them.
 // - ASS-481: `ssh -M -S <socket> … cloud-vm-<id>`, a cloud VM's master
 //   (agent-cli/cloud-vm.bash cvm_open), is fake-ssh-master.js's.
+// - ASS-501: `ssh … -o ProxyCommand=… cloud-vm-<id> -- <command>` without -S,
+//   a cloud VM's session of its own (cloud-vm.bash cvm_session), runs
+//   <command> as a session over the master does, when the VM is RUNNING
+//   (else 255); its FAKE_SSH_SESSION_PID this process (the session's sshd).
 // Under test/support/, which npm test's pattern leaves alone.
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { connect } from 'node:net';
@@ -45,19 +49,27 @@ const ask = line => new Promise(resolve => {
   c.setEncoding('utf8').on('data', () => { c.destroy(); resolve(true); }).on('error', () => resolve(false));
   c.write(`${line}\n`);
 });
-const answered = await ask(control === 'exit' ? 'exit' : 'check');
+const direct = !socket && !control && String(host).startsWith('cloud-vm-');
+if (direct) {
+  const vm = join(process.env.FAKE_WS_DIR ?? '/nonexistent', String(host).replace(/^cloud-vm-/, ''));
+  if (!existsSync(join(vm, 'status')) || readFileSync(join(vm, 'status'), 'utf8').trim() !== 'RUNNING') {
+    process.stderr.write('kex_exchange_identification: Connection closed by remote host\n');
+    process.exit(255);
+  }
+}
+const answered = direct || await ask(control === 'exit' ? 'exit' : 'check');
 if (!answered) {
   process.stderr.write(control ? `Control socket connect(${socket}): No such file or directory\n` : 'kex_exchange_identification: Connection closed by remote host\n');
   process.exit(255);
 }
 if (control) process.exit(0);
-const ws = join(process.env.FAKE_WS_DIR ?? '/nonexistent', String(host).replace(/^workstation-/, ''));
+const ws = join(process.env.FAKE_WS_DIR ?? '/nonexistent', String(host).replace(/^(workstation|cloud-vm)-/, ''));
 if (existsSync(join(ws, 'hang'))) setInterval(() => {}, 1e6);
 else {
   mkdirSync(join(ws, 'home'), { recursive: true });
   mkdirSync(join(ws, 'run'), { recursive: true });
   const read = name => (existsSync(join(ws, name)) ? readFileSync(join(ws, name), 'utf8').trim() : null);
-  const env = { ...process.env, HOME: join(ws, 'home'), PATH: `${join(ws, 'bin')}:${read('path') ?? process.env.PATH}`, HARNESS_WS_RUNTIME_ROOT: join(ws, 'run') };
+  const env = { ...process.env, HOME: join(ws, 'home'), PATH: `${join(ws, 'bin')}:${read('path') ?? process.env.PATH}`, HARNESS_WS_RUNTIME_ROOT: join(ws, 'run'), FAKE_SSH_SESSION_PID: String(process.pid) };
   if (read('boot-id')) env.HARNESS_WS_BOOT_ID = read('boot-id');
   const child = spawn('bash', command ? ['-c', command] : ['-l'], { cwd: join(ws, 'home'), stdio: 'inherit', env });
   child.on('exit', (code, signal) => process.exit(code ?? (signal ? 128 + 15 : 1)));

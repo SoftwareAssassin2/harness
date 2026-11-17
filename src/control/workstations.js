@@ -31,7 +31,11 @@
 // workstation had stopped; started it" when connect had to. A connect that
 // fails is logged with the live data's last-error message and tried again
 // after a failing step's backoff (backoff.js: 30 seconds doubling to 30
-// minutes). A workstation nothing needs has its connection closed
+// minutes). ASS-502: one whose seats are lost because it could not be
+// reached or started (seat-kinds.js unreachable) is tried again so even when
+// nothing needs it (retryLost) — its holder taken out of its seat, nothing
+// else would connect it and clear the last-error that keeps it lost — and
+// logged as back once it connects. A workstation nothing needs has its connection closed
 // (workstation:disconnect) once nothing has needed it for harness.json's
 // workstation-idle-disconnect-seconds (300 by default: a connect by hand, a
 // setup between steps, is not cut off at once), logged, so its own idle stop
@@ -105,6 +109,7 @@ import { requiresReauthentication } from './state.js';
 import { loadWorkstations, expiredLogins, setUp } from './workstation-connection.js';
 import { tendSteps, workstationWants, WORKSTATION_HEALTH } from './workstation-steps.js';
 import { seatNeeds } from './seats.js';
+import { lostWhy, unreachable } from './seat-kinds.js';
 
 const PHASE = 'workstation';
 export const KIND = 'workstation';
@@ -161,7 +166,9 @@ async function keep(ctx, state, project, settings, needs, r) {
     r.ws.set(w.id, s);
     if (!need) {
       s.need = null;
-      if (!loadWorkstations(dir)[w.id]?.connected) { s.up = false; s.idleSince = null; continue; }
+      const entry = loadWorkstations(dir)[w.id];
+      if (unreachable(entry)) { await retryLost(ctx, project, settings, w, dir, s, what, entry, now); continue; }   // ASS-502
+      if (!entry?.connected) { s.up = false; s.idleSince = null; continue; }
       s.idleSince ??= now;
       if (now - s.idleSince < idle) continue;
       await ctx.attempt(PHASE, what, async () => {
@@ -187,22 +194,56 @@ async function keep(ctx, state, project, settings, needs, r) {
       if (dropped) ctx.log(PHASE, `${what}: its connection dropped (${need}); reconnecting after the backoff`);
       continue;
     }
+    const before = loadWorkstations(dir)[w.id], lost = unreachable(before) ? lostWhy(before) : null;   // ASS-502 AC2
     try {
       const out = JSON.parse(await ctx.cli(['workstation:connect', id, w.id]));
       const how = `${dropped ? 'its connection dropped; reconnected' : s.failures ? 'connected again' : 'connected'}${out.started ? ` (the ${w.kind === 'cloud-vm' ? 'cloud VM' : 'workstation'} had stopped; started it)` : ''}`;
       Object.assign(s, { up: true, checkedAt: ctx.now().getTime(), failures: 0, until: 0 });
       if (dropped || out.started || s.need !== need) ctx.log(PHASE, `${what}: ${how}, the forwarder, Hindsight and zot forwarded to its loopback (${need})`);
       s.need = need;
+      if (lost) back(ctx, what, lost);
       await setup(ctx, id, w.id, dir, s, what);
     } catch (error) {
-      const failure = loadWorkstations(dir)[w.id]?.['last-error'];
-      const wait = failure?.kind === 'expired' ? Math.min(backoffDelay(++s.failures), EXPIRED_RETRY) : backoffDelay(++s.failures);
-      s.until = now + wait;
-      ctx.log('error', `${PHASE} ${what}: ${dropped ? 'its connection dropped and ' : ''}workstation:connect failed (${s.failures} in a row; next try in ${held(wait)}): ${failure?.message ?? error.message}`);
+      connectFailed(ctx, dir, w, s, what, now, error, dropped ? 'its connection dropped and ' : '');
     }
     await gcloudFlag(ctx, project, settings, dir);
   }
   await tend(ctx, state, project, settings, dir);
+}
+
+// connectFailed(ctx, dir, w, s, what, now, error, prefix) — a failed workstation:connect logged with the live data's
+// last-error message, and the next try held off (s.failures, s.until): a failing step's backoff, never past
+// EXPIRED_RETRY for an expired login (AC4).
+function connectFailed(ctx, dir, w, s, what, now, error, prefix = '') {
+  const failure = loadWorkstations(dir)[w.id]?.['last-error'];
+  const wait = failure?.kind === 'expired' ? Math.min(backoffDelay(++s.failures), EXPIRED_RETRY) : backoffDelay(++s.failures);
+  s.until = now + wait;
+  ctx.log('error', `${PHASE} ${what}: ${prefix}workstation:connect failed (${s.failures} in a row; next try in ${held(wait)}): ${failure?.message ?? error.message}`);
+}
+
+// back(ctx, what, why) — ASS-502 AC2: a machine whose seats were lost (`why`, lostWhy's) connected again, logged.
+const back = (ctx, what, why) => ctx.log(PHASE, `${what}: back: it connected again, so its seats can be taken again (they were lost: ${why})`);
+
+// retryLost(ctx, project, settings, w, dir, s, what, entry, now) — ASS-502 AC1: a machine nothing needs whose seats
+// are lost because it could not be reached or started (seat-kinds.js unreachable) has its connect tried again after
+// the same backoff as a needed one's (s.failures, s.until), so it comes back by itself once the cause is gone —
+// otherwise, its holder taken out of its seat and nothing needing it, nothing would ever connect it, and its
+// last-error, which keeps it lost, would never clear. Connected: logged as back (AC2), set up as after any connect,
+// and left to the idle rule (AC3: disconnected after workstation-idle-disconnect-seconds unless something needs it
+// by then — the next tick seats a waiting holder on it as on any free seat). An expired login and a failed setup
+// are not retried here (AC4).
+async function retryLost(ctx, project, settings, w, dir, s, what, entry, now) {
+  s.up = false;
+  if (now < s.until) return;
+  try {
+    const out = JSON.parse(await ctx.cli(['workstation:connect', project.id, w.id]));
+    Object.assign(s, { up: true, checkedAt: ctx.now().getTime(), failures: 0, until: 0, idleSince: now });
+    back(ctx, what, `${lostWhy(entry)}${out.started ? `; the ${w.kind === 'cloud-vm' ? 'cloud VM' : 'workstation'} had stopped, started it` : ''}`);
+    await setup(ctx, project.id, w.id, dir, s, what);
+  } catch (error) {
+    connectFailed(ctx, dir, w, s, what, now, error, 'its seats are lost and nothing needs it now, but ');
+  }
+  await gcloudFlag(ctx, project, settings, dir);
 }
 
 export { WORKSTATION_HEALTH } from './workstation-steps.js';

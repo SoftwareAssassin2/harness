@@ -48,6 +48,7 @@ const ALLOWED = {
     '"$tmp"': 'runs on a GCP workstation: a temp file beside the target in ~/harness, renamed over it',
     '"$R/ready"': 'runs on a GCP workstation: its runtime folder\'s marker, not the harness\'s data',
     '"$H/restart-watcher.log"': 'runs on the machine: the restart watcher\'s own output log under ~/harness (ASS-504)',
+    '"$started"': 'runs on a GCP workstation: a temp file of its own (mktemp), `service docker start`\'s output, removed after (ASS-500)',
   },
   'src/agent-cli/workstation/on-workstation/restart-watcher.sh': {   // ASS-504
     '"$fired_file"': 'runs on the machine: its runtime folder\'s once-a-boot marker, not the harness\'s data',

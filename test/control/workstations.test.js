@@ -20,6 +20,8 @@ import { loadProjects } from '../../src/tui/load.js';
 import { headerWarnings } from '../../src/tui/screens/frame.js';
 import { initialState } from '../../src/tui/app.js';
 import { until } from '../support/until.js';
+import { lostWhy, unreachable } from '../../src/control/seat-kinds.js';
+import { assignSeats, SEAT_HEALTH } from '../../src/control/seats.js';
 
 const run = promisify(execFile);
 const ID = 'ada-dev';
@@ -340,4 +342,128 @@ test('ASS-469 AC6: a stopped workstation whose seat a ticket holds is started at
   await s.pass();
   assert.ok(!existsSync(s.socket), s.log());
   assert.match(s.log(), /ada-dev: disconnected: nothing on it has needed it for 5m/);
+});
+
+// ASS-502: a machine whose seats are lost because it could not be reached or started is retried even when nothing
+// needs it, so it comes back by itself once the cause is gone. connects(s) counts the workstation:connect calls.
+const connects = s => {
+  const calls = [], cli = s.c.ctx.cli;
+  s.c.ctx.cli = (args, ...rest) => { if (args[0] === 'workstation:connect') calls.push(args); return cli(args, ...rest); };
+  return () => calls.length;
+};
+
+test('ASS-502 AC1, AC2, AC3: a machine lost for being unreachable is retried with the connect backoff though nothing needs it; once it connects it is back (last-error cleared, its seat usable), and nothing needing it, the idle rule disconnects it', async () => {
+  const s = setup(), tries = connects(s);
+  s.w.mark(null, 'offline');
+  await s.pass();
+  assert.match(s.log(), /^error workstation p ada-dev: workstation:connect failed \(1 in a row; next try in 30s\)/m);
+  assert.match(lostWhy(s.entry()), /could not be reached or started/);
+  assert.ok(unreachable(s.entry()));
+  s.hold(false);   // nothing needs it any more
+  s.later(10_000);
+  await s.pass();
+  assert.equal(tries(), 1, 'not within the backoff');
+  s.later(20_000);
+  await s.pass();
+  assert.equal(tries(), 2, 'tried again once the backoff is over, though nothing needs it');
+  assert.match(s.log(), /^error workstation p ada-dev: its seats are lost and nothing needs it now, but workstation:connect failed \(2 in a row; next try in 60s\): .*NameResolutionError/m);
+  s.later(30_000);
+  await s.pass();
+  assert.equal(tries(), 2, 'the backoff doubles');
+  s.later(30_000);
+  await s.pass();
+  assert.equal(tries(), 3);
+  assert.match(s.log(), /\(3 in a row; next try in 2m\)/);
+  // The cause gone: the next try connects; last-error clears and its seat can be used again.
+  s.w.unmark(null, 'offline');
+  s.later(120_000);
+  await s.pass();
+  assert.equal(tries(), 4);
+  assert.equal(s.entry().connected, true);
+  assert.equal(s.entry()['last-error'], null);
+  assert.equal(lostWhy(s.entry()), null);
+  assert.ok(workstationUsable(s.entry()), 'set up as after any connect');
+  assert.match(s.log(), /^workstation p ada-dev: back: it connected again, so its seats can be taken again \(they were lost: it could not be reached or started: .*NameResolutionError.*\)$/m);
+  // AC3: still nothing needs it — disconnected by the idle rule, and not connected again.
+  s.later(299_000);
+  await s.pass();
+  assert.ok(existsSync(s.socket), 'kept inside the idle grace');
+  s.later(2000);
+  await s.pass();
+  assert.equal(s.entry().connected, false);
+  assert.match(s.log(), /^workstation p ada-dev: disconnected: nothing on it has needed it for 5m; it stops itself once idle$/m);
+  s.later(60 * 60_000);
+  await s.pass();
+  assert.equal(tries(), 4, 'not lost any more: left alone');
+});
+
+test('ASS-502 AC4: an expired login is not retried beyond EXPIRED_RETRY\'s needed tries — with nothing needing it, not at all — and a failed setup is no reason to retry a connect', async () => {
+  const s = setup(), tries = connects(s);
+  s.w.mark(null, 'expired');
+  await s.pass();
+  assert.equal(tries(), 1);
+  assert.match(lostWhy(s.entry()), /gcloud login/);
+  assert.ok(!unreachable(s.entry()));
+  s.hold(false);
+  for (let i = 0; i < 5; i++) { s.later(EXPIRED_RETRY); await s.pass(); }
+  assert.equal(tries(), 1, 'nothing needs it: its login is the operator\'s to renew');
+  assert.ok(!/its seats are lost and nothing needs it now/.test(s.log()));
+  // A failed setup (retried while connected, ASS-434 AC3) is not one of these, connected or not.
+  const at = '2026-11-17T22:25:14Z';
+  assert.ok(!unreachable({ connected: true, setup: { ok: false, error: 'no docker' } }));
+  assert.ok(!unreachable({ connected: false, setup: { ok: false, error: 'no docker' }, 'last-error': { at, kind: 'unknown', message: 'x' } }));
+  assert.ok(unreachable({ connected: false, 'last-error': { at, kind: 'unknown', message: 'remote port forwarding failed for listen port 7787' } }));
+  assert.ok(unreachable({ connected: false, 'last-error': { at, kind: 'timeout', message: 'its start timed out' } }), 'a cloud VM\'s start that timed out');
+  assert.ok(!unreachable({ connected: true, 'last-error': { at, kind: 'unknown', message: 'x' } }));
+  assert.ok(!unreachable({ connected: false, state: 'stopped' }), 'merely stopped: its seat is kept');
+});
+
+test('ASS-502 AC5: the full loop — a seat holder\'s machine fails to connect, its seat is lost and it is taken out; nothing needing it, control keeps retrying it with the backoff; once it connects it is back, and the next tick seats the waiting holder on it again', async () => {
+  const s = setup({ need: false }), tries = connects(s);
+  edit(s.at('harness.json'), h => { h['max-tickets-in-progress'] = 9; });
+  edit(s.at('projects', 'p', 'project.json'), p => { p['dev-environments'].mode = 'workstation'; });
+  const sprint = s.at('projects', 'p', 'sprints', 'sprint-10', 'sprint.json');
+  const variation = change => edit(sprint, sp => { sp.features[0]['ticket-system-status'] = 'In Progress'; change(sp.features[0].variations[0]); });
+  variation(v => { v['harness-status'] = { state: 'build', 'state-engine': 'example-development' }; });
+  const seatsFile = s.at('projects', 'p', 'seats.json');
+  writeFileSync(seatsFile, JSON.stringify({ seats: [{ key: 'ABC-3', variation: 'A', kind: 'workstation', workstation: ID, since: '2026-11-17T22:00:00Z' }] }));
+  const seats = () => (existsSync(seatsFile) ? JSON.parse(readFileSync(seatsFile, 'utf8')).seats.map(x => `${x.key} ${x.variation} ${x.workstation ?? x.kind}`) : []);
+  const health = () => s.c.sprint().features[0].variations[0]['ai-feedback-long'] ?? null;
+  const tick = async () => { await assignSeats(s.c.ctx, s.c.ctx.load()); await s.pass(); };
+  // Its connect fails (as when a stale session holds a forwarded port).
+  s.w.mark(null, 'offline');
+  await tick();
+  assert.equal(tries(), 1);
+  assert.equal(s.entry()['last-error'].kind, 'offline');
+  // The next tick: its seat is lost and ABC-3 A taken out, its Health saying so.
+  s.later(30_000);
+  await tick();
+  assert.deepEqual(seats(), [], s.log());
+  assert.match(s.log(), /^seats ABC-3 A: taken out of its workstation seat on ada-dev: ada-dev can't be used \(it could not be reached or started: /m);
+  assert.ok(health()?.startsWith(SEAT_HEALTH), health());
+  // Nothing needs it now (ABC-3 A paused meanwhile, standing in for whatever left no step, holder or waiter on it): still retried, after the backoff.
+  variation(v => { v['is-paused'] = true; });
+  const before = tries();
+  s.later(1000);
+  await tick();
+  assert.equal(tries(), before, 'not within the backoff');
+  s.later(5 * 60_000);
+  await tick();
+  assert.equal(tries(), before + 1, s.log());
+  assert.match(s.log(), /its seats are lost and nothing needs it now, but workstation:connect failed/);
+  // The cause is fixed: the next retry connects; it is back.
+  s.w.unmark(null, 'offline');
+  s.later(30 * 60_000);
+  await tick();
+  assert.equal(s.entry().connected, true);
+  assert.equal(s.entry()['last-error'], null);
+  assert.match(s.log(), /^workstation p ada-dev: back: it connected again/m);
+  // ABC-3 A waits for a seat again: the next tick seats it on ada-dev, as on any free seat, and its Health clears.
+  variation(v => { delete v['is-paused']; });
+  s.later(1000);
+  await tick();
+  assert.deepEqual(seats(), ['ABC-3 A ada-dev'], s.log());
+  assert.ok(s.c.lines.includes('seats ABC-3 A: takes a workstation seat on ada-dev'), s.log());
+  assert.ok(!health()?.startsWith(SEAT_HEALTH), health());
+  assert.equal(s.entry().connected, true, 'kept: its seat needs it now');
 });

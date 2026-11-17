@@ -52,6 +52,17 @@ set -euo pipefail
 # once it is up the VM's boot id is recorded (boot-id): its whole disk
 # persists across a stop, so a setup done under this boot still holds
 # (workstation-connection.js setUp).
+#
+# ASS-501: step 4 failing on "remote port forwarding failed for listen port
+# <p>" (ExitOnForwardFailure) — a stale sshd session of the harness's own SSH
+# user on the machine still listening on a forward's port, its Mac end gone —
+# is cleared when the Mac has no live connection to the machine (no master
+# answering on its ControlPath, none still running): a short session without
+# forwards ends those sessions alone (workstation.bash
+# workstation_clear_stale), each logged with its pid, port and start time on
+# stderr (control's log), and the master is opened once more. With a live
+# connection nothing is ended and the connect fails as before; a retry that
+# fails too fails it with the first error, saying a clear was tried.
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../workstation.bash"
 
 command=workstation:connect
@@ -149,7 +160,28 @@ done
 workstation_record "$project" "$id" '. + { state: "running", "state-at": $at }'
 
 how="gcloud workstations ssh"; [[ "$kind" != cloud-vm ]] || how="ssh through IAP"
-out="$(workstation_open "$project" "$id" "$settings" "${ports[@]}" 2>&1)" || fail "opening its SSH connection ($how)" "$out"
+if ! out="$(workstation_open "$project" "$id" "$settings" "${ports[@]}" 2>&1)"; then
+  # ASS-501: a port the machine refuses is most often held by a stale sshd session of ours (workstation.bash says why):
+  # cleared, each ended session logged, and the connect tried once more. With a live connection to it (exit 2), as before.
+  [[ "$out" == *"remote port forwarding failed for listen port"* ]] || fail "opening its SSH connection ($how)" "$out"
+  said="$(mktemp)"
+  if ended="$(workstation_clear_stale "$project" "$id" "$settings" "${ports[@]}" 2>"$said")"; then code=0; else code=$?; fi
+  why="$(tr '\n' ' ' < "$said" | sed 's/ *$//')"; rm -f "$said"
+  [[ $code -ne 2 ]] || fail "opening its SSH connection ($how)" "$out"
+  pids=()
+  while IFS=$'\t' read -r pid port start; do
+    [[ -n "$pid" ]] || continue
+    pids+=("$pid")
+    echo "$command: $project's $noun $id: ended a stale SSH session holding its forwarded port $port: pid $pid, started $start" >&2
+  done <<< "$ended"
+  [[ -z "$why" ]] || echo "$command: $project's $noun $id: clearing a stale SSH session: $why" >&2
+  if [[ $code -ne 0 ]]; then tried="clearing a stale SSH session failed (${why:-no reason given})"
+  elif [[ ${#pids[@]} -gt 0 ]]; then tried="ended the stale SSH session (pid ${pids[*]}) holding its forwarded ports"
+  else tried="found no stale SSH session of its user holding its forwarded ports"; fi
+  retry="$(workstation_open "$project" "$id" "$settings" "${ports[@]}" 2>&1)" \
+    || fail "opening its SSH connection ($how; it tried clearing a stale session: $tried, then connecting again)" \
+      "$out"$'\n'"(tried clearing a stale session: $tried; connecting again failed: $retry)"
+fi
 if gone; then
   workstation_close "$project" "$id"
   workstation_record "$project" "$id" '. + { connected: false, "disconnected-at": $at, "control-pid": null }'

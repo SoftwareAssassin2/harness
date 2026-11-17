@@ -289,11 +289,44 @@ else
 fi
 
 # Docker: the workstation config's to give; checked, never installed.
+# ASS-500: Google's boot script starts dockerd once and never again, so a dockerd that died at boot (containerd
+# timing out on a slow home disk) left setup failing on every retry. When `docker info` fails and no dockerd is
+# running, setup starts Docker once (`sudo -n service docker start`: systemd is not PID 1 on a workstation,
+# /etc/init.d/docker manages it) and waits up to 60 s for `docker info` to answer; still not answering, it fails with
+# the end of /var/log/docker.log. A running dockerd (`docker info` failing for another reason, e.g. permissions) or
+# one that answers is never restarted. Tests stand HARNESS_WS_DOCKER_WAIT and HARNESS_WS_DOCKER_LOG in for the wait
+# and the log; a real ssh session never carries them.
+docker_info() { if has timeout; then timeout "$1" docker info --format '{{.ServerVersion}}' 2>&1; else docker info --format '{{.ServerVersion}}' 2>&1; fi; }
+dockerd_running() { if has pgrep; then pgrep -x dockerd >/dev/null 2>&1; else grep -qsx dockerd /proc/[0-9]*/comm; fi; }
 if ! has docker; then
   bad docker "not installed: the workstation config's container image has no Docker, which the project's dev containers and zot images need"
-else
-  if has timeout; then out="$(timeout 30 docker info --format '{{.ServerVersion}}' 2>&1)"; else out="$(docker info --format '{{.ServerVersion}}' 2>&1)"; fi
-  [[ $? -eq 0 ]] || bad docker "not usable (docker info failed): $(first_line "$out")"
+elif ! out="$(docker_info 30)"; then
+  why="not usable (docker info failed): $(first_line "$out")"
+  if dockerd_running; then bad docker "$why"
+  else
+    wait_s="${HARNESS_WS_DOCKER_WAIT:-60}" dlog="${HARNESS_WS_DOCKER_LOG:-/var/log/docker.log}"
+    # Its output to a file, not a pipe: a dockerd left holding the pipe would keep setup waiting.
+    started="$(mktemp)"
+    if has timeout; then timeout 60 sudo -n service docker start < /dev/null > "$started" 2>&1; else sudo -n service docker start < /dev/null > "$started" 2>&1; fi
+    rc=$? start_out="$(cat "$started")" up=false; rm -f "$started"
+    if [[ $rc -ne 0 ]]; then why+="; no dockerd was running, and starting it (sudo -n service docker start) failed (exit $rc): $(first_line "$start_out")"
+    else
+      done_ "started Docker (sudo -n service docker start): docker info failed and no dockerd was running ($(first_line "$out"))"
+      end=$((SECONDS + wait_s))
+      while ((SECONDS < end)); do
+        sleep 1
+        out="$(docker_info 10)" && { up=true; break; }
+      done
+      [[ "$up" == true ]] || why+="; no dockerd was running, and after starting it (sudo -n service docker start) docker info still failed for $wait_s s: $(first_line "$out")"
+    fi
+    if [[ "$up" != true ]]; then
+      # The log's last lines, on one line (the error is one line naming each failure), each at most 300 characters.
+      tail_="$(tail -n 5 "$dlog" 2>/dev/null || sudo -n tail -n 5 "$dlog" 2>/dev/null)" ends=""
+      while IFS= read -r l; do [[ -z "${l//[[:space:]]/}" ]] || ends+="${ends:+ | }${l:0:300}"; done <<< "$tail_"
+      if [[ -n "$ends" ]]; then why+="; $dlog ends: $ends"; else why+="; $dlog could not be read"; fi
+      bad docker "$why"
+    fi
+  fi
 fi
 
 # The project's golden-image tools and (ASS-471) the commands its CI checks need: the missing ones to its

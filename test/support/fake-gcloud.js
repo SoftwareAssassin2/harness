@@ -23,7 +23,11 @@
 //   a SIGTERM, the workstation leaving RUNNING or a `drop` file in its folder
 //   (removed as it drops: a dropped connection), then exits, its socket gone.
 //   A `refuse-forward` file in the folder fails it as ExitOnForwardFailure
-//   does for a port the workstation refuses.
+//   does for a port the workstation refuses; ASS-501: so does a -R port its
+//   `listening` file says a live process holds (fake-ssh-master.js heldPort).
+//   Given --command=<command> and no -M, it is a session of its own (ASS-501's
+//   short one): <command> run as fake-ssh.js runs a session's, its
+//   FAKE_SSH_SESSION_PID this process (the session's sshd).
 // ASS-481: `gcloud compute …` and `gcloud config get-value account`, a cloud
 // VM's, are fake-gcloud-compute.js's.
 // Under test/support/, which npm test's pattern leaves alone.
@@ -31,6 +35,8 @@ import { appendFileSync, existsSync, readFileSync, writeFileSync, rmSync, mkdirS
 import { createServer } from 'node:net';
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
+import { spawn } from 'node:child_process';
+import { heldPort } from './fake-ssh-master.js';
 
 const args = process.argv.slice(2);
 if (process.env.FAKE_GCLOUD_LOG) appendFileSync(process.env.FAKE_GCLOUD_LOG, `${JSON.stringify({ argv: args, config: process.env.CLOUDSDK_CONFIG ?? null })}\n`);
@@ -65,7 +71,17 @@ if (sub === 'describe') {
   if (state() !== 'STATE_RUNNING') die('ERROR: (gcloud.workstations.ssh) Workstation is not running. Use --start-workstation to start it.');
   const flags = args.filter(a => a.startsWith('--ssh-flag=')).flatMap(a => a.slice('--ssh-flag='.length).split(/\s+/).filter(Boolean));
   writeFileSync(join(ws, 'ssh-flags'), JSON.stringify(flags));
+  const command = args.find(a => a.startsWith('--command='))?.slice('--command='.length);
+  if (command !== undefined && !flags.includes('-M')) {
+    mkdirSync(join(ws, 'home'), { recursive: true });
+    const env = { ...process.env, HOME: join(ws, 'home'), PATH: `${join(ws, 'bin')}:${process.env.PATH}`, FAKE_SSH_SESSION_PID: String(process.pid) };
+    const child = spawn('bash', ['-c', command], { cwd: join(ws, 'home'), stdio: 'inherit', env });
+    child.on('exit', (code, signal) => process.exit(code ?? (signal ? 128 + 15 : 1)));
+    await new Promise(() => {});
+  }
   if (existsSync(join(ws, 'refuse-forward'))) die('Error: remote port forwarding failed for listen port 7787', 255);
+  const held = heldPort(ws, flags);
+  if (held) die(`Error: remote port forwarding failed for listen port ${held}`, 255);
   const socket = flags[flags.indexOf('-S') + 1];
   if (!flags.includes('-M') || !socket) die('fake gcloud: only a master (-M -S <socket> -N) is faked', 2);
   mkdirSync(join(ws, 'home'), { recursive: true });

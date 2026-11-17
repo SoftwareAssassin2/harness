@@ -237,6 +237,20 @@ lapsed the dashboard says `run 'CLOUDSDK_CONFIG=~/.config/example/gcloud
 gcloud auth login' asap`; run it, and control connects again within two
 minutes.
 
+A connect can find the forwarded ports still taken on the workstation: when
+the Mac end of an earlier connection died, its sshd session there may live on,
+listening on them, so the new connection fails with `remote port forwarding
+failed for listen port <port>` (ASS-501). `workstation:connect` then clears
+it, provided the Mac has no live connection to that workstation (no master
+answering on its socket, none still running): it opens a short SSH session
+with no forwards, lists the listening sockets (`sudo -n ss -ltnp`), ends only
+the sshd sessions of the harness's own SSH user that listen on `127.0.0.1` at
+one of the forward ports — never the session it runs in, another user's
+session or any other process — logging each one's pid, port and start time
+(control's log shows them), and connects once more. With a live connection it
+ends nothing and fails as before; if the second try fails too, it fails with
+the original error, saying it tried clearing a stale session.
+
 Once connected, control sets the workstation up for the harness's agents —
 `./agent.sh workstation:setup <project> <id>` does it by hand — installing
 what is missing under `~/harness` only (agent.sh, jq, the Claude Code CLI)
@@ -247,7 +261,11 @@ tool the workstation lacks is installed by the project's optional
 `golden-image/workstation-tools.sh`, given the missing tools' names and
 `HARNESS_BIN` to put them in; the golden-image folder's other top-level
 files (not Lima's `provision.sh`, `template.yaml`…) are shipped beside it, so
-it can source one it shares with `provision.sh`. Until setup succeeds nothing is dispatched to
+it can source one it shares with `provision.sh`. (ASS-500) When Docker's
+daemon is not running — no `dockerd`, as when it died at the workstation's
+boot — setup starts it once (`sudo -n service docker start`) and waits up to
+60 s for `docker info`; a running daemon is never restarted, and one that
+still does not answer fails setup with the end of `/var/log/docker.log`. Until setup succeeds nothing is dispatched to
 the workstation and the dashboard shows `Workstation <id> setup failed` (see
 `engines/grouped-engines.md`, "A GCP workstation's setup").
 
@@ -294,7 +312,10 @@ ticket's on its VM (made when it has none). There are no bound seats: while
 a workstation can't be used — its gcloud login lapsed, its setup failed, it
 could not be reached or started — its seat is lost, the ticket in it is
 taken out (logged and on its Health) and takes the next free seat of either
-kind; the seat comes back when the workstation does. Control keeps a
+kind; the seat comes back when the workstation does — one that could not be
+reached or started has its connect retried, with the usual backoff, even
+while nothing needs it (ASS-502), so it comes back by itself once the cause
+is gone. Control keeps a
 workstation started, connected and set up while its seat is held or a ticket
 waits for a seat it could take, and lets it stop itself (its 30-minute idle
 stop) only when nobody needs it. Who holds which seat is in
@@ -312,7 +333,9 @@ connection to it through IAP with OS Login (`ssh -o
 ProxyCommand="gcloud compute start-iap-tunnel <id> 22 --listen-on-stdin …"`,
 the key `~/.ssh/google_compute_engine`) — the same `./agent.sh
 workstation:connect <project> <id>`, `workstation:status`, `workstation:ssh`,
-`workstation:setup` and `workstation:disconnect` by hand. Each cloud VM is
+`workstation:setup` and `workstation:disconnect` by hand. A stale SSH
+session of its own still holding the forwarded ports is cleared as on a
+workstation (above), through a short IAP session of the same OS Login user. Each cloud VM is
 one seat, taken after the workstations' (in list order) and before a VM
 seat; its steps are claimed and released, its images pulled and its setup
 run as on a workstation, except that its disk persists across a stop, so

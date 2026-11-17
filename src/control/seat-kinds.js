@@ -10,7 +10,8 @@
 // number of its workstations that can be used: a workstation whose gcloud
 // login lapsed, whose setup failed, or whose last connect failed
 // (unreachable, or it would not start) has its seats lost while that lasts
-// (no bound seats). One merely stopped — its own 30-minute idle stop — keeps
+// (no bound seats); one that could not be reached or started has its connect retried by control meanwhile, needed
+// or not (ASS-502: unreachable), so it comes back by itself. One merely stopped — its own 30-minute idle stop — keeps
 // its seats: a ticket taking one has it started at once (workstations.js).
 //
 // Which variation holds which seat is control's live data,
@@ -65,6 +66,12 @@ export function lostWhy(entry) {
   if (entry?.['last-error'] && entry.connected !== true) return `it could not be reached or started${entry['last-error'].message ? `: ${entry['last-error'].message}` : ''}`;
   return null;
 }
+
+// unreachable(entry) — ASS-502: its seats are lost for lostWhy's last-error cases alone (it could not be reached or
+// started, or its start timed out) — not an expired login (the operator's to renew), not a failed setup (retried while
+// connected). Control's workstation job retries such a machine's connect even while nothing needs it, so it comes
+// back by itself once the cause is gone.
+export const unreachable = entry => Boolean(entry?.['last-error']) && entry.connected !== true && !loginExpired(entry) && entry.setup?.ok !== false;
 
 // seatCapacity(project) — { mode, vm (its VM seats: project.json's max-tickets-in-progress, Infinity for none, 0 in
 // workstation mode), workstations: [{ id, seats (always 1, AC9), lost (lostWhy, or null), kind ('cloud-vm' for a cloud VM,

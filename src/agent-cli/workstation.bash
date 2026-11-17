@@ -29,6 +29,9 @@
 #   workstation_entry <project> <id>          # that entry as one JSON line, with its id; {"id":…} without one
 #   workstation_error <output>                # sets ws_error_kind (expired, offline, unknown) and ws_error_message (one line, tokens redacted)
 #   ws_live_control <pid>                     # ASS-470: <pid> is a running control (src/control/main.js), below
+#   workstation_clear_stale <project> <id> <settings> <port…>   # ASS-501: the machine's stale sshd sessions of the harness's
+#                                             # user holding <port…> on its loopback ended (below); one "<pid>\t<port>\t<start
+#                                             # time>" line printed for each; fails (2) when the Mac has a live connection to it
 #
 # The connection. Each new connection to a workstation goes through Google's
 # workstation tunnel and needs a live Google token; an open one does not, and
@@ -103,6 +106,26 @@
 # running control (a crash's, a kill -9's); a hand-opened one (null) neither
 # closes, though a running control's idle disconnect still closes one nothing
 # needs (src/control/workstations.js).
+#
+# ASS-501, a stale session holding the forwarded ports. When the Mac end of a
+# connection dies (its master killed, the Mac asleep or offline), the far
+# end's sshd session can live on — nothing on a workstation or cloud VM drops
+# a silent client quickly — still listening on the forwards' ports on its
+# loopback, so every new master fails ExitOnForwardFailure with "remote port
+# forwarding failed for listen port <p>" (seen 2026-11-17 on a cloud VM:
+# fixed by hand by killing that sshd). workstation:connect, on that error and
+# only when the Mac has no live connection to the machine (no master
+# answering on its ControlPath, nor a master process for it still running:
+# ws_connection_live), runs workstation_clear_stale: a short session of its
+# own with no forwards (ws_session: gcloud workstations ssh --command, or a
+# cloud VM's cvm_session) runs ws_clear_remote there, which lists the
+# listening sockets (sudo -n ss -Hltnp; the sshd session's process is not
+# dumpable, so only root sees its pid) and ends (SIGTERM, as the user, never
+# sudo) each process that is an sshd (sshd or sshd-session), listens on
+# 127.0.0.1 at one of the forward ports, runs as the session's own user (the
+# harness's SSH user) and is not one of the session's own ancestors (the
+# session it runs in) — nothing else — printing each one's pid, port and
+# start time. connect logs each and retries once.
 here_ws="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
 source "$here_ws/json-file.bash"
 source "$here_ws/dev-environments.bash"
@@ -261,4 +284,67 @@ ws_open_master() {
   { cat "$log"; kill -0 "$pid" 2>/dev/null && echo "the connection did not answer within ${WORKSTATION_CONNECT_TIMEOUT:-60} seconds"; } >&2
   workstation_close "$project" "$id"
   return 1
+}
+
+# ws_connection_live <project> <id> — ASS-501: the Mac has a live connection to the machine: a master answers on its
+# ControlPath, or a master process for it (-M, its command line naming that socket) still runs.
+ws_connection_live() {
+  workstation_alive "$1" "$2" && return 0
+  # The socket in the environment, not awk's argv: awk itself never matches.
+  ps -axww -o command= 2>/dev/null | WS_CP="$(workstation_control_path "$1" "$2")" awk 'index($0, ENVIRON["WS_CP"]) && / (--ssh-flag=)?-M( |$)/ { found = 1 } END { exit !found }'
+}
+
+# ws_session <settings> <argv…> — ASS-501: argv run on the machine over an SSH session of its own, apart from the
+# master and with no forwards: gcloud workstations ssh --command (a cloud VM's: cloud-vm.bash cvm_session).
+ws_session() {
+  local settings="$1"; shift
+  if [[ "$(workstation_kind "$settings")" == cloud-vm ]]; then cvm_session "$settings" "$@"; return; fi
+  workstation_gcloud "$settings" ssh --command="$(ws_quote "$@")" --ssh-flag="-T" --ssh-flag="-o BatchMode=yes" \
+    --ssh-flag="-o ClearAllForwardings=yes" --ssh-flag="-o ControlMaster=no" --ssh-flag="-o ControlPath=none"
+}
+
+# ws_clear_remote <port…> — ASS-501: run on the machine (bash -c, through ws_session): ends this user's sshd sessions
+# listening on 127.0.0.1 at one of <port…>, never this session's own, another user's or anything else; prints
+# "ended\t<pid>\t<port>\t<start time>" for each, "note\t<text>" for what workstation_clear_stale passes on to stderr.
+ws_clear_remote() {
+  local me ancestors=" " ended=" " p listing local_ users port name pid started i
+  me="$(id -u)"
+  p=$$
+  while [[ "$p" =~ ^[0-9]+$ && "$p" -gt 1 ]]; do ancestors+="$p "; p="$(ps -o ppid= -p "$p" 2>/dev/null | tr -d ' ')"; done
+  if ! listing="$(sudo -n ss -Hltnp 2>/dev/null)"; then
+    printf 'note\t%s\n' "sudo -n ss failed: listed without sudo, which shows no sshd session's pid"
+    listing="$(ss -Hltnp)" || return 1
+  fi
+  while read -r _ _ _ local_ _ users; do
+    [[ "${local_%:*}" == 127.0.0.1 ]] || continue
+    port="${local_##*:}"
+    [[ " $* " == *" $port "* ]] || continue
+    while read -r name pid; do
+      [[ "$name" == sshd || "$name" == sshd-session ]] || continue
+      [[ "$ancestors" != *" $pid "* && "$ended" != *" $pid "* ]] || continue
+      [[ "$(ps -o uid= -p "$pid" 2>/dev/null | tr -d ' ')" == "$me" ]] || continue
+      started="$(ps -o lstart= -p "$pid" 2>/dev/null | sed 's/^ *//; s/ *$//')"
+      kill -TERM "$pid" 2>/dev/null || continue
+      ended+="$pid "
+      # Waited for (up to 5 seconds), so the retry finds the port free; a zombie holds no socket.
+      for ((i = 0; i < 50; i++)); do
+        kill -0 "$pid" 2>/dev/null && [[ "$(ps -o stat= -p "$pid" 2>/dev/null)" != *Z* ]] || break
+        sleep 0.1
+      done
+      printf 'ended\t%s\t%s\t%s\n' "$pid" "$port" "${started:-unknown}"
+    done < <(grep -oE '\("[^"]*",pid=[0-9]+' <<< "$users" | sed -E 's/^\("([^"]*)",pid=/\1 /')
+  done <<< "$listing"
+}
+
+workstation_clear_stale() {
+  local project="$1" id="$2" settings="$3" out err; shift 3
+  if ws_connection_live "$project" "$id"; then echo "the Mac has a live connection to it: nothing ended" >&2; return 2; fi
+  err="$(mktemp)"
+  # Bounded, and without the locks' descriptors (8, 9), as workstation_reachable's probe.
+  out="$(ws_timeout "${WORKSTATION_CONNECT_TIMEOUT:-60}" bash -c "source '$here_ws/workstation.bash' && ws_session \"\$@\"" _ \
+    "$settings" bash -c "$(declare -f ws_clear_remote)"$'\n''ws_clear_remote "$@"' _ "$@" </dev/null 2>"$err" 8>&- 9>&-)" \
+    || { cat "$err" >&2; rm -f "$err"; return 1; }
+  rm -f "$err"
+  grep $'^note\t' <<< "$out" | cut -f 2- >&2 || true
+  grep $'^ended\t' <<< "$out" | cut -f 2- || true
 }

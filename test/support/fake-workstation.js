@@ -17,12 +17,19 @@
 // is its runtime folder's root (the container's /dev/shm). ASS-472: its
 // docker pulls and tags too (DOCKER, below), its images in the workstation
 // folder's `images` file, each pull logged in its `pulls`.
+// ASS-500: a `docker-stopped` marker is its Docker daemon not running — `docker` cannot
+// connect, and its `pgrep` (PGREP, below) finds no dockerd; without it dockerd runs.
 // ASS-504: setup starts each workstation's restart watcher (a process on this
 // Mac, detached): it finds no metadata server (HARNESS_WS_METADATA_URL a port
 // nothing listens on, unless a test sets its own) and checks every second
 // (HARNESS_WS_WATCHER_SECONDS) that its pid file still names it; when the test
 // process exits, every fake workstation's runtime folder is removed, so each
 // watcher still running ends by itself within a second, never firing.
+// ASS-501: its bin folder holds an `ss` too, printing the folder's
+// `listening` lines (as `ss -Hltnp` would; listen(id, lines) writes them,
+// SESSION in a line standing for the session's own sshd, fake-ssh.js's and
+// fake-gcloud.js's FAKE_SSH_SESSION_PID) whose pid is still alive, and a
+// `sudo` that runs its command as is, each call logged in its `sudo` file.
 import { mkdtempSync, mkdirSync, symlinkSync, existsSync, readFileSync, readdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -48,7 +55,10 @@ export function fakeWorkstation(base = process.env) {
       writeFileSync(at(id, 'state'), state);
       writeFileSync(at(id, 'boot-id'), `boot-${id}-1`);
       writeFileSync(at(id, 'bin', 'docker'), DOCKER, { mode: 0o755 });
+      writeFileSync(at(id, 'bin', 'pgrep'), PGREP, { mode: 0o755 });
       writeFileSync(at(id, 'bin', 'claude'), '#!/bin/bash\necho "2.0.0 (Claude Code)"\n', { mode: 0o755 });
+      writeFileSync(at(id, 'bin', 'ss'), SS, { mode: 0o755 });
+      writeFileSync(at(id, 'bin', 'sudo'), SUDO, { mode: 0o755 });
     },
     // ASS-481: cloudVm(id, status) — a cloud VM (fake-gcloud-compute.js, fake-ssh-master.js), TERMINATED by default,
     // ready for workstation:setup as a workstation is; status(id) reads its status, setStatus(id, s) sets it.
@@ -57,7 +67,10 @@ export function fakeWorkstation(base = process.env) {
       writeFileSync(at(id, 'status'), status);
       writeFileSync(at(id, 'boot-id'), `boot-${id}-1`);
       writeFileSync(at(id, 'bin', 'docker'), DOCKER, { mode: 0o755 });
+      writeFileSync(at(id, 'bin', 'pgrep'), PGREP, { mode: 0o755 });
       writeFileSync(at(id, 'bin', 'claude'), '#!/bin/bash\necho "2.0.0 (Claude Code)"\n', { mode: 0o755 });
+      writeFileSync(at(id, 'bin', 'ss'), SS, { mode: 0o755 });
+      writeFileSync(at(id, 'bin', 'sudo'), SUDO, { mode: 0o755 });
     },
     status: id => readFileSync(at(id, 'status'), 'utf8').trim(),
     setStatus: (id, s) => writeFileSync(at(id, 'status'), s),
@@ -71,10 +84,19 @@ export function fakeWorkstation(base = process.env) {
     sshCalls: () => lines(env.FAKE_SSH_LOG),
     flags: id => JSON.parse(readFileSync(at(id, 'ssh-flags'), 'utf8')),
     home: id => at(id, 'home'),
+    listen: (id, lines) => writeFileSync(at(id, 'listening'), lines.map(l => `${l}\n`).join('')),
+    sudoCalls: id => (existsSync(at(id, 'sudo')) ? readFileSync(at(id, 'sudo'), 'utf8').trim().split('\n').filter(Boolean) : []),
   };
 }
 
-// The workstation image's docker: `docker info` answers, unless the workstation's docker-broken marker is there.
+// ASS-500: the workstation's pgrep, as `pgrep -x dockerd` asks it: dockerd runs unless the docker-stopped marker is there.
+const PGREP = `#!/bin/bash
+[ "$*" = "-x dockerd" ] || exit 1
+[ ! -e "$(dirname "$0")/../docker-stopped" ]
+`;
+
+// The workstation image's docker: `docker info` answers, unless the workstation's docker-broken marker is there
+// (ASS-500: or its docker-stopped one, the daemon not running).
 // ASS-472: `docker pull <ref>` asks the registry the reference names for its manifest — a 127.0.0.1:<port> one
 // (zot through the connection's forward) as named, any other host at $FAKE_AR_URL (fake-registry.js standing in for
 // Artifact Registry), with the auth DOCKER_CONFIG's config.json holds for the host (ASS-477: or the credential
@@ -86,6 +108,7 @@ export function fakeWorkstation(base = process.env) {
 // image — by name, or at the digest a <name>@<digest> names. Anything else answers nothing.
 const DOCKER = `#!/bin/bash
 ws="$(dirname "$0")/.."
+if [ -e "$ws/docker-stopped" ]; then echo "Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?" >&2; exit 1; fi
 if [ -e "$ws/docker-broken" ]; then echo "permission denied while trying to connect to the Docker daemon socket at unix:///var/run/docker.sock: Get \\"http://%2Fvar%2Frun%2Fdocker.sock/v1.47/info\\": dial unix /var/run/docker.sock: connect: permission denied" >&2; exit 1; fi
 keep() { touch "$ws/images"; awk -v k="$1" '$1 != k' "$ws/images" > "$ws/images.new"; echo "$1 $2" >> "$ws/images.new"; mv "$ws/images.new" "$ws/images"; }
 case "$1" in
@@ -132,4 +155,21 @@ case "$1" in
     keep "$3" "$d" ;;
 esac
 exit 0
+`;
+
+// ASS-501: the machine's ss and sudo (above).
+const SS = `#!/bin/bash
+ws="$(dirname "$0")/.."
+[ -f "$ws/listening" ] || exit 0
+while IFS= read -r line; do
+  line="\${line//SESSION/$FAKE_SSH_SESSION_PID}"
+  pid="$(grep -oE 'pid=[0-9]+' <<< "$line" | head -n 1 | cut -d = -f 2)"
+  [ -z "$pid" ] || ps -p "$pid" >/dev/null 2>&1 || continue
+  printf '%s\\n' "$line"
+done < "$ws/listening"
+`;
+const SUDO = `#!/bin/bash
+echo "$*" >> "$(dirname "$0")/../sudo"
+[ "$1" != -n ] || shift
+exec "$@"
 `;

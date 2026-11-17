@@ -179,7 +179,8 @@ test('AC2: a forward the workstation refuses fails the connect (ExitOnForwardFai
   s.w.mark(ID, 'refuse-forward');
   const r = await s.result('workstation:connect', 'p', ID);
   assert.equal(r.code, 1);
-  assert.match(r.err, /opening its SSH connection \(gcloud workstations ssh\) failed \(unknown\): .*remote port forwarding failed/);
+  // ASS-501: a stale session cleared first (none here), then tried again, and the original error kept.
+  assert.match(r.err, /opening its SSH connection \(gcloud workstations ssh; it tried clearing a stale session: .*\) failed \(unknown\): .*remote port forwarding failed/);
   assert.ok(!existsSync(s.socket));
   assert.equal(s.entry().connected, false);
 });
