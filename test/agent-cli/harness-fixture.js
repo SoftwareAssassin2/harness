@@ -115,6 +115,9 @@ export function fixture() {
 
   const env = {
     ...process.env,
+    // ASS-484: a test never runs as the control running it (the merge gate's npm test inherits its pid); a test
+    // wanting a control pid sets it. The first entry here that drops, not overrides, an inherited var: spawn omits undefined.
+    HARNESS_CONTROL_PID: undefined,
     ASSIGNMENTS_FILE: at('assignments.json'), HARNESS_FILE: at('harness.json'), LAST_MODEL_USED_FILE: at('last-model-used'), AGENT_NAMES_FILE: at('agent-names.json'), AGENT_NAMES_LAST_USED_FILE: at('agent-names-last-used.json'),
     ENGINES_DIR: at('engines'), PROMPTS_DIR: at('prompts'), PERSONAS_DIR: at('personas'), PROJECTS_DIR: at('projects'), AGENTS_DIR: at('agents'),
     ACLI_DISABLED: '1', CLAUDE_USAGE_DISABLED: '1',
