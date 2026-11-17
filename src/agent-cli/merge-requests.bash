@@ -11,7 +11,7 @@
 #   mr_thread <command> <index> <thread-id>     # fails unless <thread-id> can name a review thread of MRS[<index>] (ASS-239)
 #   mr_view / mr_default_branch / mr_find_open / mr_changes / mr_open / mr_retarget / mr_ready / mr_auto_merge
 #       each <command> <index> …: one forge call for MRS[<index>]
-#   mr_rerun <command> <index>                  # its failed pipeline started again (ASS-346)
+#   mr_rerun <command> <index>                  # its failed pipeline started again (ASS-346; merge-request:check, merge-request:retry)
 #   plan_new_merge_request <command> <project> <ticket-key> <variation> <repository-url> <contents>
 #                                               # a new planned merge request for <repository-url>: prints { id, repository, branch, base } (ASS-423)
 #   mr_files <command> <index>                 # each path its diff on the forge touches (a rename's both names), one per line (ASS-423)

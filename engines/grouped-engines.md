@@ -2238,8 +2238,8 @@ commit's sha) and the pipeline's `status` and `sha`.
 
 A feedback round that changed nothing spends no visit (ASS-388). The check
 records on each Open merge request's row the head commit it saw
-(`checked-head`) and clears `feedback-acted`, which `merge-request:reply` and
-`merge-request:resolve` set. After Address Merge Request Feedback, Check the
+(`checked-head`) and clears `feedback-acted`, which `merge-request:reply`,
+`merge-request:resolve` and `merge-request:retry` set. After Address Merge Request Feedback, Check the
 Feedback Round runs `merge-request:feedback-round` (`--only` as the loop's
 other commands): each Open one's head is read from its forge, and it prints
 `{ "changed": <bool>, "merge-requests": [{ id, key, head, "checked-head",

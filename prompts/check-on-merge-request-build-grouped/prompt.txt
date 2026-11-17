@@ -8,7 +8,7 @@ The merge requests: {agent-sh} ticket:merge-request-plan {project} {ticket} {var
 
 1. Open review threads: read each one and make the requested change. Where you disagree, or it needs the operator: reply saying why and leave it unresolved.
 2. Review comments: read each one in `comments` and make the requested change (a rename, a renumber, a rebase). Where you disagree, or it needs the operator: reply saying why.
-3. Failed build: read the failed jobs' logs, find the cause, and fix it. Don't skip or disable failing tests.
+3. Failed build: read the failed jobs' logs, find the cause, and fix it. Don't skip or disable failing tests. If a failed job's log shows no test ran (a runner, Docker daemon or scheduling failure: infra), don't change code: retry it with `{agent-sh} merge-request:retry {project} {ticket} {variation} <id>`, once per head; if it is refused, the failure is real: fix it, or reply and leave it for the operator.
 4. Needs rebase: git fetch origin, rebase onto origin/<base> and resolve conflicts as Conflicts, below, says.
 5. Run the automated tests, then commit every change on its branch and push it once; before you finish, nothing is left uncommitted, and nothing is committed on its base (the harness refuses a commit on the default branch).
 6. Then, for each thread you addressed: reply with what changed and its commit, then resolve it. For each review comment: reply with what changed and its commit (it has no thread to resolve).
