@@ -682,6 +682,20 @@ test('ASS-239 AC3: check-on-merge-request-grouped replies to and resolves each t
   assert.doesNotMatch(t, /a human replies on and resolves/);
 });
 
+// ASS-483: a failed job that ran no test (runner, Docker daemon or scheduling failure) is retried with
+// merge-request:retry, once per head, not fixed by changing code. VM-only: the flat prompt doesn't name it.
+test('ASS-483 AC2: the grouped feedback prompts\' failed-build item retries an infra failure (no test ran) with merge-request:retry instead of changing code, a refusal meaning the failure is real; the flat prompt does not name it', () => {
+  for (const p of ['check-on-merge-request-grouped', 'check-on-merge-request-build-grouped']) {
+    const item = text(p).split('\n').find(l => /Failed build:/.test(l));
+    assert.ok(item.includes('`{agent-sh} merge-request:retry {project} {ticket} {variation} <id>`'), `${p}: ${item}`);
+    assert.match(item, /no test ran/, p);
+    assert.match(item, /Docker daemon/, p);
+    assert.match(item, /don't change code|not .*chang\w* code/i, p);
+    assert.match(item, /refuse/i, p);
+  }
+  assert.doesNotMatch(text('check-on-merge-request'), /merge-request:retry/);
+});
+
 // ASS-361: grouped-build's Address Merge Request Feedback runs check-on-merge-request-build-grouped, Release's
 // check-on-merge-request-grouped (left as it is) plus plain review comments: it reads merge-request:view's comments,
 // makes the change (or says why not) and replies to each with what changed and its commit, through

@@ -1119,6 +1119,72 @@ async function flaked(repository = APP, head = H) {
   return f;
 }
 
+const RETRY_POST = 'api projects/g%2Fapp/merge_requests/9/pipelines --hostname gitlab.com -X POST';
+const retryPost = f => f.forge.route('glab', /^api projects\/g%2Fapp\/merge_requests\/9\/pipelines --hostname gitlab.com -X POST$/, { out: { id: 51, status: 'created' } });
+const posts = f => f.forge.log('glab').filter(l => / -X POST$/.test(l));
+
+test('ASS-483 AC1: GitLab — merge-request:retry starts the failed pipeline again (mr_rerun) and records retried-head and feedback-acted; a second call at the same head, even after a check, is refused naming the prior retry with no second rerun; a new head may be retried once more', async () => {
+  const f = await flaked();
+  retryPost(f);
+  await f.agent('merge-request:retry', 'p', 'ABC-5', 'A', '1');
+  assert.deepEqual(reruns(f), [RETRY_POST]);
+  assert.equal(f.mrs()[0]['retried-head'], H);
+  assert.equal(f.mrs()[0]['feedback-acted'], true);
+  const row = JSON.stringify(f.mrs()[0]);
+  await fails(f.agent('merge-request:retry', 'p', 'ABC-5', 'A', '1'), /MR 1 \(!9\).*already retried at aaa111/);
+  assert.deepEqual(reruns(f), [RETRY_POST]);
+  assert.equal(JSON.stringify(f.mrs()[0]), row);
+  // The check clears checked-head/feedback-acted only: retried-head stays, so still refused.
+  await checked(f);
+  assert.equal(f.mrs()[0]['retried-head'], H);
+  await fails(f.agent('merge-request:retry', 'p', 'ABC-5', 'A', '1'), /already retried at aaa111/);
+  assert.deepEqual(reruns(f), [RETRY_POST]);
+  // A push: a new head, one more retry.
+  view(f, 'app', 9, { sha: H2, head_pipeline: { id: 50, status: 'failed', created_at: BEFORE, sha: H2 } });
+  await f.agent('merge-request:retry', 'p', 'ABC-5', 'A', '1');
+  assert.deepEqual(reruns(f), [RETRY_POST, RETRY_POST]);
+  assert.equal(f.mrs()[0]['retried-head'], H2);
+});
+
+test('ASS-483 AC1: errors — merge-request:retry falls back to retrying the pipeline\'s failed jobs; when nothing could be started it fails and records nothing; bad usage or an unknown id fails with no forge write', async () => {
+  const f = await flaked();
+  f.forge.route('glab', /merge_requests\/9\/pipelines --hostname gitlab.com -X POST$/, { out: { message: 'No pipeline created' }, exit: 1 });
+  f.forge.route('glab', /^api projects\/g%2Fapp\/pipelines\/50\/retry --hostname gitlab.com -X POST$/, { out: { id: 50, status: 'running' } });
+  await f.agent('merge-request:retry', 'p', 'ABC-5', 'A', '1');
+  assert.deepEqual(reruns(f), [RETRY_POST, 'api projects/g%2Fapp/pipelines/50/retry --hostname gitlab.com -X POST']);
+  assert.equal(f.mrs()[0]['retried-head'], H);
+  const g = await flaked();
+  g.forge.route('glab', /\/pipelines(\/50\/retry)? --hostname gitlab.com -X POST$/, { out: { message: 'Forbidden' }, exit: 1 });
+  await fails(g.agent('merge-request:retry', 'p', 'ABC-5', 'A', '1'), /could not start .* failed pipeline again/);
+  assert.equal(g.mrs()[0]['retried-head'], undefined);
+  assert.equal(g.mrs()[0]['feedback-acted'], undefined);
+  const h = await flaked();
+  await fails(h.agent('merge-request:retry', 'p', 'ABC-5', 'A'), /usage: merge-request:retry/);
+  await assert.rejects(h.agent('merge-request:retry', 'p', 'ABC-5', 'A', '7'));
+  assert.deepEqual(posts(h), []);
+  assert.equal(h.mrs()[0]['retried-head'], undefined);
+});
+
+test('ASS-483 AC1: GitHub — merge-request:retry re-runs the failed workflow run\'s failed jobs (gh run rerun --failed) once per head', async () => {
+  const f = await flaked(HUB);
+  f.forge.route('gh', /^run rerun 50 --failed --repo o\/h$/);
+  await f.agent('merge-request:retry', 'p', 'ABC-5', 'A', '1');
+  assert.deepEqual(reruns(f), ['run rerun 50 --failed --repo o/h']);
+  assert.equal(f.mrs()[0]['retried-head'], H);
+  await fails(f.agent('merge-request:retry', 'p', 'ABC-5', 'A', '1'), /already retried at aaa111/);
+  assert.deepEqual(reruns(f), ['run rerun 50 --failed --repo o/h']);
+});
+
+test('ASS-483 AC1: feedback-round — a round whose only act was merge-request:retry counts as changed, like a reply or resolve', async () => {
+  const f = await flaked();
+  retryPost(f);
+  await checked(f);
+  const round = async () => { const r = await ran(f, 'merge-request:feedback-round', 'p', 'ABC-5', 'A'); assert.equal(r.code, 0, r.err); return JSON.parse(r.out).changed; };
+  assert.equal(await round(), false);
+  await f.agent('merge-request:retry', 'p', 'ABC-5', 'A', '1');
+  assert.equal(await round(), true);
+});
+
 // ASS-351: Team Code Review waits for approvals without bouncing through
 // Ensure Auto-Merge. auto-merge is true when every merge request not Closed is
 // Merged, set to auto-merge, or Open and waiting on a dependency not yet
