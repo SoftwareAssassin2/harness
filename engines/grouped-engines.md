@@ -153,6 +153,12 @@ the operator's Human Review notes, as every grouped Build prompt reads
 them — which reads each merge
 request with `merge-request:view`, acts on its threads, review comments,
 failed jobs and rebase, pushes, and replies to each (resolving the threads).
+On GitLab its `failed-jobs` (and the job names in the feedback) also hold
+the pipeline's failed bridges — trigger jobs, which `…/jobs` leaves out —
+and their downstream pipeline's failed jobs (ASS-482), all from the pipeline
+the `build-failed` was judged on. A `build-failed` with no failed job or
+bridge to show (a canceled pipeline, say) is no agent's to act on either: it
+keeps polling, exit 2, the feedback naming the pipeline's URL.
 Once its turn is complete it goes back to Await Sequential Merge, which reads the
 forge again. It has its own max-visits (3), then Blocked. A control line in
 `execution-plan-<variation>.md` names the merge request and what it needs,
