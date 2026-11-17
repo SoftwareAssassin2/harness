@@ -9,7 +9,11 @@
 // difference the ticket's diff makes to it.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdtempSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { judge, timedOut } from '../../src/agent-cli/automated-tests/test-results.js';
 
 const branch = readFileSync(new URL('./fixtures/example-shop-api-db-e2e.txt', import.meta.url), 'utf8');
@@ -192,6 +196,45 @@ test('ASS-227: with no master to compare (a reproducing check), a red run failed
   assert.equal(judge(null, [red('boom\n'), { status: 0, output: 'ok\n' }]).verdict, 'passed');
 });
 
+// ASS-487: a reproducing check's run is judged as with no master, then master's red run sets aside only the failures it names too — never a timeout, never "the bug still reproduces".
+test('ASS-487 AC1: a reproducing run whose every failure master names too passes, each listed pre-existing', () => {
+  const tap = 'x.sql ....... \n1..2\nok 1 - b\nnot ok 2 - a\n';
+  assert.deepEqual(judge(red(tap), [red(tap), red(tap)], { reproduces: true }), { verdict: 'passed', new: [], 'pre-existing': ['x.sql: a'] });
+});
+
+test('ASS-487 AC1/AC2: a reproducing run failing a test master names and one it does not failed, only the one master lacks new', () => {
+  const master = 'x.sql ....... \n1..2\nnot ok 1 - a\nok 2 - b\n', branch = 'x.sql ....... \n1..2\nnot ok 1 - a\nnot ok 2 - b\n';
+  const verdict = judge(red(master), [red(branch), red(branch)], { reproduces: true });
+  assert.equal(verdict.verdict, 'failed');
+  assert.deepEqual(verdict.new, ['x.sql: b']);
+});
+
+test('ASS-487: a reproducing run naming no test, master red, still failed — the bug still reproduces — never blocked (ASS-227 kept)', () => {
+  const master = 'x.sql ....... \n1..1\nnot ok 1 - a\n';
+  assert.deepEqual(judge(red(master), [red('Error: something broke\n')], { reproduces: true }),
+    { verdict: 'failed', new: ['the command exits 1: the ticket\'s bug still reproduces'], 'pre-existing': [] });
+  assert.deepEqual(judge(red('boom\n'), [red('Error: something broke\n')], { reproduces: true }), judge(null, [red('Error: something broke\n')]));
+});
+
+test('ASS-487: master timed out, red naming no test, or green subtracts nothing from a reproducing run: judged as with no master', () => {
+  const runs = [red('x.sql ....... \n1..1\nnot ok 1 - a\n')], none = judge(null, runs);
+  assert.equal(none.verdict, 'failed');
+  for (const master of [stopped(SPEC_STOPPED), red('boom\n'), { status: 0, output: 'ok\n' }])
+    assert.deepEqual(judge(master, runs, { reproduces: true }), none);
+});
+
+test('ASS-487: a reproducing run that timed out failed, master red or not — a timeout is never master\'s', () => {
+  const verdict = judge(red('x.sql ....... \n1..1\nnot ok 1 - a\n'), [stopped('starting\n')], { reproduces: true });
+  assert.equal(verdict.verdict, 'failed');
+  assert.match(verdict.new[0], /timed out/);
+});
+
+test('ASS-487: a reproducing run failing once and passing its re-run passes (re-run logic unchanged)', () => {
+  const master = 'x.sql ....... \n1..2\nnot ok 1 - b\nok 2 - a\n';
+  assert.equal(judge(red(master), [red('x.sql ....... \n1..2\nok 1 - b\nnot ok 2 - a\n'), { status: 0, output: 'ok\n' }], { reproduces: true }).verdict, 'passed');
+  assert.equal(judge(red(master), [red('x.sql ....... \n1..2\nnot ok 1 - b\nnot ok 2 - a\n'), red('x.sql ....... \n1..2\nnot ok 1 - b\nok 2 - a\n')], { reproduces: true }).verdict, 'passed');
+});
+
 // ASS-329: a run stopped at automated-tests:verify-success's time limit — exit
 // 124, its output ending with the limit's own line — and what node --test
 // prints when stopped: its spec reporter lists each file it was running as a
@@ -243,4 +286,14 @@ test('ASS-329 AC3: master\'s run timed out too — or master timed out where the
   assert.equal(judge(stopped(SPEC_STOPPED), [stopped(SPEC_STOPPED)]).verdict, 'blocked');
   assert.equal(judge(stopped(SPEC_STOPPED), [red('x.sql ....... \n1..1\nnot ok 1 - a\n')]).verdict, 'blocked');
   assert.equal(judge(stopped(SPEC_STOPPED), [{ status: 0, output: 'ok\n' }]).verdict, 'passed');
+});
+
+test('ASS-487: the command line takes a leading --reproduces, judging as judge(…, { reproduces: true }); without it, as before', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'ass487-'));
+  const tap = join(dir, 'tap.txt'), cli = fileURLToPath(new URL('../../src/agent-cli/automated-tests/test-results.js', import.meta.url));
+  writeFileSync(tap, 'x.sql ....... \n1..1\nnot ok 1 - b\n');
+  const verdict = (...args) => JSON.parse(execFileSync('node', [cli, ...args], { encoding: 'utf8' }));
+  assert.deepEqual(verdict('--reproduces', '1', tap, '1', tap), { verdict: 'passed', new: [], 'pre-existing': ['x.sql: b'] });
+  assert.deepEqual(verdict('1', tap, '1', tap), { verdict: 'passed', new: [], 'pre-existing': ['x.sql: b'] });
+  assert.deepEqual(verdict('--reproduces', '1', '-', '1', tap).new, ['x.sql: b']);
 });

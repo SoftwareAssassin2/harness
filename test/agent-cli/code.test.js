@@ -459,16 +459,54 @@ function reproducing(f) {
   return f;
 }
 
-test('ASS-227 AC2: a reproducing check red on master and still red on the branch, naming no test, failed — exit 1, for Generate Solution, not 3 — with no run on master', async () => {
+test('ASS-227 AC2: a reproducing check red on master and still red on the branch, naming no test, failed — exit 1, for Generate Solution, not 3 — though run on master (ASS-487)', async () => {
   const f = reproducing(await againstMaster('boom on master\n', 'boom on the branch\n', 'cat tap.txt; exit 1'));
   await exitsWith(f.agent('automated-tests:verify-success', 'p', 'ABC-3', 'A'), 1, /1 of 1 failed/);
-  assert.deepEqual(f.runs(), ['change/ABC-3', 'change/ABC-3']);              // the branch and its re-run: master's red is the bug
+  assert.deepEqual(f.runs(), ['change/ABC-3', 'HEAD', 'change/ABC-3']);      // ASS-487: master runs too, but names no test to set aside: the bug still reproduces
   assert.match(f.results(), /## ✗ .* \(exit 1\)\n\nNew failures, failing again on a re-run:\n- the command exits 1: the ticket's bug still reproduces\n/);
 });
 
 test('ASS-227 AC2: a reproducing check red on master and green on the branch passes', async () => {
   const f = reproducing(await againstMaster('boom on master\n', 'fixed\n', 'cat tap.txt; ! grep -q boom tap.txt'));
   assert.deepEqual(JSON.parse((await f.agent('automated-tests:verify-success', 'p', 'ABC-3', 'A')).stdout), { passed: 1, failed: 0 });
+});
+
+// ASS-487: a reproducing check red on the branch is run on master too, master
+// setting aside only the failures it names as well; any other is new (exit 1).
+test('ASS-487 AC1: a reproducing check whose every failure is red on master too passes, the failures listed pre-existing — master did run', async () => {
+  const f = reproducing(await againstMaster('x.sql ....... \n1..2\nok 1 - a\nnot ok 2 - b\n', 'x.sql ....... \n1..2\nok 1 - a\nnot ok 2 - b\n'));
+  assert.deepEqual(JSON.parse((await f.agent('automated-tests:verify-success', 'p', 'ABC-3', 'A')).stdout), { passed: 1, failed: 0, 'pre-existing': ['x.sql: b'] });
+  assert.deepEqual(f.runs(), ['change/ABC-3', 'HEAD']);                      // the branch, then master
+  assert.equal(f.on(), 'change/ABC-3');
+});
+
+test('ASS-487 AC1, AC2: a reproducing check also failing a test green on master exits 1, only that test new', async () => {
+  const f = reproducing(await againstMaster('x.sql ....... \n1..2\nok 1 - a\nnot ok 2 - b\n', 'x.sql ....... \n1..2\nnot ok 1 - a\nnot ok 2 - b\n'));
+  await exitsWith(f.agent('automated-tests:verify-success', 'p', 'ABC-3', 'A'), 1, /1 of 1 failed/);
+  assert.match(f.results(), /New failures, not failing on master, and failing again on a re-run:\n- x\.sql: a\n\n/);
+  assert.doesNotMatch(f.results(), /^- x\.sql: b$/m);
+});
+
+test('ASS-487 AC2: a reproducing check failing a test master does not have exits 1, the test new', async () => {
+  const f = reproducing(await againstMaster('x.sql ....... \n1..1\nnot ok 1 - b\n', 'x.sql ....... \n1..2\nnot ok 1 - b\nnot ok 2 - c\n'));
+  await exitsWith(f.agent('automated-tests:verify-success', 'p', 'ABC-3', 'A'), 1, /1 of 1 failed/);
+  assert.match(f.results(), /New failures[^\n]*\n- x\.sql: c\n\n/);
+});
+
+test('ASS-487: master\'s baseline unavailable (changes not committed), a red reproducing check is judged with no master — exit 1, not 3', async () => {
+  const f = reproducing(await againstMaster('x.sql ....... \n1..1\nnot ok 1 - a\n', 'x.sql ....... \n1..1\nnot ok 1 - a\n# the branch\n'));
+  writeFileSync(join(f.worktree, 'tap.txt'), 'x.sql ....... \n1..1\nnot ok 1 - a\n# uncommitted\n');
+  await exitsWith(f.agent('automated-tests:verify-success', 'p', 'ABC-3', 'A'), 1, /1 of 1 failed/);
+  assert.match(f.results(), /- x\.sql: a\n/);
+  assert.equal(f.on(), 'change/ABC-3');
+});
+
+test('ASS-487: a reproducing check that timed out on the branch is not run on master', async () => {
+  const f = reproducing(await againstMaster('x.sql ....... \n1..1\nnot ok 1 - a\n', 'branch\n', 'cat tap.txt; sleep 30'));
+  minutes(f, 0.02);
+  await exitsWith(f.agent('automated-tests:verify-success', 'p', 'ABC-3', 'A'), 1, /1 of 1 failed/);
+  assert.deepEqual(f.runs(), ['change/ABC-3', 'change/ABC-3']);              // the branch and its re-run only
+  assert.match(f.results(), /- the command timed out after 0\.02 minutes\n/);
 });
 
 test('a variation with a VM (ASS-74) has its tests listed and run in the VM, in /repos/, through limactl shell: no worktree or workspace needed', async () => {

@@ -476,9 +476,9 @@ test('ASS-227 AC1: generate-automated-tests-grouped says to mark "reproduces": t
 // a whole-file run command is un-passable wherever the file also holds
 // failures unrelated to the ticket (ASS-320). Step 4 must tell the agent to
 // narrow such a run to the ticket's own tests instead.
-test('ASS-324 AC1: generate-automated-tests-grouped says a "reproduces": true entry gets no master-baseline comparison, so its run command covers only the ticket\'s own tests — a --test-name-pattern or other runner filter — where the file also holds failures unrelated to the ticket', () => {
+test('ASS-324 AC1: generate-automated-tests-grouped says a "reproduces": true entry is compared with master only to set aside failures master has too (ASS-487), so its run command covers only the ticket\'s own tests — a --test-name-pattern or other runner filter — where the file also holds failures unrelated to the ticket', () => {
   const t = text('generate-automated-tests-grouped');
-  assert.match(t, /no master-baseline comparison/);
+  assert.match(t, /compared with master only to set aside failures master has too/);
   assert.match(t, /--test-name-pattern/);
   assert.match(t, /failing for reasons unrelated to the ticket/);
   assert.doesNotMatch(text('generate-automated-tests'), /test-name-pattern/, 'flat prompt unchanged');
