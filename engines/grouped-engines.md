@@ -2221,6 +2221,16 @@ listed in the check's output as `"build-pending": [{ id, key, why:
 every one not Closed is Merged, Team Code Review ends Release (ASS-224) and
 QA sets the ticket system to In Testing.
 
+An agent at Address Merge Request Feedback retries a failed pipeline that
+failed on infra before any test ran (a runner, Docker daemon or scheduling
+failure) with `merge-request:retry <project> <ticket-key> <variation> <id>`
+(ASS-483), as the grouped feedback prompts say, rather than changing code. It
+starts the pipeline again with the same `mr_rerun` as above, once per head
+commit: the head is recorded on the row as `retried-head` (the check does not
+clear it) with `feedback-acted`, and a second call at the same head is refused
+(exit 1, naming the prior retry), so a real failure cannot loop; a push gives
+a new head and one more retry. A retry that cannot start records nothing.
+
 A superseded canceled pipeline is no `build-failed` (ASS-388). A force-push,
 a rebase or a new commit cancels the pipeline running for the old head, so a
 merge request whose head is fine could read `build-failed` from it and be
@@ -2244,7 +2254,7 @@ Feedback Round runs `merge-request:feedback-round` (`--only` as the loop's
 other commands): each Open one's head is read from its forge, and it prints
 `{ "changed": <bool>, "merge-requests": [{ id, key, head, "checked-head",
 acted }] }`, changed false only when there is an Open one and every head is
-its `checked-head` with nothing replied to or resolved. Its exit on changed
+its `checked-head` with nothing replied to, resolved or retried. Its exit on changed
 false goes back to the check with `"cause": "no-op-round"` in the engine JSON;
 control records an exit's cause on a script step's move, and on a run's own
 `state-changes` too (`transient-state-engine:change-state` takes
