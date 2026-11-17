@@ -1,5 +1,5 @@
 {
-    "description": "Prompt for classifying a block as a harness, project or environment issue, with its reasoning, for the grouped engines' Blocked (ASS-107; ASS-163: a project issue is checked against the latest master before any bug is raised): where its fix is made; ASS-390: or a dependency — the block only waits for one of the ticket's own dependency merge requests to merge, sent back to Build's Await Sequential Merge — each outcome an exit of grouped-blocked's Classify; it logs what it found in the change log, and cites only what it read; ASS-391: or a rate limit, ASS-395: or a credential",
+    "description": "Prompt for classifying a block as a harness, project or environment issue, with its reasoning, for the grouped engines' Blocked (ASS-107; ASS-163: a project issue is checked against the latest master before any bug is raised): where its fix is made; ASS-390: or a dependency — the block only waits for one of the ticket's own dependency merge requests to merge, sent back to Build's Await Sequential Merge — each outcome an exit of grouped-blocked's Classify; it logs what it found in the change log, and cites only what it read; ASS-391: or a rate limit, ASS-395: or a credential; ASS-492: or own work that is incomplete, nothing failing — a missing change and its repository, planned as a merge request and sent back to Generate Solution",
     "supported-command-line-interfaces": [
         "claude"
     ],
@@ -48,7 +48,7 @@
             },
             "own-branch": {
                 "type": "boolean",
-                "description": "Project only (ASS-384): true when the cause is in what the ticket's own branch adds or changes (Troubleshoot's failing-file), not in master's code; its merged merge requests count too (ASS-423); the harness checks master and the branch, then sends the ticket back to Generate Solution; left out otherwise"
+                "description": "Project only (ASS-384): true when the cause is in what the ticket's own branch adds or changes (Troubleshoot's failing-file), not in master's code; its merged merge requests count too (ASS-423); the harness checks master and the branch, then sends the ticket back to Generate Solution; left out otherwise; ASS-492: also true when nothing failed but the ticket's own work lacks a change (missing-change)"
             },
             "human-action": {
                 "type": "string",
@@ -57,6 +57,14 @@
             "dependency-merge-request": {
                 "type": "string",
                 "description": "Dependency only (ASS-390): the merge request the block waits for — its planned id, key or url, from ticket:merge-request-plan; left out otherwise"
+            },
+            "missing-change": {
+                "type": "string",
+                "description": "Project, own-branch true only (ASS-492): nothing failed, but the ticket's own work is incomplete — the change it still needs, what the new or existing merge request must hold, in one line (e.g. bump @scope/* to 1.0.0-preview.85 in package.json and the lockfile); the harness plans it on the ticket's merge request in missing-change-repository still Open or Not Created, else a new one, and sends the ticket back to Generate Solution; left out otherwise"
+            },
+            "missing-change-repository": {
+                "type": "string",
+                "description": "With missing-change only (ASS-492): the forge url of the project's repository (project.json's repositories) the change goes in; left out otherwise"
             }
         },
         "required": [

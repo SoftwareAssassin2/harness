@@ -24,6 +24,8 @@
 //   (removed as it drops: a dropped connection), then exits, its socket gone.
 //   A `refuse-forward` file in the folder fails it as ExitOnForwardFailure
 //   does for a port the workstation refuses.
+// ASS-481: `gcloud compute …` and `gcloud config get-value account`, a cloud
+// VM's, are fake-gcloud-compute.js's.
 // Under test/support/, which npm test's pattern leaves alone.
 import { appendFileSync, existsSync, readFileSync, writeFileSync, rmSync, mkdirSync } from 'node:fs';
 import { createServer } from 'node:net';
@@ -33,8 +35,11 @@ import { join } from 'node:path';
 const args = process.argv.slice(2);
 if (process.env.FAKE_GCLOUD_LOG) appendFileSync(process.env.FAKE_GCLOUD_LOG, `${JSON.stringify({ argv: args, config: process.env.CLOUDSDK_CONFIG ?? null })}\n`);
 const dir = process.env.FAKE_WS_DIR ?? '/nonexistent';
-const [group, sub, id] = args;
 const die = (text, code = 1) => { process.stderr.write(`${text}\n`); process.exit(code); };
+// ASS-481: global flags (--quiet, --verbosity=…) may come first; a cloud VM's calls are compute's.
+const words = args.filter(a => !a.startsWith('--'));
+if (words[0] === 'config' || words[0] === 'compute') { await import('./fake-gcloud-compute.js'); await new Promise(() => {}); }
+const [group, sub, id] = args;
 if (group !== 'workstations') die(`fake gcloud: unknown command ${args.join(' ')}`);
 if (existsSync(join(dir, 'expired'))) die(`ERROR: (gcloud.workstations.${sub}) There was a problem refreshing your current auth tokens: Reauthentication failed. cannot prompt during non-interactive execution.\nPlease run:\n\n  $ gcloud auth login`);
 if (existsSync(join(dir, 'offline'))) die(`ERROR: (gcloud.workstations.${sub}) There was a problem refreshing your current auth tokens: HTTPSConnectionPool(host='oauth2.googleapis.com', port=443): Max retries exceeded with url: /token (Caused by NameResolutionError("<urllib3.connection.HTTPSConnection object>: Failed to resolve 'oauth2.googleapis.com'"))`);

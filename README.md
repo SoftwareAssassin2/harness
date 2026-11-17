@@ -150,7 +150,7 @@ selects that project.
 - `"operator-needed-notifications": false` turns these off for that project
   too.
 
-## Where a project's tickets run: VMs and GCP workstations
+## Where a project's tickets run: VMs, GCP workstations and cloud VMs
 
 By default each ticket variation runs in a Lima VM of its own. A project can
 instead say, in its `data/projects/<project>/project.json`, that its tickets
@@ -182,10 +182,30 @@ them, it never creates them):
   `CLOUDSDK_CONFIG` folder of the gcloud login that reaches it (a leading `~`
   or `$HOME` is expanded). Required, with at least one, in `workstation` and
   `vm+workstation` modes.
+- `cloud-vms` (ASS-481): plain GCP Compute Engine VMs ("cloud VMs") used
+  exactly as workstations are, each with its VM `id`, `gcp-project` and
+  `zone`, optionally `gcloud-config` (as above) and `ssh-user` (its OS Login
+  user; by default the one of the gcloud login's account,
+  `ada.lovelace@example.com` → `ada_lovelace_example_com`). The harness never
+  creates, resizes or stops one. With them, `workstation` and
+  `vm+workstation` modes need at least one workstation or cloud VM. The
+  example (the operator adds their own to a project.json by hand):
+
+  ```json
+  "cloud-vms": [
+    {
+      "id": "ada-vm",
+      "gcp-project": "example-gcp-project",
+      "zone": "us-central1-a",
+      "gcloud-config": "~/.config/example/gcloud"
+    }
+  ]
+  ```
 
 Control logs an error naming the field, and uses neither, when the mode is
-unknown, a workstation mode lists no workstations, a workstation misses a
-field or two share an id. Which ticket holds a workstation and whether it is
+unknown, a workstation mode lists no workstations (nor cloud VMs), a
+workstation or cloud VM misses a field, or two share an id (across both
+lists). Which ticket holds a workstation and whether it is
 running are live data, never kept in `project.json`. Commands read these
 settings through `src/agent-cli/dev-environments.bash`, control and the
 dashboard through `src/control/dev-environments.js`.
@@ -263,9 +283,49 @@ workstation started, connected and set up while its seat is held or a ticket
 waits for a seat it could take, and lets it stop itself (its 30-minute idle
 stop) only when nobody needs it. Who holds which seat is in
 `data/projects/<project>/seats.json`; the sprint screen marks a VM seat 💺
-and a workstation seat ⛅, the footer's gcp workstations box shows each
-workstation's `1/1 seats` (or `seat lost`), and the models box, in
+and a workstation seat ⛅, the footer's gcp workstations box shows
+`seat lost` on a workstation that can't be used, and the models box, in
 `vm+workstation` mode, `vm seats: <used>/<VM seats>`.
+
+**Cloud VMs (ASS-481).** A cloud VM is a workstation in all but how it is
+reached: control starts a stopped one (`gcloud compute instances start`, or
+`resume` when suspended), waits for it to run and for its SSH to answer
+through IAP (up to 5 and 3 minutes; past that the footer says `start timed
+out` and its seat is lost until a connect works), and keeps one SSH
+connection to it through IAP with OS Login (`ssh -o
+ProxyCommand="gcloud compute start-iap-tunnel <id> 22 --listen-on-stdin …"`,
+the key `~/.ssh/google_compute_engine`) — the same `./agent.sh
+workstation:connect <project> <id>`, `workstation:status`, `workstation:ssh`,
+`workstation:setup` and `workstation:disconnect` by hand. Each cloud VM is
+one seat, taken after the workstations' (in list order) and before a VM
+seat; its steps are claimed and released, its images pulled and its setup
+run as on a workstation, except that its disk persists across a stop, so
+setup runs again only after a reboot or when its version changes. It needs
+Docker for setup, as a workstation does. It stops itself after 60 idle
+minutes; control never stops it, and its connection holds no terminal, so it
+never keeps the VM up. The footer's `cloud virtual machines` box, after `gcp
+workstations`, shows each cloud VM's agents, state (running, stopped,
+starting, connecting, sign in needed, setup failed, start timed out) and
+lost seat, and the sprint screen marks a cloud VM seat 🌐 (see
+`engines/grouped-engines.md`, "Cloud VMs"). Each line of both boxes reads
+`<id> <activity> <state>` (ASS-485): `🤖x<n>` while agents work on the
+ticket holding the machine, `💻` while it runs a script step there (the
+sprint screen's 💻), nothing when idle — e.g. `ws-1 💻 running`.
+
+**Local virtual machines (ASS-486, ASS-489, ASS-491).** In `vm` and
+`vm+workstation` mode the footer's rightmost box, `local virtual machines`,
+has one line per seat that uses a local Lima VM. First the in-progress VM
+seats: the tickets holding one (`seats.json` kind `vm`), oldest first, each
+its Lima VM (from `data/projects/<project>/vms.json`) in the same
+`<id> <activity> <state>` lines — e.g. `vm-1 🤖x2 running`, or `vm-1-a
+creating` in gray while its VM is still being made — then a gray `free build
+seat` line per seat left, up to `max-tickets-in-progress`. Then the planning
+seats (planning always runs on local VMs), as the sprint screen's 💺 has
+them: the tickets holding one, in the same lines, then a gray `free planning
+seat` line per seat left, up to `max-tickets-in-planning`. With no limit only
+the holders show, or a gray `none` with no lines at all. A VM whose ticket
+holds no seat (at a gate, blocked, or in a workstation or cloud VM seat) is
+left out.
 
 **A step's end runs where its step ran (ASS-480).** A step run in a
 ticket's VM keeps its commits there until its end pushes them, so control
@@ -434,6 +494,32 @@ from its next start (or at once with `docker pull <image>:<tag>` in it), and
 `arm64`. If the project later publishes a multi-arch image itself, drop the
 declaration: `registry:arm64-build` reports such an image as `upstream` and
 builds nothing.
+
+## How long control's ticks take
+
+Each control times every tick (from the start of the tick to its end, a tick
+that fails included, the pause between ticks not) and keeps, since it
+started: the number of ticks, the lowest, highest and average time, the last
+tick's, and when the highest happened. It keeps the same figures for each of
+the tick's phases (finish, registries, seats/VMs, steps, gaps, timers,
+dependencies, supervise, dispatch) and, under each phase, for each call the
+tick makes in it (its sub-routines, such as `seats/VMs/superviseVms` or
+`timers/checkUsage`, with how many calls a tick makes). They are written to
+`data/projects/<project>/tick-stats.json` (`~/.harness/tick-stats.json` for a
+control run without `--project`; `HARNESS_HOME` moves it) at most every 30
+seconds and when control stops. To read them:
+
+```sh
+./agent.sh harness:tick-stats [<project>]
+```
+
+It prints each project's figures (or the one named) in seconds, then a table
+of the phases with their sub-routines indented under each, slowest average
+first. Work the tick starts and doesn't wait for, such as the VM lifecycle
+jobs, isn't included: a sub-routine marked `(awaited part)` is timed only for
+what the tick waits on. A project whose control hasn't recorded any yet says
+so. A tick over 30 seconds also logs a `tick` line in the control log with
+its three slowest phases and sub-routines.
 
 ## Exporting a project
 

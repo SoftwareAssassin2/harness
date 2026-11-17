@@ -34,7 +34,7 @@
 import { existsSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { planFor } from './plan.js';
-import { seatCapacity, keepSeats, placeSeats, seatWords, SEATS_FILE } from './seat-kinds.js';
+import { seatCapacity, keepSeats, placeSeats, seatWords, isRemoteSeat, SEATS_FILE } from './seat-kinds.js';
 import { stepOnMachine } from './workstation-steps.js';
 
 const PHASE = 'seats';
@@ -53,7 +53,7 @@ export async function assignSeats(ctx, state) {
     const before = project.seats ?? [];
     const { kept, lost, unseated } = keepSeats(before, capacity);
     for (const l of lost) {
-      ctx.log(PHASE, `${l.key} ${l.variation}: taken out of its ${l.workstation ? `workstation seat on ${l.workstation}` : 'VM seat'}: ${l.workstation ? `${l.workstation} can't be used (${l.why})` : l.why}; it takes the next free seat of either kind`);
+      ctx.log(PHASE, `${l.key} ${l.variation}: taken out of its ${l.workstation ? `${l.kind === 'cloud-vm' ? 'cloud VM' : 'workstation'} seat on ${l.workstation}` : 'VM seat'}: ${l.workstation ? `${l.workstation} can't be used (${l.why})` : l.why}; it takes the next free seat of either kind`);
       if (l.workstation) m.lost.set(keyOf(project.id, l.key, l.variation), l);
     }
     for (const s of unseated) ctx.log(PHASE, `${s.key} ${s.variation}: gives up ${seatWords(s)}: that kind's seats were lowered; it takes the next free seat`);
@@ -61,7 +61,7 @@ export async function assignSeats(ctx, state) {
     const { reserved, waiting } = planFor(state, project);
     const placed = placeSeats({ records: kept, reserved, capacity, midStep: (key, variation) => stepOnMachine(ctx, state, project.id, key, variation), now: ctx.now().toISOString() });
     for (const s of placed.left) if (withWs) ctx.log(PHASE, `${s.key} ${s.variation}: leaves ${seatWords(s)} (no longer in progress)`);
-    for (const s of placed.moved) ctx.log(PHASE, `${s.key} ${s.variation}: moves from a VM seat to a workstation seat on ${s.workstation}, between its steps; its VM seat is free for the next ticket`);
+    for (const s of placed.moved) ctx.log(PHASE, `${s.key} ${s.variation}: moves from a VM seat to ${seatWords({ kind: s.kind ?? 'workstation', workstation: s.workstation })}, between its steps; its VM seat is free for the next ticket`);
     for (const s of placed.seated) if (withWs || m.lost.has(keyOf(project.id, s.key, s.variation))) ctx.log(PHASE, `${s.key} ${s.variation}: takes ${seatWords(s)}`);
     project.seats = placed.records;
     record(ctx, dir, before, placed.records);
@@ -112,7 +112,7 @@ export function seatNeeds(state, project, plan = planFor(state, project)) {
   const name = list => list.slice(0, 3).map(s => `${s.key} ${s.variation}`).join(', ') + (list.length > 3 ? ` and ${list.length - 3} more` : '');
   for (const w of capacity.workstations) {
     if (w.seats <= 0) continue;
-    const on = records.filter(s => s.kind === 'workstation' && s.workstation === w.id);
+    const on = records.filter(s => isRemoteSeat(s) && s.workstation === w.id);
     if (on.length) needs.set(w.id, `its seat${on.length > 1 ? 's' : ''}: ${name(on)}`);
     else if (w.lost && (records.length || waiting.length || plan.reserved.length)) needs.set(w.id, `its seats lost (${w.lost}); tickets in progress would take them`);
     else if (!w.lost && on.length < w.seats && waiting.length) needs.set(w.id, `a free seat: ${name(waiting)} waiting for one`);

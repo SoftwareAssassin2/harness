@@ -24,5 +24,5 @@ command=vm:step-end
 project="$1" key="$(tr '[:lower:]' '[:upper:]' <<< "$2")" variation="$3" completed=incomplete message=""
 [[ $# -eq 3 ]] || { completed=completed message="$key $variation $5: what the step left uncommitted, committed by the harness at its end (ASS-468)"; }
 vm="$(running_vm "$command" "$project" "$key" "$variation")"
-[[ "$vm" != workstation:* ]] || { echo "$command: $key $variation's machine is a workstation's ($vm): workstation:release ends its steps there" >&2; exit 1; }
+! machine_remote "$vm" || { echo "$command: $key $variation's machine is a workstation's or a cloud VM's ($vm): workstation:release ends its steps there" >&2; exit 1; }
 wsv_trees "$command" "$vm" end "$project" "$key" "$variation" "$completed" "$message"

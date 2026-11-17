@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Description: Whether a failure Blocked attributed to a project's code is on its latest master, from its master CI — project:check-on-master <project> <repository-url|-> <job|->.
+# Description: Whether a failure Blocked attributed to a project's code is on its latest master, from its master CI — project:check-on-master <project> <repository-url|-> <job|-> [<run-id>].
 set -euo pipefail
 
 # The operator's decision box (ASS-163, 2026-10-27), made deterministic: a
@@ -21,7 +21,13 @@ set -euo pipefail
 #   nothing named, a url on no forge, or the forge not answering: unknown,
 #   exit 4 — not proven, so no bug either; { ai-feedback-short,
 #   ai-feedback-long } added for Blocked for Human, telling the operator what
-#   to check (Have AI Try Again repeats the check).
+#   to check (Have AI Try Again repeats the check). (ASS-492) With no
+#   repository or no job named there is nothing to check, so the feedback
+#   prints no blank placeholders ("job - on -'s master"): it says
+#   Troubleshoot named no failing check and gives, from the Blocked run
+#   <run-id> (optional; its structured-output in assignments.json),
+#   Troubleshoot's summary and root cause, Classify's reasoning and any
+#   missing change it named.
 # The job's result is the evidence; the assertion inside it is not matched.
 # A rerun on a fresh checkout of origin/master (AC1's fallback) is not made
 # here: it needs the ticket's VM and the project's test environment.
@@ -34,9 +40,9 @@ source "$here/../sprint.bash"
 source "$here/../harness-project.bash"
 
 command=project:check-on-master
-[[ $# -eq 3 ]] || { echo "usage: $command <project> <repository-url|-> <job|->" >&2; exit 1; }
+[[ $# -eq 3 || $# -eq 4 ]] || { echo "usage: $command <project> <repository-url|-> <job|-> [<run-id>]" >&2; exit 1; }
 [[ "$1" =~ ^[A-Za-z0-9_-]+$ && -f "$projects/$1/project.json" ]] || { echo "$command: invalid project '$1'" >&2; exit 1; }
-project="$1" url="${2%/}" job="$3"
+project="$1" url="${2%/}" job="$3" run_id="${4:-}"
 url="${url%.git}"
 said() { jq -nc --arg o "$1" --arg e "$2" '{ "on-master": $o, "master-evidence": $e }'; }
 
@@ -50,7 +56,28 @@ unknown() {
     "ai-feedback-long": "Blocked put the failure in the project'"'"'s code, but the latest master could not show it: \($e). Only a failure on the latest master is raised as a project bug. Check job \($j) on \($u)'"'"'s master: failing there, raise the bug in the project'"'"'s ticket system and have the ticket wait on it; passing, the cause is our environment or access: fix that, then mark the ticket Resolved (or Have AI Try Again to repeat the check)." }'
   echo "$command: $1" >&2; exit 4
 }
-[[ -n "$url" && "$url" != - && -n "$job" && "$job" != - ]] || unknown "Troubleshoot named no failing repository and CI job to check"
+# nothing_named — (ASS-492) unknown with nothing to check: the run's own finding said instead of blank placeholders.
+nothing_named() {
+  local e="Troubleshoot named no failing repository and CI job to check" found='{}'
+  if [[ -n "$run_id" && "$run_id" != - ]]; then
+    found="$(jq -c --arg id "$run_id" 'first(.["transient-state-engines"] // [] | .[] | select(.id == $id) | .["structured-output"] // {}) // {}' \
+      "${ASSIGNMENTS_FILE:-$here/../../../data/assignments.json}" 2>/dev/null)" || found='{}'
+    [[ -n "$found" ]] || found='{}'
+  fi
+  jq -nc --arg e "$e" --argjson f "$found" 'def said($x): ($x // "") | if type == "string" then gsub("^\\s+|\\s+$"; "") else tostring end;
+    { "on-master": "unknown", "master-evidence": $e,
+      "ai-feedback-short": "Not proven on master: Troubleshoot named no failing check",
+      "ai-feedback-long": ([
+        "Blocked put the cause in the project'"'"'s code, but Troubleshoot named no failing check (no repository and CI job), so the latest master was not checked and no project bug was raised.",
+        (if said($f.summary) != "" then "Summary: \(said($f.summary))" else empty end),
+        (if said($f["root-cause"]) != "" then "Root cause: \(said($f["root-cause"]))" else empty end),
+        (if said($f.reasoning) != "" then "Classify: \(said($f.reasoning))" else empty end),
+        (if said($f["missing-change"]) != "" then "Missing change: \(said($f["missing-change"]))\(if said($f["missing-change-repository"]) != "" then " in \(said($f["missing-change-repository"]))" else "" end)" else empty end),
+        "Decide where the fix goes: a change this ticket still needs, plan it (ticket:add-merge-request) and move the ticket back to Build; a bug on the project'"'"'s master, raise it and have the ticket wait on it; our environment or access, fix that and mark the ticket Resolved (or Have AI Try Again to repeat Blocked)."
+      ] | join("\n")) }'
+  echo "$command: $e" >&2; exit 4
+}
+[[ -n "$url" && "$url" != - && -n "$job" && "$job" != - ]] || nothing_named
 
 branch="$(jq -r --arg u "$url" 'def norm: ascii_downcase | sub("\\.git$"; "") | sub("/$"; "");
   first(.repositories[]? | select((.url // "" | norm) == ($u | norm)) | .["work-space"].branch // empty) // "master"' "$projects/$project/project.json")"

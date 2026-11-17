@@ -1368,7 +1368,7 @@ test('/ hides the project menu, and again shows it', () => {
 test('a dashboard started with the menu hidden has the day focused', () => {
   const started = initialState({ projects, workflows: [engine], assignments, menuHidden: true });
   assert.equal(started.focus, 'day');
-  assert.ok(!lines(started).some(l => l.includes('Example') && !l.includes('press space') && !l.includes('Ada Example')));   // no menu (the banner's hint names it; the grid's Assignee, Ada Example, has room since ASS-437)
+  assert.ok(!lines(started).some(l => l.includes('Example') && !l.includes('press space') && !l.includes('Ada Example')));   // no menu (the banner's hint names it)
   assert.equal(handleKey(started, slash).focus, 'day');               // shown, the focus stays on the day
 });
 
@@ -1672,16 +1672,26 @@ test('below the progress bar, a full-width ticket table', () => {
   const top = out.findIndex(l => l.startsWith('└')) + 3;            // past the state names and a blank line
   assert.equal(out[top], `┌${out[top].slice(1, -1)}┐`);
   assert.equal(out[top].length, wide.columns);
-  assert.match(out[top + 1], /^│ +Ticket +│ +Status +│ Points │ +Dev +│ +Testing +│ Total Token Spend │ +Assignee +│ +Agents +│$/);   // no Build, MR or Health column (ASS-437)
+  assert.match(out[top + 1], /^│ +Ticket +│ +Status +│ Points │ +Dev +│ +Testing +│ Total Token Spend │ +Agents +│$/);   // no Build, MR or Health column (ASS-437), no Assignee (ASS-488)
+});
+
+test('ASS-488 AC1, AC4: the sprint grid has no Assignee column — neither its header nor any row shows the ticket\'s assignee', () => {
+  const out = lines(state, wide);
+  const top = out.findIndex(l => l.startsWith('└')) + 3;
+  assert.ok(!out[top + 1].includes('Assignee'), out[top + 1]);
+  const row = out.find(l => l.includes('ABC-1: New Feature'));
+  assert.ok(!row.includes('Ada Example'), row);
+  assert.match(row, / — +🤖 Daredevil +│$/);                          // Total Token Spend, then Agents
+  assert.equal(out[top + 1].split('│').length - 2, 7);               // seven headers
 });
 
 test('one row per sprint ticket, without the branch, worktree or merge requests (ASS-437: on the ticket screen\'s Merge requests tab)', () => {
   const out = lines(state, wide);
   const first = out.findIndex(l => l.includes('ABC-1: New Feature'));
-  assert.match(out[first], /^│   2 .*ABC-1: New Feature +Code Review +3 +● ● ● +● ● ● +— +Ada Example +🤖 Daredevil +│$/);
+  assert.match(out[first], /^│   2 .*ABC-1: New Feature +Code Review +3 +● ● ● +● ● ● +— +🤖 Daredevil +│$/);   // no Assignee (ASS-488)
   assert.match(out[first + 1], /^│ +🤖 Elektra +│$/);
   assert.match(out[first + 2], /^│( {3}-)+ +│$/);                                   // dashed between rows (ASS-243)
-  assert.match(out[first + 3], /^│   1 .*ABC-2: New Bug +Backlog +— +— +— +— +— +— +│$/);
+  assert.match(out[first + 3], /^│   1 .*ABC-2: New Bug +Backlog +— +— +— +— +— +│$/);
   assert.ok(!out.some(l => /change\/ABC-1|worktrees|!1827|!12\b|Healthy/.test(l)));   // nor its Health (ASS-437 AC7)
 });
 
@@ -1826,8 +1836,8 @@ test('a ticket with several variations shows one full row per variation, keyed K
   const out = lines(initialState({ projects: [{ name: 'P', sprint: { ...sprint, features: tickets, bugs: [], spikes: [] } }] }), { ...wide, rows: 80 });
   const rows = out.filter(l => /ABC-\d/.test(l));
   assert.equal(rows.length, 3);
-  assert.match(rows[0], /^│   1  ✦ {7} ABC-7\.A: Two ways +— +5 +● +● +— +Ada Example +— +│$/);
-  assert.match(rows[1], /^│   1  ✦ {7} ABC-7\.B: Two ways +— +5 +● +● +— +Ada Example +— +│$/);
+  assert.match(rows[0], /^│   1  ✦ {7} ABC-7\.A: Two ways +— +5 +● +● +— +— +│$/);
+  assert.match(rows[1], /^│   1  ✦ {7} ABC-7\.B: Two ways +— +5 +● +● +— +— +│$/);
   assert.match(rows[2], /^│   2  ✦ {7} ABC-8: One way /);   // no engine, no seat (ASS-357)
   assert.ok(!out.some(l => /ABC-7: |Variation/.test(l)));
   assert.ok(render(initialState({ projects: [{ name: 'P', sprint: { ...sprint, features: tickets, bugs: [], spikes: [] } }] }), { ...wide, rows: 80 })
@@ -1861,10 +1871,10 @@ test('Agents lists each assignment on its own line: robot, name and the agent\'s
   const updated = { ...state, assignments: state.assignments.map(a => (a['agent-name'] === 'Daredevil' ? { ...a, 'ai-status-update-short': 'Writing the fix', 'ai-feedback-short': 'Not this' } : a)) };
   const out = lines(updated, { ...wide, columns: 220 });
   const row = out.findIndex(l => l.includes('ABC-1: New Feature'));
-  assert.match(out[row], / Ada Example +🤖 Daredevil - Writing the fix +│$/);
+  assert.match(out[row], / — +🤖 Daredevil - Writing the fix +│$/);   // Total Token Spend before it, no Assignee (ASS-488)
   assert.match(out[row + 1], / 🤖 Elektra +│$/);                   // none yet: the name alone
   assert.ok(!out.some(l => l.includes('Punisher')));
-  assert.match(out.find(l => l.includes('ABC-2: New Bug')), / — +— +│$/);   // Assignee and Agents
+  assert.match(out.find(l => l.includes('ABC-2: New Bug')), / — +— +│$/);   // Total Token Spend and Agents (no Assignee since ASS-488)
 });
 
 test('an Agents line longer than 40 columns is cut with an ellipsis', () => {
@@ -1897,7 +1907,7 @@ test('ASS-437 AC7: the grid has no Health: a variation\'s ai-feedback-short is t
   const tickets = [{ key: 'ABC-7', title: 'T', priority: 1, variations: [{ name: 'A', 'ai-feedback-short': 'On course' }, { name: 'B', 'ai-feedback-short': long, 'ai-feedback-long': long }] }];
   const s = { ...initialState({ projects: [{ name: 'P', sprint: { ...sprint, features: tickets, bugs: [], spikes: [] } }] }), focus: 'tickets' };
   const out = lines(s, { ...wide, rows: 80 });
-  assert.match(out.find(l => l.includes('ABC-7.A')), / — +— +│$/);                                   // Assignee and Agents end the row
+  assert.match(out.find(l => l.includes('ABC-7.A')), / — +— +│$/);                                   // Total Token Spend and Agents end the row (no Assignee since ASS-488)
   assert.ok(!out.some(l => l.includes('On course') || l.includes('Two failing')));
   const opened = press(s, 'down', 'return');
   assert.equal(opened.ticket.variation, 'B');
@@ -1960,7 +1970,7 @@ test('ASS-437 AC1: without the Build column a row with a branch is one line, lik
   const seven = out.findIndex(l => l.includes('ABC-7')), eight = out.findIndex(l => l.includes('ABC-8'));
   assert.ok(!out.some(l => /change\/abc-7|wt-7/.test(l)));
   assert.equal(eight, seven + 2);                                   // one line, then the dashed line between rows
-  assert.equal(out[eight].match(/—/g).length, 7);                  // Status, Points, Dev, Testing, Total Token Spend, Assignee, Agents — no MR or Health
+  assert.equal(out[eight].match(/—/g).length, 6);                  // Status, Points, Dev, Testing, Total Token Spend, Agents — no MR or Health, no Assignee (ASS-488)
 });
 
 test('the branch name links to its branch-url; without one it is plain (ASS-437: on the Merge requests tab)', () => {
@@ -2453,7 +2463,8 @@ test('a ticket at a human gate shows a red ● before its title and no red text;
   const s = initialState({ projects: [project], workflows: [{ name: 'e', steps }], assignments: [assignment('Gatekeeper', 'ABC-7', null, 'p')] });
   const row = (key, iso = '2026-10-01T16:04:00Z') => render(s, { ...wide, rows: 80, now: new Date(iso) }).find(l => l.includes(key));
   assert.ok(neededDot(row('ABC-7'), 'ABC-7: Gated'));
-  for (const v of ['ABC-7: Gated', '71', 'Payment Gate', '72', 'Gate Keeper', 'Gatekeeper']) assert.ok(row('ABC-7').includes(v) && !row('ABC-7').includes(`\x1b[31m${v}`), `${v} not red`);
+  assert.ok(!row('ABC-7').includes('Gate Keeper'));                  // no Assignee column (ASS-488)
+  for (const v of ['ABC-7: Gated', '71', 'Payment Gate', '72', 'Gatekeeper']) assert.ok(row('ABC-7').includes(v) && !row('ABC-7').includes(`\x1b[31m${v}`), `${v} not red`);
   assert.equal(row('ABC-7', '2026-10-01T16:04:01Z'), row('ABC-7'));   // steady: no flashing
   assert.ok(!/[●⦿]/.test(row('ABC-8')));                            // not at a gate
 });
@@ -3014,7 +3025,8 @@ test('Total Token Spend sums the cost-usd of every agent dispatched on the row\'
   const change = (...costs) => ({ 'from-state': 'backlog', 'to-state': 'code-review', timestamp: '2026-09-29T10:00:00Z', 'agent-dispatch-log': costs.map(dispatch) });
   const spent = { ...detailed, ...single({ 'harness-status': hs('code-review'), 'state-changes': [change(1.5, 0.26), change(null), change(10)] }) };
   const s = { ...onGrid, projects: [{ ...detailProject, sprint: { ...detailProject.sprint, features: [spent] } }] };
-  assert.match(lines(s, wide).find(l => l.includes('ABC-5')), /—\s+\$11\.76\s+Pat Owner/);   // between MR and Assignee
+  assert.match(lines(s, wide).find(l => l.includes('ABC-5')), /—\s+\$11\.76\s+🤖 Daredevil/);   // after Testing, then Agents (no Assignee since ASS-488)
+  assert.ok(!lines(s, wide).find(l => l.includes('ABC-5')).includes('Pat Owner'));
   assert.match(lines(onTab(press(s, 'return'), 'details'), { ...wide, rows: 80 }).join('\n'), /Total Token Spend\s+\$11\.76/);
   assert.match(lines(onTab(press(onGrid, 'down', 'return'), 'details'), { ...wide, rows: 80 }).join('\n'), /Ticket name +New Bug[\s\S]*Total Token Spend\s+—/);   // nothing dispatched
 });
@@ -3055,7 +3067,7 @@ test('the ticket chat\'s spend (collaboration.json, ASS-35) — the sum of its t
   const s = { ...onGrid, projects: [{ ...detailProject, sprint: { ...detailProject.sprint, features: [two] }, collaborations: { 'ABC-5': { 'session-id': 's', briefed: null, turns: [{ timestamp: '2026-09-29T10:00:00Z', billing: 'api', 'cost-usd': 1 }, { timestamp: '2026-09-29T11:00:00Z', 'cost-usd': 0.25 }] } } }] };
   const rows = lines(s, wide).filter(l => l.includes('ABC-5.'));
   assert.match(rows.find(l => l.includes('ABC-5.A')), /\$2\.11/);    // $0.86 dispatched + $1.25 chatting
-  assert.match(rows.find(l => l.includes('ABC-5.B')), /—\s+Pat Owner/);   // not counted twice
+  assert.match(rows.find(l => l.includes('ABC-5.B')), /—\s+—\s+🤖 Daredevil/);   // not counted twice (no Assignee since ASS-488)
   assert.match(lines(onTab(press(s, 'return'), 'details'), { ...wide, rows: 80 }).join('\n'), /Total Token Spend\s+\$2\.11/);
   assert.match(lines(onTab(press(s, 'down', 'return'), 'details'), { ...wide, rows: 80 }).join('\n'), /Variation +B[\s\S]*Total Token Spend\s+\$1\.25/);
 });
@@ -6211,15 +6223,16 @@ const squeezedState = initialState({
 const squeezedRow = columns => lines(squeezedState, { ...wide, columns }).find(l => l.includes('✦')) ?? '';
 const TICKET_CELL = `  2 ${cols({ agent: '🤖' })}ABC-1: Sprint screen: the Ticke…`;   // the priority (ASS-454), the icon columns (ASS-259), the key and 24 characters of title
 
-test('ASS-207 AC1: at 160 columns the Ticket cell keeps the key and 24 characters of title', () => {
-  assert.equal(squeezedRow(160).slice(0, 2 + TICKET_CELL.length), `│ ${TICKET_CELL}`);
+test('ASS-207 AC1: at 146 columns the Ticket cell keeps the key and 24 characters of title', () => {
+  assert.equal(squeezedRow(146).slice(0, 2 + TICKET_CELL.length), `│ ${TICKET_CELL}`);
 });
 
-// ASS-437: the Build, MR and Health columns went, their width to the rest, so each width here is under what it was.
-test('ASS-207 AC2, ASS-437 AC7: at 145 columns Agents gives up its width first, Health gone, Status still whole, and the table still fits', () => {
-  const row = squeezedRow(145);
-  assert.match(row, / Code Review {3}3 .* Ada Example {3}🤖 Daredevil-of-… │$/);   // Health cut hardest, Agents after it — two columns more now the icon columns widen Ticket's floor (ASS-259), two more for the seat (ASS-357); seven back now the Priority column's 11 went, 4 to the Ticket cell's priority (ASS-454); one less for 🤖/💻's two cells (ASS-456)
-  assert.equal(visible(row), 145);
+// ASS-437: the Build, MR and Health columns went, their width to the rest, so each width here is under what it was;
+// ASS-488 took the Assignee column ("Ada Example", 14 cells), each 14 under again.
+test('ASS-207 AC2, ASS-437 AC7: at 131 columns Agents gives up its width first, Health gone, Status still whole, and the table still fits', () => {
+  const row = squeezedRow(131);
+  assert.match(row, / Code Review {3}3 .* — {19}🤖 Daredevil-of-… │$/);   // Health cut hardest, Agents after it — two columns more now the icon columns widen Ticket's floor (ASS-259), two more for the seat (ASS-357); seven back now the Priority column's 11 went, 4 to the Ticket cell's priority (ASS-454); one less for 🤖/💻's two cells (ASS-456); 14 fewer, no Assignee (ASS-488)
+  assert.equal(visible(row), 131);
   assert.ok(row.includes(TICKET_CELL), row);
   assert.ok(!row.includes('Two f'), row);
 });
@@ -6231,12 +6244,12 @@ test('ASS-207 AC3: at 80 columns the Ticket cell still shows the key and 24 char
   assert.ok(!row.includes('Two f'), row);                             // Health is off-screen, as today
 });
 
-test('ASS-207 AC4: with room to spare — 211 columns (300 before ASS-437) — the row is laid out as it is today: the whole title, Agents at its 40-column cap', () => {
-  const row = squeezedRow(211);
+test('ASS-207 AC4: with room to spare — 197 columns (300 before ASS-437, 211 before ASS-488) — the row is laid out as it is today: the whole title, Agents at its 40-column cap', () => {
+  const row = squeezedRow(197);
   assert.ok(row.startsWith(`│   2 ${cols({ agent: '🤖' })}ABC-1: Sprint screen: the Ticket column is squeezed by Health `), row);
   assert.match(row, /squeezed by Health {17}Code Review /);   // two blanks fewer: the seat column's (ASS-357); no Priority column, its width to Ticket less the priority's four cells (ASS-454), one fewer for 🤖/💻's second cell (ASS-456)
-  assert.match(row, / Ada Example {3}🤖 Daredevil-of-Hells-Kitchen-and-Matt-… │$/);
-  assert.equal(visible(row), 211);
+  assert.match(row, / — {19}🤖 Daredevil-of-Hells-Kitchen-and-Matt-… │$/);
+  assert.equal(visible(row), 197);
 });
 
 // ===== ASS-189: type to an agent from its tile =====

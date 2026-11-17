@@ -66,6 +66,14 @@
 //   is no running control. One opened by hand, and one another running
 //   control owns, are left alone.
 //
+// ASS-490: each tick is timed (performance.now, from the call to its return
+// or throw; the sleep between ticks not counted) and its figures since start —
+// overall, per tick.js phase and per call tick.js makes — kept by
+// tick-stats.js, written to data/projects/<project>/tick-stats.json
+// ($HARNESS_HOME/tick-stats.json without --project) at most every 30 seconds
+// and on shutdown; a tick over 30 seconds logs a 'tick' line with its three
+// slowest phases and sub-routines. harness:tick-stats prints them.
+//
 // For the tests only (ASS-425): with CONTROL_TEST_TICK_LINES=1 it also says
 // "<ISO time> test tick ran" after each tick, so a test counts ticks in the
 // same stream as the lines it checks, rather than timing them. ASS-460: with
@@ -84,6 +92,7 @@ import { disconnectWorkstations, disconnectAtExit, closeLeftovers } from './work
 import { sessionSpend } from './finish.js';
 import { endTicketHealthRuns } from './triggers.js';
 import { recordControlCommit } from './control-commit.js';
+import { tickStats, tickStatsFile, newTickTimes } from './tick-stats.js';
 
 const ROOT = join(import.meta.dirname, '..', '..');
 const args = process.argv.slice(2);
@@ -125,6 +134,8 @@ const ctx = createContext({ root: ROOT, env: { ...process.env, HARNESS_CONTROL_P
 // The pidfile removed, when it still names this process; on 'exit', whatever the way out, with what still runs killed
 // and the workstation connections it still owns closing (ASS-470: detached, they outlive it).
 const removePidfile = () => { try { if (Number(readFileSync(pidfile, 'utf8')) === process.pid) rmSync(pidfile, { force: true }); } catch { /* gone */ } };
+// ASS-490: the ticks' timings (tick-stats.js), written on shutdown too.
+const timings = tickStats({ file: tickStatsFile({ paths: ctx.paths, home, project }), log: say, tickMs });
 process.on('exit', () => { killStarted(ctx); try { disconnectAtExit(ctx); } catch { /* the last resort: nothing more to do */ } removePidfile(); });
 say('startup', `control ${process.pid}, tick every ${tickMs}ms`);
 if (stalePidfile) say('startup', stalePidfile);
@@ -159,6 +170,7 @@ const shutdown = code => (ending ??= (async () => {
   try { await disconnectWorkstations(ctx); } catch (error) { say('error', `shutdown workstations: ${error.message}`); }
   clearTimeout(retry);
   forwarder?.close();
+  timings.flush();
   removePidfile();
   say('shutdown', 'control exiting');
   process.exit(code);
@@ -261,8 +273,13 @@ while (!stopping) {
       startDrain(ctx);
     }
     if (restart && drained(ctx)) break;
-    if (fault === 'tick' && faults < 2) { faults++; throw new Error('test: the tick failed'); }
-    await tick(ctx);
+    // ASS-490: timed from the call to its return or throw (a throw counted too); CONTROL_TEST_FAULT's throw stands for the tick's.
+    const began = performance.now();
+    ctx.tickTimes = newTickTimes();
+    try {
+      if (fault === 'tick' && faults < 2) { faults++; throw new Error('test: the tick failed'); }
+      await tick(ctx);
+    } finally { timings.record(performance.now() - began, ctx.tickTimes); }
   } catch (error) {
     say('error', `the tick failed, control goes on: ${withStack(error)}`);
   }

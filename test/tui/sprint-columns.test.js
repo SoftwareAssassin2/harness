@@ -514,6 +514,30 @@ test('ASS-469 AC7: ⛅ for a workstation seat, 💺 for a VM seat, in the same t
   assert.ok(!keyLines(render(seatState(), wide)).map(strip).join('  ').includes('⛅'), 'not for a project in VMs alone');
 });
 
+// ASS-481 AC6: a variation holding a cloud VM seat (seats.json kind cloud-vm) is 🌐, distinct from 💺 and ⛅, and the
+// key lists 🌐 for a project with cloud VMs; ⛅ only while it has workstations too.
+test('ASS-481 AC6: 🌐 for a cloud VM seat, distinct from ⛅ and 💺, in the same two-cell column; the key lists it for a project with cloud VMs', () => {
+  const ws = { id: 'ws-1', 'gcp-project': 'g', region: 'r', cluster: 'c', config: 'cfg' };
+  const vm = { kind: 'cloud-vm', id: 'vm-1', 'gcp-project': 'g', zone: 'z' };
+  const at = '2026-10-01T16:00:00Z', up = { connected: true, 'connected-at': at, setup: { ok: true, 'checked-at': at } };
+  const both = { ...seatProject(), devEnvironments: { mode: 'vm+workstation', workstations: [ws, vm] }, workstations: { 'ws-1': up, 'vm-1': up },
+    seats: [{ key: 'S-3', variation: 'A', kind: 'workstation', workstation: 'ws-1' }, { key: 'S-5', variation: 'A', kind: 'cloud-vm', workstation: 'vm-1' }, { key: 'S-11', variation: 'A', kind: 'vm' }] };
+  const lines = render(seatState([both]), wide);
+  const mark = k => strip(seatRow(lines, k)).slice(LEFT, LEFT + TEXT);
+  assert.ok(mark('S-5').includes('🌐') && !mark('S-5').includes(SEAT) && !mark('S-5').includes('⛅'), mark('S-5'));
+  assert.ok(mark('S-3').includes('⛅') && !mark('S-3').includes('🌐'), mark('S-3'));
+  assert.ok(mark('S-11.A').includes(SEAT) && !mark('S-11.A').includes('🌐'));
+  assert.equal(visible('🌐'), 2);
+  const starts = ['S-3', 'S-5'].map(k => { const c = strip(seatRow(lines, k)); return visible(c.slice(0, c.indexOf(`${k}: `))); });
+  assert.equal(starts[0], starts[1]);
+  const key = keyLines(lines).map(strip).join('  ').split('  ');
+  assert.ok(key.includes('🌐 holds a cloud VM seat') && key.includes('⛅ holds a workstation seat'), key.join(' | '));
+  assert.ok(key.indexOf('🌐 holds a cloud VM seat') === key.indexOf('⛅ holds a workstation seat') + 1, 'after ⛅');
+  const alone = keyLines(render(seatState([{ ...both, devEnvironments: { mode: 'workstation', workstations: [vm] } }]), wide)).map(strip).join('  ');
+  assert.ok(alone.includes('🌐 holds a cloud VM seat') && !alone.includes('⛅'), 'cloud VMs alone: 🌐, no ⛅');
+  assert.ok(!keyLines(render(seatState([{ ...both, devEnvironments: { mode: 'vm', workstations: [vm] } }]), wide)).map(strip).join('  ').includes('🌐'), 'vm mode: none');
+});
+
 // ASS-357 with ASS-355: the planner skips a variation its dependencies hold
 // (dependencies.js heldBy), so its row has no 💺 and its seat goes to the next
 // ticket. Capped at two in-progress seats: D-1 waits on D-2 (in the sprint, at
@@ -682,7 +706,7 @@ const rankedRow = (key, lines = rankedRaw) => lines.find(l => new RegExp(`(^|\\s
 
 test('ASS-454 AC1, AC5: the grid has no Priority column; the others keep their order; the Ticket header starts with the four-cell indent, centred over the rest of its column', () => {
   const header = strip(rankedRaw.find(l => /│ +Ticket +│/.test(strip(l))));
-  assert.deepEqual(header.split('│').slice(1, -1).map(h => h.trim()), ['Ticket', 'Status', 'Points', 'Dev', 'Testing', 'Total Token Spend', 'Assignee', 'Agents']);
+  assert.deepEqual(header.split('│').slice(1, -1).map(h => h.trim()), ['Ticket', 'Status', 'Points', 'Dev', 'Testing', 'Total Token Spend', 'Agents']);   // no Assignee (ASS-488)
   assert.ok(!rankedRaw.some(l => /│ Priority │/.test(strip(l))));
   const width = header.indexOf('│', 1) - 3;                           // the Ticket column's text width
   assert.equal(header.indexOf('Ticket') - 2, 4 + Math.floor((width - 4 - 'Ticket'.length) / 2));

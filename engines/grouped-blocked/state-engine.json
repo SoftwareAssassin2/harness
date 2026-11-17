@@ -308,12 +308,12 @@
             "id": "check-on-master",
             "sequence": 7,
             "name": "Check on the Latest Master",
-            "description": "The operator's decision box (ASS-163): is the failure a problem on the latest master? The project's master CI for the job Troubleshoot named, asked read-only on the host (project:check-on-master: glab, gh). Failed there (exit 0): a blocking bug in the project's ticket system, with that evidence, waited on. Passed (exit 3): not master's — nothing raised; a failure in the ticket's own branch goes back to Generate Solution (ASS-384, own-branch-or-obstacle), else our environment or access: the plan grows by the obstacle's fix. No master evidence (exit 4: no such job, forge unreachable, nothing named) is not proven: no bug; a failure shown to be in the ticket's own branch goes back to Generate Solution (own-branch-or-human), else Blocked for Human asking the operator; Have AI Try Again repeats the check. On the harness project (exit 2) not checked: raised as before. ASS-418: a forge read on the host, so its VM is stopped here (started again, by the lifecycle, at the next step that needs it)",
+            "description": "The operator's decision box (ASS-163): is the failure a problem on the latest master? The project's master CI for the job Troubleshoot named, asked read-only on the host (project:check-on-master: glab, gh). Failed there (exit 0): a blocking bug in the project's ticket system, with that evidence, waited on. Passed (exit 3): not master's — nothing raised; a failure in the ticket's own branch goes back to Generate Solution (ASS-384, own-branch-or-obstacle), else our environment or access: the plan grows by the obstacle's fix. No master evidence (exit 4: no such job, forge unreachable, nothing named) is not proven: no bug; a failure shown to be in the ticket's own branch goes back to Generate Solution (own-branch-or-human), else Blocked for Human asking the operator; Have AI Try Again repeats the check. On the harness project (exit 2) not checked: raised as before. ASS-418: a forge read on the host, so its VM is stopped here (started again, by the lifecycle, at the next step that needs it). ASS-492: with nothing named (no failing repository or job) there is nothing to check: exit 4, its feedback saying Troubleshoot named no failing check and giving the run's ({run}) summary, root cause, Classify's reasoning and any missing change, never a blank job or repository",
             "vm": "stopped",
             "record-script-output": true,
             "action": {
                 "type": "script",
-                "command": "./agent.sh project:check-on-master {project} {failing-repository} {failing-job}"
+                "command": "./agent.sh project:check-on-master {project} {failing-repository} {failing-job} {run}"
             },
             "exit-events": [
                 {
@@ -354,7 +354,7 @@
             "id": "own-branch-or-obstacle",
             "sequence": 8,
             "name": "Check for an Own-Branch Fix",
-            "description": "ASS-384: master passed the job, so the failure is not the project's master's. When Classify put it in the ticket's own branch and the failing file Troubleshoot named is one the variation's branch adds or changes (ticket:own-branch-fix, its VM's checkout read, VM kept running), the finding goes into execution-plan-<variation>.md and the run is done with its resume-at — Generate Solution's group, the ticket fixing its own defect (control: ownBranchFix, the visit counts restarted; counted by ticket:fix-attempts). Else (exit 3, or the command failing) the obstacle fix, made by Repair Project in a separate fix merge request (ASS-390)",
+            "description": "ASS-384: master passed the job, so the failure is not the project's master's. When Classify put it in the ticket's own branch and the failing file Troubleshoot named is one the variation's branch adds or changes (ticket:own-branch-fix, its VM's checkout read, VM kept running), the finding goes into execution-plan-<variation>.md and the run is done with its resume-at — Generate Solution's group, the ticket fixing its own defect (control: ownBranchFix, the visit counts restarted; counted by ticket:fix-attempts). Else (exit 3, or the command failing) the obstacle fix, made by Repair Project in a separate fix merge request (ASS-390). ASS-492: a missing change Classify named (no failing file) is planned the same way, as on Check for an Own-Branch Fix Before the Operator",
             "vm": "running",
             "record-script-output": true,
             "action": {
@@ -382,7 +382,7 @@
             "id": "own-branch-or-human",
             "sequence": 9,
             "name": "Check for an Own-Branch Fix Before the Operator",
-            "description": "ASS-384: master could not show the failure (not proven). The same check as Check for an Own-Branch Fix: the ticket's own branch shown, the finding into its plan and back to Generate Solution's group; else (exit 3, or the command failing) Blocked for Human with check-on-master's feedback, as before",
+            "description": "ASS-384: master could not show the failure (not proven). The same check as Check for an Own-Branch Fix: the ticket's own branch shown, the finding into its plan and back to Generate Solution's group; else (exit 3, or the command failing) Blocked for Human with check-on-master's feedback, as before. ASS-492: nothing failed but Classify (own-branch true) named a missing change in one of the project's repositories (missing-change, missing-change-repository): the change planned on the ticket's merge request there still Open or Not Created, else on a new one (planned-by Blocked, its why Classify's reasoning), the finding into the plan and back to Generate Solution's group, no operator gate",
             "vm": "running",
             "record-script-output": true,
             "action": {

@@ -102,7 +102,8 @@ const asShown = sprint => sprint && Object.fromEntries(Object.entries(sprint).ma
 // one in `dir`'s parent, the data folder), null for none; apiCost its org's
 // API spend this month (see apiCostOf, ASS-221); golden its golden image (see
 // loadGolden, ASS-292), looked for in `lima` (control/vm.js limaHome); devEnvironments where its tickets run,
-// { mode, workstations } (control/dev-environments.js, ASS-431), null while its dev-environments is wrong. Sprints and snapshots come
+// { mode, workstations } (control/dev-environments.js, ASS-431), null while its dev-environments is wrong. vms its
+// vms.json's rows by VM name (loadVms, ASS-486). Sprints and snapshots come
 // without their soft-deleted variations; sprints, snapshots, the backlog and
 // the questions without soft-deleted tickets (ASS-104).
 export const loadProjects = (dir, lima = limaHome()) => readdirSync(dir)
@@ -127,6 +128,7 @@ export const loadProjects = (dir, lima = limaHome()) => readdirSync(dir)
       gcloudLogins: expiredLogins(settingsOf(project), loadWorkstations(join(dir, name))),   // ASS-433: the workstations' gcloud logins to renew
       workstations: loadWorkstations(join(dir, name)),   // ASS-433: each workstation's state, connection and last connect error
       seats: loadSeats(join(dir, name)),   // ASS-469: control's seats.json, who holds a VM seat and who a workstation's
+      vms: loadVms(join(dir, name)),   // ASS-486: its Lima VMs' vms.json rows by VM name (ticket, variation, state), for the local virtual machines box
       glabReauthentication: project['check-for-expired-glab-auth'] === true && requiresReauthentication(join(dir, name), 'glab'),
       backgroundWorkOff: project['background-work'] === false,
       notifications: project['operator-needed-notifications'] !== false,   // ASS-383: macOS notifications when a ticket becomes Operator Needed, on unless false
@@ -157,6 +159,17 @@ export const loadProjects = (dir, lima = limaHome()) => readdirSync(dir)
     };
   })
   .toSorted((a, b) => a.name.localeCompare(b.name));
+
+// loadVms(folder) — ASS-486: the project's vms.json (src/agent-cli/vm.bash's
+// inventory), one row per Lima VM keyed by its name, with its ticket,
+// variation and state (Running or Stopped); {} without the file or while it
+// can't be read.
+const loadVms = folder => {
+  try {
+    const file = join(folder, 'vms.json'), json = existsSync(file) ? readJson(file) : null;
+    return json && typeof json === 'object' && !Array.isArray(json) ? json : {};
+  } catch { return {}; }
+};
 
 // settingsOf(json) — a project.json's dev-environments (ASS-431), null while it is wrong.
 const settingsOf = json => (devEnvironmentsErrors(json).length ? null : devEnvironments(json));
@@ -444,7 +457,7 @@ export function dataFiles(root, { projects, workflows, project, day }, lima = li
     join(dataDir(root), 'disk-space.json'),
     ...workflows.map(w => w.file ?? join(root, 'engines', w.name, 'state-engine.json')),   // a project's own at its file (ASS-277)
     ...projects.flatMap(({ id }) => [
-      join(dir(id), 'project.json'), join(dir(id), 'gcloud-requires-reauthentication'), join(dir(id), 'glab-requires-reauthentication'), join(dir(id), 'rate-limit.json'), join(dir(id), 'claude-usage.json'), join(dir(id), 'push-account.json'), join(dir(id), 'credentials-hold.json'), join(dir(id), 'jira-token-rejected.json'), join(dir(id), 'api-cost.json'), join(dir(id), 'memory-spend.json'), join(dir(id), 'sprints.json'), join(dir(id), 'backlog.json'), join(dir(id), 'global-questions-and-answers.json'), join(dir(id), 'chat-spend.json'), join(dir(id), 'vms.json'), join(dir(id), 'outside-tickets.json'), join(dir(id), 'memory-hold.json'), join(dir(id), 'memory-wait.json'), join(dir(id), SEATS_FILE), join(dir(id), 'workstations.json'),   // jira-token-rejected.json: ASS-475; seats.json and workstations.json (whose seats are lost): ASS-469; memory-hold.json: ASS-398; memory-wait.json: ASS-420; vms.json: its VMs' credential kinds (ASS-333, hasApiKey); outside-tickets.json: ASS-355
+      join(dir(id), 'project.json'), join(dir(id), 'gcloud-requires-reauthentication'), join(dir(id), 'glab-requires-reauthentication'), join(dir(id), 'rate-limit.json'), join(dir(id), 'claude-usage.json'), join(dir(id), 'push-account.json'), join(dir(id), 'credentials-hold.json'), join(dir(id), 'jira-token-rejected.json'), join(dir(id), 'api-cost.json'), join(dir(id), 'memory-spend.json'), join(dir(id), 'sprints.json'), join(dir(id), 'backlog.json'), join(dir(id), 'global-questions-and-answers.json'), join(dir(id), 'chat-spend.json'), join(dir(id), 'vms.json'), join(dir(id), 'outside-tickets.json'), join(dir(id), 'memory-hold.json'), join(dir(id), 'memory-wait.json'), join(dir(id), SEATS_FILE), join(dir(id), 'workstations.json'),   // jira-token-rejected.json: ASS-475; seats.json and workstations.json (whose seats are lost): ASS-469; memory-hold.json: ASS-398; memory-wait.json: ASS-420; vms.json: its VMs' credential kinds (ASS-333, hasApiKey) and the local virtual machines box (ASS-486); outside-tickets.json: ASS-355
       ...(existsSync(work(id)) ? readdirSync(work(id)).toSorted() : []).flatMap(ticket => ['questions-and-answers.json', 'collaboration.json'].map(file => join(work(id), ticket, file))),
     ]),
     ...(shown ? [shown] : []),

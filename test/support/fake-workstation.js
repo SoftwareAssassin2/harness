@@ -8,7 +8,8 @@
 // put and take a marker file in its folder (drop, hang, refuse-forward,
 // settle) or, without an id, the fake's own (expired, offline);
 // gcloudCalls() and sshCalls() list what each was asked; flags(id) the
-// --ssh-flag values its master was given; home(id) its user's home.
+// --ssh-flag values its master was given (ASS-481: a cloud VM's, its ssh's
+// own flags); home(id) its user's home.
 // ASS-434: each workstation is ready for workstation:setup as made — its own
 // bin folder (system(id), first on its sessions' PATH: fake-ssh.js) holds a
 // `docker` whose `info` answers (unless a `docker-broken` marker says it
@@ -39,6 +40,17 @@ export function fakeWorkstation(base = process.env) {
       writeFileSync(at(id, 'bin', 'docker'), DOCKER, { mode: 0o755 });
       writeFileSync(at(id, 'bin', 'claude'), '#!/bin/bash\necho "2.0.0 (Claude Code)"\n', { mode: 0o755 });
     },
+    // ASS-481: cloudVm(id, status) — a cloud VM (fake-gcloud-compute.js, fake-ssh-master.js), TERMINATED by default,
+    // ready for workstation:setup as a workstation is; status(id) reads its status, setStatus(id, s) sets it.
+    cloudVm: (id, status = 'TERMINATED') => {
+      mkdirSync(at(id, 'bin'), { recursive: true });
+      writeFileSync(at(id, 'status'), status);
+      writeFileSync(at(id, 'boot-id'), `boot-${id}-1`);
+      writeFileSync(at(id, 'bin', 'docker'), DOCKER, { mode: 0o755 });
+      writeFileSync(at(id, 'bin', 'claude'), '#!/bin/bash\necho "2.0.0 (Claude Code)"\n', { mode: 0o755 });
+    },
+    status: id => readFileSync(at(id, 'status'), 'utf8').trim(),
+    setStatus: (id, s) => writeFileSync(at(id, 'status'), s),
     system: id => at(id, 'bin'),
     runtime: id => at(id, 'run'),
     state: id => readFileSync(at(id, 'state'), 'utf8').trim(),

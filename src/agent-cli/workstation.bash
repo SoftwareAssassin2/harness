@@ -1,6 +1,10 @@
 # A project's GCP Cloud Workstation and its one SSH connection (ASS-433), for
 # the workstation:* commands and, through the connection, everything that
 # runs on a workstation (ASS-434's setup, ASS-435's machine backend).
+# ASS-481: a project's cloud VMs (plain Compute Engine VMs, cloud-vm.bash) are
+# remote machines of its pool alike: the same commands, connection, live data
+# and setup, keyed by their ids; only their state, start and master differ,
+# chosen by the settings' kind.
 #
 #   source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../workstation.bash"
 #   workstation_settings <command> <project> <id>   # the workstation's dev-environments JSON line; fails, naming <command>, without the project or the workstation
@@ -12,10 +16,13 @@
 #   workstation_reachable <project> <id>      # and a command run over it returns, within WORKSTATION_PROBE_SECONDS (20)
 #   workstation_gcloud <settings> <subcommand> [args…]   # gcloud workstations <subcommand> <id> --project … --region … --cluster
 #                                             # … --config …, under its gcloud-config's CLOUDSDK_CONFIG when it names one
+#   workstation_kind <settings>               # ASS-481: workstation, or cloud-vm for a cloud VM (cloud-vm.bash)
 #   workstation_state <settings>              # its state, lower case: running, stopped, starting, stopping, …; fails, gcloud's output on stderr
+#                                             # (a cloud VM's: cloud-vm.bash cvm_state)
 #   workstation_ports <command> <project>     # the Mac ports reverse-forwarded: harness.json's forwarder-port (required), project.json's
 #                                             # hindsight.port and registry.port when set
-#   workstation_open <project> <id> <settings> <port…>   # the master connection opened (below); fails, its output on stderr
+#   workstation_open <project> <id> <settings> <port…>   # the master connection opened (below; a cloud VM's: cloud-vm.bash
+#                                             # cvm_open, OpenSSH's own through IAP); fails, its output on stderr
 #   workstation_close <project> <id>          # the master ended, its socket and pid file removed; nothing when none is open
 #   workstation_lock <command> <project> <id> [<seconds>]   # the workstation's lock (descriptor 8) until exit: every connect and disconnect
 #   workstation_record <project> <id> [jq options…] <filter>  # its entry in the project's workstations.json, rewritten by <filter>
@@ -99,6 +106,7 @@
 here_ws="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
 source "$here_ws/json-file.bash"
 source "$here_ws/dev-environments.bash"
+source "$here_ws/cloud-vm.bash"
 ws_projects="${PROJECTS_DIR:-$here_ws/../../data/projects}"
 ws_harness_file="${HARNESS_FILE:-$here_ws/../../data/harness.json}"
 ws_folder="${HARNESS_HOME:-$HOME/.harness}/workstations"
@@ -152,6 +160,9 @@ workstation_reachable() {
   ws_timeout "${WORKSTATION_PROBE_SECONDS:-20}" bash -c "source '$here_ws/workstation.bash' && workstation_ssh \"\$@\" true" _ "$1" "$2" </dev/null >/dev/null 2>&1 8>&- 9>&-
 }
 
+# workstation_kind <settings> — ASS-481: workstation, or cloud-vm for one of the cloud-vms (dev-environments.js).
+workstation_kind() { jq -r '.kind // "workstation"' <<< "$1"; }
+
 workstation_gcloud() {
   local settings="$1" sub="$2" id project region cluster config cfg; shift 2
   IFS=$'\t' read -r id project region cluster config cfg < <(jq -r '[.id, .["gcp-project"], .region, .cluster, .config, (.["gcloud-config"] // "")] | @tsv' <<< "$settings")
@@ -160,6 +171,7 @@ workstation_gcloud() {
 
 workstation_state() {
   local out
+  if [[ "$(workstation_kind "$1")" == cloud-vm ]]; then cvm_state "$1"; return; fi
   out="$(workstation_gcloud "$1" describe --format='value(state)' 2>&1)" || { printf '%s\n' "$out" >&2; return 1; }
   out="$(tail -n 1 <<< "$out" | tr -d '[:space:]')"
   out="${out#STATE_}"
@@ -217,18 +229,27 @@ workstation_close() {
 }
 
 workstation_open() {
-  local project="$1" id="$2" settings="$3" cp log pid port i flags=(); shift 3
-  cp="$(workstation_control_path "$project" "$id")" log="$(ws_log_file "$project" "$id")"
-  # A unix socket's path is at most 104 bytes on macOS, and ssh adds a 17-character suffix while it makes one; --ssh-flag splits on spaces.
-  [[ ${#cp} -le 86 ]] || { echo "the connection's socket path $cp is too long for a unix socket (at most 86 characters); set HARNESS_HOME to a shorter folder" >&2; return 1; }
+  local project="$1" id="$2" settings="$3" cp port flags=(); shift 3
+  # ASS-481: a cloud VM's master is OpenSSH's own through IAP (cloud-vm.bash cvm_open).
+  if [[ "$(workstation_kind "$settings")" == cloud-vm ]]; then cvm_open "$project" "$id" "$settings" "$@"; return; fi
+  cp="$(workstation_control_path "$project" "$id")"
   [[ "$cp" != *[[:space:]]* ]] || { echo "the connection's socket path $cp has a space, which gcloud's --ssh-flag cannot carry" >&2; return 1; }
-  mkdir -p "$ws_folder" && chmod 700 "$ws_folder"
-  rm -f "$cp"
   flags=(--ssh-flag=-M --ssh-flag="-S $cp" --ssh-flag=-N --ssh-flag="-o ExitOnForwardFailure=yes" --ssh-flag="-o BatchMode=yes")
   for port in "$@"; do flags+=(--ssh-flag="-R 127.0.0.1:$port:127.0.0.1:$port"); done
+  ws_open_master "$project" "$id" bash -c "source '$here_ws/workstation.bash' && workstation_gcloud \"\$@\"" _ "$settings" ssh "${flags[@]}"
+}
+
+# ws_open_master <project> <id> <argv…> — argv, a master SSH connection on the workstation's socket, run in a session
+# of its own and waited for (workstation_open; ASS-481: a cloud VM's cvm_open too); fails, its output on stderr.
+ws_open_master() {
+  local project="$1" id="$2" cp log pid i; shift 2
+  cp="$(workstation_control_path "$project" "$id")" log="$(ws_log_file "$project" "$id")"
+  # A unix socket's path is at most 104 bytes on macOS, and ssh adds a 17-character suffix while it makes one.
+  [[ ${#cp} -le 86 ]] || { echo "the connection's socket path $cp is too long for a unix socket (at most 86 characters); set HARNESS_HOME to a shorter folder" >&2; return 1; }
+  mkdir -p "$ws_folder" && chmod 700 "$ws_folder"
+  rm -f "$cp"
   # Its own session, so it outlives this command and control; without the lock's descriptor (8) or update_json's (9), or it would hold them.
-  (umask 077; exec perl -MPOSIX -e 'POSIX::setsid(); exec @ARGV or die "cannot run $ARGV[0]: $!\n"' bash -c "source '$here_ws/workstation.bash' && workstation_gcloud \"\$@\"" _ \
-    "$settings" ssh "${flags[@]}" </dev/null >"$log" 2>&1 8>&- 9>&-) &
+  (umask 077; exec perl -MPOSIX -e 'POSIX::setsid(); exec @ARGV or die "cannot run $ARGV[0]: $!\n"' "$@" </dev/null >"$log" 2>&1 8>&- 9>&-) &
   pid=$!
   printf '%s\n' "$pid" | replace_file "$(ws_pid_file "$project" "$id")"
   for ((i = 0; i < ${WORKSTATION_CONNECT_TIMEOUT:-60} * 5; i++)); do

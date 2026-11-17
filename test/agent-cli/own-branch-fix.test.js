@@ -211,3 +211,72 @@ test('ASS-423 AC7: a file in no MR of the ticket (nor its branch), or a merged M
   assert.match(JSON.parse(e.stdout)['own-branch-why'], /its merged MR 2 \(!3951\) in example-corpus could not be read from the forge/);
   assert.equal(mrsOf(unread.s).length, 3);
 });
+
+// ASS-492 — nothing failed, but the ticket's own work is incomplete: Classify own-branch true and a missing change in
+// one of the project's repositories, no failing file. Modelled on ABC-2870: both merge requests merged, the app's bump
+// of the library the first one published never planned. No VM or forge is read.
+const MISSING = {
+  'needs-fix': true, summary: 'the indicator never reaches users: the app pins the library to preview.83', 'root-cause': 'the ticket\'s work is incomplete: it needs a bump of @scope/* to preview.85 in the app',
+  evidence: ['a jira comment: !90 published as preview.85; the app pins preview.83'],
+  issue: 'project', reasoning: 'own work incomplete: no step failed; the fix is a new MR in example-corpus planned by Generate Solution', 'own-branch': true,
+  'missing-change': 'bump @scope/* to 1.0.0-preview.85 in package.json and the lockfile', 'missing-change-repository': 'https://gitlab.com/g/example-corpus',
+  'on-master': 'unknown', 'master-evidence': 'Troubleshoot named no failing repository and CI job to check',
+  'ai-feedback-short': 'Not proven on master: Troubleshoot named no failing check', 'ai-feedback-long': 'L',
+};
+const ABC_2870 = [row(1, HUB, 'Merged', '#90', 'main'), row(2, CORPUS, 'Merged', '!4207')];
+
+test('ASS-492 AC1/AC5: own work incomplete, every MR in the repository merged — a new Not Created MR planned there (planned-by Blocked, its why Classify\'s), the finding appended to the plan, resume-at Generate Solution\'s group, the not-proven feedback cleared', async () => {
+  const s = setup(MISSING, { mrs: ABC_2870, vm: null });
+  writeFileSync(s.plan, '# Plan\n');
+  const out = JSON.parse((await s.fix()).stdout);
+  assert.deepEqual([out['own-branch-fix'], out['own-branch-source'], out['merge-request-existing']], [true, 'missing-change', null]);
+  assert.match(out['own-branch-why'], /^Classify put a missing change in example-corpus in this ticket's own work: bump @scope/);
+  assert.deepEqual(out['merge-request-planned'], { id: 3, repository: CORPUS, branch: 'change/ABC-3-3', base: 'master' });
+  assert.deepEqual([out['plan-revised'], out['resume-at'], out['resume-source'], out['ai-feedback-short'], out['ai-feedback-long']], ['execution-plan-A.md', 'build', 'declared', null, null]);
+  const mrs = mrsOf(s);
+  assert.equal(mrs.length, 3, 'one new MR, the merged ones kept');
+  assert.deepEqual(mrs.slice(0, 2).map(m => m.status), ['Merged', 'Merged']);
+  const added = mrs[2];
+  assert.deepEqual([added.id, added.repository, added.branch, added.base, added.status, added['depends-on']], [3, CORPUS, 'change/ABC-3-3', 'master', 'Not Created', []]);
+  assert.equal(added['planned-by']?.step, 'Blocked');
+  assert.equal(added['planned-by'].why, 'Blocked\'s own-branch fix (missing change): own work incomplete: no step failed; the fix is a new MR in example-corpus planned by Generate Solution');
+  assert.match(added.contents, /^Missing change \(Blocked, \d{4}-\d\d-\d\d\): bump @scope\/\* to 1\.0\.0-preview\.85 in package\.json and the lockfile in https:\/\/gitlab\.com\/g\/example-corpus\.git\. Blocked found: the indicator never reaches users: the app pins the library to preview\.83\. Nothing failed: the ticket's work lacks it/);
+  assert.match(added.contents, /its merge requests there \(MR 2 \(!4207\)\) have merged or closed, so it goes in this new one/);
+  const text = s.read();
+  assert.ok(text.startsWith('# Plan\n\n## Own-branch fix ('), 'appended after the plan');
+  assert.match(text, /^## Own-branch fix \(\d{4}-\d\d-\d\d, Blocked, variation A, attempt 1\)\n/m);
+  assert.match(text, /^Blocked: the indicator never reaches users: the app pins the library to preview\.83\. Cause: the ticket's work is incomplete/m);
+  assert.match(text, /^Missing change: bump @scope\/\* to 1\.0\.0-preview\.85 in package\.json and the lockfile \(in https:\/\/gitlab\.com\/g\/example-corpus\.git\)\. Classify: own work incomplete/m);
+  assert.match(text, /^Evidence:\n- a jira comment/m);
+  assert.match(text, /^Nothing failed: this ticket's own work is incomplete — no p bug raised, no ticket scope added\.$/m);
+  assert.match(text, /^Step added: make it in a new merge request, MR 3 \(example-corpus, branch change\/ABC-3-3, from the latest origin\/master\), planned for it \(Generate Solution builds and opens it\)\. This ticket's merge requests in example-corpus \(MR 2 \(!4207\)\) are merged or closed: do not reopen them or push to their branches\./m);
+  assert.doesNotMatch(text, /Failing check/);
+});
+
+test('ASS-492 AC2/AC5: an Open or Not Created MR of the ticket in that repository takes the change — nothing planned, the plan naming it, the run still resuming at Generate Solution', async () => {
+  for (const status of ['Open', 'Not Created']) {
+    const s = setup(MISSING, { mrs: [...ABC_2870, row(3, CORPUS, status, status === 'Open' ? '!4300' : null)] });
+    const out = JSON.parse((await s.fix()).stdout);
+    assert.deepEqual([out['own-branch-fix'], out['merge-request-planned'], out['resume-at']], [true, null, 'build'], status);
+    assert.deepEqual(out['merge-request-existing'], { id: 3, branch: 'change/ABC-3-3', status, key: status === 'Open' ? '!4300' : null }, status);
+    assert.equal(mrsOf(s).length, 3, `${status}: no second plan`);
+    assert.ok(mrsOf(s).every(m => m['planned-by'] == null), status);
+    assert.match(s.read(), new RegExp(`Step added: make it on MR 3 \\(example-corpus, branch change/ABC-3-3, ${status}\\), this ticket's merge request there still to merge \\(Generate Solution\\)`), status);
+  }
+});
+
+test('ASS-492: a missing change not shown to be the ticket\'s own work — Classify not saying own-branch, no repository named, or one the project does not list — exit 3, nothing planned or written', async () => {
+  const cases = [
+    [{ ...MISSING, 'own-branch': false }, /Classify did not put the cause in the ticket's own branch/],
+    [{ ...MISSING, 'missing-change-repository': undefined }, /named no failing repository, file and job or assertion, nor a missing change and its repository/],
+    [{ ...MISSING, 'missing-change-repository': 'https://gitlab.com/g/elsewhere' }, /https:\/\/gitlab\.com\/g\/elsewhere, where the missing change goes, is none of p's repositories/],
+  ];
+  for (const [output, why] of cases) {
+    const s = setup(output, { mrs: ABC_2870 });
+    const e = await s.refused();
+    assert.equal(e.code, 3, e.stderr);
+    assert.match(JSON.parse(e.stdout)['own-branch-why'], why);
+    assert.equal(mrsOf(s).length, 2);
+    assert.ok(!existsSync(s.plan));
+  }
+});

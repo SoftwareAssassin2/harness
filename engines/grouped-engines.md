@@ -623,6 +623,11 @@ make it (else the operator's step, Blocked for Human); the ticket resumes.
 No master evidence (no such job, forge unreachable, nothing named) is not
 proven: no bug, Blocked for Human asking the operator. On the harness
 project nothing is checked: its project issues are its own backlog.
+With nothing named there is nothing to check (ASS-492): the not-proven
+feedback never prints blank placeholders ("job - on -'s master"); it says
+Troubleshoot named no failing check and gives the Blocked run's summary,
+root cause, Classify's reasoning and any missing change (check-on-master's
+optional fourth argument, `{run}`, the run whose structured-output it reads).
 
 A failure in the ticket's own branch goes back to Generate Solution, not to
 the operator (ASS-384). When master passed the job (exit 3) or could not show
@@ -681,6 +686,31 @@ Solution's group), its Jira status that step's pairing, and goes through
 Build, Release and QA again; the return is a fix attempt as above. A file in
 no merge request of the ticket, or a merged one the forge will not show, is
 not shown: the paths above, unchanged.
+
+Own work that is merely incomplete goes back to Generate Solution with a
+merge request planned for it (ASS-492). Seen on a client ticket: both merge
+requests merged, but the app pinned the library to the version before the
+one the first published, so QA put it On Hold; nothing failed, the ticket
+lacked a third merge request bumping it. Troubleshoot names such a change
+(`missing-change`: what the merge request must hold; `missing-change-repository`:
+the project's repository it goes in) with no `failing-*`, and Classify says
+`issue: project`, `own-branch: true` with the same two fields. Check on the
+Latest Master has nothing to check (exit 4), so Check for an Own-Branch Fix
+Before the Operator runs `ticket:own-branch-fix`: with no failing file named
+and a missing change in one of the project's repositories (the ticket's
+merge requests', else project.json's), the change goes on the ticket's merge
+request there still Open or Not Created (nothing planned;
+`merge-request-existing` names it), else on a new one planned by
+`plan_new_merge_request` under ticket:add-merge-request's rules (next unused
+id, `change/<KEY>-<id>`, the merged one's base, Not Created, `planned-by`
+step `Blocked`, its why Classify's reasoning). The `## Own-branch fix`
+section gives the summary, cause, the missing change with Classify's
+reasoning, the evidence, and which merge request takes it; the run ends at
+`done`, `own-branch-fix: true`, `own-branch-source: missing-change`, its
+`resume-at` Generate Solution's group, the not-proven feedback cleared — no
+operator gate. No VM is read. A repository the project does not list, or no
+repository named, is not shown (exit 3): Blocked for Human as before, its
+feedback the run's own finding.
 
 Blocked checks first (ASS-390 AC4). After counting its attempts and before
 any agent is dispatched, Check First (`check-first`, `ticket:recheck-block`,
@@ -1964,8 +1994,9 @@ only), under `harness.json`'s cap as before. Planning seats have no kinds.
   itself. A stopped workstation with work for its seat is started at once.
 - **TUI.** The sprint screen's seat column shows 💺 for a VM (or planning)
   seat and ⛅ for a workstation seat (the key lists ⛅ for a project on
-  workstations); the gcp workstations box shows each workstation's
-  `1/1 seats`, `0/1 seats` or `seat lost`; the models box, in
+  workstations); the gcp workstations box shows `seat lost` on a
+  workstation that can't be used (ASS-485 dropped the `<used>/1 seats`
+  count); the models box, in
   `vm+workstation` mode, `vm seats: <used>/<VM seats>` (∞ with no limit).
 
 ## A step's end runs on the machine it ran on (ASS-480)
@@ -2034,6 +2065,147 @@ releasing ticket's Health.
   recorded as pending and so ended (its VM started when only stopped) or
   dropped as above (its VM gone). A stray branch already in a workstation's
   shared repositories is set aside at its next claim or release.
+
+## Cloud VMs: plain GCP Compute Engine VMs like workstations (ASS-481)
+
+A project's tickets can run on plain GCP Compute Engine VMs ("cloud VMs")
+exactly as on its GCP workstations (operator decision, 2026-11-17: a plain
+e2-standard-4 costs about a fifth of a workstation). The harness never
+creates, resizes or stops one: that is the infrastructure repository's
+(the infrastructure repository). Only the machine operations differ; everything else is
+the workstation path above.
+
+- **Settings (AC1).** `dev-environments.cloud-vms`, beside `workstations`:
+  each `{ id, gcp-project, zone }`, an optional `gcloud-config` (as a
+  workstation's, `~` expanded) and an optional `ssh-user`, the Linux (OS
+  Login) user — without it, the OS Login user of the gcloud login's account
+  (`gcloud config get-value account`, lower case, each character other than
+  a-z and 0-9 made `_`: `ada.lovelace@example.com` is
+  `ada_lovelace_example_com`). Refused, naming the field, as a workstation is:
+  a missing or empty field, an id that is no single name segment or that a
+  workstation or an earlier cloud VM has (their live data shares
+  `workstations.json`), a bad `gcloud-config`, an `ssh-user` that is no user
+  name. `vm+workstation` and `workstation` modes want the remote pool —
+  workstations plus cloud VMs — non-empty; `vm` mode uses neither.
+  `src/control/dev-environments.js` reads the pool as its `workstations`:
+  the workstations first, then the cloud VMs (each marked `kind: cloud-vm`),
+  each in list order — so every `workstation:*` command, the claims and the
+  seats take a cloud VM's id as a workstation's. A project without
+  `cloud-vms` reads exactly as before.
+- **The machine layer (AC2).** A third backend, `cloud-vm`
+  (`src/agent-cli/machine-cloud-vm.bash`, `src/control/machine-cloud-vm.js`):
+  a cloud VM's step runs in its shared root, `<home>/harness`, as a
+  workstation's (its machine `cloud-vm:<project>:<id>:<folder>`, from the
+  claim's `workstation { …, kind: cloud-vm }` or Create VM's `vm { kind:
+  cloud-vm, … }`). Run (workdir, stdin, marker), copy in and out (rsync),
+  status and stop go over its one connection exactly as a workstation's;
+  stop does nothing. Start is `workstation:connect`, which for a cloud VM
+  (`src/agent-cli/cloud-vm.bash`): reads its status (`gcloud compute
+  instances describe`), starts a TERMINATED one and resumes a SUSPENDED one
+  (`--async`, once), waits out STOPPING, SUSPENDING and a VM booting, the
+  live data's state `starting` meanwhile, polling every
+  `WORKSTATION_POLL_SECONDS` (5) until RUNNING within
+  `WORKSTATION_START_TIMEOUT` (300 seconds); then, unless it was running
+  already, waits for the guest's SSH banner through IAP (`gcloud compute
+  start-iap-tunnel <id> 22 --listen-on-stdin`, one probe at a time) within
+  `CLOUD_VM_SSH_TIMEOUT` (180 seconds). Either wait running out fails the
+  connect with the live data's `last-error` of kind `timeout` — the
+  footer's `start timed out` and a lost seat until a connect works (control
+  tries again after its backoff). The pattern is the operator's
+  `~/.local/bin/harness-vm-proxy`'s.
+- **The connection.** OpenSSH itself is the master: `ssh -M -S <socket> -N
+  -T -o ExitOnForwardFailure=yes -o BatchMode=yes -o ServerAliveInterval=30
+  -o ProxyCommand="gcloud … compute start-iap-tunnel <id> 22
+  --listen-on-stdin --zone … --project …" -i ~/.ssh/google_compute_engine
+  -l <user> -R 127.0.0.1:<port>:127.0.0.1:<port> … cloud-vm-<id>`, under
+  the VM's `CLOUDSDK_CONFIG`: OS Login authorises the key, IAP authenticates
+  the VM's end, so its host key is not pinned (as the operator's own
+  `~/.ssh/config.d/harness-vm`). The forwarder, Hindsight and zot are
+  reverse-forwarded to its loopback as on a workstation. Every session,
+  copy and signal is a channel over that master, as on a workstation. Once
+  it is up, `workstation:connect` records the VM's boot id (`boot-id`).
+- **The same lifecycle (AC3).** Each cloud VM is exactly one remote seat,
+  recorded in `seats.json` as `{ kind: cloud-vm, workstation: <id> }`: a
+  workstation seat in every rule of "VM seats and workstation seats" —
+  preferred over VM seats, lost while it can't be used (its login lapsed,
+  its setup failed, its connect failed or timed out), filled again once it
+  can. Free remote seats are filled in `dev-environments` order: the
+  workstations first, then the cloud VMs, each in list order. Steps claim,
+  check out, commit, push and release on it as in "A workstation held one
+  step at a time" (its claim recording `kind: cloud-vm`), images are pulled
+  there once per boot, Artifact Registry first as the VM's service account
+  (it runs as the dev workstation service account), with the retries of
+  ASS-473. Setup is `workstation:setup`'s; but its whole disk persists across
+  a stop and its runtime folder (`/dev/shm`) across all but a restart, so a
+  setup done under the boot it runs now still holds after a reconnect
+  (`workstation-connection.js setUp`: the setup's `boot-id` is the live
+  data's): setup runs again only for a new boot or a new version. Planning
+  and grooming steps still run on Lima VMs only. A cloud VM needs Docker
+  for setup, as a workstation does: one without it fails setup ("Docker not
+  usable"), its seat lost until it has.
+- **Idle stop and keep-awake (AC4).** The VM stops itself after 60 idle
+  minutes (no interactive pts login, no claude or codex process,
+  a low 5-minute load), which replaces the workstation's 30-minute stop.
+  Control's keep-awake rule is the workstations': while its seat is held or a
+  ticket waits for a seat it could take, control connects it — so starts a
+  stopped one — and sets it up before anything is dispatched there.
+  Control never stops, suspends, resets or deletes a cloud VM; its idle
+  disconnect only closes the master, which (`-N -T`, and sessions without
+  a terminal) never held a pts session open.
+- **The footer and the sprint screen (AC5, AC6).** The `cloud virtual
+  machines` box (ASS-485 retitled it from `virtual machines`) comes
+  directly after `gcp workstations` (after `models` without it), in
+  `vm+workstation` and `workstation` mode for a project listing a cloud
+  VM: one line per cloud VM, `<id> <activity> <state>` built as the
+  workstations box builds its own (ASS-485: `🤖x<n>` only with agents on
+  the holder, `💻` while the holder runs a script step by the sprint
+  screen's rule, nothing when idle; no seat count), the state one of running (green),
+  stopped, starting, connecting, sign in needed, setup failed or start timed
+  out (the last three red), `seat lost` in red while it can't be used, an id
+  cut to 20 with an ellipsis. When one row of boxes would be wider than the
+  screen it goes on a row of its own under the others, so the footer fits
+  the TUI's 120 columns. The `gcp workstations` box lists workstations
+  alone. On the sprint screen a variation in a cloud VM seat is marked 🌐
+  (💺 a VM seat, ⛅ a workstation seat), and the key lists it for a project
+  with cloud VMs.
+- **Tests.** `test/agent-cli/cloud-vm.test.js` and
+  `test/control/cloud-vms.test.js` against a fake cloud VM
+  (`test/support/fake-gcloud-compute.js`, `fake-ssh-master.js`);
+  `test/tui/virtual-machines-box.test.js`; and
+  `test/agent-cli/cloud-vm-real.test.js`, run only with
+  `HARNESS_CLOUD_VM_TESTS=1`, against ada-vm (or the VM
+  `CLOUD_VM_TEST_ID`, `_PROJECT`, `_ZONE`, `_GCLOUD_CONFIG`, `_SSH_USER`
+  name): its status, started if it stopped itself, a command run, a file
+  copied in and out and one small Artifact Registry image pulled, all under
+  a scratch folder removed after.
+
+## The local virtual machines box (ASS-486, ASS-489, ASS-491)
+
+The TUI footer's rightmost box, `local virtual machines`, shows every seat
+that uses one of the Mac's Lima VMs, one line each, in `vm` and
+`vm+workstation` mode (never in `workstation` mode, where tickets have no
+VMs). ASS-489 replaced ASS-486's "busy VMs" rule; ASS-491 added the planning
+seats. The in-progress VM seats come first. Their holders: control's
+`seats.json` rows of kind `vm`, in their order (oldest first). Each shows the
+Lima VM whose `vms.json` row has the seat's ticket (case-insensitive) and
+variation, as ASS-485's `<id> <activity> <state>` (`machineLine`): the
+activity the variation's agents and 💻 for a running script step
+(`variationActivity`), the state the VM's own word lowercased, `running` in
+green — e.g. `vm-1 🤖x2 running`, `vm-2 💻 running` — a name cut to 20 with
+an ellipsis. A holder whose VM has no `vms.json` row yet shows its expected
+name (lowercased key-variation, e.g. `vm-3-a`) with a gray `creating`. Then
+one gray `free build seat` line per VM seat left, so these lines number the
+VM seat count (`seatCapacity`, the models box's `vm seats: <used>/<n>`). Then
+the planning seats, every one a local VM's since planning always runs on Lima
+VMs (ASS-469), taken from `seatPlan` so they agree with the sprint screen's
+💺: its planning holders in its order, each in the same line as above, then
+one gray `free planning seat` line per free planning seat (`max-tickets-in-planning`
+within `harness.json`'s limit). With no limit (∞) of either kind only its
+holders are listed; with no lines at all, one gray `none`. A VM whose ticket
+holds no seat — waiting at a gate, blocked, or in a workstation or cloud-vm
+seat — is not listed. When a row of boxes would be wider than the screen it
+wraps as the cloud box does, staying rightmost on its row, so the footer fits
+the TUI's 120 columns. Tests: `test/tui/local-virtual-machines-box.test.js`.
 
 ## A finished plan holds no seat (ASS-362)
 

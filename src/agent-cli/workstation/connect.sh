@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Description: Start a project's GCP workstation if it is stopped and open its one SSH connection, the forwarder, Hindsight and zot reverse-forwarded to its loopback — workstation:connect <project> <id>; prints its live data.
+# Description: Start a project's GCP workstation (or cloud VM) if it is stopped and open its one SSH connection, the forwarder, Hindsight and zot reverse-forwarded to its loopback — workstation:connect <project> <id>; prints its live data.
 set -euo pipefail
 
 # ASS-433 AC1: the workstation is the project's dev-environments workstation
@@ -37,6 +37,21 @@ set -euo pipefail
 # exited: refused at once, and a master opened after it exited closed again.
 # Run by hand, a new master is recorded as nobody's (null), and so is an open
 # one no running control owns. workstation.bash says why.
+#
+# ASS-481 AC2: <id> may be one of the project's cloud VMs (cloud-vm.bash).
+# Step 3 is then a VM's: its status read (gcloud compute instances
+# describe); TERMINATED started and SUSPENDED resumed (--async, once each),
+# STOPPING, SUSPENDING and a VM booting waited for, the state recorded as
+# starting meanwhile (the TUI's "starting"), polled every
+# WORKSTATION_POLL_SECONDS until RUNNING, for up to WORKSTATION_START_TIMEOUT
+# seconds; then, unless it was running already, the guest's SSH banner
+# waited for through IAP (cvm_banner), for up to CLOUD_VM_SSH_TIMEOUT seconds
+# (180). Either wait running out fails with last-error kind timeout (the
+# TUI's "start timed out"; its seat lost while it lasts, control trying again
+# after its backoff). Step 4's master is OpenSSH's through IAP (cvm_open), and
+# once it is up the VM's boot id is recorded (boot-id): its whole disk
+# persists across a stop, so a setup done under this boot still holds
+# (workstation-connection.js setUp).
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../workstation.bash"
 
 command=workstation:connect
@@ -47,6 +62,8 @@ ports=()
 while IFS= read -r port; do ports+=("$port"); done < <(workstation_ports "$command" "$project")
 [[ ${#ports[@]} -gt 0 ]] || exit 1
 config="$(jq -r '.["gcloud-config"] // empty' <<< "$settings")"
+kind="$(workstation_kind "$settings")" noun=workstation
+[[ "$kind" != cloud-vm ]] || noun="cloud VM"
 
 # fail <what> <output> — the failure recorded (last-error, not connected) and reported.
 fail() {
@@ -55,7 +72,7 @@ fail() {
     '. + { connected: false, "checked-at": $at, "last-error": { at: $at, kind: $kind, message: $message } }' || true
   local hint=""
   [[ "$ws_error_kind" != expired ]] || hint="; the gcloud login needs reauthentication: run ${config:+CLOUDSDK_CONFIG=$config }gcloud auth login"
-  echo "$command: $project's workstation $id: $1 failed ($ws_error_kind)$hint: $ws_error_message" >&2
+  echo "$command: $project's $noun $id: $1 failed ($ws_error_kind)$hint: $ws_error_message" >&2
   exit 1
 }
 
@@ -78,8 +95,44 @@ fi
 workstation_close "$project" "$id"
 workstation_record "$project" "$id" --argjson owner "${me:-null}" '. + { "control-pid": $owner }'
 
+# timed_out <what> <message> — AC2 (ASS-481): a cloud VM's start or SSH wait ran out: last-error kind timeout, reported.
+timed_out() {
+  workstation_record "$project" "$id" --arg message "$2" \
+    '. + { connected: false, "checked-at": $at, "last-error": { at: $at, kind: "timeout", message: $message } }' || true
+  echo "$command: $project's cloud VM $id: $1 timed out: $2" >&2
+  exit 1
+}
+
 started=false
-state="$(workstation_state "$settings" 2>&1)" || fail "reading its state (gcloud workstations describe)" "$state"
+if [[ "$kind" == cloud-vm ]]; then
+  state="$(workstation_state "$settings" 2>&1)" || fail "reading its state (gcloud compute instances describe)" "$state"
+  was="$state" asked=""
+  deadline=$((SECONDS + ${WORKSTATION_START_TIMEOUT:-300}))
+  while [[ "$state" != running ]]; do
+    if [[ -z "$asked" && ( "$state" == stopped || "$state" == suspended ) ]]; then
+      verb=start; [[ "$state" == stopped ]] || verb=resume
+      workstation_record "$project" "$id" '. + { state: "starting", "state-at": $at }'
+      out="$(cvm_gcloud "$settings" "$verb" --async 2>&1)" || fail "${verb}ing it (gcloud compute instances $verb)" "$out"
+      started=true asked=1
+      workstation_record "$project" "$id" '. + { "started-at": $at }'
+    else
+      (( SECONDS < deadline )) || timed_out "its start" "it is still $state after ${WORKSTATION_START_TIMEOUT:-300} seconds"
+      workstation_record "$project" "$id" '. + { state: "starting", "state-at": $at }'
+      sleep "${WORKSTATION_POLL_SECONDS:-5}"
+    fi
+    state="$(workstation_state "$settings" 2>&1)" || fail "reading its state (gcloud compute instances describe)" "$state"
+  done
+  # RUNNING comes before the guest's sshd answers: its banner waited for through IAP, unless it was running already.
+  if [[ "$was" != running ]]; then
+    deadline=$((SECONDS + ${CLOUD_VM_SSH_TIMEOUT:-180}))
+    until cvm_banner "$settings"; do
+      (( SECONDS < deadline )) || timed_out "waiting for its SSH" "it runs, but its SSH did not answer through IAP within ${CLOUD_VM_SSH_TIMEOUT:-180} seconds"
+      sleep "${WORKSTATION_POLL_SECONDS:-5}"
+    done
+  fi
+  state=running
+fi
+[[ "$kind" == cloud-vm ]] || { state="$(workstation_state "$settings" 2>&1)" || fail "reading its state (gcloud workstations describe)" "$state"; }
 deadline=$((SECONDS + ${WORKSTATION_START_TIMEOUT:-300}))
 while [[ "$state" != running ]]; do
   if [[ "$state" == stopped ]]; then
@@ -95,12 +148,18 @@ while [[ "$state" != running ]]; do
 done
 workstation_record "$project" "$id" '. + { state: "running", "state-at": $at }'
 
-out="$(workstation_open "$project" "$id" "$settings" "${ports[@]}" 2>&1)" || fail "opening its SSH connection (gcloud workstations ssh)" "$out"
+how="gcloud workstations ssh"; [[ "$kind" != cloud-vm ]] || how="ssh through IAP"
+out="$(workstation_open "$project" "$id" "$settings" "${ports[@]}" 2>&1)" || fail "opening its SSH connection ($how)" "$out"
 if gone; then
   workstation_close "$project" "$id"
   workstation_record "$project" "$id" '. + { connected: false, "disconnected-at": $at, "control-pid": null }'
   echo "$command: $project's workstation $id: the control that ran it (pid $me) exited while it connected: closed again" >&2
   exit 1
+fi
+if [[ "$kind" == cloud-vm ]]; then
+  # shellcheck disable=SC2016
+  boot="$(workstation_ssh "$project" "$id" bash -c 'echo "${HARNESS_WS_BOOT_ID:-$(cat /proc/sys/kernel/random/boot_id 2>/dev/null)}"' </dev/null 2>/dev/null | tr -d '[:space:]')" || boot=""
+  workstation_record "$project" "$id" --arg b "$boot" '. + { "boot-id": (if $b == "" then null else $b end) }'
 fi
 workstation_record "$project" "$id" --argjson forwards "$(printf '%s\n' "${ports[@]}" | jq -sc 'map(tonumber)')" \
   '. + { connected: true, "connected-at": $at, "checked-at": $at, forwards: $forwards, "last-error": null }'

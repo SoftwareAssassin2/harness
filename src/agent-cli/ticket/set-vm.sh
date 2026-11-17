@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Description: Record a ticket variation's VM, or its workstation — ticket:set-vm <project> <ticket-key> <variation> <vm-name|workstation-id> <ip|""> [recreated] [--kind workstation --folder <folder>].
+# Description: Record a ticket variation's VM, or its workstation or cloud VM — ticket:set-vm <project> <ticket-key> <variation> <vm-name|workstation-id> <ip|""> [recreated] [--kind workstation|cloud-vm --folder <folder>].
 set -euo pipefail
 
 # Writes the variation's "vm" in the project's active sprint (see
@@ -29,7 +29,7 @@ set -euo pipefail
 # and kind stay the same.
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../sprint.bash"
 
-usage='usage: ticket:set-vm <project> <ticket-key> <variation> <vm-name|workstation-id> <ip|""> [recreated] [--kind workstation --folder <folder>]'
+usage='usage: ticket:set-vm <project> <ticket-key> <variation> <vm-name|workstation-id> <ip|""> [recreated] [--kind workstation|cloud-vm --folder <folder>]'
 kind="" folder="" args=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -41,7 +41,7 @@ done
 set -- "${args[@]+"${args[@]}"}"
 [[ $# -eq 5 || ( $# -eq 6 && "$6" == recreated ) ]] || { echo "$usage" >&2; exit 1; }
 if [[ -n "$kind" || -n "$folder" ]]; then
-  [[ "$kind" == workstation ]] || { echo "ticket:set-vm: invalid kind '$kind' (workstation, or none for a VM)" >&2; exit 1; }
+  [[ "$kind" == workstation || "$kind" == cloud-vm ]] || { echo "ticket:set-vm: invalid kind '$kind' (workstation, cloud-vm, or none for a VM)" >&2; exit 1; }   # cloud-vm: ASS-481
   [[ ( "$folder" == /*/harness || "$folder" == /*/harness/* ) && "$folder" != *:* ]] || { echo "ticket:set-vm: invalid workstation folder '$folder' (absolute, under ~/harness)" >&2; exit 1; }
   [[ "$4" =~ ^[A-Za-z0-9_-]+$ ]] || { echo "ticket:set-vm: invalid workstation id '$4'" >&2; exit 1; }
   [[ -z "$5" ]] || { echo "ticket:set-vm: a workstation records no IP" >&2; exit 1; }

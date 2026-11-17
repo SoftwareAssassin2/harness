@@ -19,7 +19,7 @@ source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../code.bash"
 # variation itself, vm.setup-complete-at — the workstation's repositories are every variation's — once the
 # workstation it records was last set up (workstations.json's setup ok: claude, agent.sh and the runtime folder there).
 key="$(tr '[:lower:]' '[:upper:]' <<< "$2")"
-ws="$(variation_field 'if .vm.kind == "workstation" then .vm.name else "" end' vm:mark-setup-complete "$1" "$key" "$3" | jq -r .)"
+ws="$(variation_field 'if (.vm.kind // "") | IN("workstation", "cloud-vm") then .vm.name else "" end' vm:mark-setup-complete "$1" "$key" "$3" | jq -r .)"
 if [[ -n "$ws" ]]; then
   workstation_entry "$1" "$ws" | jq -e '.setup.ok == true' >/dev/null \
     || { echo "vm:mark-setup-complete: $1's workstation $ws has not been set up (workstation:setup); Setup stays incomplete" >&2; exit 1; }

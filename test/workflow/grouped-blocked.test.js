@@ -419,7 +419,7 @@ const problem = (output, project = 'example') => problemOf({ id: 'r', project, p
 
 test('ASS-163 AC1: a cause in the project\'s own code is checked against the latest master by a script — project:check-on-master with the failing repository and CI job Troubleshoot named, on the host — before anything is raised; its answer and evidence kept by the run', () => {
   const check = stepOf(engines['grouped-blocked'], 'check-on-master');
-  assert.deepEqual([check.action.type, check.action.command, check['record-script-output'], check['run-location']], ['script', './agent.sh project:check-on-master {project} {failing-repository} {failing-job}', true, undefined]);
+  assert.deepEqual([check.action.type, check.action.command, check['record-script-output'], check['run-location']], ['script', './agent.sh project:check-on-master {project} {failing-repository} {failing-job} {run}', true, undefined]);
   const into = engines['grouped-blocked'].steps.flatMap(s => (s['exit-events'] ?? []).filter(e => e['move-to-state'] === 'check-on-master').map(() => s.id));
   assert.deepEqual(into, ['classify'], 'only Classify leads there');
   for (const value of ['harness', 'environment']) assert.ok(!walk('grouped-blocked', issue(value)).trail.includes('check-on-master'), `${value}: not the project's code, not checked`);
@@ -880,6 +880,53 @@ test('ASS-423 AC4: Troubleshoot and Classify say a ticket\'s merged merge reques
   assert.match(build, /Own-branch fix: an "## Own-branch fix" section/);
   assert.match(build, /Never reopen a Merged or Closed merge request or push to its branch/);
   for (const p of ['classify-issue', 'troubleshoot-block', 'generate-solution']) assert.doesNotMatch(promptText(p), /whether or not they have merged|Own-branch fix/, p);
+});
+
+// ASS-492 — a block whose own work is merely incomplete (ABC-2870: both merge requests merged, the app's bump of
+// the published library never planned): Classify own-branch true, nothing failing, a missing change named. Check on
+// the Latest Master has nothing to check (exit 4); Check for an Own-Branch Fix Before the Operator plans the merge
+// request and sends the ticket back to Generate Solution, never to the operator.
+const MISSING = { 'needs-fix': true, issue: 'project', 'own-branch': true, reasoning: 'the fix is a new third MR in example-app planned by Generate Solution',
+  'missing-change': 'bump @example/* to 1.0.0-preview.85', 'missing-change-repository': 'https://gitlab.com/g/example-app' };
+const NOTHING_NAMED = { exitCode: 4, scriptOutput: { 'on-master': 'unknown', 'master-evidence': 'Troubleshoot named no failing repository and CI job to check', 'ai-feedback-short': 'Not proven on master: Troubleshoot named no failing check', 'ai-feedback-long': 'Blocked put the cause in the project\'s code, but Troubleshoot named no failing check' } };
+const PLANNED = { exitCode: 0, scriptOutput: { 'own-branch-fix': true, 'own-branch-source': 'missing-change', 'own-branch-why': 'Classify put a missing change in example-app in this ticket\'s own work: bump', 'missing-change': 'bump @example/* to 1.0.0-preview.85',
+  'merge-request-planned': { id: 3, repository: 'https://gitlab.com/g/example-app', branch: 'change/ABC-2870-3', base: 'master' }, 'merge-request-existing': null, 'plan-revised': 'execution-plan-A.md',
+  'resume-at': 'build', 'resume-source': 'declared', 'resume-why': 'W', 'resume-ignored': [], 'ai-feedback-short': null, 'ai-feedback-long': null } };
+
+test('ASS-492 AC1: own work incomplete, nothing failing — check-on-master has nothing to check (exit 4), the own-branch check plans the missing merge request and the run ends done with Generate Solution\'s group as its resume-at, no operator gate', () => {
+  const run = walk('grouped-blocked', { classify: { structuredOutput: MISSING }, 'check-on-master': NOTHING_NAMED, 'own-branch-or-human': PLANNED });
+  assert.deepEqual(run.trail.slice(-4), ['classify', 'check-on-master', 'own-branch-or-human', 'done']);
+  assert.ok(!run.trail.includes('blocked-for-human'));
+  assert.deepEqual([run.output['own-branch-fix'], run.output['resume-at'], run.output['ai-feedback-short']], [true, 'build', null], 'the not-proven feedback cleared');
+  for (const top of TOPS['grouped-blocked']) {
+    const facts = { subEngineDone: true, subEngineState: run.end, structuredOutput: run.output };
+    assert.equal(nextState(stepOf(engines[top], 'blocked'), engines[top], facts, [{ 'from-state': 'build', 'to-state': 'test' }, { 'from-state': 'test', 'to-state': 'blocked' }]).to, 'build', `${top}: back to Build`);
+  }
+  assert.match(blockHistory({ blocks: [{ ...run.output, 'ended-at': 'done' }] }), /its own work lacked a change \(bump @example\/\* to 1\.0\.0-preview\.85\): sent back to make it, at build/);
+  assert.match(problem({ ...MISSING, 'on-master': 'unknown' }), /^Missing change: bump @example\/\* to 1\.0\.0-preview\.85 in https:\/\/gitlab\.com\/g\/example-app$/m);
+  for (const id of ['check-on-master', 'own-branch-or-human', 'own-branch-or-obstacle']) assert.match(stepOf(engines['grouped-blocked'], id).description, /ASS-492/, id);
+});
+
+test('ASS-492 AC4: not proven with nothing named and no missing change to plan — still Blocked for Human, check-on-master\'s feedback with no blank placeholders', () => {
+  const notShown = { exitCode: 3, scriptOutput: { 'own-branch-fix': false, 'own-branch-why': 'Troubleshoot named no failing repository, file and job or assertion, nor a missing change and its repository' } };
+  const run = walk('grouped-blocked', { classify: { structuredOutput: { issue: 'project', reasoning: 'R', 'own-branch': true } }, 'check-on-master': NOTHING_NAMED, 'own-branch-or-human': notShown });
+  assert.deepEqual(run.trail.slice(-2), ['own-branch-or-human', 'blocked-for-human']);
+  toHuman('grouped-blocked', run, /^Not proven on master: Troubleshoot named no failing check$/);
+  assert.doesNotMatch(run.output['ai-feedback-long'], /job - on -|\bjob -|-'s master/);
+});
+
+test('ASS-492 AC3: Classify can name a missing change and its repository, and says when; Troubleshoot asks for the missing change when no check fails; the flat engines\' prompts unchanged', () => {
+  const classify = promptJson('classify-issue-grouped').output;
+  for (const field of ['missing-change', 'missing-change-repository']) assert.equal(classify.properties[field]?.type, 'string', field);
+  assert.deepEqual(classify.required, ['issue', 'reasoning']);
+  assert.match(promptText('classify-issue-grouped'), /Nothing failed, but the ticket's own work is incomplete[^\n]*is a project issue, own-branch: true, with missing-change \(what the merge request must hold, one line\) and missing-change-repository/);
+  assert.match(promptText('classify-issue-grouped'), /"missing-change": "<what the merge request must hold>", "missing-change-repository": "<its forge url>"/);
+  for (const p of ['troubleshoot-block-grouped', 'troubleshoot-block-on-host-grouped']) {
+    const out = promptJson(p).output;
+    for (const field of ['missing-change', 'missing-change-repository']) assert.equal(out.properties[field]?.type, 'string', `${p} ${field}`);
+    assert.match(promptText(p), /Nothing failing, but the ticket's own work incomplete[^\n]*name that change \(missing-change/, p);
+  }
+  for (const p of ['classify-issue', 'troubleshoot-block']) assert.doesNotMatch(promptText(p), /missing-change/, p);
 });
 
 // ASS-427 — a problem in the ticket's VM fixable in place: fixed there at once

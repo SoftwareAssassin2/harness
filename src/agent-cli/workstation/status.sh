@@ -11,7 +11,9 @@ set -euo pipefail
 # While a connect or disconnect holds the workstation's lock, nothing is
 # checked or written: the entry is printed as it stands, with "busy": true.
 # A describe that fails leaves the state as it was, said on stderr (one line,
-# any token redacted).
+# any token redacted). ASS-481: a cloud VM's state is gcloud compute
+# instances describe's status in a workstation's words (cloud-vm.bash
+# cvm_state: TERMINATED is stopped, PROVISIONING and STAGING starting).
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../workstation.bash"
 
 command=workstation:status

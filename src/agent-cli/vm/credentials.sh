@@ -69,8 +69,8 @@ source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../vm.bash"   # $project
 [[ $# -eq 2 ]] || { echo "usage: vm:credentials <project> <vm>" >&2; exit 1; }
 [[ "$1" =~ ^[A-Za-z0-9_-]+$ ]] || { echo "vm:credentials: invalid project '$1'" >&2; exit 1; }
 target=vm
-if [[ "$2" == workstation:* ]]; then
-  wsm_parts "${2#workstation:}" || exit 1
+if machine_remote "$2"; then   # ASS-481: a cloud VM's (cloud-vm:…) as a workstation's
+  wsm_parts "${2#*:}" || exit 1
   [[ "$wsm_project" == "$1" ]] || { echo "vm:credentials: $2 is not one of $1's workstations" >&2; exit 1; }
   target=workstation
 else

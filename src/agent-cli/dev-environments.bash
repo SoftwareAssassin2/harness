@@ -5,7 +5,11 @@
 # vm (each ticket variation in a Lima VM of its own; the default), workstation
 # (on GCP Cloud Workstations from its list, over SSH) or vm+workstation (a
 # free workstation seat first, a VM seat otherwise: ASS-469, one seat per
-# workstation listed, src/control/seat-kinds.js).
+# workstation listed, src/control/seat-kinds.js). ASS-481: its cloud VMs
+# (cloud-vms) are part of the pool, after the workstations: each in
+# dev_environments_workstations' output, and found by
+# dev_environments_workstation, as { kind: "cloud-vm", id, gcp-project,
+# zone[, gcloud-config][, ssh-user] }.
 #
 #   source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../dev-environments.bash"
 #   dev_environments <command> <project>               # { mode, workstations } as one JSON line, the defaults filled in

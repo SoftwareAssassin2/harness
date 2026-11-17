@@ -26,7 +26,7 @@ test('machineOf: a variation\'s machine is its VM\'s Lima name without a kind or
 });
 
 test('a machine of a kind with no backend is refused, naming it', () => {
-  assert.throws(() => machineCommand('other:box-1', ['true']), /box-1: no machine backend for its kind 'other' \(there is: lima, workstation\)/);
+  assert.throws(() => machineCommand('other:box-1', ['true']), /box-1: no machine backend for its kind 'other' \(there is: lima, workstation, cloud-vm\)/);
 });
 
 test('machineCommand: a Lima VM\'s command is limactl shell [--workdir <cwd>] <vm> --, under its marker when given, with LIMA_HOME set', () => {

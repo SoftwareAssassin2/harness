@@ -17,7 +17,17 @@
 // data/projects/<p>/seats.json (seats.js writes it each tick, atomically):
 // { seats: [{ key, variation, kind: 'vm' } | { key, variation, kind:
 // 'workstation', workstation: <id> }, each with since] }. Planning seats have
-// no kinds (planning steps run on VMs). This file is pure — the planner, the
+// no kinds (planning steps run on VMs).
+//
+// ASS-481: a workstation seat is one kind of remote seat; a cloud VM of the
+// project's dev-environments (its pool, after its workstations) is exactly
+// one remote seat too, of kind 'cloud-vm' ({ key, variation, kind:
+// 'cloud-vm', workstation: <its id>, since }), treated as a workstation seat
+// in every rule here: preferred over VM seats, lost while its VM can't be
+// used (lostWhy: also a start or SSH wait that timed out), filled again once
+// it can; free remote seats filled in the pool's order — workstations
+// first, then cloud VMs. Its own idle stop (60 minutes) keeps its seat as a
+// stopped workstation's does. This file is pure — the planner, the
 // workstation job and the dashboard all read seats through it, so they agree.
 import { join } from 'node:path';
 import { existsSync } from 'node:fs';
@@ -25,6 +35,11 @@ import { readJson } from './read.js';
 import { loginExpired } from './workstation-connection.js';
 
 export const SEATS_FILE = 'seats.json';
+// ASS-481: the remote seats' kinds, a workstation's and a cloud VM's; isRemoteSeat(record) — the record is one.
+export const REMOTE_SEAT_KINDS = new Set(['workstation', 'cloud-vm']);
+export const isRemoteSeat = s => REMOTE_SEAT_KINDS.has(s?.kind);
+// remoteSeatKind(remote) — the seat kind of a remote of seatCapacity's workstations: 'cloud-vm' for a cloud VM.
+const remoteSeatKind = w => (w?.kind === 'cloud-vm' ? 'cloud-vm' : 'workstation');
 const MODES_WITH_VMS = new Set(['vm', 'vm+workstation']), MODES_WITH_WORKSTATIONS = new Set(['workstation', 'vm+workstation']);
 
 // loadSeats(projectDir) — its seats.json's records, [] without one; one caught half-written reads as [] (the next tick writes it whole).
@@ -45,19 +60,21 @@ export const seatOf = (records = [], key, variation) => records.find(s => same(s
 export function lostWhy(entry) {
   if (loginExpired(entry)) return 'its gcloud login needs reauthentication';
   if (entry?.setup?.ok === false) return `its setup failed${entry.setup.error ? `: ${entry.setup.error}` : ''}`;
+  if (entry?.['last-error']?.kind === 'timeout' && entry.connected !== true) return `its start timed out${entry['last-error'].message ? `: ${entry['last-error'].message}` : ''}`;   // ASS-481: a cloud VM's
   if (entry?.['last-error'] && entry.connected !== true) return `it could not be reached or started${entry['last-error'].message ? `: ${entry['last-error'].message}` : ''}`;
   return null;
 }
 
 // seatCapacity(project) — { mode, vm (its VM seats: project.json's max-tickets-in-progress, Infinity for none, 0 in
-// workstation mode), workstations: [{ id, seats (always 1, AC9), lost (lostWhy, or null) }] in list order ([] in vm
+// workstation mode), workstations: [{ id, seats (always 1, AC9), lost (lostWhy, or null), kind ('cloud-vm' for a cloud VM,
+// ASS-481; none for a workstation) }] in the pool's order, workstations then cloud VMs ([] in vm
 // mode), total (the VM seats and one per workstation not lost) }. `project` is loadState's (or the dashboard's alike): json,
 // devEnvironments ({ mode, workstations }, null while wrong — read as vm mode) and workstations (the live data).
 export function seatCapacity(project) {
   const mode = project?.devEnvironments?.mode ?? 'vm';
   const limit = project?.json?.['max-tickets-in-progress'];
   const vm = MODES_WITH_VMS.has(mode) ? limit ?? Infinity : 0;
-  const workstations = MODES_WITH_WORKSTATIONS.has(mode) ? (project.devEnvironments.workstations ?? []).map(w => ({ id: w.id, seats: 1, lost: lostWhy(project.workstations?.[w.id]) })) : [];
+  const workstations = MODES_WITH_WORKSTATIONS.has(mode) ? (project.devEnvironments.workstations ?? []).map(w => ({ id: w.id, seats: 1, lost: lostWhy(project.workstations?.[w.id]), ...(w.kind === 'cloud-vm' ? { kind: 'cloud-vm' } : {}) })) : [];
   return { mode, vm, workstations, total: vm + workstations.reduce((sum, w) => sum + (w.lost ? 0 : w.seats), 0) };
 }
 
@@ -86,14 +103,15 @@ export function keepSeats(records = [], capacity) {
   const ws = new Map(capacity.workstations.map(w => [w.id, w])), lost = [];
   let kept = [];
   for (const s of records) {
-    if (s.kind === 'workstation') {
+    if (isRemoteSeat(s)) {
       const w = ws.get(s.workstation);
-      if (!w || w.lost) { lost.push({ key: s.key, variation: s.variation, workstation: s.workstation, why: w ? w.lost : 'it is no longer one of the project\'s workstations' }); continue; }
+      if (!w || w.lost) { lost.push({ key: s.key, variation: s.variation, workstation: s.workstation, ...(s.kind === 'cloud-vm' ? { kind: 'cloud-vm' } : {}), why: w ? w.lost : `it is no longer one of the project's ${s.kind === 'cloud-vm' ? 'cloud VMs' : 'workstations'}` }); continue; }
+      if (s.kind !== remoteSeatKind(w)) { kept.push({ ...s, kind: remoteSeatKind(w) }); continue; }   // ASS-481: an id moved between the two lists
     } else if (s.kind !== 'vm' || capacity.vm <= 0) { lost.push({ key: s.key, variation: s.variation, workstation: null, why: `${capacity.mode} mode has no VM seats` }); continue; }
     kept.push({ ...s });
   }
   const over = (list, count) => list.toSorted((a, b) => String(a.since ?? '').localeCompare(String(b.since ?? ''))).slice(count);
-  const unseated = [...over(kept.filter(s => s.kind === 'vm'), capacity.vm), ...capacity.workstations.flatMap(w => over(kept.filter(s => s.kind === 'workstation' && s.workstation === w.id), w.seats))];
+  const unseated = [...over(kept.filter(s => s.kind === 'vm'), capacity.vm), ...capacity.workstations.flatMap(w => over(kept.filter(s => isRemoteSeat(s) && s.workstation === w.id), w.seats))];
   kept = kept.filter(s => !unseated.includes(s));
   return { kept, lost, unseated };
 }
@@ -117,26 +135,26 @@ export function placeSeats({ records = [], reserved = [], capacity, midStep = ()
   const left = [], moved = [], seated = [];
   let { kept } = keepSeats(records, capacity);
   kept = kept.filter(s => (rank.has(`${String(s.key).toUpperCase()} ${s.variation}`) ? true : (left.push(s), false)));
-  const used = id => kept.filter(s => s.kind === 'workstation' && s.workstation === id).length;
+  const used = id => kept.filter(s => isRemoteSeat(s) && s.workstation === id).length;
   const freeWs = () => capacity.workstations.find(w => !w.lost && used(w.id) < w.seats);
   for (const s of kept.filter(x => x.kind === 'vm').toSorted((a, b) => rankOf(a) - rankOf(b))) {
     const w = freeWs();
     if (!w) break;
     if (midStep(s.key, s.variation)) continue;
-    Object.assign(s, { kind: 'workstation', workstation: w.id, since: now });
-    moved.push({ key: s.key, variation: s.variation, workstation: w.id });
+    Object.assign(s, { kind: remoteSeatKind(w), workstation: w.id, since: now });
+    moved.push({ key: s.key, variation: s.variation, workstation: w.id, ...(w.kind === 'cloud-vm' ? { kind: 'cloud-vm' } : {}) });
   }
   for (const r of reserved) {
     if (seatOf(kept, r.key, r.variation)) continue;
     const w = freeWs();
-    const record = w ? { key: r.key, variation: r.variation, kind: 'workstation', workstation: w.id, since: now }
+    const record = w ? { key: r.key, variation: r.variation, kind: remoteSeatKind(w), workstation: w.id, since: now }
       : kept.filter(s => s.kind === 'vm').length < capacity.vm ? { key: r.key, variation: r.variation, kind: 'vm', since: now } : null;
     if (!record) continue;
     kept.push(record);
     seated.push(record);
   }
-  return { records: kept.toSorted((a, b) => rankOf(a) - rankOf(b)).map(({ key, variation, kind, workstation, since }) => ({ key, variation, kind, ...(kind === 'workstation' ? { workstation } : {}), since })), left, moved, seated };
+  return { records: kept.toSorted((a, b) => rankOf(a) - rankOf(b)).map(({ key, variation, kind, workstation, since }) => ({ key, variation, kind, ...(REMOTE_SEAT_KINDS.has(kind) ? { workstation } : {}), since })), left, moved, seated };
 }
 
-// seatWords(record) — a seat in words for the logs: "a VM seat", "a workstation seat on <id>".
-export const seatWords = s => (s?.kind === 'workstation' ? `a workstation seat on ${s.workstation}` : 'a VM seat');
+// seatWords(record) — a seat in words for the logs: "a VM seat", "a workstation seat on <id>", "a cloud VM seat on <id>" (ASS-481).
+export const seatWords = s => (s?.kind === 'workstation' ? `a workstation seat on ${s.workstation}` : s?.kind === 'cloud-vm' ? `a cloud VM seat on ${s.workstation}` : 'a VM seat');

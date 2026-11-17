@@ -107,6 +107,34 @@ test('AC5: no repository or job named, or a url on no forge, is unknown (exit 4)
   assert.deepEqual(forgeCalls(f), []);
 });
 
+test('ASS-492 AC4: nothing named — the not-proven feedback prints no blank placeholders ("job - on -\'s master"): it says Troubleshoot named no failing check and gives the Blocked run\'s summary, root cause, Classify\'s reasoning and missing change; the run optional', async () => {
+  const f = project();
+  const RUN = '77777777-7777-4777-8777-777777777777';
+  f.edit(['assignments.json'], a => { a['transient-state-engines'] = [...(a['transient-state-engines'] ?? []), { id: RUN, project: 'p', 'state-engine': 'grouped-blocked', state: 'check-on-master', 'is-done': false,
+    'structured-output': { summary: 'the indicator never reaches users', 'root-cause': 'the work is incomplete: the app still pins preview.83', reasoning: 'own work incomplete: a new third MR', 'own-branch': true,
+      'missing-change': 'bump @scope/* to preview.85', 'missing-change-repository': 'https://gitlab.com/g/app' } }]; });
+  for (const [url, job] of [['-', '-'], ['-', 'unit'], [GITLAB, '-']]) {
+    const r = await f.check('p', url, job, RUN);
+    assert.deepEqual([r.code, r.out['on-master']], [4, 'unknown'], `${url} ${job}`);
+    assert.equal(r.out['ai-feedback-short'], 'Not proven on master: Troubleshoot named no failing check');
+    const long = r.out['ai-feedback-long'];
+    assert.doesNotMatch(long, /job - |on -'s|Check job/, `${url} ${job}: no blank placeholders`);
+    assert.match(long, /^Blocked put the cause in the project's code, but Troubleshoot named no failing check \(no repository and CI job\), so the latest master was not checked and no project bug was raised\.$/m);
+    assert.match(long, /^Summary: the indicator never reaches users$/m);
+    assert.match(long, /^Root cause: the work is incomplete: the app still pins preview\.83$/m);
+    assert.match(long, /^Classify: own work incomplete: a new third MR$/m);
+    assert.match(long, /^Missing change: bump @scope\/\* to preview\.85 in https:\/\/gitlab\.com\/g\/app$/m);
+    assert.match(long, /ticket:add-merge-request/);
+  }
+  // No run given, or one not found: the same text without the finding.
+  for (const extra of [[], ['88888888-8888-4888-8888-888888888888']]) {
+    const r = await f.check('p', '-', '-', ...extra);
+    assert.equal(r.code, 4);
+    assert.doesNotMatch(r.out['ai-feedback-long'], /job - |on -'s|Summary:/);
+  }
+  assert.deepEqual(forgeCalls(f), []);
+});
+
 test('on the harness project a project issue is the harness\'s own backlog: nothing checked (exit 2), no forge asked', async () => {
   const f = project();
   f.edit(['harness.json'], h => { h['harness-project'] = 'p'; });

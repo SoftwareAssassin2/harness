@@ -18,6 +18,7 @@
 #                                     # loopback only at <port…> (vm:start, step 1), its video.display <display> (none or vz)
 #   machine_stop <machine> [force]    # stopped (force: at once)
 #   machine_backend <machine>         # its backend's name; fails, naming it, for one there is none of
+#   machine_remote <machine>          # ASS-481: it is a workstation's or a cloud VM's (workstation:… or cloud-vm:…)
 #   $machine_of                       # a jq filter: a ticket variation (its "vm", ticket:set-vm) → its machine, "" without one
 #
 # A machine is named as the variation records it: its "vm" { name, kind }
@@ -33,7 +34,11 @@
 # while one of its steps holds a workstation, the variation's `workstation`
 # { name, project, folder } (workstation:claim) is its machine instead,
 # whatever its vm records — so in vm+workstation mode a variation with a VM
-# runs a step on the workstation when it is free. A new one is a machine-<kind>.bash defining <kind>_run,
+# runs a step on the workstation when it is free. ASS-481: a third, a cloud
+# VM (machine-cloud-vm.bash), named cloud-vm:<project>:<id>:<folder> alike
+# from the claim's `workstation` (its kind cloud-vm) or vm { kind: cloud-vm,
+# … }; machine_remote says a machine is one of the two remote kinds. A
+# backend's functions are named by its kind, a - made _ (cloud_vm_run). A new one is a machine-<kind>.bash defining <kind>_run,
 # <kind>_stop_marked, <kind>_copy_in, <kind>_copy_out, <kind>_status,
 # <kind>_start and <kind>_stop as lima_* do, sourced here and named in
 # $machine_backends.
@@ -47,12 +52,17 @@
 here_machine="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
 source "$here_machine/machine-lima.bash"
 source "$here_machine/machine-workstation.bash"
+source "$here_machine/machine-cloud-vm.bash"
 
-machine_backends="lima workstation"
+machine_backends="lima workstation cloud-vm"
 
 # shellcheck disable=SC2016
-machine_of='(if (.workstation.name // "") != "" and .workstation.project and .workstation.folder then .workstation + { kind: "workstation" } else .vm // {} end) as $m | if ($m.name // "") == "" then "" elif ($m.kind // "lima") == "lima" then $m.name
-  elif $m.kind == "workstation" and $m.project and $m.folder then "workstation:\($m.project):\($m.name):\($m.folder)" else "\($m.kind):\($m.name)" end'
+machine_of='(if (.workstation.name // "") != "" and .workstation.project and .workstation.folder then .workstation + { kind: (.workstation.kind // "workstation") } else .vm // {} end) as $m | if ($m.name // "") == "" then "" elif ($m.kind // "lima") == "lima" then $m.name
+  elif ($m.kind | IN("workstation", "cloud-vm")) and $m.project and $m.folder then "\($m.kind):\($m.project):\($m.name):\($m.folder)" else "\($m.kind):\($m.name)" end'
+
+# machine_remote <machine> — ASS-481: it is a remote machine of the project's pool (a workstation's or a cloud VM's,
+# workstation:… or cloud-vm:…), reached over its one connection.
+machine_remote() { [[ "$1" == workstation:* || "$1" == cloud-vm:* ]]; }
 
 machine_backend() {
   local kind=lima
@@ -74,12 +84,12 @@ machine_run() {
   machine="$1"; shift
   [[ "${1-}" == -- ]] && shift
   backend="$(machine_backend "$machine")" || return 1
-  "${backend}_run" "$workdir" "$marker" "$timeout" "${machine#"$backend":}" "$@"
+  "${backend//-/_}_run" "$workdir" "$marker" "$timeout" "${machine#"$backend":}" "$@"
 }
 
-machine_stop_marked() { local backend; backend="$(machine_backend "$1")" || return 1; "${backend}_stop_marked" "${1#"$backend":}" "$2"; }
-machine_copy_in() { local backend; backend="$(machine_backend "$1")" || return 1; "${backend}_copy_in" "${1#"$backend":}" "$2" "$3"; }
-machine_copy_out() { local backend; backend="$(machine_backend "$1")" || return 1; "${backend}_copy_out" "${1#"$backend":}" "$2" "$3"; }
-machine_status() { local backend; backend="$(machine_backend "$1")" || return 1; "${backend}_status" "${1#"$backend":}"; }
-machine_start() { local backend; backend="$(machine_backend "$2")" || return 1; "${backend}_start" "$1" "${2#"$backend":}" "${@:3}"; }
-machine_stop() { local backend; backend="$(machine_backend "$1")" || return 1; "${backend}_stop" "${1#"$backend":}" "${2:-}"; }
+machine_stop_marked() { local backend; backend="$(machine_backend "$1")" || return 1; "${backend//-/_}_stop_marked" "${1#"$backend":}" "$2"; }
+machine_copy_in() { local backend; backend="$(machine_backend "$1")" || return 1; "${backend//-/_}_copy_in" "${1#"$backend":}" "$2" "$3"; }
+machine_copy_out() { local backend; backend="$(machine_backend "$1")" || return 1; "${backend//-/_}_copy_out" "${1#"$backend":}" "$2" "$3"; }
+machine_status() { local backend; backend="$(machine_backend "$1")" || return 1; "${backend//-/_}_status" "${1#"$backend":}"; }
+machine_start() { local backend; backend="$(machine_backend "$2")" || return 1; "${backend//-/_}_start" "$1" "${2#"$backend":}" "${@:3}"; }
+machine_stop() { local backend; backend="$(machine_backend "$1")" || return 1; "${backend//-/_}_stop" "${1#"$backend":}" "${2:-}"; }

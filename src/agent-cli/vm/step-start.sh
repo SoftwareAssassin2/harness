@@ -27,5 +27,5 @@ command=vm:step-start
 [[ $# -eq 3 ]] || { echo "usage: $command <project> <ticket-key> <variation>" >&2; exit 1; }
 project="$1" key="$(tr '[:lower:]' '[:upper:]' <<< "$2")" variation="$3"
 vm="$(running_vm "$command" "$project" "$key" "$variation")"
-[[ "$vm" != workstation:* ]] || { echo "$command: $key $variation's machine is a workstation's ($vm): workstation:claim starts its steps there" >&2; exit 1; }
+! machine_remote "$vm" || { echo "$command: $key $variation's machine is a workstation's or a cloud VM's ($vm): workstation:claim starts its steps there" >&2; exit 1; }
 wsv_trees "$command" "$vm" start "$project" "$key" "$variation" -

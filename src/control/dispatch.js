@@ -23,7 +23,7 @@ import { found, contextOf, ticketPath, isPaused, levelChanges, moveTicket, moveR
 import { problemOf, ticketOf, blockHistory, questionsOf } from './facts.js';
 import { failed, waiting, held, ticketKey, runKey } from './backoff.js';
 import { runsInVm, vmOf } from './vm.js';
-import { machineOf, machinePaths, onWorkstation } from './machine.js';
+import { machineOf, machinePaths, onWorkstation, remoteName } from './machine.js';
 import { syncTicketCopy } from './machine-workstation.js';
 import { awaitsVm, credentialKindOf, NEVER_UP, neverUp, vmUpCeilingMs } from './vm-lifecycle.js';
 import { awaitsDependencies } from './dependencies.js';
@@ -375,7 +375,7 @@ async function startFor(ctx, state, project, record, vm, repository, step, payme
   // In a VM its ticket folder is the mount and agent.sh the VM's own: what the prompt's commands run.
   // On a workstation (ASS-435) the ticket's read-only copy, brought up to date first (AC4), and the setup's agent.sh.
   const vmArgs = vm ? [`ticket-folder=${machinePaths(vm).ticket}`, 'agent-sh=agent.sh'] : [];
-  if (onWorkstation(vm)) await syncTicketCopy(vm.slice('workstation:'.length), ticketFolderOf(ctx, vm), { env: ctx.env });
+  if (onWorkstation(vm)) await syncTicketCopy(remoteName(vm), ticketFolderOf(ctx, vm), { env: ctx.env });   // ASS-481: a cloud VM's too
   await ctx.cli(['agent:dispatch', name, `folder=${folder}`, `where=${vm ? vmWhereText(project, vm, repository) : confined ? confinedWhereText(folder, codeAt, join(ctx.root, 'agent.sh')) : whereText(ctx, folder, container, containerFolder, repository)}`, `project-code-folder=${codeFolder(project, vm, codeAt, repository)}`, ...vmArgs, ...aboutArgs]);
   const live = { name, project: project.id, record, repository, startedAt: ctx.now(), result: null, exited: null, cost: 0, tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, sessionRecorded: false, rateLimit: null, pending: null, pendingThisTurn: false,
     vm: vm ?? null, payment, kind: payment ? (payment === 'api' ? 'anthropic' : 'claude') : vm ? credentialKindOf(ctx, project.id, vm) : kindOfAccount(account) };
@@ -416,7 +416,7 @@ async function startFor(ctx, state, project, record, vm, repository, step, payme
   });
   ctx.agents.set(name, live);
   await ctx.cli(['assignments:set-process', name, String(live.agent.pid), '-']);
-  ctx.log(PHASE, `${name} (${record.model}) on ${record['work-item'] ?? record['state-engine']}${record.variation ? ` ${record.variation}` : ''} ${record.state}, pid ${live.agent.pid}, in ${folder}${container ? ` (${container}:${containerFolder})` : ''}${vm ? (onWorkstation(vm) ? ` (workstation ${onWorkstation(vm).id})` : ` (VM ${vm})`) : ''}${repository ? ` for ${repository}` : ''}${payment ? ` on the ${payment === 'api' ? 'API key' : 'subscription'}` : ''}`);
+  ctx.log(PHASE, `${name} (${record.model}) on ${record['work-item'] ?? record['state-engine']}${record.variation ? ` ${record.variation}` : ''} ${record.state}, pid ${live.agent.pid}, in ${folder}${container ? ` (${container}:${containerFolder})` : ''}${vm ? (onWorkstation(vm) ? ` (${onWorkstation(vm).kind === 'cloud-vm' ? 'cloud VM' : 'workstation'} ${onWorkstation(vm).id})` : ` (VM ${vm})`) : ''}${repository ? ` for ${repository}` : ''}${payment ? ` on the ${payment === 'api' ? 'API key' : 'subscription'}` : ''}`);
 }
 
 // assignments:create with the arguments, the records it printed — every

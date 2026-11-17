@@ -73,6 +73,14 @@
             "failing-file": {
                 "type": "string",
                 "description": "Only then: the file the failure is in, its path in the failing repository, :line where one fails (ASS-384: one the ticket's own branch adds or changes — or, ASS-423, one of its merge requests added or changed, merged or not — sends the ticket back to Generate Solution, not to the operator)"
+            },
+            "missing-change": {
+                "type": "string",
+                "description": "Only when nothing fails but the ticket's own work is incomplete (ASS-492): the change it still needs in one of the project's repositories, what the merge request must hold, in one line; left out otherwise"
+            },
+            "missing-change-repository": {
+                "type": "string",
+                "description": "With missing-change only (ASS-492): the forge url of the repository it goes in; left out otherwise"
             }
         },
         "required": [

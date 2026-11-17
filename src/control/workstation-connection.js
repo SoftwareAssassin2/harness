@@ -60,12 +60,20 @@ export function sshArgv(env, project, id, argv = []) {
 // network failure).
 export const loginExpired = entry => entry?.['last-error']?.kind === 'expired';
 
+// sameBoot(entry) — ASS-481 AC3: a cloud VM's live data records the boot it
+// runs now (workstation:connect's boot-id, a cloud VM's alone) and its last
+// setup ran under that boot. Its whole disk persists across a stop, and the
+// runtime folder (/dev/shm) across everything but a restart, so a connect
+// alone does not call for a setup again: only a new boot or a new version.
+const sameBoot = entry => Boolean(entry?.['boot-id']) && entry.setup?.['boot-id'] === entry['boot-id'];
+
 // setUp(entry, version) — ASS-434: the workstation's setup (workstation:setup,
 // the live data's `setup`) succeeded since its connection last opened
 // (checked-at not before connected-at: a connect may follow a restart, which
-// only a setup run notices), and, given the version workstation:setup
+// only a setup run notices) — or, a cloud VM's, under the boot it runs now
+// (sameBoot) — and, given the version workstation:setup
 // --version prints now, for that version.
-export const setUp = (entry, version) => entry?.setup?.ok === true && (entry.setup['checked-at'] ?? '') >= (entry['connected-at'] ?? '')
+export const setUp = (entry, version) => entry?.setup?.ok === true && ((entry.setup['checked-at'] ?? '') >= (entry['connected-at'] ?? '') || sameBoot(entry))
   && (version === undefined || entry.setup.version === version);
 
 // workstationUsable(entry, version) — whether anything may be dispatched to

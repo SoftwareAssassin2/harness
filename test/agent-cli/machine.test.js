@@ -41,7 +41,7 @@ test('machine_backend: lima for a Lima name; a kind with no backend fails, namin
   assert.deepEqual(await bash('machine_backend workstation:p:ws-1:/home/me/harness/ASS-1-A', process.env), { code: 0, out: 'workstation\n', err: '' });   // ASS-435
   const refused = await bash('machine_run other:box-1 -- true', process.env);
   assert.equal(refused.code, 1);
-  assert.equal(refused.err, "box-1: no machine backend for its kind 'other' (there is: lima workstation)\n");
+  assert.equal(refused.err, "box-1: no machine backend for its kind 'other' (there is: lima workstation cloud-vm)\n");
 });
 
 test('machine_run runs the command in the VM, in its workdir, its stdin, stdout and exit code passed through (limactl shell)', async () => {

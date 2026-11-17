@@ -119,6 +119,8 @@ function analysisOf(run, transient, harness, project) {
       ...(a['cause-in'] ? [`Cause is in: ${CAUSE_IN[a['cause-in']] ?? a['cause-in']}`] : []),
       // A repository the work needs that the project lacks (ASS-121): grouped-blocked's Repair adds it, so Classify's environment.
       ...(a['missing-repository'] ? [`Missing repository: ${a['missing-repository']} — the project does not list it: an environment issue, which Repair Environment adds when the harness can access it`] : []),
+      // ASS-492: nothing failed, but the ticket's own work lacks a change there (Troubleshoot's or Classify's missing-change).
+      ...(a['missing-change'] ? [`Missing change: ${a['missing-change']}${a['missing-change-repository'] ? ` in ${a['missing-change-repository']}` : ''}`] : []),
       ...(a['failing-job'] ? [`Failing check: ${a['failing-repository'] ?? '?'} job ${a['failing-job']}${a['failing-assertion'] ? ` — ${a['failing-assertion']}` : ''}`] : []),
       ...(evidence.length ? ['Evidence:', ...evidence.map(e => `- ${e}`)] : ['Evidence: none recorded']),
       `Blocks: ${blocks(a['blocks-tickets']) || 'no ticket shown to be blocked'}`,
@@ -213,6 +215,8 @@ const ENDED = {
     : b['rate-limit-held'] === false ? 'classified as rate limited, but no rate limit was recorded'
     : b.held === true && Array.isArray(b.problems) ? `its project held by its credentials (${b.problems.map(p => p?.credential).filter(Boolean).join(', ') || '?'})`
     : b['fix-merge-request'] && b.landed === true ? `its fix merge request ${b['fix-merge-request']} merged`
+    // ASS-492: one whose own work lacked a change, planned on its merge request there and sent back to make it.
+    : b['own-branch-fix'] === true && b['own-branch-source'] === 'missing-change' ? `its own work lacked a change (${b['missing-change'] ?? '?'}): sent back to make it, at ${b['resume-at'] ?? 'the step it blocked at'}`
     : b['own-branch-fix'] === true ? `the failure was in its own branch (${b['failing-file'] ?? '?'}): sent back to fix it there, at ${b['resume-at'] ?? 'the step it blocked at'}` : b.remediated ? `repaired in place (${b['ai-feedback-short'] ?? 'no note'})` : b.key ? `fix ticket ${b.key} landed` : 'left Blocked'}, resumed — blocked again`,
   retry: b => `fix ticket ${b.key ?? '?'} closed unmerged`,
   'blocked-for-human': b => `handed to the operator (${b['ai-feedback-short'] ?? 'no note'})`,

@@ -24,7 +24,7 @@ If {ticket-folder}/operator-review-{variation}.md exists, it holds the operator'
 
 Revise, don't restart: if a merge request's branch already holds a solution, revise it — fix what the reviews and test results say, keep what works. Never start it from scratch. Say in change-log-{variation}.md what changed this time, and why.
 
-Own-branch fix: an "## Own-branch fix" section of execution-plan-{variation}.md means Blocked found a defect in this ticket's own code, merged or not. Fix it where that section says: this ticket's open merge request, or the new merge request planned for it when this ticket's merge requests in that repository have merged — build that one in step 2 like any other, its branch from the latest origin/<base>. Never reopen a Merged or Closed merge request or push to its branch.
+Own-branch fix: an "## Own-branch fix" section of execution-plan-{variation}.md means Blocked found a defect in this ticket's own code, merged or not, or a change its own work still lacks (Missing change). Fix or make it where that section says: this ticket's open merge request, or the new merge request planned for it when this ticket's merge requests in that repository have merged — build that one in step 2 like any other, its branch from the latest origin/<base>. Never reopen a Merged or Closed merge request or push to its branch.
 
 Don't widen the work beyond the plan and the acceptance criteria.
 

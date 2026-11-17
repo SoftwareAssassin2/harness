@@ -75,14 +75,15 @@ project="$1" key="$(tr '[:lower:]' '[:upper:]' <<< "$2")" variation="$3" force_v
 variation_exists vm:create "$project" "$key" "$variation"
 
 recorded="$(variation_status vm:create "$project" "$key" "$variation" >/dev/null && jq -r --arg key "$key" --arg name "$variation" 'first((.features, .bugs, .spikes) // [] | .[] | select(.key | ascii_downcase == ($key | ascii_downcase)))
-  | first(.variations // [] | .[] | select(.name == $name and (.["is-deleted"] | not))) | .vm // {} | if (.name // "") == "" then "" elif (.kind // "lima") == "workstation" then "workstation:" else .name end' "$(sprint_file vm:create "$project")")"
+  | first(.variations // [] | .[] | select(.name == $name and (.["is-deleted"] | not))) | .vm // {} | if (.name // "") == "" then "" elif (.kind // "lima") | IN("workstation", "cloud-vm") then "workstation:" else .name end' "$(sprint_file vm:create "$project")")"
 mode="$(dev_environments_mode vm:create "$project")"
 if [[ -z "$force_vm" && "$mode" != vm && ( -z "$recorded" || "$recorded" == workstation:* ) ]]; then
   rc=0; wsv_place "$project" "$key" "$variation" || rc=$?
   if [[ $rc -eq 0 ]]; then
-    wsm_parts "${wsv_machine#workstation:}" || exit 1
-    "$agent" ticket:set-vm "$project" "$key" "$variation" "$wsm_id" "" --kind workstation --folder "$wsm_folder" >/dev/null
-    echo "vm:create: $key $variation runs its steps on $project's workstation $wsm_id, each claiming it while it runs" >&2
+    wsm_parts "${wsv_machine#*:}" || exit 1
+    # ASS-481: a cloud VM of the pool recorded as kind cloud-vm.
+    "$agent" ticket:set-vm "$project" "$key" "$variation" "$wsm_id" "" --kind "${wsv_machine%%:*}" --folder "$wsm_folder" >/dev/null
+    echo "vm:create: $key $variation runs its steps on $project's ${wsv_machine%%:*} $wsm_id, each claiming it while it runs" >&2
     jq -nc --arg n "$wsm_id" --arg m "$wsv_machine" --argjson c "$( [[ -z "$recorded" ]] && echo true || echo false )" '{ name: $n, machine: $m, ip: null, created: $c }'
     exit 0
   fi

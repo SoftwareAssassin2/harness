@@ -9,7 +9,9 @@ set -euo pipefail
 # workstation itself is left running: with no SSH session left it stops
 # itself after its idle timeout (30 minutes), as control wants once nothing
 # on it needs it. Nothing to do, and no failure, when no connection is open.
-# ASS-470: its owner (control-pid, workstation.bash) cleared.
+# ASS-470: its owner (control-pid, workstation.bash) cleared. ASS-481: a
+# cloud VM is left running too — never stopped here; it stops itself after
+# 60 idle minutes, which the closed master (no terminal) never held off.
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../workstation.bash"
 
 command=workstation:disconnect

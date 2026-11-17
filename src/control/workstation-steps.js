@@ -111,7 +111,7 @@ import { stepOf, engineSteps } from './engine.js';
 import { enginesFor } from './state.js';
 import { backoffDelay, held } from './backoff.js';
 import { loadWorkstations, workstationUsable, loginExpired } from './workstation-connection.js';
-import { loadSeats, seatOf, seatCapacity } from './seat-kinds.js';
+import { loadSeats, seatOf, seatCapacity, isRemoteSeat } from './seat-kinds.js';
 import { slotKind } from './plan.js';
 import { statusIn } from './engine.js';
 import { loadEnds, pendEnd, endDone, vmGone, recover } from './step-ends.js';
@@ -207,7 +207,7 @@ export function stepOnMachine(ctx, state, projectId, key, name) {
 // seat kind); { vm: why } its VM; { wait: true } nowhere yet (no seat yet, or a workstation seat free to move into).
 function placeOf(state, project, seats, l, v) {
   const seat = seatOf(seats, l.key, l.variation), mode = project.devEnvironments?.mode;
-  if (seat?.kind === 'workstation') return { ws: seat.workstation };
+  if (isRemoteSeat(seat)) return { ws: seat.workstation };   // ASS-481: a cloud VM seat's VM alike
   if (seat?.kind === 'vm') {
     if (mode === 'vm+workstation' && freeWorkstationSeat(project, seats)) return { wait: true };
     return { vm: 'it holds a VM seat' };
@@ -218,12 +218,12 @@ function placeOf(state, project, seats, l, v) {
 }
 
 // freeWorkstationSeat(project, seats) — a workstation of the project has a seat no one holds and is not lost.
-const freeWorkstationSeat = (project, seats) => seatCapacity(project).workstations.some(w => !w.lost && seats.filter(s => s.kind === 'workstation' && s.workstation === w.id).length < w.seats);
+const freeWorkstationSeat = (project, seats) => seatCapacity(project).workstations.some(w => !w.lost && seats.filter(s => isRemoteSeat(s) && s.workstation === w.id).length < w.seats);
 
 // seatHolderWaits(ctx, project, seats, id) — the lease of workstation `id`'s seat-holder, waiting for it for a step, or
 // undefined: a step with no seat kind (workstation mode's planning) leaves that workstation to it.
 const seatHolderWaits = (ctx, project, seats, id) => [...leasesOf(ctx).values()]
-  .find(x => x.project === project.id && x.state === 'wanted' && seatOf(seats, x.key, x.variation)?.kind === 'workstation' && seatOf(seats, x.key, x.variation).workstation === id);
+  .find(x => x.project === project.id && x.state === 'wanted' && isRemoteSeat(seatOf(seats, x.key, x.variation)) && seatOf(seats, x.key, x.variation).workstation === id);
 
 // whyNot(settings, entries, home) — { why, busy, usable, transient }: why no workstation can take a step now (each
 // named), whether one is held by another variation, and whether all that keeps one is its start or its setup.

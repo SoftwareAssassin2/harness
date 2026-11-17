@@ -73,8 +73,8 @@ display=none; [[ $# -eq 3 ]] || display=vz
 project="$1" key="$(tr '[:lower:]' '[:upper:]' <<< "$2")" variation="$3"
 variation_exists vm:start "$project" "$key" "$variation"
 recorded="$(recorded_vm vm:start "$project" "$key" "$variation" 2>/dev/null || true)"
-if [[ "$recorded" == workstation:* ]]; then
-  [[ "$display" == none ]] || { echo "vm:start: $key $variation runs on a workstation, which has no display" >&2; exit 1; }
+if machine_remote "$recorded"; then   # ASS-481: a cloud VM's (cloud-vm:…) as a workstation's
+  [[ "$display" == none ]] || { echo "vm:start: $key $variation runs on a workstation or cloud VM, which has no display" >&2; exit 1; }
   wsv_start "$project" "$key" "$variation" "$recorded"
   exit
 fi

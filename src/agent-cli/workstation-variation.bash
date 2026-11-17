@@ -2,6 +2,11 @@
 # (ASS-435, ASS-468): which workstation it records, claiming one for a step
 # and giving it back at the step's end, and the step's working trees there
 # or, in vm+workstation mode, in its VM. Sourced by vm.bash.
+# ASS-481 AC3: the pool (dev_environments_workstations) holds the project's
+# cloud VMs after its workstations, each taken as a workstation is — placed,
+# claimed, readied (images pulled once per boot, ASS-472/473) and released
+# alike — its machine cloud-vm:<project>:<id>:<root> and its claim recorded
+# with kind cloud-vm.
 #
 #   wsv_root <home>                             # the workstation's shared root: <home>/harness (repos/, ticket/, mnt/, run/)
 #   wsv_place <project> <key> <variation>       # vm:create's choice of workstation, recorded on the variation ($wsv_machine);
@@ -57,6 +62,11 @@ wsv_trees_script="$here_wsv/workstation/on-workstation/step-trees.sh"
 wsv_pull_script="$here_wsv/workstation/on-workstation/pull-images.sh"
 wsv_hooks_script="$here_wsv/workstation/on-workstation/git-hooks.sh"
 
+# $wsv_set_up — a jq test of a live data entry: set up since its connection opened (src/control/workstation-connection.js
+# setUp's rule) — or, ASS-481 AC3, a cloud VM's (its whole disk kept across a stop) set up under the boot it runs now.
+# shellcheck disable=SC2016
+wsv_set_up='.setup.ok == true and ((.setup["checked-at"] // "") >= (.["connected-at"] // "") or ((.["boot-id"] // "") != "" and .setup["boot-id"] == .["boot-id"]))'
+
 wsv_root() { echo "$1/harness"; }
 
 wsv_pool_lock() { lock_on 7 "$projects/$2/workstations-pool.lock" "$1" "${VM_LOCK_TIMEOUT:-600}"; }
@@ -75,7 +85,7 @@ wsv_ready() {
   if ! workstation_alive "$project" "$id"; then
     out="$("$agent" workstation:connect "$project" "$id" 2>&1 >/dev/null </dev/null 7>&-)" || { wsv_why="$id: could not connect: $(tail -n 1 <<< "$out")"; return 1; }
   fi
-  if ! workstation_entry "$project" "$id" | jq -e '.setup.ok == true and (.setup["checked-at"] // "") >= (.["connected-at"] // "")' >/dev/null; then
+  if ! workstation_entry "$project" "$id" | jq -e "$wsv_set_up" >/dev/null; then
     out="$("$agent" workstation:setup "$project" "$id" 2>&1 >/dev/null </dev/null 7>&-)" || { wsv_why="$id: setup failed: $(tail -n 1 <<< "$out")"; return 1; }
   fi
 }
@@ -88,7 +98,7 @@ wsv_usable() {
   if jq -e '.["last-error"].kind == "expired"' >/dev/null <<< "$e"; then echo "its gcloud login needs reauthentication"; return; fi
   if ! jq -e '.connected == true' >/dev/null <<< "$e" || ! workstation_alive "$1" "$2"; then echo "not connected (stopped, or starting)"; return; fi
   if jq -e '.setup.ok == false' >/dev/null <<< "$e"; then echo "its setup failed"; return; fi
-  jq -e '.setup.ok == true and (.setup["checked-at"] // "") >= (.["connected-at"] // "") and (.setup.home // "" | startswith("/"))' >/dev/null <<< "$e" || echo "being set up"
+  jq -e "$wsv_set_up"' and (.setup.home // "" | startswith("/"))' >/dev/null <<< "$e" || echo "being set up"
 }
 
 # wsv_place — vm:create's (Setup's Create VM): the variation is to run its steps on the project's workstations, so
@@ -105,24 +115,25 @@ wsv_place() {
       home="$(workstation_entry "$project" "$id" | jq -r '.setup.home // empty')"
       [[ "$home" == /* ]] || { why+=("$id: its setup recorded no home folder"); continue; }
     fi
-    wsv_machine="workstation:$project:$id:$(wsv_root "$home")"
+    wsv_machine="$(workstation_kind "$ws"):$project:$id:$(wsv_root "$home")"
     return 0
   done < <(dev_environments_workstations vm:create "$project")
   wsv_why="no workstation of $project's can be used: $(printf '%s; ' "${why[@]+"${why[@]}"}" | sed 's/; $//')"
   return 4
 }
 
-# wsv_set_on <project> <key> <variation> <id> <folder>|"" — the variation's `workstation`, the step's claim, recorded (or removed).
+# wsv_set_on <project> <key> <variation> <id> <folder>|"" [<kind>] — the variation's `workstation`, the step's claim,
+# recorded (or removed); ASS-481: kind cloud-vm recorded on it for a cloud VM's (a workstation's has none).
 wsv_set_on() {
-  update_whole_ticket vm:workstation "$1" "$2" --arg name "$3" --arg id "$4" --arg f "${5-}" --arg p "$1" '
+  update_whole_ticket vm:workstation "$1" "$2" --arg name "$3" --arg id "$4" --arg f "${5-}" --arg p "$1" --arg k "${6:-workstation}" '
     .variations |= map(if .name != $name or .["is-deleted"] then .
       elif $f == "" then (if .workstation.name == $id then del(.workstation) else . end)
-      else .workstation = { name: $id, project: $p, folder: $f, since: $at }
-        | if .vm.kind == "workstation" and .vm.name == $id then .vm.folder = $f else . end end)' >/dev/null
+      else .workstation = ({ name: $id, project: $p, folder: $f, since: $at } + (if $k == "workstation" then {} else { kind: $k } end))
+        | if ((.vm.kind // "") | IN("workstation", "cloud-vm")) and .vm.name == $id then .vm.folder = $f else . end end)' >/dev/null
 }
 
 wsv_claim() {
-  local project="$1" key="$2" variation="$3" only="${4:-}" ws id hk hv home w why=() chosen="" machine root summary kind rc=0
+  local project="$1" key="$2" variation="$3" only="${4:-}" ws id hk hv home w why=() chosen="" machine root summary kind rc=0 remote=workstation
   wsv_pool_lock workstation:claim "$project"
   while IFS= read -r ws; do
     id="$(jq -r .id <<< "$ws")"
@@ -132,16 +143,16 @@ wsv_claim() {
     w="$(wsv_usable "$project" "$id")"
     [[ -z "$w" ]] || { why+=("$id: $w"); continue; }
     home="$(workstation_entry "$project" "$id" | jq -r '.setup.home')"
-    root="$(wsv_root "$home")" chosen="$id"
+    root="$(wsv_root "$home")" chosen="$id" remote="$(workstation_kind "$ws")"
     workstation_record "$project" "$id" --arg k "$key" --arg v "$variation" --arg f "$root" '.holder = { ticket: $k, variation: $v, folder: $f, since: $at }'
     break
   done < <(dev_environments_workstations workstation:claim "$project")
   exec 7>&-
   if [[ -z "$chosen" ]]; then wsv_why="no workstation of $project's is free: $(printf '%s; ' "${why[@]+"${why[@]}"}" | sed 's/; $//')"; return 4; fi
-  id="$chosen" machine="workstation:$project:$chosen:$root"
-  echo "workstation:claim: $key $variation claimed $project's workstation $id for a step" >&2
+  id="$chosen" machine="$remote:$project:$chosen:$root"
+  echo "workstation:claim: $key $variation claimed $project's $remote $id for a step" >&2
   # The shared root, standing in for a VM's: repos, the ticket's copy (and mnt/ticket to it), run/harness the runtime folder.
-  if wsv_set_on "$project" "$key" "$variation" "$id" "$root" && workstation_ssh "$project" "$id" bash -c 'set -e; . "$HOME/harness/env"; f="$1"
+  if wsv_set_on "$project" "$key" "$variation" "$id" "$root" "$remote" && workstation_ssh "$project" "$id" bash -c 'set -e; . "$HOME/harness/env"; f="$1"
       mkdir -p "$f/repos" "$f/mnt" "$f/run" "$f/ticket"; ln -sfn ../ticket "$f/mnt/ticket"; ln -sfn "$HARNESS_RUNTIME" "$f/run/harness"' harness-ws "$root" </dev/null \
     && { kind="$(wsv_start "$project" "$key" "$variation" "$machine" | jq -r '.["credential-kind"] // ""')" || rc=$?; [[ $rc -eq 0 ]]; } \
     && summary="$(wsv_trees workstation:claim "$machine" start "$project" "$key" "$variation")"; then
@@ -161,7 +172,7 @@ wsv_claim() {
 
 wsv_start() {
   local project="$1" key="$2" variation="$3" machine="$4" entry kind token binding boot registry
-  wsm_parts "${machine#workstation:}" || exit 1
+  wsm_parts "${machine#*:}" || exit 1
   [[ "$wsm_project" == "$project" ]] || { echo "vm:start: $key $variation's workstation machine is $wsm_project's, not $project's" >&2; return 1; }
   workstation_entry "$project" "$wsm_id" | jq -e --arg k "$key" --arg v "$variation" '.holder.ticket == $k and .holder.variation == $v' >/dev/null \
     || { echo "vm:start: $project's workstation $wsm_id is not held by $key $variation (control claims it for each of its steps: workstation:claim)" >&2; return 1; }
@@ -191,7 +202,7 @@ wsv_start() {
   printf '%s\n' "$token" | workstation_ssh "$wsm_project" "$wsm_id" bash -c 'set -e; umask 077; . "$HOME/harness/env"; IFS= read -r t; printf "%s\n" "$t" > "$HARNESS_RUNTIME/agent-token"' \
     || { echo "vm:start: could not give workstation $wsm_id its forwarder token" >&2; return 1; }
 
-  wsm_sync_ticket "${machine#workstation:}" "$(ticket_folder vm:start "$project" "$key")" >/dev/null \
+  wsm_sync_ticket "${machine#*:}" "$(ticket_folder vm:start "$project" "$key")" >/dev/null \
     || { echo "vm:start: could not copy $key's ticket folder to $wsm_folder/ticket on workstation $wsm_id" >&2; return 1; }
 
   # AC5 (ASS-435): the project's images, once per boot of the workstation (images-boot-id, ASS-468), not at every
@@ -317,7 +328,7 @@ wsv_release() {
     [[ "$folder" == /*/harness || "$folder" == /*/harness/* ]] && [[ "$folder" != *:* ]] || { echo "$command: $project's workstation $id records a folder outside ~/harness ($folder); not touched" >&2; return 1; }
     [[ "$folder" == */harness ]] || old=old   # ASS-435's folder of its own (~/harness/<KEY>-<variation>): the migration (below)
     workstation_alive "$project" "$id" || { echo "$command: $project's workstation $id has no open connection: $key $variation's step there cannot be ended yet" >&2; return 1; }
-    machine="workstation:$project:$id:$folder"
+    machine="$(workstation_kind "$(dev_environments_workstation "$command" "$project" "$id" 2>/dev/null || echo '{}')"):$project:$id:$folder"   # ASS-481: cloud-vm:… for a cloud VM's
     # Its working trees (AC3, AC9, AC10): a completed step's leftovers committed on its branch ($wsv_completed, the caller's),
     # an incomplete one's discarded; committed work pushed; master at GitLab's latest.
     if workstation_ssh "$project" "$id" test -d "$folder/repos" </dev/null; then

@@ -23,7 +23,7 @@
 // data's (workstationState).
 import { join } from 'node:path';
 import { loadWorkstations, workstationUsable, loginExpired } from './workstation-connection.js';
-import { seatOf, seatCapacity } from './seat-kinds.js';
+import { seatOf, seatCapacity, isRemoteSeat } from './seat-kinds.js';
 
 export const KIND = 'workstation';
 
@@ -32,8 +32,8 @@ export const entriesOf = (ctx, projectId) => loadWorkstations(join(ctx.paths.pro
 
 const sameKey = (a, b) => String(a ?? '').toUpperCase() === String(b ?? '').toUpperCase();
 
-// onWorkstationVariation(variation) — it records a workstation as its machine (Create VM's choice).
-export const onWorkstationVariation = variation => variation?.vm?.kind === KIND && Boolean(variation.vm.name);
+// onWorkstationVariation(variation) — it records a workstation — or, ASS-481, a cloud VM — as its machine (Create VM's choice).
+export const onWorkstationVariation = variation => (variation?.vm?.kind === KIND || variation?.vm?.kind === 'cloud-vm') && Boolean(variation.vm.name);
 
 // busy(state, projectId, key, name) — an assignment is on the variation (its agent at work, or about to be).
 export const busy = (state, projectId, key, name) => state.assignments.some(a => a.project === projectId && sameKey(a['work-item'], key) && a.variation === name);
@@ -49,6 +49,20 @@ export function workstationState(entry) {
   if (entry?.connected === true && entry.setup?.ok === false) return 'setup failed';
   if (workstationUsable(entry)) return 'running';
   if (entry?.connected === true) return 'connecting';
+  return 'stopped';
+}
+
+// cloudVmState(entry) — ASS-481 AC5: the "cloud virtual machines" box's word
+// (ASS-485 retitled it) for a cloud VM's state, workstationState's with two
+// more: 'start timed out' (its last connect's start or SSH wait ran out:
+// last-error kind timeout) and 'starting' (workstation:connect starting it or
+// waiting for it now: the live data's state starting, recorded since its last
+// failure).
+export function cloudVmState(entry) {
+  const word = workstationState(entry);
+  if (word !== 'stopped') return word;
+  if (entry?.['last-error']?.kind === 'timeout') return 'start timed out';
+  if (entry?.state === 'starting' && (entry['state-at'] ?? '') >= (entry['last-error']?.at ?? '')) return 'starting';
   return 'stopped';
 }
 
@@ -87,5 +101,5 @@ export function needsMacMemory(ctx, state, project, variation) {
 // (seats.json, seats.js), so its steps run there and its VM, if it has one, is not needed.
 export function onWorkstationSeat(project, variation) {
   const ticket = project?.tickets?.find(t => t.variations?.includes(variation));
-  return Boolean(ticket && seatOf(project.seats, ticket.key, variation.name)?.kind === 'workstation' && seatCapacity(project).workstations.length);
+  return Boolean(ticket && isRemoteSeat(seatOf(project.seats, ticket.key, variation.name)) && seatCapacity(project).workstations.length);
 }

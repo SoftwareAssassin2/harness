@@ -36,7 +36,10 @@
 // workstation-idle-disconnect-seconds (300 by default: a connect by hand, a
 // setup between steps, is not cut off at once), logged, so its own idle stop
 // (30 minutes with no SSH session) can happen; control never stops a
-// workstation itself. Whenever control exits it closes the connections it
+// workstation itself. ASS-481 AC4: a cloud VM of the pool (its kind
+// cloud-vm) is kept so alike — its connect starts or resumes it — and its
+// own idle stop (60 minutes) replaces the workstation's 30; control
+// never stops one either. Whenever control exits it closes the connections it
 // owns, and at its start those a control no longer running left (ASS-470,
 // below: disconnectWorkstations, disconnectAtExit, closeLeftovers): its
 // agents are stopped with it, and a connection left open would keep the
@@ -118,11 +121,12 @@ export function workstationNeeds(state, project, entries = {}, wants = new Map()
   const needs = new Map([...seats, ...wants]);
   for (const t of project.tickets ?? []) for (const v of t.variations ?? []) {
     if (v['is-deleted']) continue;
-    const on = v.workstation?.name ?? (v.vm?.kind === KIND ? v.vm.name : null);
+    const remote = v.vm?.kind === KIND || v.vm?.kind === 'cloud-vm';   // ASS-481: a cloud VM's alike
+    const on = v.workstation?.name ?? (remote ? v.vm.name : null);
     if (!on || needs.has(on)) continue;
     const working = v.workstation?.name && state.assignments.some(a => a.project === project.id && a['work-item'] === t.key && a.variation === v.name);
     if (working) needs.set(on, `${t.key} ${v.name}'s agent works on it`);
-    else if (v['vm-hold'] && v.vm?.kind === KIND) needs.set(v.vm.name, `${t.key} ${v.name} held running for the operator`);
+    else if (v['vm-hold'] && remote) needs.set(v.vm.name, `${t.key} ${v.name} held running for the operator`);
   }
   for (const w of project.devEnvironments?.workstations ?? []) {
     const h = entries[w.id]?.holder;
@@ -162,7 +166,7 @@ async function keep(ctx, state, project, settings, needs, r) {
       if (now - s.idleSince < idle) continue;
       await ctx.attempt(PHASE, what, async () => {
         await ctx.cli(['workstation:disconnect', id, w.id]);
-        ctx.log(PHASE, `${what}: disconnected: nothing on it has needed it for ${held(idle)}; it stops itself once idle`);
+        ctx.log(PHASE, `${what}: disconnected: nothing on it has needed it for ${held(idle)}; it stops itself once idle${w.kind === 'cloud-vm' ? ' (a cloud VM: after 60 idle minutes; control never stops it)' : ''}`);
       });
       Object.assign(s, { up: false, idleSince: null, failures: 0, until: 0 });
       continue;
@@ -185,7 +189,7 @@ async function keep(ctx, state, project, settings, needs, r) {
     }
     try {
       const out = JSON.parse(await ctx.cli(['workstation:connect', id, w.id]));
-      const how = `${dropped ? 'its connection dropped; reconnected' : s.failures ? 'connected again' : 'connected'}${out.started ? ' (the workstation had stopped; started it)' : ''}`;
+      const how = `${dropped ? 'its connection dropped; reconnected' : s.failures ? 'connected again' : 'connected'}${out.started ? ` (the ${w.kind === 'cloud-vm' ? 'cloud VM' : 'workstation'} had stopped; started it)` : ''}`;
       Object.assign(s, { up: true, checkedAt: ctx.now().getTime(), failures: 0, until: 0 });
       if (dropped || out.started || s.need !== need) ctx.log(PHASE, `${what}: ${how}, the forwarder, Hindsight and zot forwarded to its loopback (${need})`);
       s.need = need;

@@ -703,8 +703,8 @@ export function blockedLines(info, { width, now = new Date(), steps = [], choice
   const at = iso => `${String(iso).replace('T', ' ').slice(0, 16)} UTC`;
   const group = (...parts) => { const lines = parts.flat(); return lines.length ? ['', ...lines] : []; };
   const yesNo = x => (x === true ? 'yes' : x === false ? 'no' : x);
-  // Whose code: the ticket's own branch (ASS-384), and where in it (ASS-423: its branch, or its merged merge requests).
-  const own = b['own-branch'] === true ? `yes: the ticket's own ${b['own-branch-source'] === 'merged' ? 'merged merge requests' : 'branch'}${b['own-branch-why'] ? ` — ${b['own-branch-why']}` : ''}`
+  // Whose code: the ticket's own branch (ASS-384), and where in it (ASS-423: its branch, or its merged merge requests; ASS-492: a change its work lacks).
+  const own = b['own-branch'] === true ? `yes: the ticket's own ${b['own-branch-source'] === 'merged' ? 'merged merge requests' : b['own-branch-source'] === 'missing-change' ? 'work, a change missing from it' : 'branch'}${b['own-branch-why'] ? ` — ${b['own-branch-why']}` : ''}`
     : b['own-branch'] === false ? `no: not the ticket's own code${b['own-branch-why'] ? ` — ${b['own-branch-why']}` : ''}` : b['own-branch-source'] ? `in its ${b['own-branch-source']}` : null;
   const planned = b['merge-request-planned'];
   const plannedText = planned && typeof planned === 'object'

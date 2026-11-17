@@ -83,6 +83,7 @@ import { limaHome } from './vm.js';
 import { checkCredentials } from './credentials.js';
 import { login } from './login.js';
 import { sessionUsage } from '../agents/usage.js';
+import { newTickTimes, timeCall } from './tick-stats.js';
 import { monthCost } from '../agents/api-cost.js';
 import { pushAccount } from '../agents/forge.js';
 
@@ -192,6 +193,11 @@ export function createContext({ root, env = process.env, command, log = () => {}
   // or SCRIPT_WAIT_MS (the test fixtures' env: a loaded machine's slow start).
   if (env.SCRIPT_WAIT_MS) ctx.scriptWait = Number(env.SCRIPT_WAIT_MS);
   ctx.stopScripts = () => { for (const child of ctx.scripts) try { process.kill(-child.pid, 'SIGTERM'); } catch { /* gone */ } };
+  // timed(phase, name, fn, { background }) — fn() awaited and timed into this tick's ctx.tickTimes under the
+  // sub-routine '<phase>/<name>' (ASS-490, tick-stats.js timeCall): the one helper for every timing, so timing deeper
+  // is wrapping more calls in it. `background` marks one that starts work it does not await.
+  ctx.tickTimes = newTickTimes();
+  ctx.timed = (phase, name, fn, options) => timeCall(ctx.tickTimes, phase, name, fn, options);
   // attempt(phase, what, fn) — fn() awaited; what it throws is logged under
   // "error" as "<phase> <what>: <message>", so one failing item leaves the
   // rest of its phase to run. ASS-457: but the data failing to read
@@ -210,6 +216,22 @@ export function createContext({ root, env = process.env, command, log = () => {}
 // The phases that start agents, skipped while a restart drains.
 const NEW_WORK = new Set([fastTrack, refineBacklog, dispatch]);
 const PHASES = [finishEnded, superviseRegistries, followGolden, superviseMemory, backupMemory, recordMemorySpend, assignSeats, seatMemory, superviseVms, superviseWorkstations, fastTrack, runSteps, detectGaps, fireTimers, detectReverts, checkGcloud, checkGlab, checkUsage, checkApiCost, checkPushAccount, raiseDependencies, refineBacklog, superviseAgents, dispatch];
+// ASS-490: which of the header's nine phases (tick-stats.js TICK_PHASES) each phase function is timed under, and by
+// what name (ctx.timed, as '<phase>/<name>'; named here, as checkGcloud and checkGlab are made, not declared); the
+// hold, disk and credentials checks before fast track count under 'steps', the phase they gate. BACKGROUND: those that start work they do not await (vm-lifecycle.js's VM jobs, steps.js's script
+// steps left running), timed for their awaited part only, and marked so.
+const PHASE_OF = new Map(Object.entries({
+  finish: { finishEnded },
+  registries: { superviseRegistries, followGolden, superviseMemory, backupMemory, recordMemorySpend },
+  'seats/VMs': { assignSeats, seatMemory, superviseVms, superviseWorkstations },
+  steps: { fastTrack, runSteps },
+  gaps: { detectGaps },
+  timers: { fireTimers, detectReverts, checkGcloud, checkGlab, checkUsage, checkApiCost, checkPushAccount },
+  dependencies: { raiseDependencies, refineBacklog },
+  supervise: { superviseAgents },
+  dispatch: { dispatch },
+}).flatMap(([phase, calls]) => Object.entries(calls).map(([name, fn]) => [fn, { phase, name }])));
+const BACKGROUND = new Set([superviseVms, runSteps]);
 
 // tick(ctx) — the twenty-four phases, in order, each reading the data afresh; a
 // phase that throws is logged under "error" and the next still runs. The
@@ -231,22 +253,28 @@ const PHASES = [finishEnded, superviseRegistries, followGolden, superviseMemory,
 // waiting for the data (waitForData) and the next tick tries again; once one
 // runs through, that the data is back is logged (dataRecovered). Running
 // agents are left be: no phase finishes, tends or stops them meanwhile.
+//
+// ASS-490: every call it makes is timed (ctx.timed), its times left in
+// ctx.tickTimes (tick-stats.js newTickTimes) for main.js's figures.
 export async function tick(ctx) {
   const now = ctx.now().getTime();
   let held = false;
   ctx.trouble = null;
+  ctx.tickTimes = newTickTimes();
   try {
     for (const phase of PHASES) {
       if (phase === fastTrack) {
-        await ctx.attempt('hold', 'check', () => checkRateLimits(ctx, now));   // ASS-460: guarded as every phase is
-        await ctx.attempt('disk', 'check', () => checkDisk(ctx));
-        held = diskHeld({ diskSpace: readDiskSpace(ctx.paths.diskSpace) });
-        await ctx.attempt('credentials', 'check', () => checkCredentials(ctx, ctx.load()));   // ASS-395: a project held by its credentials starts no new work (dispatch.js, steps.js)
+        await ctx.timed('steps', 'checkRateLimits', () => ctx.attempt('hold', 'check', () => checkRateLimits(ctx, now)));   // ASS-460: guarded as every phase is
+        await ctx.timed('steps', 'checkDisk', async () => {
+          await ctx.attempt('disk', 'check', () => checkDisk(ctx));
+          held = diskHeld({ diskSpace: readDiskSpace(ctx.paths.diskSpace) });
+        });
+        await ctx.timed('steps', 'checkCredentials', () => ctx.attempt('credentials', 'check', () => checkCredentials(ctx, ctx.load())));   // ASS-395: a project held by its credentials starts no new work (dispatch.js, steps.js)
         if (ctx.trouble) break;
       }
       if ((ctx.drain || held) && NEW_WORK.has(phase)) continue;
       try {
-        await phase(ctx, ctx.load());
+        await ctx.timed(PHASE_OF.get(phase).phase, PHASE_OF.get(phase).name, () => phase(ctx, ctx.load()), { background: BACKGROUND.has(phase) });
       } catch (error) {
         const trouble = troubleOf(ctx, error);
         if (trouble) { ctx.trouble ??= trouble; break; }

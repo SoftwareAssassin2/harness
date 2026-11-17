@@ -17,7 +17,8 @@
 // workstation, name: <id>, project, folder } — or, while one of its steps
 // holds a workstation (ASS-468), its `workstation` { name, project, folder }
 // — the folder the workstation's shared root, <home>/harness, standing in
-// for a VM's root (machinePaths). A new one is
+// for a VM's root (machinePaths). ASS-481: a third, a cloud VM
+// (machine-cloud-vm.js), named cloud-vm:<project>:<id>:<folder> alike. A new one is
 // a module exporting what `lima` does (command, stopMarked, copyIn, copyOut,
 // statuses, status, stop), added to BACKENDS under its kind.
 //
@@ -28,8 +29,12 @@ import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { lima } from './machine-lima.js';
 import { workstation, parts as workstationParts, wsPath } from './machine-workstation.js';
+import { cloudVm } from './machine-cloud-vm.js';
 
-const BACKENDS = { lima, workstation };
+const BACKENDS = { lima, workstation, 'cloud-vm': cloudVm };
+// ASS-481: the remote kinds — a project's pool, its workstations and its cloud VMs — whose machine is
+// <kind>:<project>:<id>:<folder>, a folder on the remote reached over its one connection.
+export const REMOTE_KINDS = ['workstation', 'cloud-vm'];
 
 // machineOf(variation) — the variation's machine, as named above; undefined
 // when it has none (its Create VM step has not run). ASS-468: while one of
@@ -37,20 +42,28 @@ const BACKENDS = { lima, workstation };
 // project, folder } (workstation:claim) is its machine, whatever its vm
 // records — in vm+workstation mode a variation with a VM runs a step on the
 // workstation when one is free.
+// ASS-481: a cloud VM's claim records kind cloud-vm on the variation's `workstation` (its vm, kind cloud-vm), and its
+// machine is cloud-vm:<project>:<id>:<folder> alike.
 export function machineOf(variation) {
-  const held = variation?.workstation?.name && variation.workstation.project && variation.workstation.folder ? { ...variation.workstation, kind: 'workstation' } : null;
+  const held = variation?.workstation?.name && variation.workstation.project && variation.workstation.folder ? { ...variation.workstation, kind: variation.workstation.kind ?? 'workstation' } : null;
   const { name, kind = 'lima', project, folder } = held ?? variation?.vm ?? {};
   if (!name) return undefined;
-  if (kind === 'workstation' && project && folder) return `workstation:${project}:${name}:${folder}`;
+  if (REMOTE_KINDS.includes(kind) && project && folder) return `${kind}:${project}:${name}:${folder}`;
   return kind === 'lima' ? name : `${kind}:${name}`;
 }
 
-// onWorkstation(machine) — { project, id, folder } when `machine` is a
-// workstation's (ASS-435), else null.
+// onWorkstation(machine) — { project, id, folder, kind } when `machine` is a
+// workstation's (ASS-435) or, ASS-481, a cloud VM's (kind 'cloud-vm'): a
+// remote machine of the project's pool; else null.
 export function onWorkstation(machine) {
-  if (!machine?.startsWith('workstation:')) return null;
-  try { return workstationParts(machine.slice('workstation:'.length)); } catch { return null; }
+  const kind = REMOTE_KINDS.find(k => machine?.startsWith(`${k}:`));
+  if (!kind) return null;
+  try { return { ...workstationParts(machine.slice(kind.length + 1)), kind }; } catch { return null; }
 }
+
+// remoteName(machine) — a remote machine's name without its kind (<project>:<id>:<folder>), as its backend and
+// syncTicketCopy take it; null for any other.
+export const remoteName = machine => (onWorkstation(machine) ? machine.slice(machine.indexOf(':') + 1) : null);
 
 // machinePaths(machine) — where things are in the machine (ASS-435): {
 // repos, the folder holding each repository's checkout (a step's cwd and
@@ -60,7 +73,7 @@ export function onWorkstation(machine) {
 export function machinePaths(machine) {
   const ws = onWorkstation(machine);
   if (!ws) return { repos: '/repos/', ticket: '/mnt/ticket', kind: 'VM', where: `in this ticket variation's own VM, ${machine}` };
-  return { repos: `${wsPath(ws.folder, '/repos')}/`, ticket: wsPath(ws.folder, '/mnt/ticket'), kind: 'workstation', where: `on the GCP workstation ${ws.id}, in its shared repositories under ${ws.folder}, checked out on this ticket variation's branches for this step: commit and push your work on its branch before you finish (what a step that does not finish leaves uncommitted is discarded; a commit on master is refused)` };
+  return { repos: `${wsPath(ws.folder, '/repos')}/`, ticket: wsPath(ws.folder, '/mnt/ticket'), kind: 'workstation', where: `on the ${ws.kind === 'cloud-vm' ? 'GCP cloud VM' : 'GCP workstation'} ${ws.id}, in its shared repositories under ${ws.folder}, checked out on this ticket variation's branches for this step: commit and push your work on its branch before you finish (what a step that does not finish leaves uncommitted is discarded; a commit on master is refused)` };
 }
 
 // parseMachine(machine) — { kind, name }.

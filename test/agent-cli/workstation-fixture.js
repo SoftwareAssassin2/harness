@@ -9,6 +9,9 @@
 // folder holding plan.md. Returns { f, w, env, cli, result, entry(id),
 // variation(name), folder(name, id), root(id), repo(name, id), origins,
 // ids, at, tokens() }; closeAll() closes every connection the tests opened.
+// ASS-481: `cloudVms` — ids of running fake cloud VMs (fake-gcloud-compute.js)
+// listed in the project's cloud-vms after its workstations, in zone
+// us-central1-a; ids lists both.
 import { execFile, execFileSync } from 'node:child_process';
 import { promisify } from 'node:util';
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
@@ -25,7 +28,8 @@ export async function closeAll() { for (const s of opened.splice(0)) for (const 
 export const git = (dir, ...args) => execFileSync('git', ['-C', dir, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
 export const edit = (file, change) => { const json = JSON.parse(readFileSync(file, 'utf8')); change(json); writeFileSync(file, JSON.stringify(json)); };
 
-export function wsFixture({ mode = 'workstation', ids = [ID], f = fixture(), forwarder = 7787 } = {}) {
+export function wsFixture({ mode = 'workstation', ids: wsIds = [ID], cloudVms = [], f = fixture(), forwarder = 7787 } = {}) {
+  const ids = [...wsIds, ...cloudVms];
   const w = fakeWorkstation(f.env);
   const at = (...rest) => join(f.dir, ...rest);
   const origins = {};
@@ -40,10 +44,12 @@ export function wsFixture({ mode = 'workstation', ids = [ID], f = fixture(), for
   }
   edit(at('projects', 'p', 'project.json'), p => {
     p.repositories = [{ url: origins.harness, description: 'h' }, { url: origins["example-corpus"], description: "c" }];
-    p['dev-environments'] = { mode, workstations: ids.map(id => ({ id, 'gcp-project': 'example-gcp-project', region: 'us-central1', cluster: 'example-workstations', config: 'example-config' })) };
+    p['dev-environments'] = { mode, workstations: wsIds.map(id => ({ id, 'gcp-project': 'example-gcp-project', region: 'us-central1', cluster: 'example-workstations', config: 'example-config' })),
+      ...(cloudVms.length ? { 'cloud-vms': cloudVms.map(id => ({ id, 'gcp-project': 'example-gcp-project', zone: 'us-central1-a' })) } : {}) };
   });
   edit(at('harness.json'), h => { h['forwarder-port'] = forwarder; });
-  for (const id of ids) w.workstation(id, 'STATE_RUNNING');
+  for (const id of wsIds) w.workstation(id, 'STATE_RUNNING');
+  for (const id of cloudVms) w.cloudVm(id, 'RUNNING');
   const home = mkdtempSync(join(tmpdir(), 'mac-home-'));
   mkdirSync(join(home, '.harness'), { recursive: true });
   writeFileSync(join(home, '.harness', 'vm-credentials.json'), JSON.stringify({ p: { claude: { 'keychain-service': 'Claude Token (Test)' }, git: { 'user-name': 'Ada', 'user-email': 'ada@example.com' } } }));

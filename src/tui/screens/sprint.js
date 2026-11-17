@@ -5,7 +5,7 @@ import { boxTable, lastStart, tableLayout } from '../table.js';
 import { link, visible, clip } from '../text.js';
 import { workedByHand, tokenSpend, testCounts } from '../ticket.js';
 import { below, headerLines, platform } from './frame.js';
-import { usesWorkstations } from '../../control/dev-environments.js';
+import { usesWorkstations, workstationsOf, cloudVmsOf } from '../../control/dev-environments.js';
 import { NONE, agentLines, liveAssignments, ticketMarks, sprintMark, markDot, GLYPHS, move, green, red, gold, gray, sprintTickets, statusCell, ticketAgents, chatSpend, seatPlan, runsScript } from './shared.js';
 import { openTicket } from './ticket.js';
 import { slotKind } from '../../control/plan.js';
@@ -16,9 +16,11 @@ import { enginesOf } from '../status.js';
 // and in full the Details tab's Health; a ticket worked by hand keeps its ☛ (the Ticket cell's c3) and the panel's By hand.
 // ASS-454: no Priority column — each row's Ticket cell starts with its priority (priorityPrefix), so the Ticket
 // header starts with the same four-cell indent: centered (boxTable) over the rest of the column, over the text.
+// ASS-488: no Assignee column — its width goes to the others through tableLayout; the assignee stays the
+// waited-on "(<first name>)" suffix (waitingWho), the UNASSIGNED mark and the ticket screen's.
 const PRIORITY_CELLS = 3;
 const PRIORITY_CAP = 999;
-const TABLE_HEADERS = [`${' '.repeat(PRIORITY_CELLS + 1)}Ticket`, 'Status', 'Points', 'Dev', 'Testing', 'Total Token Spend', 'Assignee', 'Agents'];
+const TABLE_HEADERS = [`${' '.repeat(PRIORITY_CELLS + 1)}Ticket`, 'Status', 'Points', 'Dev', 'Testing', 'Total Token Spend', 'Agents'];
 // The Ticket column is the most important one (ASS-207): it keeps at least the
 // key and TITLE_CHARS characters of title, Agents giving up its width to leave
 // room first (Health did before it, until ASS-437 took that column) — then Status (ASS-326), re-wrapping its lines narrower
@@ -101,7 +103,8 @@ function layout(state, { columns = 0, rows = Infinity, now = 0 }) {
   const { rows: grid, place } = withEmptySeats(tickets, seats);
   const bottom = below(state) + Math.max(1, platform(state, columns, now).length);
   const settings = state.projects[state.project]?.devEnvironments;
-  const key = iconKey(columns, Boolean(usesWorkstations(settings?.mode) && settings.workstations?.length));
+  const remote = usesWorkstations(settings?.mode);
+  const key = iconKey(columns, Boolean(remote && workstationsOf(settings).length), Boolean(remote && cloudVmsOf(settings).length));
   const free = rows - headerLines(state, columns, now).length - bottom - 5 - key.length;
   const cells = ticketRows(grid, liveAssignments(state), steps, state.projects[state.project]?.collaborations, ticketMarks(state, tickets), seats, t => runsScript(state, t));
   const fit = { columns, stretch: 0, min: ticketFloor(cells, grid), shrink: SHRINK };
@@ -282,6 +285,8 @@ export const priorityPrefix = (priority, manual = false) => {
 const SEAT = '💺';
 // ASS-469: a variation in progress holding a workstation seat (control's seats.json): ⛅, two cells too, in 💺's place.
 const WS_SEAT = '⛅';
+// ASS-481 AC6: a variation in progress holding a cloud VM seat: 🌐, two cells too, distinct from 💺 and ⛅.
+const CLOUD_SEAT = '🌐';
 
 // The key under the ticket grid (ASS-259): the priority the rows start with
 // (ASS-454), in bright magenta when set by hand, then each of the rows' glyphs as they
@@ -299,10 +304,12 @@ const KEY = [
   [gold('AWAITING MERGE'), 'MRs to merge, in order'],
 ].map(([glyph, meaning]) => `${glyph}${dim(` ${meaning}`)}`);
 // ASS-469: ⛅'s entry, after 💺's, only for a project whose tickets run on GCP workstations (`workstations`).
+// ASS-481 AC6: 🌐's after it, only for a project whose tickets run on cloud VMs (`cloudVms`).
 const WS_KEY = `${WS_SEAT}${dim(' holds a workstation seat')}`;
-function iconKey(columns, workstations = false) {
+const CLOUD_KEY = `${CLOUD_SEAT}${dim(' holds a cloud VM seat')}`;
+function iconKey(columns, workstations = false, cloudVms = false) {
   const lines = [];
-  const entries = workstations ? KEY.flatMap(e => (e.startsWith(SEAT) ? [e, WS_KEY] : [e])) : KEY;
+  const entries = KEY.flatMap(e => (e.startsWith(SEAT) ? [e, ...(workstations ? [WS_KEY] : []), ...(cloudVms ? [CLOUD_KEY] : [])] : [e]));
   for (const entry of entries) {
     const last = lines.at(-1);
     if (last != null && visible(last) + 2 + visible(entry) <= columns) lines[lines.length - 1] = `${last}  ${entry}`;
@@ -313,7 +320,7 @@ function iconKey(columns, workstations = false) {
 
 // One table row per ticket variation (see sprintTickets). Status is its
 // statusCell, wrapped at its column's width (ASS-326). The Ticket cell leads with a square in that step's
-// progress-bar color, the deepest step's own when it has one (`steps` set its shade). Points and assignee come from the ticket; Agents
+// progress-bar color, the deepest step's own when it has one (`steps` set its shade). Points come from the ticket (no assignee since ASS-488); Agents
 // lists its assignments from assignments.json (no Health since ASS-437: ai-feedback-short is the ticket screen's);
 // Total Token Spend its tokenSpend, the ticket's chat's spend (ASS-35) on its first variation's row alone.
 // The Ticket cell starts with the ticket's priority in three cells and a blank (ASS-454: priorityPrefix, bright
@@ -335,7 +342,7 @@ function iconKey(columns, workstations = false) {
 // two-cell column, 💺 when the variation holds a planning or in-progress seat
 // (ASS-357: `seats`, seatPlan's holders — the planner's, none on a past day),
 // ⛅ instead for an in-progress seat on a GCP workstation (ASS-469: seatPlan's
-// kinds, control's seats.json; 💺 then a VM seat). A
+// kinds, control's seats.json; 💺 then a VM seat), 🌐 for one on a cloud VM (ASS-481). A
 // paused variation's (is-paused) text starts "PAUSED " in blue; a ticket
 // reassigned away from the operator's account (ASS-345: ticket:sync's
 // reassigned, to another person or to nobody) "UNASSIGNED " in red in its
@@ -352,7 +359,7 @@ function iconKey(columns, workstations = false) {
 // An empty seat row (ASS-451, withEmptySeats) is one line: blanks where the priority and icon columns are, a dim 💺
 // in the seat column, then "empty seat" in dim gray; every other cell blank.
 function ticketRows(tickets, assignments, steps, collaborations = {}, marks = { needed: new Set() }, { holders = new Set(), kinds = new Map() } = {}, scripts = () => false) {
-  const seatMark = id => (!holders.has(id) ? '  ' : kinds.get(id) === 'workstation' ? WS_SEAT : SEAT);
+  const seatMark = id => (!holders.has(id) ? '  ' : kinds.get(id) === 'workstation' ? WS_SEAT : kinds.get(id) === 'cloud-vm' ? CLOUD_SEAT : SEAT);
   return tickets.map(t => {
     if (isEmptySeat(t)) return [`${priorityPrefix(null)}${' '.repeat(5)}  ${dim(SEAT)} ${dim(gray(EMPTY_SEAT))}`, ...TABLE_HEADERS.slice(1).map(() => '')];
     // One line per assignment to this ticket and this row's variation (or to no
@@ -376,7 +383,6 @@ function ticketRows(tickets, assignments, steps, collaborations = {}, marks = { 
       String(t.points ?? NONE),
       ...variationCells(t.variation),
       tokenSpend(t.variation, t.variation === t.variations?.[0] ? chatSpend(collaborations, t.key) : 0) ?? NONE,
-      t['ticket-system-assignment'] ?? NONE,
       agentLines(agents),
     ];
   });

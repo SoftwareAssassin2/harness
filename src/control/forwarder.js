@@ -42,6 +42,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { flattenSprint } from './rank.js';
 import { syncTicketCopy } from './machine-workstation.js';
+import { remoteName } from './machine.js';
 import { dataDir } from '../data-folder.js';
 
 const ALLOW = JSON.parse(readFileSync(join(import.meta.dirname, 'forwarder-allowlist.json'), 'utf8'));
@@ -139,8 +140,9 @@ export function startForwarder({ root, env = process.env, port, log = () => {} }
       child.on('error', error => res.end(`${JSON.stringify({ e: Buffer.from(`${error.message}\n`).toString('base64'), exit: 127 })}\n`));
       const exit = (code, signal) => `${JSON.stringify({ exit: code ?? (signal === 'SIGKILL' ? 137 : 143) })}\n`;
       child.on('close', (code, signal) => {
-        if (!a.vm?.startsWith('workstation:')) { res.end(exit(code, signal)); return; }
-        syncTicketCopy(a.vm.slice('workstation:'.length), a.binding['ticket-folder'], { env })
+        // ASS-481: a cloud VM's machine (cloud-vm:…) has its ticket copy as a workstation's has.
+        if (!remoteName(a.vm)) { res.end(exit(code, signal)); return; }
+        syncTicketCopy(remoteName(a.vm), a.binding['ticket-folder'], { env })
           .catch(error => { log('forwarder', `SYNC ${a.vm} failed: ${error.message}`); send('e')(Buffer.from(`agent.sh: the ticket folder's copy on the workstation could not be brought up to date: ${(error.stderr || error.message).trim()}\n`)); })
           .finally(() => res.end(exit(code, signal)));
       });

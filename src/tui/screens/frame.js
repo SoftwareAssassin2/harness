@@ -11,10 +11,10 @@ import { visible, link } from '../text.js';
 import { utcDate } from '../../downloader/cycle.js';
 import { flattenSprint } from '../../control/rank.js';
 import { spendRecords, daySpend, sprintSpend, spendText } from '../../control/spend.js';
-import { usesWorkstations } from '../../control/dev-environments.js';
-import { workstationState } from '../../control/workstation-machines.js';
+import { usesVms, usesWorkstations, cloudVmsOf, workstationsOf } from '../../control/dev-environments.js';
+import { workstationState, cloudVmState } from '../../control/workstation-machines.js';
 import { lostWhy, seatCapacity } from '../../control/seat-kinds.js';
-import { ellipsis, refining, agentLine, projectAssignments, liveAssignments, viewedSprint, operatorNeeded, restartFixes, markDot, ICONS, since, indent, center, middle, color, green, red, gold, timestamp, sprintTickets } from './shared.js';
+import { ellipsis, refining, agentLine, projectAssignments, liveAssignments, viewedSprint, operatorNeeded, restartFixes, markDot, ICONS, since, indent, center, middle, color, green, red, gold, timestamp, sprintTickets, runsScript, GLYPHS, gray, seatPlan } from './shared.js';
 
 // Screens where space pauses and releases the agents.
 export const PAUSABLE = new Set(['s', 'S', 'b', 'B', 'c', 'a', 'A']);
@@ -145,9 +145,14 @@ function gcloudWarning(warning, logins = []) {
 // project's workstations whose last setup (workstation:setup, the live data's
 // setup) failed, saying what failed: control dispatches nothing to it until
 // a setup works.
+// ASS-481: a cloud VM's says "Cloud VM <id>".
 function setupWarnings(warning, project) {
+  const cloud = new Set(cloudVmsOf(project?.devEnvironments).map(w => w.id));
   return Object.entries(project?.workstations ?? {}).filter(([, e]) => e?.setup?.ok === false)
-    .map(([id, e]) => warning(`workstation-setup:${id}`, `Workstation ${id} setup failed`, `Fix workstation ${id}'s setup (nothing is dispatched to it meanwhile): ${e.setup.error ?? 'see control\'s log'}`, { chip: true }));
+    .map(([id, e]) => {
+      const what = cloud.has(id) ? 'Cloud VM' : 'Workstation';
+      return warning(`workstation-setup:${id}`, `${what} ${id} setup failed`, `Fix ${what.toLowerCase()} ${id}'s setup (nothing is dispatched to it meanwhile): ${e.setup.error ?? 'see control\'s log'}`, { chip: true });
+    });
 }
 // The sprint header's white-on-red boxes (sprintLines): headerWarnings' chips' texts, in its order (ASS-412).
 const warnings = (state, now) => headerWarnings(state, now).filter(w => w.chip).map(w => w.text);
@@ -239,8 +244,10 @@ export const headerLines = (state, columns, now) => (state.screen === 'S' || sta
 // ASS-430: moved here from the header's tiles), then how the project is
 // billed (billingLines, ASS-221), ending with the account. ASS-436: then, in
 // vm+workstation or workstation mode, the gcp workstations box
-// (workstationLines). Each box is one entry of `boxes`, so another goes in as
-// one more entry.
+// (workstationLines); ASS-481: then the cloud virtual machines box
+// (cloudVmBox); ASS-486: then, rightmost, in vm or vm+workstation mode, the
+// local virtual machines box (localVmBox; ASS-491: its build and planning seats). Each box is one entry of `boxes`,
+// so another goes in as one more entry.
 export function platform(state, columns, now) {
   if (state.screen === 'S' || state.screen === 'B') return []; // the flow screens give the diagram the room (ASS-187)
   const project = state.projects[state.project];
@@ -259,7 +266,16 @@ export function platform(state, columns, now) {
       .map(([model, list]) => `${model} 🤖x${list.length}`), ...vmSeatLines(project), ...spendLines(state, now), ...billingLines(project, now)]] : []),
     ...workstationBox(state, project),
   ];
-  const row = boxRow(boxes, columns);
+  // ASS-481 AC5: the cloud virtual machines box directly after them, and (ASS-486 AC1/AC5) the local virtual machines
+  // box after it, rightmost — each on the row before it while that row still fits the screen, else starting a row of its
+  // own under it, so the footer fits the TUI's minimum width (120 columns) with all five boxes.
+  const rows = [boxes];
+  for (const tail of [...cloudVmBox(state, project), ...localVmBox(state, project)]) {
+    const last = rows.at(-1);
+    if (!last.length || visible(boxRow([...last, tail], columns)[0]) <= columns) last.push(tail);
+    else rows.push([tail]);
+  }
+  const row = rows.flatMap(r => boxRow(r, columns));
   return row.length ? [...row, ''] : row;
 }
 
@@ -268,34 +284,136 @@ export function platform(state, columns, now) {
 // ASS-431) run tickets on workstations (usesWorkstations: vm+workstation or
 // workstation mode) and list at least one; none in vm mode, with an empty
 // list or while the setting is wrong (null), so the footer is as before. One
-// line per workstation, in the list's order, "<id> 🤖x<n> <state>" as the
-// models box draws a model and its count: n the project's assignments
-// (projectAssignments, as the models box counts them) on the variation its
-// live data's holder holds (ASS-435: same ticket, case-insensitive, and
-// variation), 0 with no holder; the state workstationState's word from its
-// workstations.json entry (ASS-433/434; 'stopped' with none yet) — running in
-// green, sign in needed and setup failed in red — then its seat (ASS-469: one
-// per workstation, AC9): "<used>/1 seats" as control's seats.json records it,
-// or "seat lost" in red while it can't be used (seat-kinds.js lostWhy). An id longer than WS_ID is
-// cut to it with an ellipsis, so the box stays narrow beside control and
-// models: the longest line, WS_ID + "🤖x99 sign in needed", fits the footer's
-// 120 columns with both.
+// line per workstation, in the list's order, built by remoteLine and
+// machineLine (ASS-485 AC6). An id longer than WS_ID is cut to it with an
+// ellipsis, so the box stays narrow beside control and models: the longest
+// line, WS_ID + "🤖x99 💻 sign in needed seat lost", fits the footer's 120
+// columns with both.
+// ASS-481: the pool's cloud VMs are not workstations: workstationsOf leaves
+// them to cloudVmBox, so a project listing cloud VMs alone has no
+// "gcp workstations" box.
 const WS_ID = 20;
 function workstationBox(state, project) {
   const settings = project?.devEnvironments;
-  if (!settings || !usesWorkstations(settings.mode) || !settings.workstations?.length) return [];
-  const sameKey = (a, b) => String(a ?? '').toUpperCase() === String(b ?? '').toUpperCase();
-  const agents = projectAssignments(state);
-  const line = ({ id }) => {
+  const list = workstationsOf(settings);
+  if (!settings || !usesWorkstations(settings.mode) || !list.length) return [];
+  return [['gcp workstations', ...list.map(remoteLine(state, project, workstationState))]];
+}
+
+// machineLine({ id, agents, script, state, lost }) — ASS-485 AC6: the one line
+// builder of the footer's machine boxes (gcp workstations, cloud virtual
+// machines and, ASS-486, local virtual machines): "<id> <activity> <state>", then
+// "seat lost" in red when `lost`. The id is cut to WS_ID with an ellipsis;
+// activity is "🤖x<agents>" only when agents > 0, then GLYPHS.script (💻) only
+// when `script`, nothing when idle; the state word running in green, sign in
+// needed, setup failed and start timed out in red. No seat count.
+// e.g. "ws-1 💻 running", "harness-vm-1 🤖x1 running", "ws-1 running".
+const RED_STATES = new Set(['sign in needed', 'setup failed', 'start timed out']);
+export function machineLine({ id, agents = 0, script = false, state, lost = false }) {
+  const shade = state === 'running' ? green : RED_STATES.has(state) ? red : text => text;
+  const activity = [agents > 0 ? `🤖x${agents}` : '', script ? GLYPHS.script : ''].filter(Boolean);
+  return [ellipsis(String(id), WS_ID), ...activity, shade(state), ...(lost ? [red('seat lost')] : [])].join(' ');
+}
+
+// remoteLine(state, project, stateOf) — machineLine's facts for the remote
+// { id } of the gcp workstations box or (ASS-481) the cloud virtual machines
+// box, from its live data (project.workstations[id]):
+// - agents and script: the activity (variationActivity) of the variation its
+//   holder holds, none with no holder;
+// - state: `stateOf`'s word (workstationState, cloudVmState; 'stopped' with
+//   no live data yet);
+// - lost: while it can't be used (seat-kinds.js lostWhy, ASS-469 AC5).
+const sameKey = (a, b) => String(a ?? '').toUpperCase() === String(b ?? '').toUpperCase();
+const remoteLine = (state, project, stateOf) => {
+  const activity = variationActivity(state);
+  return ({ id }) => {
     const entry = project.workstations?.[id], holder = entry?.holder;
-    const count = holder ? agents.filter(a => sameKey(a['work-item'], holder.ticket) && a.variation === holder.variation).length : 0;
-    const word = workstationState(entry);
-    const shade = word === 'running' ? green : word === 'sign in needed' || word === 'setup failed' ? red : text => text;
-    const used = (project.seats ?? []).filter(r => r.kind === 'workstation' && r.workstation === id).length;
-    const seat = lostWhy(entry) ? red('seat lost') : `${used}/1 seats`;
-    return `${ellipsis(String(id), WS_ID)} 🤖x${count} ${shade(word)} ${seat}`;
+    const { agents, script } = holder ? activity(holder.ticket, holder.variation) : { agents: 0, script: false };
+    return machineLine({ id, agents, script, state: stateOf(entry), lost: Boolean(lostWhy(entry)) });
   };
-  return [['gcp workstations', ...settings.workstations.map(line)]];
+};
+
+// variationActivity(state)(ticket, variation) — what a machine's variation is
+// doing, for machineLine (ASS-485; ASS-486 the local VMs too):
+// - agents: the project's assignments (projectAssignments, as the models box
+//   counts them) on the variation (ASS-435: same ticket, case-insensitive,
+//   and variation);
+// - script (ASS-485 AC1-AC3): the ticket in the sprint on show, found as the
+//   sprint screen finds it (sprintTickets) and matched as the agent count
+//   matches it, runs a script step by runsScript — the sprint screen's own
+//   rule: none at a gate, held, on an agent step, or on a past day.
+const variationActivity = state => {
+  const assignments = projectAssignments(state);
+  const { tickets } = sprintTickets(state);
+  return (ticket, variation) => ({
+    agents: assignments.filter(a => sameKey(a['work-item'], ticket) && a.variation === variation).length,
+    script: tickets.some(t => sameKey(t.key, ticket) && t.variation?.name === variation && runsScript(state, t)),
+  });
+};
+
+// cloudVmBox(state, project) — ASS-481 AC5: the "cloud virtual machines" box
+// (ASS-485 AC7: retitled from "virtual machines"), directly after the gcp
+// workstations box (after models without one), while the project's
+// dev-environments run tickets on its remote pool (vm+workstation or
+// workstation mode) and list at least one cloud VM; none in vm mode, with no
+// cloud VMs, or while the setting is wrong. One line per cloud VM, in list
+// order, built by remoteLine and machineLine as the workstations' are
+// (ASS-485 AC6), its state cloudVmState's word — running, stopped, starting,
+// connecting, sign in needed, setup failed, start timed out. Its id is cut to
+// WS_ID: the longest line, WS_ID + "🤖x99 💻 start timed out seat lost", fits
+// the footer's 120 columns beside control, models and gcp workstations.
+function cloudVmBox(state, project) {
+  const settings = project?.devEnvironments;
+  const list = cloudVmsOf(settings);
+  if (!settings || !usesWorkstations(settings.mode) || !list.length) return [];
+  return [['cloud virtual machines', ...list.map(remoteLine(state, project, cloudVmState))]];
+}
+
+// localVmBox(state, project) — ASS-486, ASS-489, ASS-491: the "local virtual
+// machines" box, the footer's rightmost (ASS-489 AC5, ASS-491 AC5), while the
+// project runs tickets on Lima VMs (vm or vm+workstation mode, usesVms); none
+// in workstation mode, where tickets have no VMs, or while the setting is
+// wrong (ASS-491 AC4). One line per seat that uses a local VM (ASS-491 AC1):
+// - the in-progress VM seats first, as ASS-489 has them (ASS-491 AC4): their
+//   holders, control's seats.json rows of kind 'vm' (project.seats), in their
+//   order (oldest first), never more lines than seats; then a gray "free build
+//   seat" (ASS-491 AC3) per VM seat left, up to the VM seat count
+//   (seatCapacity, as vmSeatLines counts it); with no limit (∞) only the holders;
+// - then the planning seats, every one a local VM's (planning always runs on
+//   Lima VMs, ASS-469), from seatPlan — the sprint screen's 💺 source, so the
+//   two agree: its `planning` holders ("<key> <variation>") in its order, then
+//   a gray "free planning seat" per free.planning (none with no planning
+//   limit, so only the holders).
+// A holder's line is machineLine's (ASS-491 AC2): the VM the vms.json row
+// (project.vms) with its ticket (case-insensitive) and variation, its name the
+// row's key cut to WS_ID (AC5), its activity variationActivity's, its state the
+// VM's own lowercased, "running" in green; with no row yet (still being
+// created) its expected name, lowercased key-variation (e.g. vm-1-a),
+// "creating" in gray (ASS-489 AC4). No lines at all: one gray "none". A VM
+// whose ticket holds no seat — at a gate, blocked, or in a workstation or
+// cloud-vm seat — is not listed (ASS-489 AC3).
+function localVmBox(state, project) {
+  const settings = project?.devEnvironments;
+  if (!settings || !usesVms(settings.mode)) return [];
+  const activity = variationActivity(state);
+  const vms = Object.entries(project.vms ?? {});
+  const holderLine = (key, variation) => {
+    const [id, vm] = vms.find(([, v]) => sameKey(v?.ticket, key) && v?.variation === variation) ?? [];
+    const { agents, script } = activity(key, variation);
+    if (!vm) return machineLine({ id: `${key}-${variation}`.toLowerCase(), agents, script, state: gray('creating') });
+    return machineLine({ id, agents, script, state: String(vm.state ?? 'stopped').toLowerCase() });
+  };
+  const holders = (project.seats ?? []).filter(s => s?.kind === 'vm').map(seat => holderLine(seat.key, seat.variation));
+  const { vm: seats } = seatCapacity({ json: project.limits?.project ?? {}, devEnvironments: settings, workstations: project.workstations });
+  const free = Number.isFinite(seats) ? Array.from({ length: Math.max(0, seats - holders.length) }, () => gray('free build seat')) : [];
+  const build = [...(Number.isFinite(seats) ? holders.slice(0, seats) : holders), ...free];
+  const plan = seatPlan(state);
+  const planning = [
+    ...plan.planning.map(name => { const at = name.indexOf(' '); return holderLine(name.slice(0, at), name.slice(at + 1)); }),
+    ...Array.from({ length: plan.free.planning }, () => gray('free planning seat')),
+  ];
+  const lines = [...build, ...planning];
+  return [['local virtual machines', ...(lines.length ? lines : [gray('none')])]];
 }
 
 // vmSeatLines(project) — ASS-469: in the models box, in vm+workstation mode (where a ticket in progress sits in a VM
