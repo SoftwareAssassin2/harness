@@ -36,8 +36,8 @@ set -euo pipefail
 #
 # A test marked "reproduces": true (ASS-227) is red on master by design — it
 # reproduces the ticket's bug — so master only sets aside the failed tests it
-# names too (ASS-487: a whole suite red on master for reasons of its own,
-# CLW-84's): any other failure, or a red run naming no test, red on the branch
+# names too (ASS-487: a whole suite red on master for reasons of its
+# own): any other failure, or a red run naming no test, red on the branch
 # and again on a re-run, failed (exit 1, for Generate Solution, whose
 # max-visits caps it) — never exit 3, master red or not. One timed out on the
 # branch is not run on master (a timeout is never master's); with master's
