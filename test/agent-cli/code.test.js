@@ -474,7 +474,7 @@ test('ASS-227 AC2: a reproducing check red on master and green on the branch pas
 // ASS-487: a reproducing check red on the branch is run on master too, master
 // setting aside only the failures it names as well; any other is new (exit 1).
 test('ASS-487 AC1: a reproducing check whose every failure is red on master too passes, the failures listed pre-existing — master did run', async () => {
-  const f = reproducing(await againstMaster('x.sql ....... \n1..2\nok 1 - a\nnot ok 2 - b\n', 'x.sql ....... \n1..2\nok 1 - a\nnot ok 2 - b\n'));
+  const f = reproducing(await againstMaster('x.sql ....... \n1..2\nok 1 - a\nnot ok 2 - b\n', 'x.sql ....... \n1..2\nok 1 - a\nnot ok 2 - b\n# the branch\n'));
   assert.deepEqual(JSON.parse((await f.agent('automated-tests:verify-success', 'p', 'ABC-3', 'A')).stdout), { passed: 1, failed: 0, 'pre-existing': ['x.sql: b'] });
   assert.deepEqual(f.runs(), ['change/ABC-3', 'HEAD']);                      // the branch, then master
   assert.equal(f.on(), 'change/ABC-3');
