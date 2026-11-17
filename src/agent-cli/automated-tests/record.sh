@@ -12,7 +12,8 @@ set -euo pipefail
 # "<command>" }, each a string — the shape automated-tests.bash checks — and
 # optionally "reproduces": true or false (ASS-227: red on master by design;
 # master sets aside only the failures it names too, ASS-487 — see
-# verify-success.sh). It is
+# verify-success.sh), and "merge-request": <id> (ASS-498: the merge request
+# whose branch holds the test, when two share a repository). It is
 # stored verbatim (byte for byte), under the file's lock, through a temp file
 # renamed over it (json-file.bash replace_file), so a reader sees the old file
 # or the new one. Fails, writing nothing, on an invalid path or input — and
@@ -34,8 +35,8 @@ if [[ $# -eq 4 ]]; then
 fi
 
 input="$(cat; echo x)"; input="${input%x}"
-printf '%s' "$input" | jq -se 'length == 1 and (.[0] | type == "array" and all(.[]; type == "object" and (.list | type) == "string" and (.run | type) == "string" and ((.reproduces // false) | type) == "boolean"))' >/dev/null 2>&1 \
-  || { echo "$command: $from must be [] or a list of { \"list\": \"<command>\", \"run\": \"<command>\" }, each a string, with an optional boolean \"reproduces\": $(basename "$file") left as it was" >&2; exit 1; }
+printf '%s' "$input" | jq -se 'length == 1 and (.[0] | type == "array" and all(.[]; type == "object" and (.list | type) == "string" and (.run | type) == "string" and ((.reproduces // false) | type) == "boolean" and ((.["merge-request"] // 1) | type == "number" and . >= 1 and . == floor)))' >/dev/null 2>&1 \
+  || { echo "$command: $from must be [] or a list of { \"list\": \"<command>\", \"run\": \"<command>\" }, each a string, with an optional boolean \"reproduces\" and an optional \"merge-request\": <id>, a positive integer: $(basename "$file") left as it was" >&2; exit 1; }
 
 reusing="$(printf '%s' "$input" | node "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/compose-reset.js")" \
   || { echo "$command: could not check the run commands' docker compose stacks: $(basename "$file") left as it was" >&2; exit 1; }

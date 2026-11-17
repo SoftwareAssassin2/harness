@@ -3,7 +3,10 @@
 # in the ticket's folder,
 # data/projects/<project>/work/<KEY>/automated-tests-<variation>.json — a list of
 # { "list": "<command that lists the tests without running them>", "run":
-# "<command that runs them>" } — each command run with bash in the
+# "<command that runs them>" } — optionally with "merge-request": <id>
+# (ASS-498), the ticket's merge request whose branch holds the test, needed
+# when two of them share a repository: verify-exist-and-runnable checks that
+# branch out to list it — each command run with bash in the
 # variation's worktree (build.worktree-folder), else the project's workspace,
 # through in_project (code.bash): in the dev container when it has one; for a
 # variation with a VM (ASS-74), in the VM, in /repos/, where every
