@@ -1482,3 +1482,26 @@ test('ASS-388 AC2/AC3: the check records each Open MR\'s head as checked-head; m
   f.record({ 1: { status: 'Merged' }, 2: { status: 'Merged' } });
   assert.deepEqual(await round(), { changed: true, 'merge-requests': [] });
 });
+
+// ASS-482: GitLab bridge (trigger) jobs — left out of /pipelines/<id>/jobs,
+// read from /pipelines/<id>/bridges — and a failed bridge's downstream
+// pipeline (99, in project 42) with its failed job (77) and that job's log.
+const BRIDGE_URL = `${APP}/-/jobs/31`, DOWNSTREAM_JOB_URL = 'https://gitlab.com/g/ci/-/jobs/77';
+const bridge = (id, name, status = 'failed', v = {}) => ({ id, name, status, allow_failure: false, web_url: `${APP}/-/jobs/${id}`, downstream_pipeline: null, ...v });
+const REVIEW_APP = bridge(31, 'review-app', 'failed', { downstream_pipeline: { id: 99, project_id: 42, status: 'failed', web_url: 'https://gitlab.com/g/ci/-/pipelines/99' } });
+// A failed bridge that counts, one allowed to fail and one passed: only review-app is shown.
+const BRIDGES = [REVIEW_APP, bridge(32, 'optional-app', 'failed', { allow_failure: true }), bridge(33, 'docs', 'success')];
+const DOWNSTREAM_JOBS = [{ id: 77, name: 'deploy', status: 'failed', allow_failure: false, web_url: DOWNSTREAM_JOB_URL }, { id: 78, name: 'lint', status: 'failed', allow_failure: true }, { id: 79, name: 'ok', status: 'success' }];
+const DEPLOY_LOG = 'helm upgrade review-app\nError: timed out waiting for the condition';
+const LONG_LOG = Array.from({ length: 70 }, (_, i) => `deploy line ${i + 1}`).join('\n');   // > 60 lines: only its last 60 shown
+// Pipeline `id` of g/<repo>: its jobs and bridges as given (any query string), one not given left unrouted (the call fails);
+// downstream (true or { jobs, log }) routes project 42's pipeline 99 jobs and job 77's trace.
+function pipelineOf(f, repo, id, { jobs, bridges, downstream } = {}) {
+  const at = list => new RegExp(`^api projects/g%2F${repo}/pipelines/${id}/${list}(\\?[^ ]*)? --hostname gitlab.com$`);
+  if (jobs) f.forge.route('glab', at('jobs'), { out: jobs });
+  if (bridges) f.forge.route('glab', at('bridges'), { out: bridges });
+  if (downstream) {
+    f.forge.route('glab', /^api projects\/42\/pipelines\/99\/jobs(\?[^ ]*)? --hostname gitlab.com$/, { out: downstream.jobs ?? DOWNSTREAM_JOBS });
+    f.forge.route('glab', /^api projects\/42\/jobs\/77\/trace --hostname gitlab.com$/, { out: downstream.log ?? DEPLOY_LOG });
+  }
+}
