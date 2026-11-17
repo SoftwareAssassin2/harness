@@ -3,6 +3,7 @@
 import { statSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fillArgs } from './placeholders.js';
+import { askCheck } from './checks.js';
 import { harnessProject, isHarnessProject } from './harness-project.js';
 
 // A command's placeholders for a ticket's step; {merge-request-ids} - (every one: no run names a set, ASS-365).
@@ -156,11 +157,18 @@ const fresh = (record, variation) => (record && !(arrived(variation) > record.ti
 // filled (ASS-118: explanation-{variation}.md);
 // scriptSucceeds(command), whether the command, its placeholders filled,
 // exits 0 (false, logged, when one cannot be filled) — run in the VM `vm`
-// when given (a run-location: vm step's, ASS-74); questions(), the ticket's
+// when given (a run-location: vm step's, ASS-74), in the background (ASS-493,
+// checks.js askCheck: false while it runs, `checks.pending` set — no later
+// check of the evaluation started — so the caller, heldByChecks, leaves the
+// step where it is), its answer kept for the evaluation `evaluation` (a key
+// naming this reading of the exits; the variation's visit at `since` when not
+// given); questions(), the ticket's
 // (questionsOf, ASS-144); fastTracked, whether the ticket is (ASS-83's
 // fast-track: true; ASS-151).
-export function ticketFacts(ctx, project, ticket, variation, since, vm) {
+export function ticketFacts(ctx, project, ticket, variation, since, vm, evaluation) {
+  const checks = { evaluation: evaluation ?? `${project.id}/${ticket.key}/${variation.name}/${(variation['state-changes'] ?? []).length}/${since ?? ''}`, pending: false };
   return {
+    checks,
     questions: () => questionsOf(ctx, project.id, ticket.key),
     ticketSystemStatus: ticket['ticket-system-status'],
     fastTracked: ticket['fast-track'] === true,
@@ -173,7 +181,12 @@ export function ticketFacts(ctx, project, ticket, variation, since, vm) {
       try { return statSync(join(ctx.paths.projects, project.id, 'work', ticket.key, fillArgs(own, ticketValues(project, ticket, variation)).join(' '))).mtimeMs > since; } catch { return false; }
     },
     scriptSucceeds: command => {
-      try { return ctx.succeeds(fillArgs(command, ticketValues(project, ticket, variation)), vm); } catch (error) { ctx.log('facts', `${ticket.key} ${variation.name}: ${error.message}`); return false; }
+      let argv;
+      try { argv = fillArgs(command, ticketValues(project, ticket, variation)); } catch (error) { ctx.log('facts', `${ticket.key} ${variation.name}: ${error.message}`); return false; }
+      if (checks.pending) return false;   // ASS-493: held by an earlier check; this one is asked once that has answered
+      const ok = askCheck(ctx, checks.evaluation, argv, vm, `${ticket.key} ${variation.name}`);
+      if (ok === undefined) checks.pending = true;
+      return ok === true;
     },
   };
 }

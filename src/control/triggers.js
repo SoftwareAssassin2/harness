@@ -10,6 +10,7 @@ import { firstStepId, isPaused, BACKGROUND, backgroundOff, weeklyHeld, found, mo
 import { rankBacklog } from './rank.js';
 import { sessionSpend } from './finish.js';
 import { expiredLogins } from './workstation-connection.js';
+import { backgroundCheck, settled } from './background-checks.js';
 
 // A run of the engine's `<kind>-steps` list started for `parent`, when the
 // list exists and no such run is going — and, for background work, the
@@ -182,35 +183,47 @@ export async function refineBacklog(ctx, state) {
 // is gcloud's for the project's workstations too (workstations.js), so a
 // live Mac login leaves it set while a workstation's last connect found its
 // own login (its gcloud-config) expired.
+//
+// ASS-497: the asking, and what follows from the answer, runs as a background
+// job the tick does not await (background-checks.js), at most one per tool and
+// project; until it finishes, the flag stays as the last one left it. The
+// phase returns at once, with a promise of the jobs it started.
 const LOGIN_EVERY = 2 * 60e3;
 const SERVER = { gcloud: 'Google', glab: 'GitLab' };
-const loginCheck = tool => async function (ctx, state) {
+const loginCheck = (tool, name) => function (ctx, state) {
   const now = ctx.now().getTime();
   const last = (ctx.memory[tool] ??= new Map());
+  const jobs = [];
   for (const project of state.projects) {
     if (project.json[`check-for-expired-${tool}-auth`] !== true) continue;
     const seen = last.get(project.id);
     if (seen && now - seen.at < LOGIN_EVERY) continue;
-    const answer = await ctx[tool]();
-    const { login, output = '' } = typeof answer === 'string' ? { login: answer } : answer;
-    last.set(project.id, { at: now, login, output });
-    if (login === 'unavailable') {
-      if (seen?.login !== 'unavailable') ctx.log(tool, `${project.id}: ${tool} cannot be run; the warning stays as it is`);
-      continue;
-    }
-    if (login === 'offline') {
-      if (seen?.login !== 'offline') ctx.log(tool, `${project.id}: ${tool} could not reach ${SERVER[tool] ?? 'its server'}, a network problem, not an expired login; the warning stays as it is${output ? ` (${output})` : ''}`);
-      continue;
-    }
-    if (login === 'unknown' && (seen?.login !== 'unknown' || seen.output !== output)) ctx.log(tool, `${project.id}: ${tool} failed for a reason it does not say is an expiry or a network problem; counted as expired: ${output || '(no output)'}`);
-    const expired = login !== 'live' || (tool === 'gcloud' && expiredLogins(project.devEnvironments, project.workstations).length > 0);
-    if (project[`${tool}RequiresReauthentication`] === expired) continue;
-    await ctx.attempt(tool, project.id, async () => {
-      await ctx.cli([`project:set-${tool}-reauthentication`, project.id, String(expired)]);
-      ctx.log(tool, `${project.id}: ${expired ? `the ${tool} login has expired; run '${tool} auth login'` : `the ${tool} login is live again`}`);
-    });
+    jobs.push(backgroundCheck(ctx, `${name}/${project.id}`, job => askLogin(job, tool, project, seen, now)));
   }
+  return settled(jobs);
 };
+// askLogin(ctx, tool, project, seen, now) — one project's login check, in the background (ctx the job's context).
+async function askLogin(ctx, tool, project, seen, now) {
+  const last = ctx.memory[tool];
+  const answer = await ctx[tool]();
+  const { login, output = '' } = typeof answer === 'string' ? { login: answer } : answer;
+  last.set(project.id, { at: now, login, output });
+  if (login === 'unavailable') {
+    if (seen?.login !== 'unavailable') ctx.log(tool, `${project.id}: ${tool} cannot be run; the warning stays as it is`);
+    return;
+  }
+  if (login === 'offline') {
+    if (seen?.login !== 'offline') ctx.log(tool, `${project.id}: ${tool} could not reach ${SERVER[tool] ?? 'its server'}, a network problem, not an expired login; the warning stays as it is${output ? ` (${output})` : ''}`);
+    return;
+  }
+  if (login === 'unknown' && (seen?.login !== 'unknown' || seen.output !== output)) ctx.log(tool, `${project.id}: ${tool} failed for a reason it does not say is an expiry or a network problem; counted as expired: ${output || '(no output)'}`);
+  const expired = login !== 'live' || (tool === 'gcloud' && expiredLogins(project.devEnvironments, project.workstations).length > 0);
+  if (project[`${tool}RequiresReauthentication`] === expired) return;
+  await ctx.attempt(tool, project.id, async () => {
+    await ctx.cli([`project:set-${tool}-reauthentication`, project.id, String(expired)]);
+    ctx.log(tool, `${project.id}: ${expired ? `the ${tool} login has expired; run '${tool} auth login'` : `the ${tool} login is live again`}`);
+  });
+}
 // The gcloud login (ASS-28) and the glab login (ASS-61).
-export const checkGcloud = loginCheck('gcloud');
-export const checkGlab = loginCheck('glab');
+export const checkGcloud = loginCheck('gcloud', 'checkGcloud');
+export const checkGlab = loginCheck('glab', 'checkGlab');

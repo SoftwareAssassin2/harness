@@ -25,9 +25,10 @@ export const WORKSTATIONS_FILE = 'workstations.json';
 // read — the folder gone (the drive dropped), an fs error, or the file still
 // not parsing once read again (read.js readJson) — which would read as no
 // workstation held or connected: that throws, for the tick to be skipped
-// (tick.js) and the dashboard's reload to keep what it had.
-export function loadWorkstations(projectDir) {
-  try { return readJson(join(projectDir, WORKSTATIONS_FILE)) ?? {}; } catch (error) {
+// (tick.js) and the dashboard's reload to keep what it had. `read`: readJson,
+// or loadState's readJsonCached (ASS-495).
+export function loadWorkstations(projectDir, read = readJson) {
+  try { return read(join(projectDir, WORKSTATIONS_FILE)) ?? {}; } catch (error) {
     if (error.code === 'ENOENT' && existsSync(projectDir)) return {};
     throw error;
   }

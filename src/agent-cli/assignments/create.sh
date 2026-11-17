@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Description: Create an assignment's agent records — assignments:create [--model <model>] <project> <state-engine> <state> <prompt> <agent-count> <run-in-dev-container> <work-item|-> <variation|-> <transient-state-engine-id|-> [<problem>|-].
+# Description: Create an assignment's agent records — assignments:create [--model <model>] [--account <email|-> <org|-> <subscription|-> <subscription|api|->] <project> <state-engine> <state> <prompt> <agent-count> <run-in-dev-container> <work-item|-> <variation|-> <transient-state-engine-id|-> [<problem>|-].
 set -euo pipefail
 
 # <agent-count> records in assignments.json (in data/) sharing one new
@@ -17,7 +17,12 @@ set -euo pipefail
 # it names none of them or has none, when all take their turn — or, given
 # --model <model> first (a step whose action names its model, ASS-452, or asks
 # for the stronger one, ASS-399, which control resolves, dispatch.js modelFor), every record that
-# model, the round robin and last-model-used left as they were. A record is status
+# model, the round robin and last-model-used left as they were. Given --account
+# (ASS-496: control's dispatch, which so needs no assignments:set-account after
+# it), every record carries the Claude account and payment method as
+# assignments:set-account writes them — account { email, org, subscription }
+# (null for -) and, unless -, payment-method (subscription or api) — so the
+# records are complete from their first write. A record is status
 # Starting with no process, start-time and last-heartbeat now (UTC),
 # working-in-dev-container as given, the state-engine and prompt named, and its
 # context: work-item and variation (- for null), the transient-state-engine id,
@@ -45,12 +50,23 @@ names_file="${AGENT_NAMES_FILE:-$here/../../../data/agent-names.json}"
 used_file="${AGENT_NAMES_LAST_USED_FILE:-$here/../../../data/agent-names-last-used.json}"
 prompts="${PROMPTS_DIR:-$here/../../../prompts}"
 
-usage() { echo "usage: assignments:create [--model <model>] <project> <state-engine> <state> <prompt> <agent-count> <run-in-dev-container true|false> <work-item|-> <variation|-> <transient-state-engine-id|-> [<problem>|-]" >&2; exit 1; }
-model=""
-if [[ "${1:-}" == --model ]]; then
-  [[ -n "${2:-}" ]] || usage
-  model="$2"; shift 2
-fi
+usage() { echo "usage: assignments:create [--model <model>] [--account <email|-> <org|-> <subscription|-> <subscription|api|->] <project> <state-engine> <state> <prompt> <agent-count> <run-in-dev-container true|false> <work-item|-> <variation|-> <transient-state-engine-id|-> [<problem>|-]" >&2; exit 1; }
+model="" account="{}"
+# The options, in either order, before the positional arguments.
+while [[ "${1:-}" == --model || "${1:-}" == --account ]]; do
+  if [[ "$1" == --model ]]; then
+    [[ -n "${2:-}" ]] || usage
+    model="$2"; shift 2
+  else
+    [[ $# -ge 5 ]] || usage
+    [[ "$5" == - || "$5" == subscription || "$5" == api ]] || { echo "assignments:create: the payment method must be subscription or api, got '$5'" >&2; exit 1; }
+    account="$(jq -nc --arg email "$2" --arg org "$3" --arg subscription "$4" --arg payment "$5" '
+      def given: if . == "-" then null else . end;
+      { account: { email: ($email | given), org: ($org | given), subscription: ($subscription | given) } }
+      + (if $payment == "-" then {} else { "payment-method": $payment } end)')"
+    shift 5
+  fi
+done
 [[ $# -eq 9 || $# -eq 10 ]] || usage
 project="$1" engine="$2" state="$3" prompt="$4" count="$5" container="$6" work="$7" variation="$8" transient="$9" problem="${10:--}"
 [[ "$container" == true || "$container" == false ]] || usage
@@ -83,7 +99,7 @@ models="$(jq -c --argjson n "$count" --arg last "$(cat "$last_model_file" 2>/dev
 [[ -z "$model" ]] || models="$(jq -nc --argjson n "$count" --arg m "$model" '[range(0; $n) | $m]')"
 records="$(jq -nc --argjson names "$names" --argjson models "$models" --arg id "$id" --arg project "$project" --arg engine "$engine" \
   --arg state "$state" --arg prompt "$prompt" --argjson count "$count" --argjson container "$container" \
-  --arg work "$work" --arg variation "$variation" --arg transient "$transient" --arg problem "$problem" --arg at "$at" '
+  --arg work "$work" --arg variation "$variation" --arg transient "$transient" --arg problem "$problem" --arg at "$at" --argjson account "$account" '
   [range(0; $count) as $i
     | { "process-id": null, "session-id": null, model: $models[$i], "start-time": $at, "last-heartbeat": $at, "agent-name": $names[$i], project: $project }
     + (if $work != "-" then { "work-item": $work, variation: (if $variation == "-" then null else $variation end) } else {} end)
@@ -92,7 +108,8 @@ records="$(jq -nc --argjson names "$names" --argjson models "$models" --arg id "
         "assignment-id": $id, "agent-count": $count, "pen-holder": $names[0], approvals: {},
         "ai-feedback-short": null, "ai-feedback-long": null, "working-in-dev-container": $container,
         "ai-status-update-short": null, "last-ai-status-update": null }
-    + (if $problem != "-" then { problem: $problem } else {} end)]')"
+    + (if $problem != "-" then { problem: $problem } else {} end)
+    + $account]')"
 
 # The records first, their names checked under the lock, then the dispatch
 # log (ASS-178): a stop between them leaves records with no process, which

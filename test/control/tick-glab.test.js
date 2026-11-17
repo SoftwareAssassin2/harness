@@ -10,6 +10,7 @@ import { tmpdir } from 'node:os';
 import { controlFixture } from './control-fixture.js';
 import { checkGlab, checkGcloud } from '../../src/control/triggers.js';
 import { tick, createContext } from '../../src/control/tick.js';
+import { settleChecks } from '../../src/control/background-checks.js';
 
 const project = f => join(f.dir, 'projects', 'p', 'project.json');
 const read = f => JSON.parse(readFileSync(project(f), 'utf8'));
@@ -85,6 +86,7 @@ test('a tick runs the glab check', async () => {
   try {
     await f.agent('assignments:pause', 'all', 'human');                 // nothing dispatched
     await tick(f.ctx);
+    await settleChecks(f.ctx);                                          // ASS-497: run in the background
     assert.equal(asked.length, 1);
     assert.equal(flag(f), 'true');
   } finally {

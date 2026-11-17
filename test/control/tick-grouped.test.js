@@ -14,6 +14,8 @@ import { fakeVm } from '../support/fake-vm.js';
 import { engineDir, engineNames } from '../support/engine-walk.js';
 
 const ROOT = join(import.meta.dirname, '..', '..');
+// ASS-493: the script-succeeds checks a tick started (checks.js), awaited, as the ticks' interval allows live.
+const checked = f => Promise.all([...(f.ctx.memory.checking?.values() ?? [])].map(c => c.done));
 const edit = (file, change) => { const json = JSON.parse(readFileSync(file, 'utf8')); change(json); writeFileSync(file, JSON.stringify(json)); };
 
 test('tick: on example-development-grouped a ticket leaves the backlog for Setup, which its VM\'s setup-complete marker ends at once, and enters Plan at Extract Acceptance Criteria', async () => {
@@ -29,7 +31,7 @@ test('tick: on example-development-grouped a ticket leaves the backlog for Setup
   f.ctx.env = v.env;
   try {
     // Each tick's VM work awaited, as the ticks' interval allows live: Setup's steps wait until control has seen the VM running (ASS-133).
-    for (let i = 0; i < 6 && f.variation()['harness-status'].state !== 'plan'; i++) { await tick(f.ctx); await Promise.all([...(f.ctx.memory.vms?.values() ?? [])].map(r => r.job)); }
+    for (let i = 0; i < 6 && f.variation()['harness-status'].state !== 'plan'; i++) { await tick(f.ctx); await Promise.all([...(f.ctx.memory.vms?.values() ?? [])].map(r => r.job)); await checked(f); }
     const variation = f.variation();
     assert.deepEqual(variation['harness-status'], { state: 'plan', 'state-engine': 'example-development-grouped', 'sub-status': { state: 'enrich-ac', 'state-engine': 'grouped-plan' } }, f.lines.join('\n'));
     assert.deepEqual(variation['state-changes'].filter(c => !c['sub-state-change']).map(c => c['to-state']), ['committed', 'setup', 'plan']);
@@ -52,7 +54,7 @@ test('tick: Create VM that cannot fit within the project\'s VM disk limit (ASS-7
   writeFileSync(join(v.instances, 'golden-p', 'disk'), randomBytes(8192));
   f.ctx.env = { ...v.env, HARNESS_HOME: join(v.dir, 'harness-home') };
   try {
-    for (let i = 0; i < 10 && f.variation()['harness-status'].state !== 'blocked-for-human'; i++) await tick(f.ctx);
+    for (let i = 0; i < 10 && f.variation()['harness-status'].state !== 'blocked-for-human'; i++) { await tick(f.ctx); await checked(f); }
     const variation = f.variation();
     assert.equal(variation['harness-status'].state, 'blocked-for-human', f.lines.join('\n'));
     assert.equal(variation['ai-feedback-short'], 'VM disk limit reached');

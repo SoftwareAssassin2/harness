@@ -11,6 +11,7 @@ import { tmpdir } from 'node:os';
 import { controlFixture } from './control-fixture.js';
 import { checkApiCost } from '../../src/control/api-cost.js';
 import { tick, createContext } from '../../src/control/tick.js';
+import { settleChecks } from '../../src/control/background-checks.js';
 import { monthCost } from '../../src/agents/api-cost.js';
 
 const HOUR = 3600e3;
@@ -114,6 +115,7 @@ test('ASS-221 AC2: a project\'s failed reading keeps its last value, logged once
 test('checkApiCost runs in every tick; a context made with ANTHROPIC_API_COST_DISABLED=1 (the fixtures\' env) has no apiCost, and nothing is read', async () => {
   const { f, asked } = checking([reading('2026-10', 2)]);
   await tick(f.ctx);
+  await settleChecks(f.ctx);                                            // ASS-497: run in the background
   assert.equal(asked.length, 1);
   assert.equal(cost(f).usd, 2);
   assert.equal(controlFixture().ctx.apiCost, null);

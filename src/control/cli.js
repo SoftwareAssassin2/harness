@@ -1,7 +1,7 @@
 // How control changes anything: agent.sh at the repo root, run as a child
 // (control never writes a JSON file itself), and how
 // it runs a step's script. Every call is logged through the context's log.
-import { execFile, spawn, spawnSync } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { join } from 'node:path';
 import { machinePaths } from './machine.js';
 import { troubleOf } from './read.js';
@@ -77,17 +77,47 @@ export function runScript(ctx, given, vm, extra) {
   });
 }
 
-// scriptSucceeds(ctx, argv, vm) — whether the command exits 0, waited for: the
-// yes or no a `script-succeeds` condition asks while the exits are evaluated;
-// in the VM `vm` when given, as runScript — but a ./agent.sh command on the
-// Mac (ASS-137): in the VM it would be forwarded back to this process's own
-// forwarder, which cannot answer while this waits, and the answer is the same.
-// It stays synchronous while a step's script runs in the background (ASS-328):
-// the exits are evaluated synchronously (engine.js), and what they ask is a
-// short check — a VM's setup-complete marker, the tests' list commands — not
-// a test suite.
-export function scriptSucceeds(ctx, given, vm) {
+// scriptSucceeds(ctx, argv, vm, who) — whether the command exits 0: the yes
+// or no a `script-succeeds` condition asks while the exits are evaluated; in
+// the VM `vm` when given, as runScript — but a ./agent.sh command on the Mac
+// (ASS-137): in the VM it would be forwarded back to this process's own
+// forwarder, and the answer is the same. ASS-493: it runs in the background,
+// never blocking control (spawnSync froze a project's whole control for the
+// 114 s a ticket's test-listing check took): a promise of the answer, the
+// exits evaluated from it once it has come (checks.js). It runs in its own
+// process group, kept in ctx.scripts while it runs, so shutdown stops it
+// (stopScripts); past SCRIPT_CHECK_TIMEOUT_MS (ctx.checkTimeoutMs, tests) its
+// group is killed and it counts as not succeeded, an 'error' line naming the
+// command and `who` (the ticket and variation); one that took over
+// SLOW_CHECK_MS (ctx.slowCheckMs, tests) logs its duration as it exits. A command that cannot start is
+// a no.
+export const SCRIPT_CHECK_TIMEOUT_MS = 10 * 60_000;
+export const SLOW_CHECK_MS = 30_000;
+export function scriptSucceeds(ctx, given, vm, who) {
   const at = given[0] === './agent.sh' ? undefined : vm, { argv, env, shown } = where(ctx, given, at);
-  ctx.log('script', at ? `${at}: ${show(shown)}` : show(argv));
-  return spawnSync(argv[0], argv.slice(1), { cwd: ctx.root, env, stdio: 'ignore' }).status === 0;
+  const command = at ? `${at}: ${show(shown)}` : show(argv);
+  ctx.log('script', command);
+  return new Promise(resolve => {
+    const started = Date.now(), limit = ctx.checkTimeoutMs ?? SCRIPT_CHECK_TIMEOUT_MS;
+    const child = spawn(argv[0], argv.slice(1), { cwd: ctx.root, env, detached: true, stdio: 'ignore' });
+    if (child.pid != null) ctx.scripts?.add(child);
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      try { process.kill(-child.pid, 'SIGKILL'); } catch { /* gone */ }
+      ctx.log('error', `script-succeeds check ${command}${who ? ` (${who})` : ''} still running after ${limit / 1000}s: killed, counted as not succeeded`);
+    }, limit);
+    child.once('error', error => {   // it cannot start: no 'close' follows
+      clearTimeout(timer);
+      ctx.log('script', `cannot start: ${error.message}`);
+      resolve(false);
+    });
+    child.once('close', code => {
+      clearTimeout(timer);
+      ctx.scripts?.delete(child);
+      const took = Date.now() - started;
+      if (took > (ctx.slowCheckMs ?? SLOW_CHECK_MS)) ctx.log('script', `${command}${who ? ` (${who})` : ''}: ${timedOut ? 'killed' : `exited ${code ?? 'by a signal'}`} after ${(took / 1000).toFixed(1)}s`);
+      resolve(!timedOut && code === 0);
+    });
+  });
 }

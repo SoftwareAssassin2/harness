@@ -189,11 +189,10 @@ test('ASS-328 AC3: control restarted while a script runs: the old control stops 
   }
 });
 
-// AC4: script-succeeds conditions stay synchronous (cli.js scriptSucceeds):
-// the exits are evaluated synchronously (engine.js), and the commands they
-// ask are short checks — vm:setup-complete's marker, the tests' list
-// commands. Asked as an exit of a script step, they are asked when its exit is
-// read, with the facts of that tick.
+// AC4: script-succeeds conditions asked as an exit of a script step are asked
+// when its exit is read, with the facts of that tick (ASS-493: run in the
+// background, checks.js — tick-script-checks.test.js; this fake answers at
+// once).
 test('ASS-328 AC4: a script-succeeds condition on a background script step\'s exit is asked once its script has exited, and moves it', async () => {
   const f = fixture();
   edit(engineFile(f), e => { e.steps.find(s => s.id === 'build')['exit-events'][0].condition = { all: [{ 'exit-code': 0 }, { 'script-succeeds': './agent.sh check {ticket} {variation}' }] }; });

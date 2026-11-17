@@ -9,6 +9,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync, realpathSync } from
 import { controlFixture } from './control-fixture.js';
 import { checkUsage } from '../../src/control/usage.js';
 import { tick, createContext } from '../../src/control/tick.js';
+import { settleChecks } from '../../src/control/background-checks.js';
 
 const usageFile = f => join(f.dir, 'projects', 'p', 'claude-usage.json');
 const usage = f => existsSync(usageFile(f)) ? JSON.parse(readFileSync(usageFile(f), 'utf8')) : undefined;
@@ -121,6 +122,7 @@ test('ASS-221 AC1: an api_key login (FAKE_AUTH=api-key) records its auth method 
 test('checkUsage runs in every tick; a context made with CLAUDE_USAGE_DISABLED=1 (the fixtures\' env) has no usage, and nothing is read', async () => {
   const { f, asked } = checking([]);
   await tick(f.ctx);
+  await settleChecks(f.ctx);                                            // ASS-497: run in the background
   assert.equal(asked.length, 1);
   assert.equal(usage(f).email, 'fake@example.com');
   const off = createContext({ root: '/nowhere', env: { CLAUDE_USAGE_DISABLED: '1' } });

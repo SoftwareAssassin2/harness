@@ -42,11 +42,12 @@ export const isRemoteSeat = s => REMOTE_SEAT_KINDS.has(s?.kind);
 const remoteSeatKind = w => (w?.kind === 'cloud-vm' ? 'cloud-vm' : 'workstation');
 const MODES_WITH_VMS = new Set(['vm', 'vm+workstation']), MODES_WITH_WORKSTATIONS = new Set(['workstation', 'vm+workstation']);
 
-// loadSeats(projectDir) — its seats.json's records, [] without one; one caught half-written reads as [] (the next tick writes it whole).
-export function loadSeats(projectDir) {
+// loadSeats(projectDir, read) — its seats.json's records, [] without one; one caught half-written reads as [] (the next tick writes it whole).
+// `read`: readJson, or loadState's readJsonCached (ASS-495).
+export function loadSeats(projectDir, read = readJson) {
   try {
     const file = join(projectDir, SEATS_FILE);
-    return existsSync(file) ? readJson(file)?.seats ?? [] : [];
+    return existsSync(file) ? read(file)?.seats ?? [] : [];
   } catch { return []; }
 }
 

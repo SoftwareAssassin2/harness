@@ -23,7 +23,7 @@ const ITEM = 'Claude Token (Test)';
 // item, ITEM, in a HOME of its own; `security` answers from a keychain folder
 // (a file per item present). store(present) adds or removes ITEM; later(ms)
 // moves the clock; every cli call recorded.
-function checking() {
+function checking({ slow = false } = {}) {
   const f = controlFixture();
   process.env.FAKE_HOLD = join(f.dir, 'hold');   // hold every dispatched agent's turn open
   writeFileSync(process.env.FAKE_HOLD, '');
@@ -31,7 +31,7 @@ function checking() {
   const home = join(dir, 'home'), kc = join(dir, 'keychain'), bin = join(dir, 'bin');
   for (const d of [join(home, '.harness'), kc, bin]) mkdirSync(d, { recursive: true });
   writeFileSync(join(home, '.harness', 'vm-credentials.json'), JSON.stringify({ p: { claude: { 'keychain-service': ITEM } } }));
-  writeFileSync(join(bin, 'security'), `#!/usr/bin/env bash\n[[ -e "${kc}/$3" ]] || exit 44\n`);
+  writeFileSync(join(bin, 'security'), `#!/usr/bin/env bash\n${slow ? 'sleep 1.5\n' : ''}[[ -e "${kc}/$3" ]] || exit 44\n`);
   chmodSync(join(bin, 'security'), 0o755);
   const store = present => (present ? writeFileSync(join(kc, ITEM), 'x') : rmSync(join(kc, ITEM), { force: true }));
   f.ctx.env = { ...f.env, CREDENTIALS_CHECK_DISABLED: '0' };
@@ -118,4 +118,16 @@ test('ASS-395 AC1: a check that cannot be run is logged once per failure streak;
   c.f.ctx.cli = (args, env) => (args[0] === 'project:check-credentials' ? Promise.reject(new Error('agent.sh project:check-credentials p: boom')) : cli(args, env));
   for (let i = 0; i < 3; i++) { await tick(c.f.ctx); c.later(3 * MINUTE); }
   assert.equal(c.f.lines.filter(l => l.startsWith('error credentials p: ')).length, 1, c.f.lines.join('\n'));
+});
+
+test('ASS-497 AC3: the credentials check stays awaited, slow or not: the tick whose check finds a credential missing starts no agent, though the check ran while the other checks went to the background', async () => {
+  const c = checking({ slow: true });
+  c.store(false);
+  c.f.ctx.glab = () => new Promise(() => {});                  // a login check that never answers: in the background, never waited for
+  edit(join(c.f.dir, 'projects', 'p', 'project.json'), p => { p['check-for-expired-glab-auth'] = true; });
+  await tick(c.f.ctx);
+  assert.equal(checks(c.calls), 1);
+  assert.ok(existsSync(c.record), c.f.lines.join('\n'));
+  assert.deepEqual(dispatched(c.f), [], `no agent while held\n${c.f.lines.join('\n')}`);
+  assert.ok(c.f.lines.includes(HOLD), c.f.lines.join('\n'));
 });

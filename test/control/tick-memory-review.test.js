@@ -11,6 +11,7 @@ import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { controlFixture } from './control-fixture.js';
 import { fakeForge } from '../support/fake-forge.js';
 import { tick } from '../../src/control/tick.js';
+import { settleChecks } from '../../src/control/background-checks.js';
 import { detectReverts } from '../../src/control/reverts.js';
 
 const HOUR = 3600_000;
@@ -116,6 +117,7 @@ test('AC2: tick runs the revert check', async () => {
   forge.route('gh', /^api repos\/o\/app\/commits/, { out: [ghCommit('c3', 'Revert "ABC-3: build the thing"', '2026-10-02T00:00:00Z')] });
   later(HOUR);
   await tick(f.ctx);
+  await settleChecks(f.ctx);                                            // ASS-497: run in the background
   assert.deepEqual(reviews(), ['ABC-3']);
 });
 

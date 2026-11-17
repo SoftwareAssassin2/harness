@@ -1,13 +1,22 @@
 // How control stops what it started (ASS-460: moved from main.js, so a crash
 // stops it the same way a normal shut-down does). See main.js.
+import { stopChecks } from './background-checks.js';
+
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 // stopStarted(ctx, say, graceMs) — every script step's command still running
 // stopped, its group SIGTERMed (ASS-328: run in the background, a step's
 // script may still be running; the next control runs it again, so the two
 // never run at once); every agent's group SIGTERMed, given up to `graceMs`
-// (5 seconds) to end, the rest SIGKILLed, each logged.
+// (5 seconds) to end, the rest SIGKILLed, each logged. ASS-497: meanwhile the
+// background checks are stopped and waited for (background-checks.js
+// stopChecks): none starts again, none writes after control exits.
 export async function stopStarted(ctx, say, graceMs = 5000) {
+  const checks = stopChecks(ctx, say);
+  try { await stopProcesses(ctx, say, graceMs); } finally { await checks; }
+}
+
+async function stopProcesses(ctx, say, graceMs) {
   if (ctx.scripts.size) {
     say('shutdown', `stopping ${ctx.scripts.size} script${ctx.scripts.size === 1 ? '' : 's'}; their steps run them again when control starts`);
     ctx.stopScripts();

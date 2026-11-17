@@ -12,6 +12,7 @@ import { readFileSync, writeFileSync, existsSync, mkdtempSync, mkdirSync, chmodS
 import { tmpdir } from 'node:os';
 import { controlFixture } from './control-fixture.js';
 import { tick, createContext } from '../../src/control/tick.js';
+import { settleChecks } from '../../src/control/background-checks.js';
 // By the namespace, so the suite runs (and fails) before the modules are there.
 const { checkPushAccount } = await import('../../src/control/push-account.js').catch(() => ({}));
 const { declaredCredentials } = await import('../../src/control/vm-credentials.js').catch(() => ({}));
@@ -145,6 +146,7 @@ test('ASS-307 AC2: one project\'s failing record leaves the rest of the phase to
 test('ASS-307 AC2: checkPushAccount runs in every tick; a context made with PUSH_ACCOUNT_DISABLED=1 (the fixtures\' env) has no pushAccount, and nothing is asked', async () => {
   const { f, asked } = checking();
   await tick(f.ctx);
+  await settleChecks(f.ctx);                                            // ASS-497: run in the background
   assert.equal(asked.length, 1);
   assert.equal(recorded(f, 'p')?.account, 'ada');
   assert.equal(controlFixture().ctx.pushAccount, null);

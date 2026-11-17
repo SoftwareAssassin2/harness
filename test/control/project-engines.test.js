@@ -15,6 +15,8 @@ import { engineDir, engineNames } from '../support/engine-walk.js';
 
 const ROOT = join(import.meta.dirname, '..', '..');
 const write = (file, content) => { mkdirSync(join(file, '..'), { recursive: true }); writeFileSync(file, JSON.stringify(content)); };
+// ASS-493: the script-succeeds checks a tick started (checks.js), awaited, as the ticks' interval allows live.
+const checked = f => Promise.all([...(f.ctx.memory.checking?.values() ?? [])].map(c => c.done));
 const edit = (file, change) => { const json = JSON.parse(readFileSync(file, 'utf8')); change(json); writeFileSync(file, JSON.stringify(json)); };
 // own(dir, project, …names) — each engine moved out of engines/ into the project's own folder, its content as it is.
 const own = (dir, project, ...names) => names.forEach(name => {
@@ -65,7 +67,7 @@ test('ASS-276 AC3: tick on example-development-grouped with it and its Setup and
   writeFileSync(join(v.root, 'repos', '.setup-complete'), '');
   f.ctx.env = v.env;
   try {
-    for (let i = 0; i < 6 && f.variation()['harness-status'].state !== 'plan'; i++) { await tick(f.ctx); await Promise.all([...(f.ctx.memory.vms?.values() ?? [])].map(r => r.job)); }
+    for (let i = 0; i < 6 && f.variation()['harness-status'].state !== 'plan'; i++) { await tick(f.ctx); await Promise.all([...(f.ctx.memory.vms?.values() ?? [])].map(r => r.job)); await checked(f); }
     assert.deepEqual(f.variation()['harness-status'], { state: 'plan', 'state-engine': 'example-development-grouped', 'sub-status': { state: 'enrich-ac', 'state-engine': 'grouped-plan' } }, f.lines.join('\n'));
     assert.deepEqual(f.variation()['state-changes'].filter(c => c['to-state'] === 'setup' && c['sub-state-change']).map(c => c['sub-state-change']['to-state']), ['check-setup-complete', 'done']);
   } finally {

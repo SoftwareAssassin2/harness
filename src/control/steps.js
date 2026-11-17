@@ -11,6 +11,7 @@ import { planFor, slotKind } from './plan.js';
 import { waitsForSeat } from './fast-track.js';
 import { fillArgs } from './placeholders.js';
 import { ticketFacts, ticketValues, runValues, parseOutput, cameFrom, sandboxRefusedFeedback } from './facts.js';
+import { heldByChecks } from './checks.js';
 import { firstStepId, levelChanges, contextOf, ticketPath, found, moveTicket, moveRun, endRun, isPaused, mayMove, gated, SKIPPED, NO_CHOICE, TIMER } from './moves.js';
 import { failed, waiting, held as heldFor, ticketKey, runKey, cleared, BLOCK_AFTER, FAILED_STARTS } from './backoff.js';
 import { runsInVm, vmOf } from './vm.js';
@@ -128,7 +129,10 @@ async function runScriptStep(ctx, step, values, who, variation, env) {
     argv = fillArgs(step.action.command, values);
     if (runsInVm(step)) vm = vmOf(variation, who);
   } catch (error) { ctx.log(PHASE, `${who}: ${error.message}`); return { exitCode: 1 }; }
-  const { exitCode, stdout } = await (env ? ctx.script(argv, vm, env) : ctx.script(argv, vm));
+  // ASS-494: started untimed — a script step runs in the background (startScript), and timing never wraps work not
+  // awaited in turn; the tick's wait for it is timed as scriptExit. Nothing timed (ctx.cli, ctx.timedHere…) may be
+  // called after it here: that too runs in the background, after the timed call that started it may have ended.
+  const { exitCode, stdout } = await ctx.untimed(() => (env ? ctx.script(argv, vm, env) : ctx.script(argv, vm)));
   return { exitCode, scriptOutput: parseOutput(stdout) };
 }
 
@@ -195,7 +199,9 @@ function startScript(ctx, key, visit, running, who) {
 }
 
 // scriptExit(ctx, key, wait) — step `key`'s script's facts (exitCode,
-// scriptOutput) once it has exited, forgotten as they are read; null while it
+// scriptOutput) once it has exited, forgotten once its exits are read
+// (scriptRead; ASS-493: not while a script-succeeds check holds them, so the
+// script is not run again meanwhile); null while it
 // still runs, after waiting up to `wait` ms for it (only in the tick that
 // started it: a later tick never waits).
 async function scriptExit(ctx, key, wait) {
@@ -207,9 +213,9 @@ async function scriptExit(ctx, key, wait) {
     clearTimeout(timer);
   }
   if (!entry.exited) return null;
-  ctx.memory.scripts.delete(key);
   return entry.exited;
 }
+const scriptRead = (ctx, key) => ctx.memory.scripts.delete(key);
 
 // scriptExited(ctx, who, key, exitCode, retried, values, step) — a script step's exit
 // logged, once its exits are read. A failure holds the step a while before it
@@ -278,13 +284,16 @@ async function runVariation(ctx, state, project, key, name) {
     const vmWait = awaitsVm(ctx, state, project, variation, who);
     if (vmWait === NEVER_UP) await neverUp(ctx, PHASE, at, variation.vm.name, vmUpCeilingMs(state));   // ASS-387: its start pending past the ceiling: Blocked
     if (vmWait) return;   // its VM still starting (ASS-133), or its start still queued or to be tried again (ASS-387, ASS-464)
-    const facts = ticketFacts(ctx, project, ticket, variation, undefined, runsInVm(step) ? machineOf(variation) : undefined);
+    // ASS-493: its script-succeeds checks kept for this visit's reading of the exits (checks.js), till one is done.
+    const facts = ticketFacts(ctx, project, ticket, variation, undefined, runsInVm(step) ? machineOf(variation) : undefined, `${project.id}/${who}/${(variation['state-changes'] ?? []).length}`);
     const changes = levelChanges(variation);
     switch (step.action?.type) {
       case 'none': {
         const planned = backlog ? null : planFor(state, project);
         facts.agentNeedsWork = !backlog && agentNeedsWork(planned, step, ticket, variation);
-        if (!await move(nextState(step, engine, facts, changes))) {
+        const next = nextState(step, engine, facts, changes);
+        if (heldByChecks(ctx, facts)) return;   // ASS-493: a script-succeeds check still running; a later tick reads its answer
+        if (!await move(next)) {
           // Kept in the queue for want of a planning slot (committed): a fast-tracked ticket's wait, remembered (ASS-83).
           if (!backlog && step['is-planning-stage'] === true && !facts.agentNeedsWork) waitsForSeat(ctx.memory, project, ticket, variation, 'planning');
           // …or for room in the ready-for-build queue (ASS-362: max-tickets-ready-for-build), said once per visit.
@@ -311,10 +320,12 @@ async function runVariation(ctx, state, project, key, name) {
           startScript(ctx, running, visit, usingMachine(ctx, project.id, ticket.key, variation.name, step, runScriptStep(ctx, step, values, who, variation, backlog ? undefined : scriptEnv(state, project, variation))), who);
           wait = ctx.scriptWait ?? SCRIPT_WAIT;
         }
-        const exited = await scriptExit(ctx, running, wait);
+        const exited = await ctx.timedHere('scriptExit', () => scriptExit(ctx, running, wait));   // ASS-494
         if (!exited) { if (wait) ctx.log(PHASE, `${who}: script still running; its exit is read once it has exited`); return; }   // the step stays where it is
         Object.assign(facts, exited);
         const next = nextState(step, engine, facts, changes);
+        if (heldByChecks(ctx, facts)) return;   // ASS-493: its exit read again, as it is, once the check has answered
+        scriptRead(ctx, running);
         await scriptExited(ctx, who, held, facts.exitCode, next?.to == null || next.to === stateId, values, step);
         // ASS-388: a script exit's own cause (no-op-round: a feedback round that changed nothing) is recorded on its move.
         if (!await move(next, timer ? TIMER : next?.exit?.cause)) return;
@@ -341,6 +352,7 @@ async function runVariation(ctx, state, project, key, name) {
         if (!run['is-done']) return;
         Object.assign(facts, { subEngineDone: true, subEngineState: run.state, structuredOutput: run['structured-output'] });
         const next = nextState(step, engine, facts, changes);
+        if (heldByChecks(ctx, facts)) return;   // ASS-493
         if (next?.to == null) { warnOnce(ctx, run.id, `${who}: its ${run['state-engine']} run is done but no exit matched`); return; }
         // What the run returned stays with the ticket (record-output-as), once, before it moves:
         // kept with the run's id, which tells a restarted control it was kept (ASS-235).
@@ -384,6 +396,7 @@ async function runVariation(ctx, state, project, key, name) {
         // backlog ticket's waiting points, by their exits (its questions answered).
         // A fast-tracked ticket's pass by its fast-tracked exit (passedItself) is logged and recorded.
         const next = nextState(step, engine, facts, changes), passed = passedItself(next), reject = rejected(next, facts);
+        if (heldByChecks(ctx, facts)) return;   // ASS-493
         if (!await move(next, humanCause(next, facts))) return;
         if (passed) ctx.log(PHASE, `${who}: ${passed}`);
         if (reject) ctx.log(PHASE, `${who}: ${rejectedLine(reject, next.to)}`);
@@ -432,7 +445,7 @@ async function runTransient(ctx, state, id) {
     const vmWait = awaitsVm(ctx, state, project, variation, who);
     if (vmWait === NEVER_UP) await neverUp(ctx, PHASE, place, variation.vm.name, vmUpCeilingMs(state));   // ASS-387
     if (vmWait) return;   // its ticket's VM still starting (ASS-133), or its start still queued or to be tried again (ASS-387, ASS-464)
-    const facts = { ...(ticket && variation ? ticketFacts(ctx, project, ticket, variation, undefined, runsInVm(step) ? machineOf(variation) : undefined) : {}), structuredOutput: run['structured-output'], agentNeedsWork: true };
+    const facts = { ...(ticket && variation ? ticketFacts(ctx, project, ticket, variation, undefined, runsInVm(step) ? machineOf(variation) : undefined, `${run.id}/${run.state}/${(run['state-changes'] ?? []).length}`) : {}), structuredOutput: run['structured-output'], agentNeedsWork: true };
     // Its steps' visits are the run's own (ASS-66): counted over its moves, none from an earlier run or its parent.
     const changes = run['state-changes'] ?? [];
     const settle = async (next, output, cause) => {
@@ -442,7 +455,9 @@ async function runTransient(ctx, state, id) {
     };
     switch (step.action?.type) {
       case 'none': {
-        if (!await settle(nextState(step, engine, facts, changes))) return;
+        const next = nextState(step, engine, facts, changes);
+        if (heldByChecks(ctx, facts)) return;   // ASS-493: a script-succeeds check still running; a later tick reads its answer
+        if (!await settle(next)) return;
         break;
       }
       case 'script': {
@@ -461,12 +476,14 @@ async function runTransient(ctx, state, id) {
           startScript(ctx, running, visit, ticket && variation && !backlog ? usingMachine(ctx, project.id, ticket.key, variation.name, step, scriptRun) : scriptRun, who);
           wait = ctx.scriptWait ?? SCRIPT_WAIT;
         }
-        const exited = await scriptExit(ctx, running, wait);
+        const exited = await ctx.timedHere('scriptExit', () => scriptExit(ctx, running, wait));   // ASS-494
         if (!exited) { if (wait) ctx.log(PHASE, `${who}: script still running; its exit is read once it has exited`); return; }   // the run stays where it is
         Object.assign(facts, exited);
         // A step that records its script's output (record-script-output) merges that JSON into the run's structured-output.
         const recorded = step['record-script-output'] === true && facts.scriptOutput && typeof facts.scriptOutput === 'object' && !Array.isArray(facts.scriptOutput) ? facts.scriptOutput : undefined;
         const next = nextState(step, engine, facts, changes);
+        if (heldByChecks(ctx, facts)) return;   // ASS-493: its exit read again, as it is, once the check has answered
+        scriptRead(ctx, running);
         await scriptExited(ctx, who, held, facts.exitCode, !next || next.to === run.state, variation && values, step);   // to null: the run ends
         // ASS-388: a script exit's own cause (no-op-round) is recorded on the run's move, as on a ticket's.
         if (!await settle(next, recorded, timer ? TIMER : next?.exit?.cause)) return;
@@ -487,6 +504,7 @@ async function runTransient(ctx, state, id) {
         if (!child['is-done']) return;
         Object.assign(facts, { subEngineDone: true, subEngineState: child.state, structuredOutput: { ...(run['structured-output'] ?? {}), ...(child['structured-output'] ?? {}) } });
         const next = nextState(step, engine, facts, changes);
+        if (heldByChecks(ctx, facts)) return;   // ASS-493
         if (!next) { warnOnce(ctx, child.id, `${who}: its ${child['state-engine']} run is done but no exit matched`); return; }
         await endRun(ctx, PHASE, child);
         if (!await settle(next, child['structured-output'])) return;
@@ -499,6 +517,7 @@ async function runTransient(ctx, state, id) {
         // or, a fast-tracked ticket's, passed by itself (passedItself), logged and recorded;
         // a rejection logged and recorded with cause operator-reject (ASS-228).
         const next = nextState(step, engine, facts, changes), passed = passedItself(next), reject = rejected(next, facts);
+        if (heldByChecks(ctx, facts)) return;   // ASS-493
         if (!await settle(next, undefined, humanCause(next, facts))) return;
         if (passed) ctx.log(PHASE, `${context.workItem} ${context.variation} ${run['state-engine']}/${step.id}: ${passed}`);
         if (reject) ctx.log(PHASE, `${context.workItem} ${context.variation} ${run['state-engine']}/${step.id}: ${rejectedLine(reject, next.to)}`);
@@ -630,10 +649,13 @@ async function stopAtSpendingLimit(ctx, state) {
   }
 }
 
+// runSteps(ctx, state) — the control phase. ASS-494: timed a level deeper (tick.js DEEPER) — each helper and each
+// variation's or run's turn under 'steps/runSteps/<name>' (ctx.timedHere), its loads, agent.sh calls and script
+// checks within them by name.
 export async function runSteps(ctx, state) {
-  await escalateFailedStarts(ctx, state);
-  await blockFailing(ctx, ctx.load());
-  await stopAtSpendingLimit(ctx, ctx.load());
+  await ctx.timedHere('escalateFailedStarts', () => escalateFailedStarts(ctx, state));
+  await ctx.timedHere('blockFailing', () => blockFailing(ctx, ctx.load()));
+  await ctx.timedHere('stopAtSpendingLimit', () => stopAtSpendingLimit(ctx, ctx.load()));
   state = ctx.load();
   for (const project of state.projects) {
     if (!project.engine || !project.sprint) continue;
@@ -642,7 +664,7 @@ export async function runSteps(ctx, state) {
       if (v['is-deleted'] || isPaused(state, project.id, ticket.key, v.name)) continue;
       const stateId = v['harness-status']?.state, paired = pairedStatus(project.engine, stateId), status = ticket['ticket-system-status'];
       if (paired != null && status != null && status !== paired && !answersGap(project.engine, v, status, enginesFor(state, project.id)) && !pairedByAnother(project.engine, ticket, v, status)) { warnOnce(ctx, `gap/${project.id}/${ticket.key}/${v.name}/${stateId}`, `${ticket.key} ${v.name} ${stateId}: the ticket system says ${status}, the step pairs ${paired}; left to gap resolution`); continue; }
-      await ctx.attempt(PHASE, `${ticket.key} ${v.name}`, () => runVariation(ctx, ctx.load(), project, ticket.key, v.name));
+      await ctx.attempt(PHASE, `${ticket.key} ${v.name}`, () => ctx.timedHere('runVariation', () => runVariation(ctx, ctx.load(), project, ticket.key, v.name)));
     }
   }
   // Then each backlog ticket at a step of its refinement engine, in refinement order (ASS-144).
@@ -650,13 +672,13 @@ export async function runSteps(ctx, state) {
     if (!project.refinement) continue;
     for (const ticket of rankBacklog(project.backlog ?? [])) for (const v of ticket.variations ?? []) {
       if (v['is-deleted'] || isPaused(state, project.id, ticket.key, v.name)) continue;
-      await ctx.attempt(PHASE, `${ticket.key} ${v.name}`, () => runVariation(ctx, state, project, ticket.key, v.name));
+      await ctx.attempt(PHASE, `${ticket.key} ${v.name}`, () => ctx.timedHere('runVariation backlog', () => runVariation(ctx, state, project, ticket.key, v.name)));
     }
   }
   for (const run of state.transient) {
     if (!state.projects.some(p => p.id === run.project)) continue;   // another project's control's (ASS-9)
     const { workItem, variation } = contextOf(run, state.transient);   // the pause is on the variation (ASS-225)
     if (isPaused(state, run.project, workItem, variation, run.id)) continue;
-    await ctx.attempt(PHASE, `run ${run.id.slice(0, 8)}`, () => runTransient(ctx, ctx.load(), run.id));
+    await ctx.attempt(PHASE, `run ${run.id.slice(0, 8)}`, () => ctx.timedHere('runTransient', () => runTransient(ctx, ctx.load(), run.id)));
   }
 }

@@ -22,9 +22,10 @@ test('tick: the none steps chain in one tick (backlog → committed → plan), t
     assert.equal(v['harness-status'].state, 'plan');
     assert.deepEqual(v['state-changes'].map(c => [c['from-state'], c['to-state'], c['work-is-done']]), [['backlog', 'committed', true], ['committed', 'plan', false]]);
     assert.equal(f.ticket()['ticket-system-status'], 'In Progress');                        // paired status set as the ticket moved
+    const live = f.ctx.agents.get(f.assignments().assignments[0]['agent-name']);
+    await live.processWrite;                                                                // ASS-496: its pid, written without the tick waiting
     const [record] = f.assignments().assignments;
     assert.deepEqual([record['work-item'], record.variation, record.state, record.prompt, record.status], ['ABC-3', 'A', 'plan', 'review-plan', 'Running']);
-    const live = f.ctx.agents.get(record['agent-name']);
     assert.equal(record['process-id'], live.agent.pid);
     assert.deepEqual(f.inbox(record['agent-name'], record['start-time'].replace(/[-:]/g, '')).length, 1);   // agent:dispatch queued the prompt the process reads
     assert.deepEqual(v['state-changes'][1]['agent-dispatch-log'].map(d => d['dispatched-to']), [record['agent-name']]);

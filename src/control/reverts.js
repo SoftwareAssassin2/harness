@@ -19,19 +19,27 @@
 // ASS-327): nothing is asked that could start no review, and
 // nothing marked checked, so a revert made meanwhile is found once it lifts.
 // One page of 100 commits a repository an hour.
+//
+// ASS-497: the hourly check of a project runs as a background job the tick
+// does not await (background-checks.js; at most one per project), its forge
+// calls FORGE_CALLS_AT_ONCE at a time; each repository's answer is then dealt
+// with in the order project.json lists them, as before: marked checked, its
+// reverts' reviews started. A call aborted at shutdown marks nothing.
 import { execFile } from 'node:child_process';
 import { existsSync, readFileSync, writeFileSync, renameSync } from 'node:fs';
 import { join } from 'node:path';
 import { timerDue, startTrigger } from './triggers.js';
 import { backgroundOff, weeklyHeld } from './moves.js';
+import { backgroundCheck, settled } from './background-checks.js';
 
 const PHASE = 'reverts';
 const HOUR_SECONDS = 3600;
+export const FORGE_CALLS_AT_ONCE = 4;   // ASS-497
 const REVERT = /^Revert "([A-Za-z][A-Za-z0-9]*-\d+): /;
 const iso = ms => new Date(ms).toISOString().replace(/\.\d{3}Z$/, 'Z');
 
 // The forge CLI's JSON answer to `<tool> <args>`, with control's environment; thrown, naming the call, when it fails.
-const forge = (ctx, tool, args) => new Promise((done, fail) => execFile(tool, args, { env: ctx.env, timeout: 60_000 }, (error, stdout, stderr) => {
+const forge = (ctx, tool, args) => new Promise((done, fail) => execFile(tool, args, { env: ctx.env, timeout: 60_000, signal: ctx.checkSignal }, (error, stdout, stderr) => {
   if (error) return fail(new Error(`${tool} ${args.join(' ')}: ${(stderr || stdout || error.message).trim()}`));
   try { done(JSON.parse(stdout)); } catch { fail(new Error(`${tool} ${args.join(' ')}: not JSON`)); }
 }));
@@ -46,28 +54,52 @@ async function commitsSince(ctx, url, since) {
   return (await forge(ctx, 'glab', ['api', `projects/${encodeURIComponent(path)}/repository/commits?since=${since}&per_page=100`, '--hostname', host])).map(c => ({ sha: c.id, subject: c.title }));
 }
 
-// detectReverts(ctx, state) — the control phase; see the module comment.
-export async function detectReverts(ctx, state) {
-  const now = ctx.now().getTime();
+// inTurns(items, limit, fn) — fn(item) for each item, at most `limit` at once; their results in items' order.
+async function inTurns(items, limit, fn) {
+  const results = new Array(items.length);
+  let next = 0;
+  const worker = async () => { while (next < items.length) { const i = next++; results[i] = await fn(items[i]); } };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return results;
+}
+
+// detectReverts(ctx, state) — the control phase; see the module comment. ASS-497: starts each due project's check as
+// a background job and returns at once, with a promise of the jobs it started (the tick leaves it; tests await it).
+export function detectReverts(ctx, state) {
+  const now = ctx.now().getTime(), jobs = [];
   for (const project of state.projects) {
     if (!project.engine?.['check-memory-steps']?.length || backgroundOff(project) || weeklyHeld(ctx, project)) continue;
     if (!timerDue(ctx.memory, `${project.id}/check-reverts`, HOUR_SECONDS, now, ctx.started.getTime())) continue;
-    const file = join(ctx.paths.projects, project.id, 'revert-checks.json');
-    const checked = existsSync(file) ? JSON.parse(readFileSync(file, 'utf8')) : {};
-    const known = new Set([...project.tickets, ...(project.backlog ?? [])].map(t => t.key.toUpperCase()));
-    for (const { url } of project.json.repositories ?? []) {
-      await ctx.attempt(PHASE, `${project.id} ${url}`, async () => {
-        const commits = await commitsSince(ctx, url, checked[url] ?? iso(now - HOUR_SECONDS * 1000));
-        checked[url] = iso(now);
-        writeFileSync(`${file}.tmp`, JSON.stringify(checked, null, 4));
-        renameSync(`${file}.tmp`, file);
-        for (const { sha, subject } of commits) {
-          const key = subject?.match(REVERT)?.[1].toUpperCase();
-          if (!key || !known.has(key)) continue;
-          ctx.log(PHASE, `${project.id}: ${sha} on ${url} reverts ${key}; its memories are reviewed`);
-          if (await startTrigger(ctx, state, PHASE, project, 'check-memory', { 'work-item': key })) state = ctx.load();
-        }
-      });
-    }
+    jobs.push(backgroundCheck(ctx, `detectReverts/${project.id}`, job => checkReverts(job, state, project, now)));
+  }
+  return settled(jobs);
+}
+
+// checkReverts(ctx, state, project, now) — one project's hourly check, in the background (ctx the job's context).
+async function checkReverts(ctx, state, project, now) {
+  const file = join(ctx.paths.projects, project.id, 'revert-checks.json');
+  const checked = existsSync(file) ? JSON.parse(readFileSync(file, 'utf8')) : {};
+  const known = new Set([...project.tickets, ...(project.backlog ?? [])].map(t => t.key.toUpperCase()));
+  const repositories = project.json.repositories ?? [];
+  // A failed call is logged (attempt) and leaves its repository's last check as it was.
+  const answers = await inTurns(repositories, FORGE_CALLS_AT_ONCE, async ({ url }) => {
+    let commits = null;
+    await ctx.attempt(PHASE, `${project.id} ${url}`, async () => { commits = await commitsSince(ctx, url, checked[url] ?? iso(now - HOUR_SECONDS * 1000)); });
+    return commits;
+  });
+  for (const [i, { url }] of repositories.entries()) {
+    const commits = answers[i];
+    if (!commits || ctx.checkSignal?.aborted) continue;
+    await ctx.attempt(PHASE, `${project.id} ${url}`, async () => {
+      checked[url] = iso(now);
+      writeFileSync(`${file}.tmp`, JSON.stringify(checked, null, 4));
+      renameSync(`${file}.tmp`, file);
+      for (const { sha, subject } of commits) {
+        const key = subject?.match(REVERT)?.[1].toUpperCase();
+        if (!key || !known.has(key)) continue;
+        ctx.log(PHASE, `${project.id}: ${sha} on ${url} reverts ${key}; its memories are reviewed`);
+        if (await startTrigger(ctx, state, PHASE, project, 'check-memory', { 'work-item': key })) state = ctx.load();
+      }
+    });
   }
 }

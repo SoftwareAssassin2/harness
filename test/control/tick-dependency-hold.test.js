@@ -48,7 +48,7 @@ function holding({ sprint = [], outside = [], limits = {} } = {}) {
     inSprint,
     variationOf: key => inSprint(key).variations[0],
     stateOf: key => inSprint(key).variations[0]['harness-status'].state,
-    dispatched: key => f.lines.filter(l => new RegExp(`^cli agent\\.sh assignments:create p \\S+ \\S+ \\S+ \\S+ \\S+ ${key} A `).test(l)).length,
+    dispatched: key => f.lines.filter(l => new RegExp(`^cli agent\\.sh assignments:create (?:.* )?p \\S+ \\S+ \\S+ \\S+ \\S+ ${key} A `).test(l)).length,
     calls: pattern => f.lines.filter(l => pattern.test(l)),
     ticks: async (n = 1) => { for (let i = 0; i < n; i++) await tick(f.ctx); },
   };

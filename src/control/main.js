@@ -159,8 +159,9 @@ process.on('SIGINT', stop);
 process.on('SIGHUP', stop);
 const sleep = ms => new Promise(resolve => { const t = setTimeout(resolve, ms); wake = () => { clearTimeout(t); resolve(); }; });
 
-// Shutting down, once: every script step's command and every agent stopped
-// (stop.js), each workstation connection this control owns closed — opened by
+// Shutting down, once: every script step's command and every agent stopped,
+// and the background checks (ASS-497: background-checks.js; a restart's drain
+// ends here too) stopped and waited for, none writing after (stop.js), each workstation connection this control owns closed — opened by
 // its phase or by a command it ran (ASS-433, ASS-470: a workstation it kept up
 // can stop itself once idle; workstations.js disconnectWorkstations) — the
 // forwarder closed, the pidfile removed; then exit with `code`.

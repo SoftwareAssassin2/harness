@@ -3,6 +3,7 @@
 // Hindsight's API key (ASS-62), and any other, costs — for the dashboard's
 // models box.
 import { isHarnessProject } from './harness-project.js';
+import { backgroundCheck, settled } from './background-checks.js';
 
 // checkApiCost(ctx, state) — every API_COST_EVERY (the first tick at once):
 // the month-to-date spend (ctx.apiCost(now, service) → { month, usd }, see
@@ -18,28 +19,41 @@ import { isHarnessProject } from './harness-project.js';
 // writes nothing, so the last value stays, and is logged once per failure
 // streak (the first failure after a success, or ever); it is tried again an
 // API_COST_EVERY later.
+// ASS-497: each due org's reading and its recording run as a background job
+// the tick does not await (background-checks.js), at most one per org; the
+// models box shows the last one recorded. Returns at once, with a promise of
+// the jobs it started.
 const API_COST_EVERY = 60 * 60e3;
-export async function checkApiCost(ctx, state) {
-  if (!ctx.apiCost) return;
+export function checkApiCost(ctx, state) {
+  if (!ctx.apiCost) return settled([]);
+  const jobs = [];
   if (!ctx.project || isHarnessProject(state.harness, ctx.project)) {
-    await check(ctx, 'harness', undefined, '', reading => ['harness:set-api-cost', reading.month, String(reading.usd)]);
+    jobs.push(check(ctx, 'harness', undefined, '', reading => ['harness:set-api-cost', reading.month, String(reading.usd)]));
   }
   for (const project of state.projects) {
     const service = project.json?.['api-cost-admin-keychain-service'];
     if (!service || (ctx.project && ctx.project !== project.id)) continue;
-    await check(ctx, project.id, service, `${project.id}: `, reading => ['project:set-api-cost', project.id, reading.month, String(reading.usd)]);
+    jobs.push(check(ctx, project.id, service, `${project.id}: `, reading => ['project:set-api-cost', project.id, reading.month, String(reading.usd)]));
   }
+  return settled(jobs);
 }
 
 // One org's reading, `key` its place in memory, `service` its admin key's
 // keychain item (undefined, the harness org's), `command` the cli call that
-// records it.
-async function check(ctx, key, service, prefix, command) {
+// records it; its background job (null when not due or one still runs).
+function check(ctx, key, service, prefix, command) {
   const now = ctx.now();
   const memory = (ctx.memory.apiCost ??= new Map());
   const last = memory.get(key);
-  if (last && now.getTime() - last.at < API_COST_EVERY) return;
-  memory.set(key, { at: now.getTime(), failing: last?.failing ?? false });
+  if (last && now.getTime() - last.at < API_COST_EVERY) return null;
+  const job = backgroundCheck(ctx, `checkApiCost/${key}`, job => read(job, key, service, prefix, command, now));
+  if (job) memory.set(key, { at: now.getTime(), failing: last?.failing ?? false });
+  return job;
+}
+
+// read(ctx, …) — the reading and its recording, in the background (ctx the job's context).
+async function read(ctx, key, service, prefix, command, now) {
+  const memory = ctx.memory.apiCost;
   let reading;
   try {
     reading = await ctx.apiCost(now, service);

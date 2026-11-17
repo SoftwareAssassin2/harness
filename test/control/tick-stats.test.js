@@ -2,7 +2,10 @@
 // figures over known durations, the throttled and shut-down writes, a failed
 // write logged once per streak, the slow-tick line; control itself (main.js)
 // timing every tick, a thrown one too, into its project's tick-stats.json; and
-// harness:tick-stats printing them, with and without a file.
+// harness:tick-stats printing them, with and without a file. ASS-494: a level
+// deeper inside runSteps and finishEnded (ASS-497 runs detectReverts in the background) — their helpers and
+// loop bodies, agent.sh calls and script checks by command name, loads — each
+// phase's load timed apart, and the nested printing.
 import { test, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
@@ -10,8 +13,8 @@ import { createInterface } from 'node:readline';
 import { join } from 'node:path';
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { tickStats, tickStatsFile, slowTickLine, newTickTimes, timeCall, TICK_PHASES, SLOW_TICK_MS, TICK_STATS_WRITE_MS, BACKGROUND_NOTE } from '../../src/control/tick-stats.js';
-import { createContext } from '../../src/control/tick.js';
+import { tickStats, tickStatsFile, slowTickLine, newTickTimes, timeCall, commandName, formatTickStats, TICK_PHASES, SLOW_TICK_MS, TICK_STATS_WRITE_MS, BACKGROUND_NOTE } from '../../src/control/tick-stats.js';
+import { createContext, tick as runTick } from '../../src/control/tick.js';
 import { controlFixture } from './control-fixture.js';
 import { run as runAgent, AGENT } from '../agent-cli/harness-fixture.js';
 import { until, within } from '../support/until.js';
@@ -156,9 +159,11 @@ test('ASS-490 AC1, AC2, AC3: control --project times each tick and each of tick.
   assert.equal(s.ticks.count, 1);
   assert.ok(s.ticks['min-ms'] > 0 && s.ticks['min-ms'] === s.ticks['max-ms'] && s.ticks['last-ms'] === s.ticks['mean-ms']);
   assert.deepEqual(Object.keys(s.phases), TICK_PHASES);
-  // Each call tick.js makes, nested under its phase as '<phase>/<function>'; the VM phase's marked as background.
-  assert.deepEqual(Object.keys(s.phases.timers['sub-routines']).toSorted(), ['timers/checkApiCost', 'timers/checkGcloud', 'timers/checkGlab', 'timers/checkPushAccount', 'timers/checkUsage', 'timers/detectReverts', 'timers/fireTimers']);
-  assert.deepEqual(Object.keys(s.phases.steps['sub-routines']).toSorted(), ['steps/checkCredentials', 'steps/checkDisk', 'steps/checkRateLimits', 'steps/fastTrack', 'steps/runSteps']);
+  // Each call tick.js makes, nested under its phase as '<phase>/<function>' (ASS-494: its loads too, as '<phase>/load';
+  // the deeper keys under runSteps left out here); the VM phase's marked as background.
+  const top = (phase, keys) => Object.keys(keys).filter(k => !k.slice(phase.length + 1).includes('/')).toSorted();
+  assert.deepEqual(top('timers', s.phases.timers['sub-routines']), ['timers/checkApiCost', 'timers/checkGcloud', 'timers/checkGlab', 'timers/checkPushAccount', 'timers/checkUsage', 'timers/detectReverts', 'timers/fireTimers', 'timers/load']);
+  assert.deepEqual(top('steps', s.phases.steps['sub-routines']), ['steps/checkCredentials', 'steps/checkDisk', 'steps/checkRateLimits', 'steps/fastTrack', 'steps/load', 'steps/runSteps']);
   assert.equal(s.phases['seats/VMs']['sub-routines']['seats/VMs/superviseVms'].background, true);
   assert.equal(s.phases.finish['sub-routines']['finish/finishEnded']['calls-last'], 1);
   const phaseSum = Object.values(s.phases).reduce((sum, p) => sum + p['last-ms'], 0);
@@ -228,4 +233,147 @@ test('ASS-490 AC5: harness:tick-stats is listed in agent.sh\'s help with the oth
   const f = processFixture();
   const { stdout } = await f.agent('--help');
   assert.match(stdout, /\nharness:\n(?: {2}harness:.*\n)* {2}harness:tick-stats +Print how long control's ticks take/);
+});
+
+// ASS-494: a root whose agent.sh echoes its arguments; `fail` exits 3 with "nope" on stderr, `slow` sleeps first.
+function echoRoot() {
+  const root = mkdtempSync(join(tmpdir(), 'tick-stats-root-'));
+  writeFileSync(join(root, 'agent.sh'), '#!/bin/sh\n[ "$1" = fail ] && { echo nope >&2; exit 3; }\n[ "$1" = slow ] && sleep 0.3\necho "$@"\n', { mode: 0o755 });
+  return root;
+}
+const subsOf = ctx => Object.fromEntries(Object.entries(ctx.tickTimes.subs).map(([k, s]) => [k, s.calls]));
+
+test('ASS-494 AC1, AC2, AC4: within a deeper sub-routine, each helper and loop body is timed under \'<phase>/<parent>/<name>\', and the agent.sh calls and scripts within by command name (the background script checks of ASS-493 untimed) with no arguments, summed per tick with their calls; errors and synchronous results as before', async () => {
+  const ctx = createContext({ root: echoRoot(), env: { PATH: process.env.PATH } });
+  await ctx.timed('steps', 'runSteps', async () => {
+    await ctx.timedHere('escalateFailedStarts', async () => {});
+    for (const v of ['A', 'B']) {
+      await ctx.timedHere('runVariation', async () => {
+        assert.equal(await ctx.cli(['ticket:record-output', 'p', 'T-1', v, 'out', '{"x":1}']), `ticket:record-output p T-1 ${v} out {"x":1}\n`);
+        assert.equal(await ctx.succeeds(['./agent.sh', 'automated-tests:verify-exist-and-runnable', 'p', 'T-1', v]), true);   // ASS-493: run in the background, so untimed
+        assert.equal((await ctx.script(['./agent.sh', 'tests:run', 'T-1', v])).exitCode, 0);
+      });
+    }
+    await assert.rejects(ctx.cli(['fail', 'T-1']), /agent\.sh fail T-1: nope/);                                    // a failure rejects as before
+    assert.equal(ctx.timedHere('ranked', () => 5), 5);                                                             // a synchronous call stays synchronous
+    assert.throws(() => ctx.timedHere('broken', () => { throw new Error('sync boom'); }), /sync boom/);           // …and throws synchronously
+  }, { deeper: true });
+  assert.deepEqual(subsOf(ctx), {
+    'steps/runSteps/escalateFailedStarts': 1,
+    'steps/runSteps/runVariation/cli ticket:record-output': 2,
+    'steps/runSteps/runVariation/script tests:run': 2,
+    'steps/runSteps/runVariation': 2,
+    'steps/runSteps/cli fail': 1,
+    'steps/runSteps/ranked': 1,
+    'steps/runSteps/broken': 1,
+    'steps/runSteps': 1,
+  });
+  const { subs, phases, depth } = ctx.tickTimes;
+  assert.equal(depth, 0);
+  assert.equal(phases.steps, subs['steps/runSteps'].ms);                                                           // the deeper ones not counted twice
+  const inner = ['cli ticket:record-output', 'script tests:run'].reduce((sum, k) => sum + subs[`steps/runSteps/runVariation/${k}`].ms, 0);
+  assert.ok(subs['steps/runSteps/runVariation'].ms >= inner, `${subs['steps/runSteps/runVariation'].ms} < ${inner}`);
+  assert.equal(subs['steps/runSteps/runVariation'].phase, 'steps');
+});
+
+test('ASS-494 AC4: outside a deeper sub-routine nothing more is timed; work started untimed and not awaited is never timed, and the phases after it are recorded as before', async () => {
+  const ctx = createContext({ root: echoRoot(), env: { PATH: process.env.PATH } });
+  assert.equal(await ctx.cli(['ticket:get', 'T-1']), 'ticket:get T-1\n');                                         // no timed call around it
+  assert.equal(ctx.timedHere('x', () => 1), 1);
+  await ctx.timed('timers', 'checkUsage', () => ctx.cli(['usage:check']));                                          // not a deeper one
+  let background;
+  await ctx.timed('steps', 'runSteps', () => ctx.timedHere('runVariation', async () => {
+    background = ctx.untimed(() => ctx.cli(['slow', 'T-1']));                                                       // a script step left running
+  }), { deeper: true });
+  assert.equal(ctx.tickTimes.depth, 0);
+  await ctx.timed('dispatch', 'dispatch', async () => {});
+  assert.equal(await background, 'slow T-1\n');
+  assert.deepEqual(subsOf(ctx), { 'timers/checkUsage': 1, 'steps/runSteps/runVariation': 1, 'steps/runSteps': 1, 'dispatch/dispatch': 1 });
+  assert.deepEqual(Object.keys(ctx.tickTimes.phases), ['timers', 'steps', 'dispatch']);
+  assert.ok(ctx.tickTimes.phases.steps < 300, ctx.tickTimes.phases.steps);                                         // the slow call not waited for
+});
+
+test('ASS-494 AC2: a script\'s key names its agent.sh command, or else its program, its arguments dropped', () => {
+  assert.equal(commandName(['./agent.sh', 'automated-tests:verify-exist-and-runnable', 'p', 'T-1', 'A']), 'automated-tests:verify-exist-and-runnable');
+  assert.equal(commandName(['/opt/harness/agent.sh', 'vm:step-start', 'x']), 'vm:step-start');
+  assert.equal(commandName(['/usr/bin/test', '-f', '/repos/.setup-complete']), 'test');
+  assert.equal(commandName(['npm', 'test']), 'npm');
+});
+
+test('ASS-494 AC1, AC3: in a tick, each phase\'s load is timed apart as \'<phase>/load\', the phase\'s time its top-level calls\' with it; runSteps\' and finishEnded\'s deeper keys recorded, ticket names in none', async () => {
+  const f = controlFixture();
+  await runTick(f.ctx);                                                                                            // ABC-3 A: backlog → committed
+  const check = () => {
+    const { phases, subs, depth } = f.ctx.tickTimes;
+    assert.equal(depth, 0);
+    for (const phase of TICK_PHASES) {
+      assert.ok(subs[`${phase}/load`]?.calls >= 1, `${phase}/load`);
+      const top = Object.entries(subs).filter(([k, s]) => s.phase === phase && !k.slice(phase.length + 1).includes('/'));
+      const sum = top.reduce((t, [, s]) => t + s.ms, 0);
+      assert.ok(Math.abs(phases[phase] - sum) < 1e-6, `${phase}: ${phases[phase]} ≠ ${sum}`);
+    }
+    assert.ok(!Object.keys(subs).some(k => /ABC-3|\bp\b/.test(k)), Object.keys(subs).join('\n'));
+    return subs;
+  };
+  let subs = check();
+  assert.equal(subs['finish/load'].calls, 1);
+  assert.equal(subs['timers/load'].calls, 7);                                                                      // one per timers phase function
+  for (const key of ['steps/runSteps/escalateFailedStarts', 'steps/runSteps/blockFailing', 'steps/runSteps/stopAtSpendingLimit', 'steps/runSteps/load', 'steps/runSteps/runVariation', 'steps/runSteps/runVariation/load', 'steps/runSteps/runVariation/cli ticket:change-state']) assert.ok(subs[key], key);
+  assert.equal(subs['steps/runSteps/runVariation'].calls, 1);
+  // An agent that ended with no assignment left: finishEnded's finishOne for it, its load inside.
+  f.ctx.agents.set('ghost', { name: 'ghost', result: {}, agent: { stop() {} }, record: {} });
+  await runTick(f.ctx);
+  subs = check();
+  assert.equal(subs['finish/finishEnded/finishOne'].calls, 1);
+  assert.equal(subs['finish/finishEnded/finishOne/load'].calls, 1);
+  assert.ok(!f.ctx.agents.has('ghost'));
+});
+
+test('ASS-494 AC5: harness:tick-stats indents each deeper key 2 more spaces under its parent sub-routine, slowest average first at each level; tick-stats.json keeps them flat under their phase', () => {
+  const fig = (mean, calls = 1) => ({ count: 10, 'min-ms': mean / 2, 'max-ms': mean * 2, 'mean-ms': mean, 'last-ms': mean, 'max-at': 'T', 'calls-last': calls, 'calls-mean': calls });
+  const text = formatTickStats('p', {
+    'control-pid': 1, started: 'S', 'tick-ms': 2000, written: 'W', ticks: { count: 0 },
+    phases: {
+      steps: { ...fig(2000), 'sub-routines': {
+        'steps/load': fig(10),
+        'steps/runSteps': { ...fig(1700), background: true },
+        'steps/runSteps/load': fig(20, 3),
+        'steps/runSteps/runTransient': fig(300, 2),
+        'steps/runSteps/runTransient/cli transient-state-engine:create': fig(200),
+        'steps/runSteps/runVariation': fig(1200, 4),
+        'steps/runSteps/runVariation/cli ticket:change-state': fig(400, 2),
+        'steps/runSteps/runVariation/scriptExit': fig(700),
+        'steps/runSteps/runVariation/load': fig(30, 5),
+        'steps/fastTrack': fig(50),
+      } },
+      'seats/VMs': { ...fig(100), 'sub-routines': {
+        'seats/VMs/superviseVms': fig(60),
+        'seats/VMs/superviseVms/match': fig(40),
+        'seats/VMs/gone/orphan': fig(90),                                                                        // its parent never timed: under the phase
+      } },
+    },
+  });
+  const names = text.split('\n').filter(l => /^ {2}\S| {4}/.test(l) && / T$/.test(l)).map(l => l.replace(/ {2,}\d.*$/, ''));
+  assert.deepEqual(names, [
+    '  steps',
+    '    steps/runSteps (awaited part)',
+    '      steps/runSteps/runVariation',
+    '        steps/runSteps/runVariation/scriptExit',
+    '        steps/runSteps/runVariation/cli ticket:change-state',
+    '        steps/runSteps/runVariation/load',
+    '      steps/runSteps/runTransient',
+    '        steps/runSteps/runTransient/cli transient-state-engine:create',
+    '      steps/runSteps/load',
+    '    steps/fastTrack',
+    '    steps/load',
+    '  seats/VMs',
+    '    seats/VMs/gone/orphan',
+    '    seats/VMs/superviseVms',
+    '      seats/VMs/superviseVms/match',
+  ]);
+  // The file keeps ASS-490's shape: each deeper key flat under its phase.
+  const { s, tick } = stats({ writeMs: Infinity });
+  tick(100, { steps: 90 }, { 'steps/runSteps': { phase: 'steps', ms: 80, calls: 1 }, 'steps/runSteps/runVariation/cli ticket:change-state': { phase: 'steps', ms: 30, calls: 2 }, 'steps/load': { phase: 'steps', ms: 10, calls: 1 } });
+  assert.deepEqual(Object.keys(s.snapshot().phases.steps['sub-routines']), ['steps/load', 'steps/runSteps', 'steps/runSteps/runVariation/cli ticket:change-state']);
+  assert.equal(s.snapshot().phases.steps['sub-routines']['steps/runSteps/runVariation/cli ticket:change-state']['calls-last'], 2);
 });

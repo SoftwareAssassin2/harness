@@ -1,9 +1,9 @@
 // Phase 8: putting agents on prompt steps — the runs' first (small, and
 // counted toward max-agents but never max-tickets-in-progress), then the sprints' as
-// plan.js plans them — each through assignments:create, agent:dispatch (the prompt
-// queued in the inbox the process will read), startAgent, and
-// assignments:set-process (the session id is recorded in finish.js once the
-// process has said it). None for a variation its dependencies hold (ASS-355).
+// plan.js plans them — each through assignments:create (with the agent's Claude
+// account, ASS-496), agent:dispatch (the prompt queued in the inbox the process
+// will read), startAgent, and assignments:set-process (ASS-496: not awaited; the
+// session id is recorded in finish.js once the process has said it). None for a variation its dependencies hold (ASS-355).
 import { existsSync, readFileSync, mkdirSync, appendFileSync } from 'node:fs';
 import { readKept } from './read.js';
 import { join, dirname, resolve } from 'node:path';
@@ -33,6 +33,23 @@ import { overSpent, runningOn } from './spend.js';
 import { credentialsHeld } from './credentials.js';
 
 const PHASE = 'dispatch';
+// ASS-496: each agent.sh call dispatch awaits, and claude auth status, timed (ctx.timed, ASS-490) as the sub-routine
+// 'dispatch/dispatch/cli <command>' ('dispatch/dispatch/claude auth status'), inside the phase's own 'dispatch/dispatch'.
+// Only awaited work is wrapped: timeCall's depth counts calls awaited in turn. A ctx without timed (a test's) just calls.
+const timed = (ctx, name, fn) => (ctx.timed ? ctx.timed(PHASE, `dispatch/${name}`, fn) : fn());
+const cli = (ctx, args) => timed(ctx, `cli ${args[0]}`, () => ctx.cli(args));
+const authStatus = (ctx, configDir) => timed(ctx, 'claude auth status', () => accountOf({ command: ctx.command, configDir, env: ctx.env }));
+// ASS-496: unawaited(ctx, what, fn) — a write dispatch does not wait for, its result unused: fn() started now and
+// left running, the tick going on; what it throws logged under "error" as ctx.attempt logs it ("dispatch <what>:
+// <message>"), never thrown — nothing awaits it to catch it. Returns its promise, which never rejects, for what
+// must follow it (finish.js awaits an agent's pid write before its session id's), kept in ctx.unawaited until it
+// settles (for tests to wait on; shutdown stops agents by ctx.agents, not by the pid written). Never timed: timeCall's depth assumes calls awaited in turn.
+export function unawaited(ctx, what, fn) {
+  const running = ctx.unawaited ??= new Set();
+  const write = Promise.resolve().then(fn).then(() => {}, error => ctx.log('error', `${PHASE} ${what}: ${error.message}`)).finally(() => running.delete(write));
+  running.add(write);
+  return write;
+}
 
 // hasPendingTool(event) — an assistant turn that left background work still
 // running (ASS-334): a `tool_use` of a tool the SDK runs in the background, so
@@ -205,7 +222,8 @@ function ticketFolderOf(ctx, machine) {
 // vmWhereText, its {ticket-folder} /mnt/ticket and its commands the VM's
 // agent.sh; for a step in one `repository` (ASS-119, repositories.js), in
 // /repos/<repo>/, that repository its {where} and {project-code-folder} — and
-// assignments:set-process records its pid. Kept in ctx.agents as { name,
+// assignments:set-process records its pid (ASS-496: not awaited, its promise
+// kept as processWrite). Kept in ctx.agents as { name,
 // project, record, agent, startedAt, result (the last result event), exited,
 // cost and tokens (summed over its turns), sessionRecorded, rateLimit (the
 // rate_limit_info of a rejected rate_limit_event it printed, see finish.js),
@@ -254,32 +272,20 @@ async function accountHold(ctx, project) {
   if (expected) {
     const dir = configDir(ctx, project);
     let account;
-    try { account = await accountOf({ command: ctx.command, configDir: dir, env: ctx.env }); } catch (error) { account = { loggedIn: false, error: error.message }; }
+    try { account = await authStatus(ctx, dir); } catch (error) { account = { loggedIn: false, error: error.message }; }
     const actual = account.loggedIn ? account.email : null;
     if (actual?.toLowerCase() !== String(expected).toLowerCase()) hold = { expected, actual, dir, error: account.error };
   }
   const was = project.json['account-hold'];
   if (hold && (was?.expected !== hold.expected || was?.actual !== hold.actual)) {
-    await ctx.cli(['project:set-account-hold', project.id, hold.expected, hold.actual ?? '-', hold.dir ?? '-']);
+    await cli(ctx, ['project:set-account-hold', project.id, hold.expected, hold.actual ?? '-', hold.dir ?? '-']);
     ctx.log(PHASE, `${project.id} expects the Claude account ${hold.expected}; ${hold.actual ? `logged in as ${hold.actual}` : hold.error ?? 'not logged in'} — none of its agents start until it is (sign in: ${hold.dir ? `CLAUDE_CONFIG_DIR=${hold.dir} ` : ''}claude, then /login)`);
   } else if (!hold && was) {
-    await ctx.cli(['project:clear-account-hold', project.id]);
+    await cli(ctx, ['project:clear-account-hold', project.id]);
     ctx.log(PHASE, `${project.id} is logged in as its expected account again; its agents start`);
   }
   ctx.memory.accounts.set(project.id, { at: now, expected, hold });
   return hold;
-}
-
-// The agent's Claude account, recorded on its assignment (ASS-25), from the
-// config it will run with — with the payment method control chose for it,
-// when it chose one (ASS-217) — and returned; not logged in, it is not started —
-// thrown, so the dispatch is held and logged as any failure is.
-async function recordAccount(ctx, project, name, payment) {
-  const dir = configDir(ctx, project, payment);
-  const account = await accountOf({ command: ctx.command, configDir: dir, env: ctx.env });
-  await ctx.cli(['assignments:set-account', name, account.email ?? '-', account.org ?? '-', account.subscription ?? '-', ...(payment ? [payment] : [])]);
-  if (!account.loggedIn) throw new Error(`${name}: the Claude account ${dir ?? 'in ~/.claude'} is not logged in; not started`);
-  return account;
 }
 
 // hostKind(ctx, project) — the credential kind the project's host agents run
@@ -289,7 +295,7 @@ async function hostKind(ctx, project) {
   const memo = (ctx.memory.hostKinds ??= new Map()).get(project.id), now = ctx.now().getTime();
   if (memo && now - memo.at < ACCOUNT_CHECK_MS) return memo.kind;
   let kind;
-  try { kind = kindOfAccount(await accountOf({ command: ctx.command, configDir: configDir(ctx, project), env: ctx.env })); } catch { kind = 'claude'; }
+  try { kind = kindOfAccount(await authStatus(ctx, configDir(ctx, project))); } catch { kind = 'claude'; }
   ctx.memory.hostKinds.set(project.id, { at: now, kind });
   return kind;
 }
@@ -353,9 +359,8 @@ async function memoryFor(ctx, project, vm, dir) {
   return undefined;
 }
 
-async function startFor(ctx, state, project, record, vm, repository, step, payment = null) {
+async function startFor(ctx, state, project, record, account, vm, repository, step, payment = null) {
   const name = record['agent-name'];
-  const account = await recordAccount(ctx, project, name, payment);
   const { variation } = found(state, record);
   const container = record['working-in-dev-container'] === true ? project.json['dev-container'] : undefined;
   const { folder: codeAt, containerFolder } = vm ? { folder: vmFolder(vm, repository), containerFolder: null } : agentFolder(ctx, project, variation, container);
@@ -376,7 +381,7 @@ async function startFor(ctx, state, project, record, vm, repository, step, payme
   // On a workstation (ASS-435) the ticket's read-only copy, brought up to date first (AC4), and the setup's agent.sh.
   const vmArgs = vm ? [`ticket-folder=${machinePaths(vm).ticket}`, 'agent-sh=agent.sh'] : [];
   if (onWorkstation(vm)) await syncTicketCopy(remoteName(vm), ticketFolderOf(ctx, vm), { env: ctx.env });   // ASS-481: a cloud VM's too
-  await ctx.cli(['agent:dispatch', name, `folder=${folder}`, `where=${vm ? vmWhereText(project, vm, repository) : confined ? confinedWhereText(folder, codeAt, join(ctx.root, 'agent.sh')) : whereText(ctx, folder, container, containerFolder, repository)}`, `project-code-folder=${codeFolder(project, vm, codeAt, repository)}`, ...vmArgs, ...aboutArgs]);
+  await cli(ctx, ['agent:dispatch', name, `folder=${folder}`, `where=${vm ? vmWhereText(project, vm, repository) : confined ? confinedWhereText(folder, codeAt, join(ctx.root, 'agent.sh')) : whereText(ctx, folder, container, containerFolder, repository)}`, `project-code-folder=${codeFolder(project, vm, codeAt, repository)}`, ...vmArgs, ...aboutArgs]);
   const live = { name, project: project.id, record, repository, startedAt: ctx.now(), result: null, exited: null, cost: 0, tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, sessionRecorded: false, rateLimit: null, pending: null, pendingThisTurn: false,
     vm: vm ?? null, payment, kind: payment ? (payment === 'api' ? 'anthropic' : 'claude') : vm ? credentialKindOf(ctx, project.id, vm) : kindOfAccount(account) };
   live.agent = startAgent({
@@ -407,25 +412,44 @@ async function startFor(ctx, state, project, record, vm, repository, step, payme
       live.tokens.cacheRead += usage.cache_read_input_tokens ?? 0;
       live.tokens.cacheWrite += usage.cache_creation_input_tokens ?? 0;
       // Each model's context window, learned for the dashboard's next sessions
-      // (ASS-190); not awaited — attempt logs a failure, never throws.
+      // (ASS-190); not awaited — ASS-496: unawaited logs a failure, never throws (ctx.attempt rethrew the data
+      // failing to read, unhandled here).
       for (const [model, info] of Object.entries(event.modelUsage ?? {})) {
-        if (info?.contextWindow) ctx.attempt(PHASE, `${name}: ${model}'s context window`, () => ctx.cli(['harness:set-context-window', model, String(info.contextWindow)]));
+        if (info?.contextWindow) unawaited(ctx, `${name}: ${model}'s context window`, () => ctx.cli(['harness:set-context-window', model, String(info.contextWindow)]));
       }
     },
     onExit: (code, signal) => { live.exited = { code, signal }; },
   });
   ctx.agents.set(name, live);
-  await ctx.cli(['assignments:set-process', name, String(live.agent.pid), '-']);
+  // ASS-496: its pid recorded without the tick waiting (nothing here reads it back); finish.js awaits processWrite
+  // before it records the session id, so the two land in that order. The record, with its account, was there before
+  // the process started (create).
+  live.processWrite = unawaited(ctx, `${name}'s process`, () => ctx.cli(['assignments:set-process', name, String(live.agent.pid), '-']));
   ctx.log(PHASE, `${name} (${record.model}) on ${record['work-item'] ?? record['state-engine']}${record.variation ? ` ${record.variation}` : ''} ${record.state}, pid ${live.agent.pid}, in ${folder}${container ? ` (${container}:${containerFolder})` : ''}${vm ? (onWorkstation(vm) ? ` (${onWorkstation(vm).kind === 'cloud-vm' ? 'cloud VM' : 'workstation'} ${onWorkstation(vm).id})` : ` (VM ${vm})`) : ''}${repository ? ` for ${repository}` : ''}${payment ? ` on the ${payment === 'api' ? 'API key' : 'subscription'}` : ''}`);
 }
 
-// assignments:create with the arguments, the records it printed — every
-// agent on the step's model when it names one (modelFor, ASS-399, ASS-452),
-// the round robin and last-model-used left alone; else assignments:create's
-// round robin.
-const create = async (ctx, args, step, harness) => {
-  const model = modelFor(step, harness);
-  return JSON.parse(await ctx.cli(['assignments:create', ...(model ? ['--model', model] : []), ...args]));
+// create(ctx, project, payment, args, step, harness) — assignments:create with
+// the arguments, { records (the records it printed), account } — every agent on
+// the step's model when it names one (modelFor, ASS-399, ASS-452), the round
+// robin and last-model-used left alone; else assignments:create's round robin.
+// Each record carries its Claude account (ASS-25), from the config its agent
+// will run with, and the payment method control chose for it, when it chose
+// one (ASS-217): ASS-496: written by assignments:create itself (--account),
+// in the same process, so no assignments:set-account follows it, and the
+// record has its account before its agent is started, as before. Not logged
+// in, the records are made all the same (their account null, as before) and
+// none started — thrown, so the dispatch is held and logged as any failure
+// is; claude auth status failing, they are made with no account and its
+// error thrown.
+const create = async (ctx, project, payment, args, step, harness) => {
+  const model = modelFor(step, harness), dir = configDir(ctx, project, payment);
+  let account, failure;
+  try { account = await authStatus(ctx, dir); } catch (error) { failure = error; }
+  const recorded = account ? ['--account', account.email ?? '-', account.org ?? '-', account.subscription ?? '-', payment ?? '-'] : [];
+  const records = JSON.parse(await cli(ctx, ['assignments:create', ...(model ? ['--model', model] : []), ...recorded, ...args]));
+  if (failure) throw failure;
+  if (!account.loggedIn) throw new Error(`${records[0]['agent-name']}: the Claude account ${dir ?? 'in ~/.claude'} is not logged in; not started`);
+  return { records, account };
 };
 
 // modelFor(step, harness) — the model a prompt step's agents run on when its
@@ -467,7 +491,7 @@ function workspaceFree(ctx, state, step, project, key, variation) {
   return false;
 }
 const takeWorkspace = (ctx, step, project, key, variation) =>
-  (inContainer(step, project) && key != null ? ctx.cli(['code:checkout-in-workspace', project.id, key, variation]) : Promise.resolve());
+  (inContainer(step, project) && key != null ? cli(ctx, ['code:checkout-in-workspace', project.id, key, variation]) : Promise.resolve());
 
 // vmDown(ctx, state, step, project, key, variation, at) — whether a
 // run-location: vm step's agent waits for the ticket variation's VM: so long
@@ -632,8 +656,8 @@ export async function dispatch(ctx, state) {
       if (where?.skip) return skip(ctx, step, engineSteps(enginesFor(state, run.project), run['state-engine']), run['state-changes'] ?? [], `run ${run.id.slice(0, 8)} ${run.state}`, to => moveRun(ctx, PHASE, run, to));
       const vm = vmFor(state, project, step, context.workItem, context.variation);
       await takeWorkspace(ctx, step, project, context.workItem, context.variation);
-      const records = await create(ctx, [run.project, run['state-engine'], run.state, step.action.prompt, String(count), String(inContainer(step, project)), ticket ?? '-', (ticket === context.workItem && !elsewhere ? context.variation : undefined) ?? '-', run.id, problemOf(run, state.transient, { harness: state.harness, project: ticketProjectOf(state, run.id) ?? run.project, history: blockHistory(found(state, { project: run.project, 'work-item': context.workItem, variation: context.variation }).variation) })], step, state.harness);
-      for (const record of records) await startFor(ctx, state, project, record, vm, where?.repository, step, pays.payment);
+      const { records, account } = await create(ctx, project, pays.payment, [run.project, run['state-engine'], run.state, step.action.prompt, String(count), String(inContainer(step, project)), ticket ?? '-', (ticket === context.workItem && !elsewhere ? context.variation : undefined) ?? '-', run.id, problemOf(run, state.transient, { harness: state.harness, project: ticketProjectOf(state, run.id) ?? run.project, history: blockHistory(found(state, { project: run.project, 'work-item': context.workItem, variation: context.variation }).variation) })], step, state.harness);
+      for (const record of records) await startFor(ctx, state, project, record, account, vm, where?.repository, step, pays.payment);
     })).finally(done);
     state = ctx.load();
   }
@@ -658,8 +682,8 @@ export async function dispatch(ctx, state) {
       if (!pays) continue;
       await ctx.attempt(PHASE, `${t.key} ${v.name}`, heldOnFailure(ctx, key, async () => {
         await takeWorkspace(ctx, step, project, t.key, v.name);
-        const records = await create(ctx, [project.id, variation['harness-status']['state-engine'] ?? project.refinementName, step.id, step.action.prompt, String(count), String(inContainer(step, project)), t.key, v.name, '-'], step, state.harness);
-        for (const record of records) await startFor(ctx, state, project, record, null, undefined, step, pays.payment);
+        const { records, account } = await create(ctx, project, pays.payment, [project.id, variation['harness-status']['state-engine'] ?? project.refinementName, step.id, step.action.prompt, String(count), String(inContainer(step, project)), t.key, v.name, '-'], step, state.harness);
+        for (const record of records) await startFor(ctx, state, project, record, account, null, undefined, step, pays.payment);
       }));
       state = ctx.load();
     }
@@ -690,8 +714,8 @@ export async function dispatch(ctx, state) {
         if (where?.skip) return skip(ctx, step, project.engine, levelChanges(variation), who, to => mayMove(ctx, PHASE, state, project, variation, who, to) && moveTicket(ctx, PHASE, project, ticket, variation, to));
         const vm = vmFor(state, project, step, item.key, item.variation);
         await takeWorkspace(ctx, step, project, item.key, item.variation);
-        const records = await create(ctx, [project.id, project.engineName, item.state, step.action.prompt, String(item.agentCount), String(inContainer(step, project)), item.key, item.variation, '-'], step, state.harness);
-        for (const record of records) await startFor(ctx, state, project, record, vm, where?.repository, step, pays.payment);
+        const { records, account } = await create(ctx, project, pays.payment, [project.id, project.engineName, item.state, step.action.prompt, String(item.agentCount), String(inContainer(step, project)), item.key, item.variation, '-'], step, state.harness);
+        for (const record of records) await startFor(ctx, state, project, record, account, vm, where?.repository, step, pays.payment);
       })).finally(done);
       state = ctx.load();
     }

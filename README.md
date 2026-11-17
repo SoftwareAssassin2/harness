@@ -520,7 +520,27 @@ tick's, and when the highest happened. It keeps the same figures for each of
 the tick's phases (finish, registries, seats/VMs, steps, gaps, timers,
 dependencies, supervise, dispatch) and, under each phase, for each call the
 tick makes in it (its sub-routines, such as `seats/VMs/superviseVms` or
-`timers/checkUsage`, with how many calls a tick makes). They are written to
+`timers/checkUsage`, with how many calls a tick makes). Each phase's read of
+the data is timed apart, as `<phase>/load`: it counts in the phase's time but
+not in its sub-routine's. Three sub-routines are timed a level deeper.
+`steps/runSteps` and `finish/finishEnded` (`timers/detectReverts` runs in the
+background since ASS-497, and isn't timed deeper): under them are their helpers
+and the turn of each variation, run or ended agent (such as
+`steps/runSteps/runVariation` or `finish/finishEnded/finishOne`). Within those
+are the `agent.sh` calls control makes and the scripts it runs, grouped by
+command name without arguments (such as
+`steps/runSteps/runVariation/cli ticket:change-state`), and their data reads
+(`…/load`). Script steps left running in the background aren't timed, only the
+tick's wait for them (`…/scriptExit`), and nor are step-exit `script-succeeds`
+checks, which run in the background (ASS-493; one over 30 s logs its
+duration). And `dispatch/dispatch` (ASS-496): each `agent.sh` command it waits
+for, as `dispatch/dispatch/cli <command>`, and the Claude login check, as
+`dispatch/dispatch/claude auth status`. Starting an agent waits for two
+`agent.sh` commands, `assignments:create` (which records the agent's Claude
+account too) and `agent:dispatch`, plus `code:checkout-in-workspace` for a
+step in the dev container; recording the agent's process
+(`assignments:set-process`) and a model's context window run without the
+tick waiting, a failure logged as an `error` line. They are written to
 `data/projects/<project>/tick-stats.json` (`~/.harness/tick-stats.json` for a
 control run without `--project`; `HARNESS_HOME` moves it) at most every 30
 seconds and when control stops. To read them:
@@ -530,11 +550,23 @@ seconds and when control stops. To read them:
 ```
 
 It prints each project's figures (or the one named) in seconds, then a table
-of the phases with their sub-routines indented under each, slowest average
-first. Work the tick starts and doesn't wait for, such as the VM lifecycle
+of the phases with their sub-routines indented under each, and each deeper
+one indented 2 more spaces under its parent, slowest average first at each
+level. Work the tick starts and doesn't wait for, such as the VM lifecycle
 jobs, isn't included: a sub-routine marked `(awaited part)` is timed only for
 what the tick waits on. A project whose control hasn't recorded any yet says
-so. A tick over 30 seconds also logs a `tick` line in the control log with
+so.
+
+The periodic checks that call out to other services (the hourly revert check,
+the gcloud and glab logins, Claude usage, API cost and the push account) run
+in the background: the tick starts one when it's due and goes on without
+waiting, at most one of each running at a time per project, and reads what the
+last finished one recorded. The revert check asks the forges about 4
+repositories at once. A background check that takes over 10 seconds logs a
+`timers` line with how long it took. The credentials check still runs inside
+the tick, because it decides whether this tick starts any of the project's
+agents. When control stops or restarts, the background checks are stopped and
+waited for, so none writes anything after control exits. A tick over 30 seconds also logs a `tick` line in the control log with
 its three slowest phases and sub-routines.
 
 ## Exporting a project

@@ -151,6 +151,38 @@ test('assignments:set-account records the Claude account an agent runs on — em
   assert.equal(JSON.stringify(f.assignments()), before);
 });
 
+test('ASS-496: assignments:create --account writes the account and payment method on every record as assignments:create then assignments:set-account do; without it, as before, none; a bad one writes nothing', async () => {
+  const args = ['p', 'example-development', 'generate-solution', 'generate-solution', '2', 'false', 'ABC-3', 'A', '-'];
+  const fresh = f => writeFileSync(join(f.dir, 'assignments.json'), JSON.stringify({ ...f.assignments(), assignments: [] }));
+  // The names are drawn at random among the never-used: the rest must match.
+  const same = r => ({ ...r, 'assignment-id': 'I', 'start-time': 'T', 'last-heartbeat': 'T', 'agent-name': 'N', 'pen-holder': 'N' });
+  for (const [account, payment] of [[['me@example.com', 'My Org', 'max'], 'api'], [['me@example.com', 'My Org', 'max'], '-'], [['-', '-', '-'], 'subscription']]) {
+    // The old way: create, then set-account on each record (as control did before).
+    const f = fixture();
+    fresh(f);
+    const old = JSON.parse((await f.agent('assignments:create', '--model', 'claude-opus-5', ...args)).stdout);
+    for (const r of old) await f.agent('assignments:set-account', r['agent-name'], ...account, ...(payment === '-' ? [] : [payment]));
+    // The new: one create, --account before or after --model.
+    for (const options of [['--model', 'claude-opus-5', '--account', ...account, payment], ['--account', ...account, payment, '--model', 'claude-opus-5']]) {
+      const g = fixture();
+      fresh(g);
+      const printed = JSON.parse((await g.agent('assignments:create', ...options, ...args)).stdout);
+      assert.deepEqual(g.assignments().assignments, printed);
+      assert.deepEqual(printed.map(same), f.assignments().assignments.map(same), `${account} ${payment}`);
+      assert.deepEqual(Object.keys(printed[0]), Object.keys(f.assignments().assignments[0]));     // the fields in the same order too
+    }
+  }
+  // The old form writes no account.
+  const h = fixture();
+  const [plain] = JSON.parse((await h.agent('assignments:create', ...args.slice(0, 4), '1', ...args.slice(5))).stdout);
+  assert.equal('account' in plain, false);
+  assert.equal('payment-method' in plain, false);
+  const before = written(h);
+  await fails(h, h.agent('assignments:create', '--account', 'a', 'b', 'c', 'free', ...args), /payment method must be subscription or api/);
+  await fails(h, h.agent('assignments:create', '--account', 'a', 'b'), /usage/);
+  assert.deepEqual(written(h), before);
+});
+
 test('assignments:set-process, :heartbeat and :set-status write the running process, a heartbeat and a status on the record; set-process leaves an agent Shutting Down so', async () => {
   const f = fixture();
   await f.agent('assignments:set-process', 'Spock', '4242', 'sess-1');

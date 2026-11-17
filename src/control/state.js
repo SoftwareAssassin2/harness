@@ -12,7 +12,7 @@ import { obsoleteKeysOf, withoutObsolete } from '../workflow/obsolete.js';
 import { devEnvironments, devEnvironmentsErrors } from './dev-environments.js';
 import { loadWorkstations } from './workstation-connection.js';
 import { loadSeats } from './seat-kinds.js';
-import { readJson, readJsonOnce } from './read.js';
+import { readJson, readJsonOnce, readJsonCached, sweepCached, deepFreeze } from './read.js';
 
 // readJson (read.js, ASS-460): a read that fails because the drive dropped or
 // the file was caught empty or half-written is tried again a couple of times
@@ -20,7 +20,7 @@ import { readJson, readJsonOnce } from './read.js';
 // handled where it is read (disk-space.json, memory-spend.json).
 export { readJson };
 // readDiskSpace(file) — disk-space.json (ASS-288), or null without it or caught half-written.
-export const readDiskSpace = file => { try { return readJsonOnce(file); } catch { return null; } };
+export const readDiskSpace = (file, read = readJsonOnce) => { try { return read(file); } catch { return null; } };
 
 // requiresReauthentication(projectDir, tool) — whether the project's
 // <tool>-requires-reauthentication file (gcloud, glab; written by
@@ -79,14 +79,14 @@ export const refinementOf = engine => (engine?.['backlog-refinement-steps'] ?? [
 // nothing — to the open blocking questions (blocksTicket) in its
 // work/<key>/questions-and-answers.json, kept only when there are any. A
 // missing or unreadable file has none.
-function openBlocking(dir, tickets) {
+function openBlocking(dir, tickets, read = readJson) {
   const asking = new Map();
   for (const t of tickets) {
     if (t['ticket-system-status'] === 'Done') continue;
     const file = join(dir, 'work', t.key, 'questions-and-answers.json');
     if (!existsSync(file)) continue;
     let list;
-    try { list = readJson(file).list ?? []; } catch { continue; }
+    try { list = read(file).list ?? []; } catch { continue; }
     const open = list.filter(blocksTicket);
     if (open.length) asking.set(t.key, open.map(q => q.question ?? ''));
   }
@@ -125,24 +125,62 @@ const live = t => t['is-deleted'] !== true;
 // place, a file caught empty) is its last good copy, read earlier in this
 // process (lastGoodEngines, by file), pushed onto `stale` as { file, error }
 // for control to say once per failure streak; one never read well throws, as before.
+// ASS-495: each read by readJsonCached, the engine without its obsolete keys
+// made once per parse (cleaned, by the parse), and the folder's { [name]:
+// engine } the last one while every name and engine is the same (memo), so
+// the engine merge after it is kept too; all deep-frozen.
 const lastGoodEngines = new Map();
-export const readEngines = (dir, obsolete = [], stale = []) => (!existsSync(dir) ? {} : Object.fromEntries(readdirSync(dir)
-  .filter(name => existsSync(join(dir, name, 'state-engine.json')))
-  .map(name => {
-    const file = join(dir, name, 'state-engine.json');
-    let engine;
-    try {
-      engine = readJson(file);
-      lastGoodEngines.set(file, engine);
-    } catch (error) {
-      if (!lastGoodEngines.has(file)) throw error;
-      engine = lastGoodEngines.get(file);
-      stale.push({ file, error: error.message });
-    }
-    const keys = obsoleteKeysOf(engine);
-    if (keys.length) obsolete.push({ file, keys });
-    return [name, withoutObsolete(engine)];
-  })));
+const cleaned = new WeakMap();
+const withoutObsoleteOnce = engine => {
+  if (!engine || typeof engine !== 'object') return withoutObsolete(engine);
+  if (!cleaned.has(engine)) cleaned.set(engine, deepFreeze(withoutObsolete(engine)));
+  return cleaned.get(engine);
+};
+export function readEngines(dir, obsolete = [], stale = []) {
+  if (!existsSync(dir)) return EMPTY;
+  const entries = readdirSync(dir)
+    .filter(name => existsSync(join(dir, name, 'state-engine.json')))
+    .map(name => {
+      const file = join(dir, name, 'state-engine.json');
+      let engine;
+      try {
+        engine = readJsonCached(file);
+        lastGoodEngines.set(file, engine);
+      } catch (error) {
+        if (!lastGoodEngines.has(file)) throw error;
+        engine = lastGoodEngines.get(file);
+        stale.push({ file, error: error.message });
+      }
+      const keys = obsoleteKeysOf(engine);
+      if (keys.length) obsolete.push({ file, keys });
+      return [name, withoutObsoleteOnce(engine)];
+    });
+  return memo(`engines ${dir}`, entries.flat(), () => deepFreeze(Object.fromEntries(entries)));
+}
+
+// ASS-495: memo(key, inputs, compute) — compute()'s value, kept under `key`
+// and given again while every one of `inputs` is the same (===) as when it
+// was computed: loadState's derived pieces (flattenSprint's tickets, the
+// backlog, the engine merge with switchOff) over the parses readJsonCached
+// hands out, which stay the same object while their file is unchanged. What
+// compute() returns is deep-frozen by it, as those parses are (read.js, AC2).
+// Swept as read.js's parses are: a key not used since the last load is dropped.
+const memos = new Map();   // key → { inputs, value, used }
+let memoGeneration = 0;
+export const memoStats = { computes: 0 };
+const EMPTY = Object.freeze({});
+function memo(key, inputs, compute) {
+  const kept = memos.get(key);
+  if (kept && kept.inputs.length === inputs.length && kept.inputs.every((input, i) => input === inputs[i])) { kept.used = memoGeneration; return kept.value; }
+  const value = compute();
+  memoStats.computes++;
+  memos.set(key, { inputs, value, used: memoGeneration });
+  return value;
+}
+function sweepMemos() {
+  for (const [key, kept] of memos) if (kept.used !== memoGeneration) memos.delete(key);
+  memoGeneration++;
+}
 
 // loadState(paths) — everything as it is now: { harness, assignments (the
 // records), transient (the state engine runs), pauses, selfHealing, engines
@@ -177,59 +215,77 @@ export const readEngines = (dir, obsolete = [], stale = []) => (!existsSync(dir)
 // harness no longer reads, { file, keys }, those keys dropped: readEngines),
 // and staleEngines (ASS-460: each engine that failed to read and stands at its
 // last good copy, { file, error }: readEngines).
+// ASS-495: every file read through readJsonCached (read.js: its last parse
+// while it is unchanged, deep-frozen) and the derived pieces through memo, so
+// an unchanged project costs its stats, not its parse. What is returned is
+// built afresh each load — the state and each project object (seats.js and
+// seat-memory.js set a project's seats and memoryWait on theirs), asking's Map
+// — over those shared, frozen pieces. After a load that read everything, what
+// it did not read is dropped from both caches.
 export function loadState(paths) {
-  const data = readJson(paths.assignments);
+  const read = readJsonCached;
+  const data = read(paths.assignments);
   const obsolete = [], stale = [];
   const engines = readEngines(paths.engines, obsolete, stale);
   const projects = readdirSync(paths.projects).toSorted()
     .filter(id => existsSync(join(paths.projects, id, 'project.json')))
     .map(id => {
       const dir = join(paths.projects, id);
-      const json = readJson(join(dir, 'project.json'));
+      const json = read(join(dir, 'project.json'));
       const engineName = json['execution-state-engine'];
-      const active = existsSync(join(dir, 'sprints.json')) && readJson(join(dir, 'sprints.json')).list?.find(s => s['is-active']);
+      const active = existsSync(join(dir, 'sprints.json')) && read(join(dir, 'sprints.json')).list?.find(s => s['is-active']);
       const sprintFile = active ? join(dir, 'sprints', `sprint-${active.number}`, 'sprint.json') : null;
-      const sprint = sprintFile && existsSync(sprintFile) ? readJson(sprintFile) : null;
-      const listed = sprint ? flattenSprint(sprint) : [];
-      const inSprint = new Set(listed.map(t => t.key.toUpperCase()));
-      const tickets = listed.filter(live);
-      const backlog = (existsSync(join(dir, 'backlog.json')) ? readJson(join(dir, 'backlog.json')).tickets ?? [] : []).filter(t => isLiveBacklogEntry(t, inSprint));
-      const rateLimit = existsSync(join(dir, 'rate-limit.json')) ? readJson(join(dir, 'rate-limit.json')) : null;
-      const claudeUsage = existsSync(join(dir, 'claude-usage.json')) ? readJson(join(dir, 'claude-usage.json')) : null;
+      const sprint = sprintFile && existsSync(sprintFile) ? read(sprintFile) : null;
+      // ASS-495: flattenSprint's tickets, recomputed only for a new sprint parse; the backlog for a new backlog or sprint parse.
+      const { tickets, inSprint } = memo(`sprint ${dir}`, [sprint], () => {
+        const listed = sprint ? flattenSprint(sprint) : [];
+        return { tickets: deepFreeze(listed.filter(live)), inSprint: new Set(listed.map(t => t.key.toUpperCase())) };
+      });
+      const backlogJson = existsSync(join(dir, 'backlog.json')) ? read(join(dir, 'backlog.json')) : null;
+      const backlog = memo(`backlog ${dir}`, [backlogJson, sprint], () => deepFreeze((backlogJson?.tickets ?? []).filter(t => isLiveBacklogEntry(t, inSprint))));
+      const rateLimit = existsSync(join(dir, 'rate-limit.json')) ? read(join(dir, 'rate-limit.json')) : null;
+      const claudeUsage = existsSync(join(dir, 'claude-usage.json')) ? read(join(dir, 'claude-usage.json')) : null;
       // ASS-395: its credentials hold (project:check-credentials' credentials-hold.json — { since, problems }), or null.
-      const credentialsHold = existsSync(join(dir, 'credentials-hold.json')) ? readJson(join(dir, 'credentials-hold.json')) : null;
+      const credentialsHold = existsSync(join(dir, 'credentials-hold.json')) ? read(join(dir, 'credentials-hold.json')) : null;
       // ASS-404: its memory hold (host-memory.js' memory-hold.json — { since, …, held: [{ key, variation, … }] }: plan.js frees the held variations' seats), or null; one caught half-written reads as null.
       let memoryHold = null;
-      try { memoryHold = existsSync(join(dir, 'memory-hold.json')) ? readJson(join(dir, 'memory-hold.json')) : null; } catch { /* half-written: the next load reads it */ }
+      try { memoryHold = existsSync(join(dir, 'memory-hold.json')) ? read(join(dir, 'memory-hold.json')) : null; } catch { /* half-written: the next load reads it */ }
       // ASS-420: the variations refused a seat for want of memory for their VMs (seat-memory.js' memory-wait.json — { waiting: [{ key, variation, … }] }: plan.js gives them none), or null.
       let memoryWait = null;
-      try { memoryWait = existsSync(join(dir, 'memory-wait.json')) ? readJson(join(dir, 'memory-wait.json')) : null; } catch { /* half-written: the next load reads it */ }
+      try { memoryWait = existsSync(join(dir, 'memory-wait.json')) ? read(join(dir, 'memory-wait.json')) : null; } catch { /* half-written: the next load reads it */ }
       // The engines it runs on: its own folder's over engines/'s (ASS-276).
-      const seen = { ...engines, ...readEngines(join(dir, 'engines'), obsolete, stale) };
+      const ownEngines = readEngines(join(dir, 'engines'), obsolete, stale);
       // Its switched-off-steps (ASS-209): each valid entry's step switched off in its own engines; a bad one left on, its errors kept.
-      const switchedOff = [].concat(json['switched-off-steps'] ?? []);
-      const switchedOffErrors = switchedOff.flatMap(e => switchedOffStepErrors(e, seen));
-      const own = switchOff(seen, switchedOff.filter(e => !switchedOffStepErrors(e, seen).length));
+      // ASS-495: the merge and switchOff recomputed only when engines/'s, its own or its project.json's entries change.
+      const { switchedOffErrors, own } = memo(`switch-off ${dir}`, [engines, ownEngines, json['switched-off-steps']], () => {
+        const seen = { ...engines, ...ownEngines };
+        const switchedOff = [].concat(json['switched-off-steps'] ?? []);
+        return deepFreeze({ switchedOffErrors: switchedOff.flatMap(e => switchedOffStepErrors(e, seen)), own: switchOff(seen, switchedOff.filter(e => !switchedOffStepErrors(e, seen).length)) });
+      });
       const refinementName = refinementOf(own[engineName]);
       // Where its tickets run (ASS-431): refused, its errors kept, while its dev-environments is wrong.
       const devErrors = devEnvironmentsErrors(json);
-      return { id, json, engineName, engines: own, switchedOffErrors, engine: own[engineName], refinementName, refinement: own[refinementName], sprintFile, sprint, tickets, backlog, asking: openBlocking(dir, [...tickets, ...backlog]), outside: loadOutside(dir),
+      return { id, json, engineName, engines: own, switchedOffErrors, engine: own[engineName], refinementName, refinement: own[refinementName], sprintFile, sprint, tickets, backlog, asking: openBlocking(dir, [...tickets, ...backlog], read), outside: loadOutside(dir, read),
         gcloudRequiresReauthentication: requiresReauthentication(dir, 'gcloud'), glabRequiresReauthentication: requiresReauthentication(dir, 'glab'), rateLimit, claudeUsage, credentialsHold, memoryHold, memoryWait,
-        devEnvironmentsErrors: devErrors, devEnvironments: devErrors.length ? null : devEnvironments(json), workstations: loadWorkstations(dir), seats: loadSeats(dir) };
+        devEnvironmentsErrors: devErrors, devEnvironments: devErrors.length ? null : devEnvironments(json), workstations: loadWorkstations(dir, read), seats: loadSeats(dir, read) };
     });
-  return {
-    harness: readJson(paths.harness),
+  const state = {
+    harness: read(paths.harness),
     assignments: data.assignments ?? [],
     transient: data['transient-state-engines'] ?? [],
     pauses: data.pauses ?? {},
     selfHealing: data['self-healing'] ?? {},
     engines,
     projects,
-    contextWindows: existsSync(paths.contextWindows) ? readJson(paths.contextWindows) : {},
-    diskSpace: readDiskSpace(paths.diskSpace),
+    contextWindows: existsSync(paths.contextWindows) ? read(paths.contextWindows) : {},
+    // A disk-space.json caught half-written reads as null at once (no reads again), as readDiskSpace's.
+    diskSpace: readDiskSpace(paths.diskSpace, file => read(file, [])),
     obsoleteEngineKeys: obsolete,
     staleEngines: stale,
   };
+  sweepCached();
+  sweepMemos();
+  return state;
 }
 
 // enginesFor(state, id) — the engines as project `id` runs them (its engines,

@@ -5,6 +5,7 @@
 import { stepOf, engineSteps, nextState } from './engine.js';
 import { enginesFor } from './state.js';
 import { ticketFacts, sandboxRefusedFeedback } from './facts.js';
+import { heldByChecks } from './checks.js';
 import { runsInVm } from './vm.js';
 import { machineOf } from './machine.js';
 import { found, contextOf, levelChanges, moveTicket, moveRun, isPaused, releaseWorkspace, firstStepId } from './moves.js';
@@ -180,8 +181,13 @@ async function holdForRateLimit(ctx, state, live) {
 // process signalled) and the work moved (moveTicket or moveRun). No exit
 // matching, or one whose target cannot be told, is logged; the assignment is
 // removed all the same and the step runs again. Each turn ended is counted
-// for the self-healing trigger (see triggers.js).
+// for the self-healing trigger (see triggers.js). ASS-494: timed a level deeper
+// (tick.js DEEPER): each ended agent's finishOne as 'finish/finishEnded/finishOne',
+// the agent.sh calls, script checks and loads within by name.
 export async function finishEnded(ctx, state) {
+  // ASS-496: each agent's pid write, which dispatch did not wait for, landed first (it never rejects): its session
+  // id, and its assignment's removal, come after it.
+  for (const live of ctx.agents.values()) await live.processWrite;
   for (const live of ctx.agents.values()) {
     if (live.sessionRecorded || !live.agent.sessionId || !state.assignments.some(a => a['agent-name'] === live.name)) continue;
     await ctx.attempt(PHASE, live.name, async () => {
@@ -192,7 +198,7 @@ export async function finishEnded(ctx, state) {
   for (const live of [...ctx.agents.values()]) {
     if (!live.result && !live.exited) continue;
     if (!ctx.agents.has(live.name)) continue;   // ended with an earlier assignment this tick
-    await ctx.attempt(PHASE, live.name, () => finishOne(ctx, ctx.load(), live));
+    await ctx.attempt(PHASE, live.name, () => ctx.timedHere('finishOne', () => finishOne(ctx, ctx.load(), live)));   // ASS-494: timed per agent
   }
 }
 
@@ -270,8 +276,11 @@ async function finishOne(ctx, state, live) {
   // vm+workstation mode, its VM) what it left uncommitted is committed on its branch, not discarded.
   stepCompleted(ctx, pen);
   const place = placeOf(ctx, state, pen);
-  const facts = { turnComplete: true, structuredOutput: penLive.result.structured_output, ...(place?.variation ? ticketFacts(ctx, place.project, place.ticket, place.variation, penLive.startedAt.getTime(), runsInVm(place.step) ? machineOf(place.variation) : undefined) : {}) };
+  // ASS-493: a script-succeeds check its exits ask runs in the background, kept for this turn (checks.js); while it
+  // runs the turn stays unfinished, its agents live and its step where it is, and a later tick reads its answer.
+  const facts = { turnComplete: true, structuredOutput: penLive.result.structured_output, ...(place?.variation ? ticketFacts(ctx, place.project, place.ticket, place.variation, penLive.startedAt.getTime(), runsInVm(place.step) ? machineOf(place.variation) : undefined, `turn/${pen['agent-name']}/${penLive.startedAt.getTime()}`) : {}) };
   const next = place?.step ? nextState(place.step, place.engine, facts, place.changes) : null;
+  if (heldByChecks(ctx, facts)) return;
   for (const l of lives) await endAgent(ctx, l);
   if (!place) return;
   // ASS-428 AC4: an agent.sh write the sandbox refused, named in the output, is logged and becomes the variation's

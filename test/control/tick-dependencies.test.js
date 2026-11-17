@@ -49,7 +49,7 @@ function waiting(options = {}) {
     stateOf: key => inSprint(key).variations[0]['harness-status'].state,
     inSprint,
     inBacklog: key => JSON.parse(readFileSync(file, 'utf8')).tickets.find(t => t.key === key),
-    dispatched: key => f.lines.some(l => new RegExp(`^cli agent\\.sh assignments:create p \\S+ \\S+ \\S+ \\S+ \\S+ ${key} A `).test(l)),
+    dispatched: key => f.lines.some(l => new RegExp(`^cli agent\\.sh assignments:create (?:.* )?p \\S+ \\S+ \\S+ \\S+ \\S+ ${key} A `).test(l)),
     calls: pattern => f.lines.filter(l => pattern.test(l)),
     ticks: async (n = 1) => { for (let i = 0; i < n; i++) await tick(f.ctx); },
   };

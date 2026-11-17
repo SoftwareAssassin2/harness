@@ -83,7 +83,7 @@ import { limaHome } from './vm.js';
 import { checkCredentials } from './credentials.js';
 import { login } from './login.js';
 import { sessionUsage } from '../agents/usage.js';
-import { newTickTimes, timeCall } from './tick-stats.js';
+import { newTickTimes, timeCall, timeSync, timeHere, untimed, commandName } from './tick-stats.js';
 import { monthCost } from '../agents/api-cost.js';
 import { pushAccount } from '../agents/forge.js';
 
@@ -154,15 +154,24 @@ export function createContext({ root, env = process.env, command, log = () => {}
   // DISK_SPACE_DISABLED is — so a test's control never holds a VM for the real
   // Mac's memory. Tests replace it.
   ctx.hostMemory = env.HOST_MEMORY_DISABLED === '1' ? null : () => readHostMemory(limaHome(env))();
-  ctx.cli = (args, env) => runCli(ctx, args, env);
-  ctx.script = (argv, vm, env) => runScript(ctx, argv, vm, env);
-  ctx.succeeds = (argv, vm) => scriptSucceeds(ctx, argv, vm);
+  // ASS-494: within a deeper timed sub-routine (runSteps, finishEnded, detectReverts), each timed by command name,
+  // its arguments dropped — '<parent key>/cli <command>', '…/script <command>' (tick-stats.js timeHere, commandName);
+  // elsewhere just run. A script started and not awaited (steps.js's script steps) is started untimed (ctx.untimed):
+  // timing assumes calls awaited in turn.
+  ctx.cli = (args, env) => timeHere(ctx.tickTimes, `cli ${args[0]}`, () => runCli(ctx, args, env));
+  ctx.script = (argv, vm, env) => timeHere(ctx.tickTimes, `script ${commandName(argv)}`, () => runScript(ctx, argv, vm, env));
+  // ASS-493: a promise, run in the background (checks.js) and not awaited by the tick, so — ASS-494's rule — started
+  // untimed: a slow check shows as its 'script' duration line, not in the tick's timings.
+  ctx.succeeds = (argv, vm, who) => untimed(() => scriptSucceeds(ctx, argv, vm, who));
   // ASS-457/458: a load that fails — an fs error or a file that will not
   // parse, even read again (read.js readJson) — is the data failing to read:
   // marked (error.dataTrouble) and kept for the tick (ctx.trouble), which then
   // stops (see tick). A good load keeps harness.json's
   // data-unreadable-exit-seconds for while one does not.
-  ctx.load = () => {
+  // ASS-494: within a deeper timed sub-routine, timed as '<parent key>/load' (tick-stats.js timeHere); tick() times
+  // each phase's own load apart, as '<phase>/load'.
+  ctx.load = () => timeHere(ctx.tickTimes, 'load', loadNow);
+  const loadNow = () => {
     let state;
     try { state = loadState(ctx.paths); } catch (error) {
       if (error instanceof SyntaxError || UNREADABLE_CODES.has(error?.code)) ctx.trouble ??= (error.dataTrouble = { file: error.file ?? error.path ?? ctx.paths.assignments, reason: error.message });
@@ -185,7 +194,8 @@ export function createContext({ root, env = process.env, command, log = () => {}
   ctx.stopAgents = () => { for (const live of ctx.agents.values()) live.agent.stop(); };
   // stopScripts() — each script step's command still running (cli.js
   // runScript, ctx.scripts; ASS-328: run in the background, so control can
-  // exit while one runs) SIGTERMed, its process group with it: the next
+  // exit while one runs), and each script-succeeds check (cli.js
+  // scriptSucceeds, ASS-493: in ctx.scripts too), SIGTERMed, its process group with it: the next
   // control, remembering none of it, runs the step's script again
   // (steps.js), and the two never run at once.
   // scriptWait — how long a script step's command is waited for in the tick
@@ -198,6 +208,13 @@ export function createContext({ root, env = process.env, command, log = () => {}
   // is wrapping more calls in it. `background` marks one that starts work it does not await.
   ctx.tickTimes = newTickTimes();
   ctx.timed = (phase, name, fn, options) => timeCall(ctx.tickTimes, phase, name, fn, options);
+  // timedHere(name, fn) — ASS-494: fn() timed under '<parent key>/<name>' within a deeper timed sub-routine (its
+  // helpers, its per-item loop bodies), just called elsewhere (tick-stats.js timeHere): synchronous or not, as fn is,
+  // and nothing awaited that the caller does not await. untimed(fn): fn() and all it starts left untimed — for work
+  // started in the background and not awaited, which timing must never wrap (its depth counting assumes calls awaited
+  // in turn).
+  ctx.timedHere = (name, fn) => timeHere(ctx.tickTimes, name, fn);
+  ctx.untimed = untimed;
   // attempt(phase, what, fn) — fn() awaited; what it throws is logged under
   // "error" as "<phase> <what>: <message>", so one failing item leaves the
   // rest of its phase to run. ASS-457: but the data failing to read
@@ -231,7 +248,14 @@ const PHASE_OF = new Map(Object.entries({
   supervise: { superviseAgents },
   dispatch: { dispatch },
 }).flatMap(([phase, calls]) => Object.entries(calls).map(([name, fn]) => [fn, { phase, name }])));
-const BACKGROUND = new Set([superviseVms, runSteps]);
+// ASS-497: CHECKS, the periodic checks that call out (background-checks.js), start their jobs and return a promise
+// of them, which the tick does not await: only their start is timed, and they are marked background too.
+const CHECKS = new Set([detectReverts, checkGcloud, checkGlab, checkUsage, checkApiCost, checkPushAccount]);
+const BACKGROUND = new Set([superviseVms, runSteps, ...CHECKS]);
+// ASS-494: those timed a level deeper — their helpers, per-item loop bodies, agent.sh calls, scripts and loads
+// (ctx.timedHere, ctx.cli, ctx.script, ctx.load; ASS-493: ctx.succeeds runs untimed in the background). detectReverts
+// is not one: ASS-497 runs its work as a background job, which is never timed.
+const DEEPER = new Set([runSteps, finishEnded]);
 
 // tick(ctx) — the twenty-four phases, in order, each reading the data afresh; a
 // phase that throws is logged under "error" and the next still runs. The
@@ -255,7 +279,14 @@ const BACKGROUND = new Set([superviseVms, runSteps]);
 // agents are left be: no phase finishes, tends or stops them meanwhile.
 //
 // ASS-490: every call it makes is timed (ctx.timed), its times left in
-// ctx.tickTimes (tick-stats.js newTickTimes) for main.js's figures.
+// ctx.tickTimes (tick-stats.js newTickTimes) for main.js's figures. ASS-494:
+// each phase's ctx.load() timed apart, as '<phase>/load' (timeSync, not
+// awaited); runSteps and finishEnded timed a level deeper (DEEPER).
+//
+// ASS-497: the checks that call out — reverts, the gcloud and glab logins,
+// Claude usage, API cost, push account (CHECKS) — start their due work as
+// background jobs (background-checks.js) and the tick goes on without waiting
+// for them; the credentials check stays awaited, as it gates this tick's dispatch.
 export async function tick(ctx) {
   const now = ctx.now().getTime();
   let held = false;
@@ -269,12 +300,17 @@ export async function tick(ctx) {
           await ctx.attempt('disk', 'check', () => checkDisk(ctx));
           held = diskHeld({ diskSpace: readDiskSpace(ctx.paths.diskSpace) });
         });
-        await ctx.timed('steps', 'checkCredentials', () => ctx.attempt('credentials', 'check', () => checkCredentials(ctx, ctx.load())));   // ASS-395: a project held by its credentials starts no new work (dispatch.js, steps.js)
+        // ASS-395: a project held by its credentials starts no new work (dispatch.js, steps.js). ASS-497: so, unlike the
+        // checks that call out (CHECKS), it stays awaited: this tick's dispatch reads the hold its check has just recorded.
+        await ctx.timed('steps', 'checkCredentials', () => ctx.attempt('credentials', 'check', () => checkCredentials(ctx, ctx.load())));
         if (ctx.trouble) break;
       }
       if ((ctx.drain || held) && NEW_WORK.has(phase)) continue;
       try {
-        await ctx.timed(PHASE_OF.get(phase).phase, PHASE_OF.get(phase).name, () => phase(ctx, ctx.load()), { background: BACKGROUND.has(phase) });
+        const { phase: timedAs, name } = PHASE_OF.get(phase);
+        const state = timeSync(ctx.tickTimes, timedAs, 'load', () => ctx.load());   // ASS-494: timed apart, in the phase's time and not its sub-routine's
+        const call = CHECKS.has(phase) ? () => { phase(ctx, state); } : () => phase(ctx, state);   // ASS-497: a check's jobs not awaited
+        await ctx.timed(timedAs, name, call, { background: BACKGROUND.has(phase), deeper: DEEPER.has(phase) });
       } catch (error) {
         const trouble = troubleOf(ctx, error);
         if (trouble) { ctx.trouble ??= trouble; break; }
