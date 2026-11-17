@@ -8,8 +8,9 @@
 # (ci-checks.json, src/agent-cli/ci-check-commands.js) and the checks that
 # need it, e.g. `static-policy-gate (example-project, example-corpus and 24
 # more)`.
-# stdin two lines: in-vm/agent.sh in base64, then the project's
-# golden-image/workstation-tools.sh in base64 (an empty line without one);
+# stdin three lines: in-vm/agent.sh in base64, then the project's
+# golden-image/workstation-tools.sh in base64 (an empty line without one),
+# then (ASS-477) on-workstation/docker-credential-harness in base64;
 # then (ASS-462) one line per golden-image file shipped beside it,
 # `<name> <base64>`.
 # Prints one JSON line, { ok, version, home, runtime, boot-id, did: [what it
@@ -28,9 +29,18 @@
 #                     sources a file shared with provision.sh as on the host
 #   ~/harness/env     sourced by the harness's sessions alone (ASS-435): PATH
 #                     with ~/harness/bin first, HARNESS_RUNTIME, and the
-#                     runtime folder's env (the credentials) when it holds one.
-#                     The owner's shell files are never edited: their own
-#                     sessions never see the harness's bin folder.
+#                     runtime folder's env (the credentials) when it holds one,
+#                     and (ASS-477) DOCKER_CONFIG ~/harness/docker once it holds
+#                     a config.json. The owner's shell files are never edited:
+#                     their own sessions never see the harness's bin folder.
+#   ~/harness/docker  (ASS-477) the harness's Docker config, when the project's
+#                     registry has an Artifact Registry upstream
+#                     (HARNESS_WS_REGISTRY, its host): the owner's
+#                     ~/.docker/config.json with that host's credential helper
+#                     ~/harness/bin/docker-credential-harness (the workstation's
+#                     service account's token from the metadata server), its
+#                     other entries linked (docker-credential-harness
+#                     configure); removed when the project has no upstream.
 #   ~/harness/setup.json  the setup last completed: { version, boot-id, runtime }
 # Each file is written only when its content differs, and each tool installed
 # only when it is not on PATH already, so a rerun with nothing missing changes
@@ -117,6 +127,7 @@ first_line() { local l; l="$(printf '%s\n' "$1" | grep -m1 -v '^[[:space:]]*$')"
 
 IFS= read -r agent_b64 || true
 IFS= read -r tools_b64 || true
+IFS= read -r helper_b64 || true
 files=()
 while IFS=' ' read -r name b64 || [[ -n "${name-}" ]]; do [[ -z "$name" ]] || files+=("$name" "$b64"); done
 mkdir -p "$H" "$B" "$L" "$T" || { bad "$H" "could not be made"; finish; }
@@ -235,7 +246,32 @@ export HARNESS_RUNTIME=$(printf '%q' "$R")
 case ":\$PATH:" in *":\$HOME/harness/bin:"*) ;; *) export PATH="\$HOME/harness/bin:\$PATH" ;; esac
 export DISABLE_AUTOUPDATER=1
 if [ -r "\$HARNESS_RUNTIME/env" ]; then set -a; . "\$HARNESS_RUNTIME/env"; set +a; fi
+if [ -r "\$HOME/harness/docker/config.json" ]; then export DOCKER_CONFIG="\$HOME/harness/docker"; fi
 EOF
+
+# ASS-477: the agents' own pulls from the project's Artifact Registry (docker pull, docker compose up, devcontainer
+# builds) as the workstation's service account, not the owner's gcloud login, which lapses under Workspace session
+# control: the credential helper installed, the harness's Docker config written from the owner's (configure, rerun
+# at each step's claim to follow the owner's changes), and the helper checked to get a token from the metadata server
+# — a failure fails setup naming it, as a missing tool does. The token itself never reaches the output.
+if [[ -z "$helper_b64" ]]; then bad docker-credential-harness "workstation:setup sent no docker-credential-harness"
+else
+  printf '%s' "$helper_b64" | base64 -d | put "$B/docker-credential-harness" 755 && done_ "installed the harness's Docker credential helper ($B/docker-credential-harness)"
+  registry="${HARNESS_WS_REGISTRY-}"
+  if [[ -n "$registry" ]]; then
+    was="$(cat "$H/docker/config.json" 2>/dev/null)"
+    if ! out="$(docker-credential-harness configure "$registry" 2>&1)"; then bad "Docker config" "the harness's ($H/docker) could not be written: $(first_line "$out")"
+    else
+      [[ -z "$out" ]] || printf '%s\n' "$out" >&2
+      [[ "$(cat "$H/docker/config.json" 2>/dev/null)" == "$was" ]] || done_ "wrote the harness's Docker config ($H/docker), $registry's credentials the workstation's service account's"
+    fi
+    out="$(printf '%s\n' "$registry" | docker-credential-harness get 2>&1)"
+    grep -q '"Secret":"[^"]' <<< "$out" || bad docker-credential-harness "gets no token for $registry: $(first_line "$out")"
+    out=""
+  elif [[ -d "$H/docker" ]]; then
+    rm -rf "$H/docker" && done_ "removed the harness's Docker config ($H/docker): the project's registry has no upstream"
+  fi
+fi
 
 # Docker: the workstation config's to give; checked, never installed.
 if ! has docker; then

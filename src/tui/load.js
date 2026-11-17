@@ -202,6 +202,24 @@ export const loadHarness = dir => {
   return { agentsGridColumns: harness['agents-grid-columns'] ?? 3, agentsGridRows: harness['agents-grid-rows'] ?? 2 };
 };
 
+// loadDownloadInterval(dir) — harness.json's download-updates-interval-in-minutes
+// (beside the projects folder `dir`), how often the downloader reads Jira and
+// the merge requests, which the Performance screen's staleness is measured
+// against (ASS-479); null without the file or a positive number, the screen
+// then taking the downloader's own default.
+export const loadDownloadInterval = dir => {
+  const minutes = Number(harnessOf(dir)['download-updates-interval-in-minutes']);
+  return minutes > 0 ? minutes : null;
+};
+
+// analyticsFiles(projectDir) — what loadAnalytics reads, to watch while the
+// Performance screen is open (ASS-479), and the analytics folder itself, so
+// its first files are seen even before it is there.
+export const analyticsFiles = projectDir => [
+  join(projectDir, 'analytics'), ...['tickets.json', 'sprints.json', 'merge-requests.json'].map(f => join(projectDir, 'analytics', f)),
+  join(projectDir, 'team.json'), join(projectDir, 'ticket-system-account-id'),
+];
+
 // loadModelUsage(dir) — what the tiles' context % and cost need (ASS-190),
 // `dir` the projects folder, as loadHarness's (unlike loadApiCost's data
 // folder): prices, harness.json's model-prices, and windows, the learned

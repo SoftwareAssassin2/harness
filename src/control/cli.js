@@ -14,7 +14,10 @@ const show = argv => argv.map(a => (/\s/.test(a) ? JSON.stringify(a) : a)).join(
 // agent-cli's path overrides, for tests) and `env` over it (a move's
 // MOVE_CAUSE, moves.js), logging "agent.sh <args>" and any
 // stderr under the phase "cli". Resolves to its stdout; rejects, the stderr
-// in the message, when it exits with anything but 0.
+// in the message, when it exits with anything but 0 — its exit status the
+// error's `code` (ASS-473: workstation:claim's 4, none free, and 5, an image
+// missing on the workstation, told apart by workstation-steps.js; until then
+// no `code` was ever set, so a 4 was taken for a failure).
 export function runCli(ctx, args, env) {
   ctx.log('cli', `agent.sh ${show(args)}`);
   return new Promise((resolve, reject) => {
@@ -22,6 +25,7 @@ export function runCli(ctx, args, env) {
       if (stderr.trim()) ctx.log('cli', `stderr: ${stderr.trim().replace(/\n/g, ' | ')}`);
       if (!error) return resolve(stdout);
       const failure = new Error(`agent.sh ${show(args)}: ${stderr.trim() || error.message}`);
+      if (typeof error.code === 'number') failure.code = error.code;
       // ASS-457 AC4: a write that failed for the data folder being gone stops the tick, as a failed read does (tick.js).
       const trouble = troubleOf(ctx, failure);
       if (trouble) ctx.trouble ??= trouble;

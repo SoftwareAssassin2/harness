@@ -29,19 +29,31 @@
 #     tag-less pinned image keeps zot's name) — so a tag Artifact Registry
 #     lacks but zot has still arrives — why the registry failed said.
 # docker pull's own check keeps an image already there at the same digest
-# from being downloaded again (said "up to date"). A pull that fails both
-# ways leaves the workstation the image it has.
+# from being downloaded again (said "up to date").
+#
+# ASS-473 AC1: each source's pull is tried 3 times, waiting
+# HARNESS_WS_PULL_RETRY_SECONDS (5) and then twice that between tries,
+# before the image goes on to the next source (or counts as failed): a
+# dropped connection part way ("httpReadSeeker: failed open: failed to do
+# request", a ticket's placement on 2026-11-15) is no longer the end of
+# it. A source that says it has no such image (manifest unknown, not found)
+# is not asked again: another try would only say the same. Each try that
+# fails and is tried again is logged. A pull that fails every way leaves the
+# workstation the image it has, and says whether it has one (AC2): `kept`
+# when the image is there (by its name, at an older version, or at its
+# pinned digest — a warning, as on a VM), `missing` when it is not, which
+# fails the step's claim (wsv_pull_images).
 #
 # Output: per image, one line on stderr for the log and one result line on
 # stdout,
-#   !pull <TAB> <image> <TAB> registry|zot|failed <TAB> <seconds> <TAB> downloaded|up-to-date|"" <TAB> <why>
+#   !pull <TAB> <image> <TAB> registry|zot|failed <TAB> <seconds> <TAB> downloaded|up-to-date|kept|missing <TAB> <why>
 # <why> empty for a pull from the registry, else why zot (or nothing) was
-# used. ASS-473 builds on pull_one (retries; a missing image failing the
-# claim). Exit 0 whatever the pulls did; 1 only on bad arguments.
+# used. Exit 0 whatever the pulls did; 1 only on bad arguments.
 #
 # Tests stand a folder in for the workstation (test/support/fake-ssh.js):
 # HARNESS_WS_METADATA_URL replaces the metadata server's
-# (http://metadata.google.internal). A real ssh session never carries it.
+# (http://metadata.google.internal), HARNESS_WS_PULL_RETRY_SECONDS the wait
+# between tries. A real ssh session carries neither.
 set -uo pipefail
 umask 077
 [[ $# -ge 3 ]] || { echo "usage: pull-images.sh <upstream-host> <zot-port> <local-namespace> <image>…" >&2; exit 1; }
@@ -77,6 +89,37 @@ pull() {
   return 1
 }
 
+# tries <what> <command>… — the command (a source's pull: it sets $why when it fails) run up to 3 times (ASS-473
+# AC1), waiting $retry seconds and then twice that between tries, each failure tried again logged; not again when
+# the source says it has no such image. Fails, $why the last try's, when every try failed.
+retry="${HARNESS_WS_PULL_RETRY_SECONDS:-5}"
+tries() {
+  local what="$1" try wait="$retry"; shift
+  for try in 1 2 3; do
+    "$@" && return 0
+    [[ $try -lt 3 ]] || break
+    if grep -qiE 'manifest unknown|not found|no such image' <<< "$why"; then return 1; fi
+    echo "pull-images: $what failed (try $try of 3): $why; trying again in ${wait}s" >&2
+    sleep "$wait"; wait=$(( wait * 2 ))
+  done
+  why="$why (3 tries)"
+  return 1
+}
+
+# from_registry <image> — the service account's token asked for, then the pull from Artifact Registry with it.
+from_registry() { sa_login && pull "$1" "$config"; }
+
+# present <image> — the workstation's Docker has the image: by its name (any version, its digest left off when it
+# has a tag), at its pinned digest, or under zot's name for a pinned one with no tag (from_zot keeps that name).
+present() {
+  local image="$1" rest="${1#"$host"/}" named
+  named="${rest%%@*}"
+  if [[ "${named##*/}" == *:* ]]; then docker image inspect "${image%@*}" >/dev/null 2>&1 && return 0; fi
+  [[ "$rest" == *@* ]] || { docker image inspect "$image" >/dev/null 2>&1; return; }   # neither: docker's :latest
+  docker image inspect "$image" >/dev/null 2>&1 \
+    || { [[ -n "$zot" ]] && docker image inspect "127.0.0.1:$zot/${rest%%@*}@${rest#*@}" >/dev/null 2>&1; }
+}
+
 # from_zot <ref in zot> <image> — pulled through zot and, when <image> has a tag, tagged as it (its digest left off:
 # docker tags no digest).
 from_zot() {
@@ -85,7 +128,7 @@ from_zot() {
   [[ "${named##*/}" != *:* ]] || docker tag "$1" "$named" >/dev/null 2>&1 || { why="pulled $1 but could not tag it $named"; return 1; }
 }
 
-# pull_one <image> — sets $source (registry, zot or failed), $status and $why.
+# pull_one <image> — sets $source (registry, zot or failed), $status and $why; each source tried 3 times (tries).
 pull_one() {
   local image="$1" rest path tag="" digest="" ref registry_why local_why=""
   source=failed status="" why=""
@@ -95,14 +138,14 @@ pull_one() {
   if [[ -n "$zot" && -n "$tag" && -z "$digest" ]] \
     && curl -fsI -o /dev/null --max-time 10 -H "$accept" "http://127.0.0.1:$zot/v2/$ns/$path/manifests/$tag" 2>/dev/null; then
     ref="127.0.0.1:$zot/$ns/$path:$tag"
-    if from_zot "$ref" "$image"; then source=zot why="a local rebuild (registry:push) in zot, which wins over Artifact Registry's"; return 0; fi
+    if tries "pulling $image's local rebuild from zot" from_zot "$ref" "$image"; then source=zot why="a local rebuild (registry:push) in zot, which wins over Artifact Registry's"; return 0; fi
     local_why="its local rebuild in zot ($ref) could not be pulled: $why; "
   fi
-  if sa_login && pull "$image" "$config"; then source=registry why="$local_why"; return 0; fi
+  if tries "pulling $image from Artifact Registry" from_registry "$image"; then source=registry why="$local_why"; return 0; fi
   registry_why="$local_why""Artifact Registry: $why"
   [[ -n "$zot" ]] || { why="$registry_why; and the project has no zot to fall back on"; return 0; }
   if [[ -n "$digest" ]]; then ref="127.0.0.1:$zot/$path@$digest"; else ref="127.0.0.1:$zot/$path${tag:+:$tag}"; fi
-  if from_zot "$ref" "$image"; then source=zot why="$registry_why"
+  if tries "pulling $image through zot" from_zot "$ref" "$image"; then source=zot why="$registry_why"
   else why="$registry_why; zot ($ref): $why"; fi
 }
 
@@ -114,7 +157,8 @@ for image in "$@"; do
   case "$source" in
     registry) echo "pulled $image from Artifact Registry in ${took}s ($said)" >&2 ;;
     zot) echo "pulled $image through zot in ${took}s ($said): $why" >&2 ;;
-    *) echo "could not pull $image (${took}s): $why; the workstation keeps the image it has" >&2 ;;
+    *) if present "$image"; then status=kept; echo "could not pull $image (${took}s): $why; the workstation keeps the image it has" >&2
+       else status=missing; echo "could not pull $image (${took}s): $why; the workstation has no such image" >&2; fi ;;
   esac
   printf '!pull\t%s\t%s\t%s\t%s\t%s\n' "$image" "$source" "$took" "$status" "$why"
 done

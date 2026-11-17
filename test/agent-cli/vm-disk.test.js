@@ -187,6 +187,19 @@ test('ASS-325 AC2: vm:delete p <vm> deletes one of p\'s stopped VMs whose variat
   assert.deepEqual(['abc-3-b', 'abc-3-a', 'abc-4-a', 'xyz-1-a', 'golden-p'].map(d.exists), [true, true, true, true, true]);
 });
 
+// ASS-480 AC1: a VM a step's end is pending on (control's step-ends.json: a step ran in it whose vm:step-end has not
+// succeeded) is never deletable, whatever its variation's step, so make_room and vm:reclaim-all leave it, nor will
+// vm:delete; once the end has run (the record gone) it is as before.
+test('ASS-480 AC1: a stopped VM at a vm: released step is not deletable while a step\'s end is pending on it', async () => {
+  const d = disk();
+  edit(d.at('engines', 'example-development', 'state-engine.json'), e => { e.steps.find(s => s.id === 'local-testing').vm = 'released'; });
+  d.vm('abc-3-c', 1, 'Stopped'); d.record('C', 'abc-3-c');   // at local-testing: released
+  writeFileSync(d.at('projects', 'p', 'step-ends.json'), JSON.stringify({ ends: { 'ABC-3 C': { key: 'ABC-3', variation: 'C', vm: 'abc-3-c', step: 'Build', completed: true } } }));
+  assert.deepEqual((await d.inventory()).vms.filter(v => v.deletable).map(v => v.name), [], 'its step\'s end pending: kept');
+  writeFileSync(d.at('projects', 'p', 'step-ends.json'), JSON.stringify({ ends: {}, recovered: '2026-11-17T00:00:00Z' }));
+  assert.deepEqual((await d.inventory()).vms.filter(v => v.deletable).map(v => v.name), ['abc-3-c'], 'the end run: deletable again');
+});
+
 test('two vm:creates of one VM at once (Setup\'s and control\'s) clone it once, under the project\'s VM lock, and both succeed', async () => {
   const d = disk();
   d.mount();

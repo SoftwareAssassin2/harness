@@ -267,6 +267,20 @@ and a workstation seat ⛅, the footer's gcp workstations box shows each
 workstation's `1/1 seats` (or `seat lost`), and the models box, in
 `vm+workstation` mode, `vm seats: <used>/<VM seats>`.
 
+**A step's end runs where its step ran (ASS-480).** A step run in a
+ticket's VM keeps its commits there until its end pushes them, so control
+never stops, deletes or reclaims that VM until the end has run — it starts
+a stopped one for it — recording each pending end in
+`data/projects/<project>/step-ends.json` so a restart of control picks it up
+again. A pending end whose VM was deleted anyway can never run: control
+logs it once as an error, naming the step and the branches its unpushed
+commits were on, shows it on the ticket's Health, and drops it. A step's end
+pushes only its own ticket's branches (ASS-478); another ticket's local
+branch in a workstation's shared repositories that has parted from GitLab's
+(so it could never be pushed) is set aside under
+`refs/harness/stray/<branch>/<time>` in that repository, never pushed, and
+reported on that ticket's Health.
+
 ## Arm64 builds of images a project publishes for amd64 only
 
 Ticket VMs are arm64 (Lima `vz` on Apple Silicon). An image a project pins

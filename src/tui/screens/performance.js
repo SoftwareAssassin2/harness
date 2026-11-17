@@ -12,7 +12,7 @@ import { performance, COLUMNS, cellLines, activeSprint, dateIn } from '../../ana
 import { visible, pad, wrap } from '../text.js';
 import { thumb } from '../table.js';
 import { below, headerLines, platform, jiraTokenTodo } from './frame.js';
-import { clamp, red, gray } from './shared.js';
+import { clamp, red, gray, yellow, since } from './shared.js';
 
 export const HEADERS = ['Developer', ...COLUMNS.map(c => c.title)];
 
@@ -121,6 +121,57 @@ export function noticeLines({ newMembers, unknownAuthors }, columns) {
   return parts.length ? wrap(`Check team.json — ${parts.join('; ')}.`, Math.max(20, columns)) : [];
 }
 
+// ASS-479: how old the numbers are, always on show under the header. The
+// downloader stamps analytics/tickets.json with fetched-through (the time just
+// before its last good Jira read) and merge-requests.json with a
+// fetched-through per repository (the newest is when the merge requests were
+// last read). Each is shown in the operator's time zone with its age; the
+// older of the two decides the colour: gray while fresh, yellow once stale,
+// red once very stale. Stale is past twice the downloader's
+// download-updates-interval-in-minutes but never under 30 minutes (so a
+// Jira hiccup, a slow cycle or the Mac waking from sleep is not flagged at
+// the default 4-minute interval), very stale past four times that (2 hours
+// by default).
+export const DEFAULT_INTERVAL_MINUTES = 4;   // the downloader's own default (src/downloader/main.js)
+export function staleAfter(intervalMinutes = DEFAULT_INTERVAL_MINUTES) {
+  const interval = Number(intervalMinutes) > 0 ? Number(intervalMinutes) : DEFAULT_INTERVAL_MINUTES;
+  const stale = Math.max(30, 2 * interval) * 60_000;
+  return { stale, veryStale: 4 * stale };
+}
+
+// "16:12 UTC" today in `zone`, "2026-11-15 16:12 UTC" on another day.
+function localTime(ms, now, zone) {
+  const parts = Object.fromEntries(new Intl.DateTimeFormat('en-US', { timeZone: zone, hour: '2-digit', minute: '2-digit', hourCycle: 'h23', timeZoneName: 'short' })
+    .formatToParts(new Date(ms)).map(p => [p.type, p.value]));
+  const day = dateIn(ms, zone);
+  return `${day === dateIn(now, zone) ? '' : `${day} `}${parts.hour}:${parts.minute} ${parts.timeZoneName}`;
+}
+const ago = (ms, now) => (now - ms < 60_000 ? 'just now' : `${since(new Date(ms).toISOString(), now)} ago`);
+const durationText = ms => (ms % 3_600_000 ? `${ms / 60_000}m` : `${ms / 3_600_000}h`);
+
+// dataAge(data, { now, timeZone, intervalMinutes }) — { level, text }: level
+// 'none' (no analytics yet), 'fresh', 'stale' or 'very-stale'; text the line
+// uncoloured. data: loadAnalytics' result, null when there is none.
+export function dataAge(data, { now, timeZone, intervalMinutes }) {
+  if (!data) return { level: 'none', text: 'Data updated: never — no analytics data downloaded yet' };
+  const at = value => { const ms = Date.parse(value ?? ''); return Number.isNaN(ms) ? null : ms; };
+  const tickets = at(data.tickets?.['fetched-through']);
+  const reads = Object.values(data.mergeRequests?.['fetched-through'] ?? {}).map(at).filter(ms => ms != null);
+  const mrs = reads.length ? Math.max(...reads) : null;
+  const parts = [`tickets ${tickets == null ? 'never read' : `${localTime(tickets, now, timeZone)} (${ago(tickets, now)})`}`,
+    ...(mrs == null ? [] : [`merge requests ${localTime(mrs, now, timeZone)} (${ago(mrs, now)})`])];
+  const { stale, veryStale } = staleAfter(intervalMinutes);
+  const age = now - Math.min(tickets ?? -Infinity, mrs ?? Infinity);
+  const level = age > veryStale ? 'very-stale' : age > stale ? 'stale' : 'fresh';
+  const note = level === 'very-stale' ? ` — very stale, over ${durationText(veryStale)} old` : level === 'stale' ? ` — stale, over ${durationText(stale)} old` : '';
+  return { level, text: `Data updated: ${parts.join(', ')}${note}` };
+}
+const LEVEL_COLORS = { none: gray, fresh: gray, stale: yellow, 'very-stale': red };
+const updatedLine = (data, size, state) => {
+  const { level, text } = dataAge(data, { now: +(size.now ?? Date.now()), timeZone: zoneOf(size), intervalMinutes: state.downloadInterval });
+  return LEVEL_COLORS[level](text);
+};
+
 // The keys, as the line over the grid shows them.
 const KEYS = '[ previous sprint   ] next sprint   t this sprint   l loads again';
 const FOCUSED_KEYS = '   enter sets from/to dates   ↑/↓ scroll';
@@ -144,13 +195,13 @@ function layout(state, size) {
   // ASS-475: while Jira rejects the analytics token, a red line first: the numbers stop at the last good read.
   const through = loaded?.data?.tickets?.['fetched-through'];
   const warn = project?.jiraTokenRejected ? wrap(`${jiraTokenTodo(project.jiraTokenRejected)}.${through ? ` These numbers stop at ${String(through).slice(0, 16).replace('T', ' ')} UTC.` : ''}`, Math.max(20, columns || Infinity)).map(red) : [];
-  const message = text => ({ head: [...warn, text, ...(third ? [third] : [])], grid: null, notice: [], height: 0, last: 0 });
+  const message = (text, lead = []) => ({ head: [...warn, ...lead, text, ...(third ? [third] : [])], grid: null, notice: [], height: 0, last: 0 });
   if (!project) return message('No project selected.');
   if (!loaded) return message(`loading ${project.id}'s analytics…`);
   if (loaded.error) return message(red(loaded.error));
-  if (!loaded.data) return message(`No analytics data for ${project.name ?? project.id} yet: the grid fills once its tickets are downloaded (analytics/tickets.json).`);
+  if (!loaded.data) return message(`No analytics data for ${project.name ?? project.id} yet: the grid fills once its tickets are downloaded (analytics/tickets.json).`, [updatedLine(null, size, state)]);   // ASS-479 AC3
   const result = worked(state, loaded.data, size);
-  const head = [...warn, result.header, keys, third];   // third: the form's keys or a message, else the blank line over the grid
+  const head = [...warn, result.header, updatedLine(loaded.data, size, state), keys, third];   // ASS-479: the data's age under the header   // third: the form's keys or a message, else the blank line over the grid
   const notice = noticeLines(result, columns);
   if (!result.rows.length) return { head: [...head, 'No developer moved a ticket or sub-task to Done, merged a merge request or has work in progress in this span.'], grid: null, notice, height: 0, last: 0 };
   const table = grid(result.rows, loaded.data.accountId ?? OPERATOR_ID);

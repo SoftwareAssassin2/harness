@@ -151,13 +151,13 @@ test('a project with no ticket-system-account-id (off-board) highlights the memb
 // AC4
 test('the header names the span: the active sprint to today by default', () => {
   assert.equal(header(onScreen()), 'Sprint 13: 2026-11-02 → 2026-11-12 (11 days)');
-  assert.match(lines(onScreen())[1], /\[ previous sprint {3}\] next sprint {3}t this sprint/);   // the keys, as other screens show theirs
+  assert.match(lines(onScreen())[2], /\[ previous sprint {3}\] next sprint {3}t this sprint/);   // the keys, as other screens show theirs
 });
 
 test('enter opens a from/to form on the span on show; dates typed and enter set any span', () => {
   const form = press(onScreen(), 'return');
   assert.deepEqual(form.performanceForm, { field: 'from', from: '2026-11-02', to: '2026-11-12' });
-  assert.match(lines(form)[1], /^From 2026-11-02█ {3}to 2026-11-12 {3}\(dates in UTC\)/);
+  assert.match(lines(form)[2], /^From 2026-11-02█ {3}to 2026-11-12 {3}\(dates in UTC\)/);
   const set = press(form, ...Array(10).fill('backspace'), ...typed('2026-11-03'), 'tab', ...Array(10).fill('backspace'), ...typed('2026-11-05'), 'return');
   assert.equal(set.performanceForm, null);
   assert.deepEqual(set.performanceSpan, { start: '2026-11-03', end: '2026-11-05' });
@@ -224,9 +224,9 @@ test('a grid taller than the screen scrolls under its headings, with a scrollbar
   assert.ok(far.performanceScroll < 999);                         // never past the end
 });
 
-test('a project with no analytics data yet says so in one line, with no grid', () => {
+test('a project with no analytics data yet says so in one line (under the ASS-479 data-age line), with no grid', () => {
   const out = lines(screen.analyticsLoaded({ ...base, screen: 'p' }, 'proj', { data: null }));
-  assert.deepEqual(out, ['No analytics data for Proj yet: the grid fills once its tickets are downloaded (analytics/tickets.json).']);
+  assert.deepEqual(out, ['Data updated: never — no analytics data downloaded yet', 'No analytics data for Proj yet: the grid fills once its tickets are downloaded (analytics/tickets.json).']);
   const whole = render(screen.analyticsLoaded({ ...base, screen: 'p' }, 'proj', { data: null }), SIZE).map(strip);
   assert.ok(!whole.some(l => l.includes('Developer')));
 });

@@ -208,7 +208,10 @@ ssh_repin() {
 # the variation's status that sets it deciding; a VM whose variation is at
 # one that sets either is in flight, whatever it is now. One that sets
 # `released` (ASS-325: QA, say, where control deletes it at once through
-# vm:delete) needs none, as one that sets no `vm`.
+# vm:delete) needs none, as one that sets no `vm`. ASS-480: nor is one
+# deletable while a step's end is pending on it (data/projects/<p>/
+# step-ends.json, control's: a step ran in it whose vm:step-end has not
+# succeeded — its commits not pushed yet), whatever its variation's step.
 # The limit is project.json's vm-disk-limit-gb (GB, 10^9 bytes), within
 # harness.json's, every project's default and ceiling: a project's above it
 # is held to it, with a warning.
@@ -353,14 +356,15 @@ reconcile_vms() {
     '. as $old | $l[0] as $l | $r[0] as $r
     | $m[0] | with_entries(.key as $n | .value = (($old[$n] // ($r[$n] + { "last-accessed": .value.accessed }))
       + { state: (if $blind and $old[$n].state then $old[$n].state else $l[$n].status end), "disk-bytes": .value.bytes }))'
-  jq -n --slurpfile vms "$file" --slurpfile s "$sprint" --slurpfile m <(printf '%s' "$measured") --argjson golden "$golden" --argjson build "$build" --arg current "$current_at" --slurpfile e <(engine_files "$project" | { mapfile -t list; jq -n 'reduce inputs as $e ({}; .[input_filename | split("/") | .[-2]] = ($e.steps // []))' /dev/null "${list[@]}"; }) \
+  local ends="$projects/$project/step-ends.json"; [[ -f "$ends" ]] || ends=/dev/null   # ASS-480: none: $pe[0] is null
+  jq -n --slurpfile vms "$file" --slurpfile s "$sprint" --slurpfile pe "$ends" --slurpfile m <(printf '%s' "$measured") --argjson golden "$golden" --argjson build "$build" --arg current "$current_at" --slurpfile e <(engine_files "$project" | { mapfile -t list; jq -n 'reduce inputs as $e ({}; .[input_filename | split("/") | .[-2]] = ($e.steps // []))' /dev/null "${list[@]}"; }) \
     --arg p "$project" --argjson limit "$limit" '
-    $s[0] as $sprint | $e[0] as $engines
+    $s[0] as $sprint | $e[0] as $engines | [($pe[0].ends // {})[] | .vm // empty] as $pending
     | def use($v): [$v["harness-status"] | recurse(.["sub-status"] // empty) | select(.state != null) | . as $l
       | ($engines[$l["state-engine"]] // [] | map(select(.id == $l.state)) | first | .vm) // empty] | last;
     def live($e): first(($sprint // {}) | (.features, .bugs, .spikes) // [] | .[] | select(.key | ascii_downcase == ($e.ticket | ascii_downcase))
       | .variations // [] | .[] | select(.name == $e.variation and (.["is-deleted"] | not))) // null;
-    ($vms[0] | to_entries | map({ name: .key } + .value | . + { deletable: (.state != "Running" and (live(.) as $v | $v == null or (use($v) | . == null or . == "released"))),
+    ($vms[0] | to_entries | map({ name: .key } + .value | . + { deletable: (.state != "Running" and (.name | IN($pending[]) | not) and (live(.) as $v | $v == null or (use($v) | . == null or . == "released"))),
         "golden-built-at": $m[0][.name]["built-at"], "old-generation": $m[0][.name].old })
       | sort_by(.["last-accessed"], .name)) as $list
     | ($m[0] | to_entries | group_by(.value.generation) | map({ generation: .[0].value.generation, "golden-built-at": .[0].value["built-at"],

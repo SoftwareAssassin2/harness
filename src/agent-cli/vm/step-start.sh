@@ -12,7 +12,10 @@ set -euo pipefail
 # GitLab's, made from the planned base when GitLab has none yet), the others
 # on master at the latest — as vm:refresh-repositories moves the others —
 # and each repository's git hooks set to refuse a commit on master (AC10,
-# git-hooks.sh). Every step commits and pushes its own work (AC9); its
+# git-hooks.sh). ASS-480: a stray local branch (another ticket's, or its own
+# parted from GitLab's with commits GitLab never had) is set aside under
+# refs/harness/stray/ first, never pushed, and listed in the summary's
+# set-aside. Every step commits and pushes its own work (AC9); its
 # matching vm:step-end commits what a completed step left, pushes and cleans
 # at the step's end, so nothing
 # a step did is lost wherever the next one runs. The VM must be running.

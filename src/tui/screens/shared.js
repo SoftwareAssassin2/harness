@@ -208,6 +208,7 @@ export const green = color('32');
 export const red = color('31');
 export const gold = color('38;2;255;215;0');
 export const gray = color('90');
+export const yellow = color('33');   // ASS-479: stale analytics on the Performance screen
 
 // "Thu Oct 1 @ 4:04 PM UTC"
 export function timestamp(now) {

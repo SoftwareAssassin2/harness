@@ -4,12 +4,12 @@
 // one column narrower than the terminal, so the rightmost column of the screen
 // stays blank (ASS-311). All behaviour lives in app.js.
 import { emitKeypressEvents } from 'node:readline';
-import { mkdirSync, readFileSync, rmSync, appendFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, rmSync, appendFileSync, existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { execFile, execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import { initialState, handleKey, render, decided, openRequested, controlStarted, controlExited, controlDraining, controlWaiting, controlRestarted, controlBack, BACK_MS, drawColumns } from './app.js';
-import { loadProjects, loadWorkflows, loadPauses, loadSelfHealing, loadAssignments, loadTransientEngines, loadChats, loadHarness, loadModelUsage, loadDiskSpace, loadAnalytics, watchFiles, dataFiles, keepSame, projectsChanged, activeSprintFile } from './load.js';
+import { loadProjects, loadWorkflows, loadPauses, loadSelfHealing, loadAssignments, loadTransientEngines, loadChats, loadHarness, loadDownloadInterval, analyticsFiles, loadModelUsage, loadDiskSpace, loadAnalytics, watchFiles, dataFiles, keepSame, projectsChanged, activeSprintFile } from './load.js';
 import { operatorNeededNotifier, headerWarningNotifier } from '../notify/notifier.js';
 import { startControl } from '../control/process.js';
 import { ender, stillNamed, vmStopper, goldenBuilds } from './shutdown.js';
@@ -62,7 +62,7 @@ let state = { ...initialState({
   disk: loadDiskSpace(DATA),
   menuHidden: true,   // / shows it
   features: loadFeatures(),   // read once, here (ASS-262)
-}), updatedAt: {} };
+}), updatedAt: {}, downloadInterval: loadDownloadInterval(join(DATA, 'projects')) };   // downloadInterval: ASS-479
 // When each project's own data last changed (see projectsChanged): from now, for every project at start.
 state = { ...state, updatedAt: Object.fromEntries(state.projects.map(p => [p.id, Date.now()])) };
 
@@ -338,6 +338,7 @@ function reload() {
       chats: loadChats(CHATS),
       modelUsage: loadModelUsage(join(DATA, 'projects')),
       disk: loadDiskSpace(DATA),
+      downloadInterval: loadDownloadInterval(join(DATA, 'projects')),   // ASS-479: the Performance screen's staleness
     };
   } catch { return; }
   const changed = Object.entries(loaded).map(([key, value]) => [key, keepSame(state[key], value)]).filter(([key, value]) => value !== state[key]);
@@ -400,8 +401,28 @@ function takeRequest() {
 // ASS-383: every project's active sprint.json too, not only the one on show,
 // so a ticket of another project becoming Operator Needed is seen at once,
 // and the request file a clicked notification writes (takeRequest).
+// The performance screen's analytics read without blocking (ASS-411), then drawn.
+function readAnalytics(id) {
+  loadAnalytics(join(DATA, 'projects', id)).then(data => ({ data }), error => ({ error: `${id}'s analytics: ${error.message}` }))
+    .then(result => { state = analyticsLoaded(state, id, result); draw(); });
+}
+// ASS-479: while the Performance screen is open, its project's analytics files
+// are watched on their own (not with the rest, so the large files never slow a
+// reload), and read again once they change — the data's age line and the grid
+// follow each download. Watched again once the analytics folder appears.
+let analyticsWatcher, analyticsWatching = '';
+function rewatchAnalytics() {
+  const id = state.screen === 'p' ? state.projects[state.project]?.id : null;
+  const dir = id && join(DATA, 'projects', id);
+  const key = id ? `${id}\n${existsSync(join(dir, 'analytics'))}` : '';
+  if (key === analyticsWatching) return;
+  analyticsWatcher?.close();
+  analyticsWatcher = id ? watchFiles(analyticsFiles(dir), () => { rewatchAnalytics(); if (state.screen === 'p' && state.projects[state.project]?.id === id) readAnalytics(id); }, { delay: 500 }) : null;
+  analyticsWatching = key;
+}
 let watcher, watching = '';
 function rewatch() {
+  rewatchAnalytics();
   const live = state.projects.map(p => activeSprintFile(join(DATA, 'projects', p.id))).filter(Boolean);
   const files = [...new Set([...dataFiles(ROOT, state), ...live, REQUEST])];
   if (files.join('\n') === watching) return;
@@ -538,9 +559,7 @@ stdin.on('keypress', (_, key) => {
   // says it is loading meanwhile, every other screen draws as before — or what
   // went wrong said.
   if (next.performanceLoad) {
-    const id = next.performanceLoad;
-    loadAnalytics(join(DATA, 'projects', id)).then(data => ({ data }), error => ({ error: `${id}'s analytics: ${error.message}` }))
-      .then(result => { state = analyticsLoaded(state, id, result); draw(); });
+    readAnalytics(next.performanceLoad);
     next = { ...next, performanceLoad: null };
   }
   // A ticket's screen opened: its chat briefed or caught up; a message typed there, to its agent (ASS-35).

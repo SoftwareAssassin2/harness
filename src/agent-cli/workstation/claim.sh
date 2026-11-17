@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Description: Claim a free GCP workstation of a project for one step of a ticket variation, its repositories on the variation's branches — workstation:claim <project> <ticket-key> <variation> [--workstation <id>]; prints { name, machine, credential-kind, pushed, … }, exits 4 when none is free.
+# Description: Claim a free GCP workstation of a project for one step of a ticket variation, its repositories on the variation's branches — workstation:claim <project> <ticket-key> <variation> [--workstation <id>]; prints { name, machine, credential-kind, pushed, … }, exits 4 when none is free, 5 when an image the step needs could not be pulled there and is not there.
 set -euo pipefail
 
 # ASS-468 AC1, AC2: a step's start. Control runs it as a step of the
@@ -23,7 +23,10 @@ set -euo pipefail
 # such branch yet; every other repository on master at the latest), each
 # repository's git hooks refusing a commit on master and naming the branch
 # to use (git-hooks.sh, AC10) (step-trees.sh). A failure part way gives the workstation back
-# (workstation:release's work) and fails (1). None free: exit 4, why each is
+# (workstation:release's work) and fails (1) — with 5 when an image of
+# images.txt could not be pulled there (each source tried 3 times) and the
+# workstation does not have it, its last line naming each image and its
+# error (ASS-473 AC2: no agent starts without its containers). None free: exit 4, why each is
 # not on stderr ("no workstation of <p>'s is free: <id>: held by <KEY> <v>;
 # …"), nothing claimed. ASS-469: --workstation <id> claims that workstation
 # or none — control's way to run a workstation-seat holder's step on its

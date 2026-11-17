@@ -55,10 +55,13 @@ export function fakeWorkstation(base = process.env) {
 // The workstation image's docker: `docker info` answers, unless the workstation's docker-broken marker is there.
 // ASS-472: `docker pull <ref>` asks the registry the reference names for its manifest — a 127.0.0.1:<port> one
 // (zot through the connection's forward) as named, any other host at $FAKE_AR_URL (fake-registry.js standing in for
-// Artifact Registry), with the auth DOCKER_CONFIG's config.json holds for the host — and keeps "<name> <digest>"
+// Artifact Registry), with the auth DOCKER_CONFIG's config.json holds for the host (ASS-477: or the credential
+// helper its credHelpers name for the host, else its credsStore, asked as Docker asks one — a helper that fails
+// fails the pull, "error getting credentials") — and keeps "<name> <digest>"
 // in the workstation's `images` file (its Docker's images): "Image is up to date" when it holds that digest
 // already, else "Downloaded newer image". Every pull is logged to its `pulls` file as "<ref> <auth: yes|no>".
-// `docker tag <src> <dst>` gives dst src's digest. Anything else answers nothing.
+// `docker tag <src> <dst>` gives dst src's digest. ASS-473: `docker image inspect <ref>` succeeds when it holds the
+// image — by name, or at the digest a <name>@<digest> names. Anything else answers nothing.
 const DOCKER = `#!/bin/bash
 ws="$(dirname "$0")/.."
 if [ -e "$ws/docker-broken" ]; then echo "permission denied while trying to connect to the Docker daemon socket at unix:///var/run/docker.sock: Get \\"http://%2Fvar%2Frun%2Fdocker.sock/v1.47/info\\": dial unix /var/run/docker.sock: connect: permission denied" >&2; exit 1; fi
@@ -70,7 +73,15 @@ case "$1" in
     [[ "$ref" != *@* ]] || digest="\${ref#*@}"
     host="\${name%%/*}" rest="\${name#*/}" tag=latest
     if [[ "\${rest##*/}" == *:* ]]; then tag="\${rest##*:}" rest="\${rest%:*}"; fi
-    auth="$(sed -n "s/.*\\"$host\\":{\\"auth\\":\\"\\([^\\"]*\\)\\".*/\\1/p" "\${DOCKER_CONFIG:-$HOME/.docker}/config.json" 2>/dev/null)"
+    cfg="\${DOCKER_CONFIG:-$HOME/.docker}/config.json" auth=""
+    helper="$(jq -r --arg h "$host" '.credHelpers[$h] // .credsStore // empty' "$cfg" 2>/dev/null)"
+    if [ -n "$helper" ]; then
+      if ! creds="$(printf '%s\\n' "$host" | "docker-credential-$helper" get 2>/dev/null)"; then
+        echo "$ref no" >> "$ws/pulls"
+        echo "Error response from daemon: Get \\"https://$host/v2/\\": error getting credentials - err: exit status 1, out: \\\`$creds\\\`" >&2; exit 1
+      fi
+      auth="$(jq -j '"\\(.Username):\\(.Secret)"' <<< "$creds" | base64 | tr -d '\\n')"
+    else auth="$(jq -r --arg h "$host" '.auths[$h].auth // empty' "$cfg" 2>/dev/null)"; fi
     if [ -n "$auth" ]; then echo "$ref yes"; else echo "$ref no"; fi >> "$ws/pulls"
     case "$host" in 127.0.0.1:*) url="http://$host" ;; *) url="\${FAKE_AR_URL:-https://$host}" ;; esac
     h=(); [ -z "$auth" ] || h=(-H "Authorization: Basic $auth")
@@ -86,6 +97,13 @@ case "$1" in
     echo "\${digest:-$tag}: Pulling from $rest"
     if grep -qxF "$name $d" "$ws/images" 2>/dev/null; then echo "Status: Image is up to date for $ref"; else keep "$name" "$d"; echo "Status: Downloaded newer image for $ref"; fi
     echo "$ref" ;;
+  image)
+    [ "$2" = inspect ] || exit 0
+    ref="$3" name="\${3%%@*}"
+    if [[ "$ref" == *@* ]]; then grep -qxF "$name \${ref#*@}" "$ws/images" 2>/dev/null
+    else awk -v k="$name" '$1 == k { found = 1 } END { exit !found }' "$ws/images" 2>/dev/null; fi
+    [ $? -eq 0 ] || { echo "Error: No such image: $ref" >&2; exit 1; }
+    echo "[{}]" ;;
   tag)
     d="$(awk -v k="\${2%%@*}" '$1 == k { print $2 }' "$ws/images" 2>/dev/null)"
     [ -n "$d" ] || { echo "Error response from daemon: No such image: $2" >&2; exit 1; }

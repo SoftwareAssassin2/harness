@@ -7,7 +7,8 @@
 // "manifest unknown" — and, given a token, only with `Authorization: Basic
 // base64(oauth2accesstoken:<token>)`, else 401 (Artifact Registry as a
 // Docker config logged in with a service account's token; without, zot,
-// which asks for none). asked lists "<METHOD> <url>". fakeMetadata(token)
+// which asks for none). asked lists "<METHOD> <url>". ASS-473: flaky(n)
+// answers its next n manifest requests 503, as a registry dropping a pull. fakeMetadata(token)
 // is a GCE metadata server: the default service account's token, only with
 // Metadata-Flavor: Google; failing() makes it answer 500 until undone.
 // Each returns { url, port, close() }; await ready first.
@@ -18,8 +19,10 @@ const listen = server => new Promise(resolve => server.listen(0, '127.0.0.1', ()
 
 export async function fakeRegistry({ token = null } = {}) {
   const images = new Map(), asked = [];
+  let flaky = 0;
   const server = createServer((req, res) => {
     asked.push(`${req.method} ${req.url}`);
+    if (flaky > 0 && /\/manifests\//.test(req.url)) { flaky -= 1; res.writeHead(503); return res.end('{"errors":[{"code":"UNAVAILABLE","message":"service unavailable"}]}'); }
     if (token && req.headers.authorization !== `Basic ${Buffer.from(`oauth2accesstoken:${token}`).toString('base64')}`) {
       res.writeHead(401, { 'Content-Type': 'application/json' });
       return res.end('{"errors":[{"code":"UNAUTHORIZED","message":"authentication failed"}]}');
@@ -35,6 +38,7 @@ export async function fakeRegistry({ token = null } = {}) {
     port, url: `http://127.0.0.1:${port}`, asked,
     put: (path, reference, digest) => { images.set(`${path}:${reference}`, digest); if (!reference.startsWith('sha256:')) images.set(`${path}:${digest}`, digest); },
     remove: (path, reference) => images.delete(`${path}:${reference}`),
+    flaky: n => { flaky = n; },
     close: () => new Promise(resolve => server.close(resolve)),
   };
 }

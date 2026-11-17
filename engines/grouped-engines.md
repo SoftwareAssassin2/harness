@@ -1493,8 +1493,13 @@ installed (a rerun with nothing missing writes nothing):
   when the workstation had none.
 - `~/harness/env` — what the harness's sessions source (ASS-435): PATH with
   `~/harness/bin` first, `HARNESS_RUNTIME`, `DISABLE_AUTOUPDATER=1`, and the
-  runtime folder's `env` (the credentials) when there is one. The owner's
-  shell files, git identity, SSH keys and `~/workspaces` are never touched.
+  runtime folder's `env` (the credentials) when there is one, and (ASS-477)
+  `DOCKER_CONFIG=~/harness/docker` once that holds a config. The owner's
+  shell files, git identity, SSH keys, `~/.docker` and `~/workspaces` are
+  never touched.
+- `~/harness/bin/docker-credential-harness` and `~/harness/docker` (ASS-477)
+  — the agents' own Artifact Registry pulls as the workstation's service
+  account (below, "The agents' own pulls").
 - `~/harness/setup.json` — `{ version, boot-id, runtime }` of the last setup
   that completed.
 - `~/harness/golden-image` — the project's `workstation-tools.sh` and the
@@ -1703,10 +1708,69 @@ from being downloaded again. Each pull is logged (`vm:start: workstation
 zot in 12s (up to date): <why>`, `could not pull <image> (…): <why>`), then
 the run's counts; the workstation's live data (`workstations.json`) records
 the last run as `last-image-pull` `{ at, boot-id, seconds, from-registry,
-from-zot, failed, up-to-date, zot: [{ image, why }], failures: [{ image, why
-}] }` (with `error` when the session itself failed; the images are then
-tried again at the next claim). ASS-473 builds on it: retries, and a
-missing image failing the claim.
+from-zot, failed, up-to-date, missing, zot: [{ image, why }], failures: [{
+image, why, present }] }` (with `error` when the session itself failed; the
+images are then tried again at the next claim).
+
+**Retries, and a missing image (ASS-473).** 2026-11-15, a ticket's
+placement logged "httpReadSeeker: failed open: failed to do request" and
+went on without its images. Now each source's pull is tried 3 times,
+waiting 5s and then 10s between tries (`HARNESS_WS_PULL_RETRY_SECONDS`, for
+the tests), each retried failure logged — except when the source says it
+has no such image (`manifest unknown`, `not found`), which another try
+would only repeat. An image that still fails every way is then looked for
+in the workstation's Docker (`docker image inspect`: by name, at its pinned
+digest, or under zot's name for a tag-less pinned one):
+
+- **There, at an older version: a warning**, as on a VM (`… the workstation
+  keeps the image it has`); the claim goes on and the boot counts as pulled.
+- **Not there: the step's claim fails** — `workstation:claim` exits 5, its
+  last line naming each missing image with its error; the workstation is
+  given back (its holder cleared, the variation's `workstation` removed),
+  `images-boot-id` is not recorded, so the next claim pulls again. Control
+  (`workstation-steps.js`) tries the claim again after the usual backoff
+  (30s, doubling), the variation's Health meanwhile `Waiting for its
+  workstation: <id> lacks images its step needs, which could not be pulled:
+  <image> (<error>) …`, cleared once a claim succeeds. The workstation stays
+  usable, so its seat stays the ticket's (ASS-469: a seat is lost only for
+  a login to renew, a failed setup, or a workstation that cannot be
+  reached). No agent of the step starts meanwhile.
+
+VMs are unchanged: `vm:start` in a VM still warns on a failed pull (a VM's
+golden image already holds every image, ASS-70).
+
+**The agents' own pulls (ASS-477).** Pulling `images.txt` at a claim is
+not all: a step's agents pull too (`docker pull`, `docker compose up`,
+devcontainer builds), and with the owner's `~/.docker/config.json` the
+Artifact Registry host went to the owner's `gcloud` credential helper, whose
+login on the workstation lapses every few hours — those pulls failed. So the
+harness's sessions use a Docker config of their own:
+
+- `~/harness/bin/docker-credential-harness`
+  (`src/agent-cli/workstation/on-workstation/docker-credential-harness`,
+  shipped and installed by `workstation:setup`, part of its version) — a
+  Docker credential helper whose `get` answers
+  `{"Username":"oauth2accesstoken","Secret":<token>}` with the workstation's
+  service account's token, asked of the metadata server at every call (no
+  token is kept, written or printed; `store`, `erase` and `list` keep
+  nothing).
+- `~/harness/docker` (0700), written by the helper's `configure <host>` for
+  the project's `registry.upstream` host: the owner's `config.json` as it is
+  (other registries' `auths`, `credsStore`, the owner's `credHelpers` for
+  other hosts, `currentContext`, …) with `credHelpers[<host>]` set to
+  `harness` and any `auths` entry of that host dropped, and a link to each
+  other entry of `~/.docker` (`contexts`, `cli-plugins`, `buildx`…) so a
+  context or a per-user compose plugin is found; a link to an entry the
+  owner removed is removed. Made at each setup and again at each step's
+  claim (`wsv_start`; a failure there is a warning, the last config kept), so
+  the owner's changes reach the next step. The owner's `~/.docker` is only
+  read. `~/harness/env` exports `DOCKER_CONFIG=~/harness/docker` once it
+  holds a `config.json`, so the owner's own sessions never see it; a project
+  with no upstream gets none (a setup removes one left over).
+
+Setup checks the helper gets a token for the host, and fails naming it
+when it does not (`docker-credential-harness: gets no token for <host>: …`).
+`pull-images.sh` keeps its own temp config for its Artifact Registry pulls.
 
 ## A workstation held one step at a time (ASS-468)
 
@@ -1778,8 +1842,9 @@ folder per variation.
   logged as a warning (`warning: <KEY> <v>: its step completed but left …
   uncommitted on …; committed and pushed by the harness (<files>)`); else
   discarded (`reset --hard`, `clean -fd`), each file logged per repository.
-  Then each local branch's commits GitLab lacks are pushed to that branch
-  (never forced); master is never pushed — a local master ahead of GitLab's
+  Then each of the variation's own local branches' commits GitLab lacks are
+  pushed to that branch (never forced; ASS-480: never another ticket's, set
+  aside instead — below); master is never pushed — a local master ahead of GitLab's
   is reset to it, the discarded commits (hash and subject) logged and shown
   on the variation's Health (`Commits on master were discarded: …`) — and
   checked out at GitLab's latest. Only once every tree is clean are the
@@ -1882,6 +1947,73 @@ only), under `harness.json`'s cap as before. Planning seats have no kinds.
   workstations); the gcp workstations box shows each workstation's
   `1/1 seats`, `0/1 seats` or `seat lost`; the models box, in
   `vm+workstation` mode, `vm seats: <used>/<VM seats>` (∞ with no limit).
+
+## A step's end runs on the machine it ran on (ASS-480)
+
+Seen live on 2026-11-16, the first evening of ASS-468 and ASS-469: a VM was
+stopped and later deleted at QA before its last step's `vm:step-end` ran,
+and control retried that end against the missing VM every 30 minutes for
+ever; and every release of a workstation tried to push another ticket's
+local branch left in the shared repositories, the rejection shown on the
+releasing ticket's Health.
+
+- **Pending ends (AC1).** Once a step goes on in a variation's VM
+  (`vm:step-start`), its end is pending on that VM until `vm:step-end` has
+  succeeded: recorded in control's live data,
+  `data/projects/<p>/step-ends.json` (`{ ends: { "<KEY> <v>": { key,
+  variation, vm, step, completed, since } }, recovered }`,
+  `src/control/step-ends.js`), so a restart of control takes it up again as
+  a lease in its VM, and the next step of the variation waits for it. The VM
+  lifecycle (`vm-lifecycle.js`) keeps such a VM running whatever its step, a
+  pause, a wait or a rate limit says — starting it when stopped, never
+  stopping it, never deleting it at a `vm: released` step — logged once
+  (`vm <p> <vm>: kept and started for <KEY> <v>'s step end ("<step>"),
+  pending on it: …`); `vm.bash reconcile_vms` never counts it deletable, so
+  `make_room` and `vm:reclaim-all` leave it. The end waits, no failure
+  counted, while the VM is not up. Once it has run, the step's own rules
+  apply again (a released VM is deleted then).
+- **A VM already gone (AC2).** When limactl has no such instance (deleted,
+  not merely stopped) the end can never run, and a fresh clone would only
+  let it "succeed" on nothing, so the VM is not recreated for it: control
+  logs once, as an error, which step's end could not run and that any
+  commits that step had not pushed were lost with the VM, naming the
+  repositories and branches the variation's plan had; shows it on the
+  variation's Health (`A step's end could not run, its VM gone: …`, cleared
+  by a later step's end that pushes cleanly); and drops the pending end —
+  never retried.
+- **Another ticket's unpushable branch is set aside (AC3).** A step's end
+  pushes only the variation's own planned branch (ASS-478, which also never
+  pushes back a branch GitLab deleted after its merge, and prunes merged
+  ones at the claim). Another ticket's local branch it can still push
+  itself — ahead of GitLab's, or not on GitLab yet — is left where it is
+  for that ticket's next step (ASS-478). But one that has parted from
+  GitLab's branch, which moved on since (an earlier step's push rejected),
+  could never be pushed as it is (it is never force-pushed): once GitLab's
+  branches are fetched its tip is kept under
+  `refs/harness/stray/<branch>/<UTC time>` in that repository (out of the
+  way of every checkout, never pushed), its local branch deleted so it is
+  checked out fresh from GitLab later, and it is listed in the summary's
+  `set-aside`. Control logs it as an error and shows it on the Health of
+  the ticket the branch names (`Commits of a stray local branch were set
+  aside: …`), never the releasing one's.
+- **The same at a step's start (AC4).** Before any checkout
+  (`step-trees.sh start`: `workstation:claim`, `vm:step-start`) a stray
+  local branch of another ticket is set aside the same way; and a local
+  branch of the variation's own that has parted from GitLab's with commits
+  GitLab never had (ASS-468 kept it as it was) is set aside too and GitLab's
+  taken, so a step never starts on stale local commits. One merely ahead of
+  GitLab's (a push that failed) is kept, and its end pushes it.
+- **Waiting for its VM (AC5).** A step waiting for its VM to be made or to
+  start — a VM-seat holder's, or a planning step's, which never uses a
+  workstation — says `Waiting for its VM: …` on its Health, never
+  `Waiting for its workstation`.
+- **The migration.** Before ASS-480 a pending end lived only in the memory
+  of the control that ran its step. At the first start with this change,
+  each project's control log (`~/.harness/logs/control-<p>.log`) is read
+  once for VM step ends that failed and never succeeded afterwards; each is
+  recorded as pending and so ended (its VM started when only stopped) or
+  dropped as above (its VM gone). A stray branch already in a workstation's
+  shared repositories is set aside at its next claim or release.
 
 ## A finished plan holds no seat (ASS-362)
 

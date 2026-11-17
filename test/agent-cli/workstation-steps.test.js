@@ -250,3 +250,210 @@ test('AC2: a branch GitLab had, rewritten since by a rebase pushed from elsewher
   assert.equal(git(s.repo('harness'), 'rev-parse', 'HEAD'), rebased);
   assert.match(again.err, /GitLab's change\/ABC-3\.B-1 was rewritten since; taken/);
 });
+
+// ASS-478: a step's end on a shared workstation pushes only its own ticket's branches; a branch GitLab deleted after
+// its merge is never pushed back; the claim prunes stale merged branches, keeping any with work master lacks.
+const onBranch = (dir, branch, file, text, from) => { const was = head(dir); git(dir, 'checkout', '-q', ...(from ? ['-b', branch, from] : [branch])); const sha = commit(dir, file, text); git(dir, 'checkout', '-q', was); return sha; };
+function squashMerged(bare, branch, base = 'main') {
+  const work = join(execFileSync('mktemp', ['-d'], { encoding: 'utf8' }).trim(), 'w');
+  execFileSync('git', ['clone', '-q', '-b', base, bare, work]);
+  git(work, 'merge', '-q', '--squash', `origin/${branch}`);
+  git(work, '-c', 'user.name=T', '-c', 'user.email=t@example.com', 'commit', '-q', '-m', `Merge ${branch} (squashed)`);
+  git(work, 'push', '-q', 'origin', base);
+  git(work, 'push', '-q', 'origin', '--delete', branch);
+}
+
+test('ASS-478 AC1, AC4: a release pushes only its own ticket\'s branch; another ticket\'s unpushed branch on the workstation is left alone, and a rejected push names only its own', async () => {
+  const s = wsFixture();
+  await connected(s);
+  plan(s, 'B', [{ id: 1, repository: s.origins.harness, branch: 'change/ABC-3.B-1', status: 'Open' }]);
+  assert.equal((await s.result('workstation:claim', 'p', 'ABC-3', 'B')).code, 0);
+  const repo = s.repo('harness');
+  const theirs = onBranch(repo, 'change/XYZ-9-1', 'theirs.txt', 'another ticket\'s\n', 'origin/main');
+  const own = commit(repo, 'own.txt', 'its own\n');
+  const end = await s.result('workstation:release', 'p', ID);
+  assert.equal(end.code, 0, end.err);
+  assert.deepEqual(JSON.parse(end.out).pushed, [{ repository: 'harness', branch: 'change/ABC-3.B-1', commits: 1 }]);
+  assert.equal(remote(s.origins.harness, 'refs/heads/change/ABC-3.B-1'), own);
+  assert.equal(remote(s.origins.harness, 'refs/heads/change/XYZ-9-1'), null, 'another ticket\'s branch is not pushed');
+  assert.equal(git(repo, 'rev-parse', 'change/XYZ-9-1'), theirs, 'and is kept for its own step');
+
+  // C plans nothing: its end pushes nothing, not even the other ticket's branch.
+  assert.equal((await s.result('workstation:claim', 'p', 'ABC-3', 'C')).code, 0);
+  assert.equal(git(repo, 'rev-parse', 'change/XYZ-9-1'), theirs, 'never pushed, so never pruned');
+  const c = await s.result('workstation:release', 'p', ID);
+  assert.equal(c.code, 0, c.err);
+  assert.deepEqual(JSON.parse(c.out).pushed, []);
+  assert.equal(remote(s.origins.harness, 'refs/heads/change/XYZ-9-1'), null);
+
+  // GitLab refuses every push: the release's failure names its own branch only.
+  assert.equal((await s.result('workstation:claim', 'p', 'ABC-3', 'B')).code, 0);
+  commit(repo, 'more.txt', 'more\n');
+  writeFileSync(join(s.origins.harness, 'hooks', 'pre-receive'), '#!/bin/sh\necho "You are not allowed to push code to this project." >&2\nexit 1\n', { mode: 0o755 });
+  const refused = await s.result('workstation:release', 'p', ID);
+  assert.equal(refused.code, 0, refused.err);
+  assert.deepEqual(JSON.parse(refused.out)['push-failed'].map(f => f.branch), ['change/ABC-3.B-1']);
+});
+
+test('ASS-478 AC2: a ticket branch GitLab deleted after its merge is never pushed back by any release, its commits kept and said', async () => {
+  const s = wsFixture();
+  await connected(s);
+  plan(s, 'B', [{ id: 1, repository: s.origins.harness, branch: 'change/ABC-3.B-1', status: 'Open' }]);
+  assert.equal((await s.result('workstation:claim', 'p', 'ABC-3', 'B')).code, 0);
+  const repo = s.repo('harness');
+  commit(repo, 'feature.txt', 'built\n');
+  assert.equal((await s.result('workstation:release', 'p', ID)).code, 0);
+  assert.equal(git(repo, 'config', 'branch.change/ABC-3.B-1.merge'), 'refs/heads/change/ABC-3.B-1', 'tracks GitLab\'s once pushed');
+  // Its merge request is squash-merged, the source branch deleted; the local branch has a commit more (as the incident's had).
+  squashMerged(s.origins.harness, 'change/ABC-3.B-1');
+  const late = onBranch(repo, 'change/ABC-3.B-1', 'late.txt', 'after the merge\n');
+
+  // Another variation's release does not push it.
+  assert.equal((await s.result('workstation:claim', 'p', 'ABC-3', 'C')).code, 0);
+  assert.equal((await s.result('workstation:release', 'p', ID)).code, 0);
+  assert.equal(remote(s.origins.harness, 'refs/heads/change/ABC-3.B-1'), null);
+
+  // Nor does its own, while its plan still names the branch (not yet synced as Merged).
+  const claim = await s.result('workstation:claim', 'p', 'ABC-3', 'B');
+  assert.equal(claim.code, 0, claim.err);
+  assert.match(claim.err, /kept change\/ABC-3\.B-1: its branch on GitLab is gone, but it has commits main lacks: \w+ late\.txt/);
+  const end = await s.result('workstation:release', 'p', ID);
+  assert.equal(end.code, 0, end.err);
+  assert.deepEqual(JSON.parse(end.out).pushed, []);
+  assert.deepEqual(JSON.parse(end.out)['push-failed'], []);
+  assert.match(end.err, /not pushing change\/ABC-3\.B-1: its branch on GitLab is gone/);
+  assert.equal(remote(s.origins.harness, 'refs/heads/change/ABC-3.B-1'), null, 'never resurrected');
+  assert.equal(git(repo, 'rev-parse', 'change/ABC-3.B-1'), late, 'its unmerged commit kept');
+});
+
+test('ASS-478 AC3: the claim prunes branches GitLab deleted whose work is on master (merged or squashed), and keeps one with unmerged commits and one never pushed', async () => {
+  const s = wsFixture();
+  await connected(s);
+  plan(s, 'B', [{ id: 1, repository: s.origins.harness, branch: 'change/ABC-3.B-1', status: 'Open' }]);
+  assert.equal((await s.result('workstation:claim', 'p', 'ABC-3', 'B')).code, 0);
+  const repo = s.repo('harness');
+  // Branches as other tickets' steps left them: pushed to GitLab by the code before ASS-478 (tracking origin/main),
+  // or never pushed.
+  for (const b of ['change/OLD-1-1', 'change/OLD-2-1', 'change/OLD-3-1']) {
+    onBranch(repo, b, `${b.split('/')[1]}.txt`, `${b}\n`, 'origin/main');
+    git(repo, 'push', '-q', 'origin', `${b}:${b}`);
+  }
+  const unpushed = onBranch(repo, 'change/NEW-4-1', 'new.txt', 'never pushed\n', 'origin/main');
+  commit(repo, 'feature.txt', 'built\n');
+  assert.equal((await s.result('workstation:release', 'p', ID)).code, 0);
+  // The next claim sees them on GitLab: each now tracks its GitLab branch.
+  assert.equal((await s.result('workstation:claim', 'p', 'ABC-3', 'C')).code, 0);
+  assert.equal(git(repo, 'config', 'branch.change/OLD-1-1.merge'), 'refs/heads/change/OLD-1-1');
+  assert.equal((await s.result('workstation:release', 'p', ID)).code, 0);
+  // OLD-1 squash-merged and deleted; B's own too; OLD-2 merged with a merge commit and deleted; OLD-3 deleted with work
+  // master never got, a commit more locally besides.
+  squashMerged(s.origins.harness, 'change/OLD-1-1');
+  squashMerged(s.origins.harness, 'change/ABC-3.B-1');
+  const work = join(execFileSync('mktemp', ['-d'], { encoding: 'utf8' }).trim(), 'w');
+  execFileSync('git', ['clone', '-q', '-b', 'main', s.origins.harness, work]);
+  git(work, '-c', 'user.name=T', '-c', 'user.email=t@example.com', 'merge', '-q', '--no-ff', '-m', 'merge OLD-2', 'origin/change/OLD-2-1');
+  git(work, 'push', '-q', 'origin', 'main');
+  git(work, 'push', '-q', 'origin', '--delete', 'change/OLD-2-1', 'change/OLD-3-1');
+  const kept = onBranch(repo, 'change/OLD-3-1', 'more.txt', 'more\n');
+
+  const claim = await s.result('workstation:claim', 'p', 'ABC-3', 'C');
+  assert.equal(claim.code, 0, claim.err);
+  const branches = git(repo, 'for-each-ref', '--format=%(refname:short)', 'refs/heads').split('\n').sort();
+  assert.deepEqual(branches, ['change/NEW-4-1', 'change/OLD-3-1', 'main']);
+  assert.match(claim.err, /removed change\/OLD-1-1: its branch on GitLab is gone and its work is on main/);
+  assert.match(claim.err, /removed change\/OLD-2-1/);
+  assert.match(claim.err, /removed change\/ABC-3\.B-1/);
+  assert.match(claim.err, /kept change\/OLD-3-1: its branch on GitLab is gone, but it has commits main lacks/);
+  assert.equal(git(repo, 'rev-parse', 'change/OLD-3-1'), kept);
+  assert.equal(git(repo, 'rev-parse', 'change/NEW-4-1'), unpushed);
+  assert.equal((await s.result('workstation:release', 'p', ID)).code, 0);
+  for (const b of ['change/OLD-1-1', 'change/OLD-2-1', 'change/OLD-3-1', 'change/ABC-3.B-1', 'change/NEW-4-1']) assert.equal(remote(s.origins.harness, `refs/heads/${b}`), null, `${b} not pushed`);
+});
+
+// ASS-480: the stray branches a step finds in the shared repositories — set aside under refs/harness/stray/<branch>/<time>.
+const strays = dir => git(dir, 'for-each-ref', '--format=%(refname) %(objectname)', 'refs/harness/stray/').split('\n').filter(Boolean).map(l => l.split(' '));
+// gitlabMoved(s, branch) — GitLab's <branch> made (from main) with a commit pushed from elsewhere; its sha.
+function gitlabMoved(s, branch) {
+  const elsewhere = execFileSync('mktemp', ['-d'], { encoding: 'utf8' }).trim();
+  execFileSync('git', ['clone', '-q', s.origins.harness, elsewhere]);
+  git(elsewhere, 'checkout', '-q', '-b', branch);
+  const sha = commit(elsewhere, 'moved.txt', 'moved on\n');
+  git(elsewhere, 'push', '-q', 'origin', branch);
+  return sha;
+}
+const branchSha = (dir, b) => { try { return git(dir, 'rev-parse', '--verify', '-q', `refs/heads/${b}`); } catch { return null; } };
+
+test('ASS-480 AC3: a step\'s end pushes only its own branch; another ticket\'s local branch that has parted from GitLab\'s, with commits GitLab lacks, is set aside under refs/harness/stray, its local branch deleted, never pushed, and named for its ticket', async () => {
+  const s = wsFixture();
+  await connected(s);
+  plan(s, 'B', [{ id: 1, repository: s.origins.harness, branch: 'change/ABC-3.B-1', status: 'Open' }]);
+  assert.equal((await s.result('workstation:claim', 'p', 'ABC-3', 'B')).code, 0);
+  const repo = s.repo('harness');
+  const own = commit(repo, 'own.txt', 'its own\n');
+  // An earlier step of ABC-9 left a local branch of its own with a commit GitLab lacks, its push rejected: GitLab's
+  // change/ABC-9-1 has moved on since (pushed from elsewhere), so it could never be pushed as it is.
+  gitlabMoved(s, 'change/ABC-9-1');
+  git(repo, 'fetch', '-q', 'origin');
+  git(repo, 'branch', '-q', 'change/ABC-9-1', 'origin/main');
+  git(repo, 'checkout', '-q', 'change/ABC-9-1');
+  const stray = commit(repo, 'stray.txt', 'another ticket\'s\n');
+  // And ABC-7's, merely ahead of GitLab's (not on GitLab yet): ASS-478 leaves it for its own ticket's next step.
+  git(repo, 'checkout', '-q', '-b', 'change/ABC-7-1', 'origin/main');
+  const ahead = commit(repo, 'ahead.txt', 'pushable\n');
+  git(repo, 'checkout', '-q', 'change/ABC-3.B-1');
+  const end = await s.result('workstation:release', 'p', ID);
+  assert.equal(end.code, 0, end.err);
+  const out = JSON.parse(end.out);
+  assert.deepEqual(out.pushed, [{ repository: 'harness', branch: 'change/ABC-3.B-1', commits: 1 }]);
+  assert.deepEqual(out['push-failed'], []);
+  assert.equal(out['set-aside'].length, 1, end.out);
+  const [aside] = out['set-aside'];
+  assert.deepEqual({ ...aside, ref: undefined }, { repository: 'harness', branch: 'change/ABC-9-1', ref: undefined, commits: 1, why: 'not this ticket variation\'s branch, and parted from GitLab\'s, which moved on: a push would be rejected' });
+  assert.match(aside.ref, /^refs\/harness\/stray\/change\/ABC-9-1\/\d{8}T\d{6}Z$/);
+  assert.equal(remote(s.origins.harness, 'refs/heads/change/ABC-3.B-1'), own, 'its own pushed');
+  assert.notEqual(remote(s.origins.harness, 'refs/heads/change/ABC-9-1'), stray, 'the stray never pushed');
+  assert.equal(remote(s.origins.harness, 'refs/heads/change/ABC-7-1'), null, 'nor ABC-7\'s');
+  assert.equal(branchSha(repo, 'change/ABC-7-1'), ahead, 'ABC-7\'s, pushable by its own next step, left where it is (ASS-478)');
+  assert.deepEqual(strays(repo), [[aside.ref, stray]], 'kept out of the way');
+  assert.equal(branchSha(repo, 'change/ABC-9-1'), null, 'its local branch deleted');
+  assert.equal(head(repo), 'main');
+  assert.equal(s.entry().holder, undefined);
+  assert.match(end.err, /harness: set change\/ABC-9-1 aside under refs\/harness\/stray\/change\/ABC-9-1\/\S+ \(1 commit\(s\) GitLab lacks; .*\): never pushed; its local branch deleted/);
+});
+
+test('ASS-480 AC4: at a step\'s start another ticket\'s stray branch is set aside before the checkout, and its own local branch, parted from GitLab\'s with commits GitLab never had, is set aside too and GitLab\'s taken', async () => {
+  const s = wsFixture();
+  await connected(s);
+  plan(s, 'B', [{ id: 1, repository: s.origins.harness, branch: 'change/ABC-3.B-1', status: 'Open' }]);
+  assert.equal((await s.result('workstation:claim', 'p', 'ABC-3', 'C')).code, 0);   // the shared repositories cloned
+  assert.equal((await s.result('workstation:release', 'p', ID)).code, 0);
+  const repo = s.repo('harness');
+  // GitLab's change/ABC-3.B-1, pushed from elsewhere (its VM).
+  const elsewhere = execFileSync('mktemp', ['-d'], { encoding: 'utf8' }).trim();
+  execFileSync('git', ['clone', '-q', s.origins.harness, elsewhere]);
+  git(elsewhere, 'checkout', '-q', '-b', 'change/ABC-3.B-1');
+  const gitlab = commit(elsewhere, 'gitlab.txt', 'on GitLab\n');
+  git(elsewhere, 'push', '-q', 'origin', 'change/ABC-3.B-1');
+  // Left in the shared repository: a local change/ABC-3.B-1 of its own GitLab never had, and ABC-9's stray.
+  git(repo, 'checkout', '-q', '-b', 'change/ABC-3.B-1', 'origin/main');
+  const stale = commit(repo, 'stale.txt', 'never pushed\n');
+  gitlabMoved(s, 'change/ABC-9-1');
+  git(repo, 'checkout', '-q', '-b', 'change/ABC-9-1', 'origin/main');
+  const stray = commit(repo, 'stray.txt', 'another ticket\'s\n');
+  const claim = await s.result('workstation:claim', 'p', 'ABC-3', 'B');
+  assert.equal(claim.code, 0, claim.err);
+  const out = JSON.parse(claim.out);
+  assert.deepEqual(out['set-aside'].map(a => [a.repository, a.branch, a.commits]).sort(), [['harness', 'change/ABC-3.B-1', 1], ['harness', 'change/ABC-9-1', 1]]);
+  assert.match(out['set-aside'].find(a => a.branch === 'change/ABC-3.B-1').why, /parted from GitLab's change\/ABC-3\.B-1/);
+  assert.equal(head(repo), 'change/ABC-3.B-1');
+  assert.equal(git(repo, 'rev-parse', 'HEAD'), gitlab, 'GitLab\'s taken: the step never starts on the stale commit');
+  assert.equal(branchSha(repo, 'change/ABC-9-1'), null);
+  assert.deepEqual(strays(repo).map(([, sha]) => sha).sort(), [stale, stray].sort(), 'both kept, out of the way');
+  assert.match(claim.err, /its change\/ABC-3\.B-1 and GitLab's had parted; the local one set aside, GitLab's taken/);
+  // Its end pushes nothing of either.
+  const end = await s.result('workstation:release', 'p', ID);
+  assert.equal(end.code, 0, end.err);
+  assert.deepEqual(JSON.parse(end.out).pushed, []);
+  assert.equal(remote(s.origins.harness, 'refs/heads/change/ABC-3.B-1'), gitlab);
+  assert.notEqual(remote(s.origins.harness, 'refs/heads/change/ABC-9-1'), stray);
+});

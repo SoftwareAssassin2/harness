@@ -11,10 +11,14 @@ set -euo pipefail
 # never the ignored dependency and build caches — is, for a completed step on
 # a branch other than master, committed there with a message naming the
 # ticket and the step (each step commits its own work; this safety net is
-# logged as a warning by control), else discarded, each file named; then each
-# local branch's commits GitLab lacks pushed to that branch (never forced; a
-# rejected push said, its commits kept on the local branch for the
-# variation's next step); master never pushed — a local master ahead of
+# logged as a warning by control), else discarded, each file named; then the
+# variation's own planned branch's commits GitLab lacks pushed to that branch
+# (ASS-478: never another ticket's, never one GitLab deleted after its merge;
+# never forced; a rejected push said, its commits kept on the local branch
+# for the variation's next step; ASS-480: another ticket's local branch
+# that has parted from GitLab's, so a push of it would be rejected, is set
+# aside under refs/harness/stray/<branch>/<time>, its local branch deleted,
+# and listed in set-aside for control to report on that ticket); master never pushed — a local master ahead of
 # GitLab's is reset to it, the discarded commits named — and checked out at
 # GitLab's latest. Only once every tree is clean: the step's Docker
 # containers (working in the shared repositories or the ticket's copy, or
@@ -28,7 +32,8 @@ set -euo pipefail
 # released: { ticket, variation, folder, migrated }, pushed: [{ repository,
 # branch, commits }], push-failed: [{ repository, branch, why }], committed:
 # [{ repository, branch, files }], discarded: [{ repository, branch, files
-# }], master-reset: [{ repository, branch, commits }], unclean: […], exit }
+# }], master-reset: [{ repository, branch, commits }], unclean: […],
+# set-aside: [{ repository, branch, ref, commits, why }], exit }
 # (released null with no holder).
 #
 # AC7, the migration: a holder from before ASS-468 records its own folder,

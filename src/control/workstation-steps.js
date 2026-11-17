@@ -31,7 +31,11 @@
 //   --workstation: its holder and the variation's `workstation` set, the
 //   shared repositories fetched and checked out on the variation's branches,
 //   the ticket's copy, credentials and forwarder token written, AC2) → held;
-//   logged with the workstation. Not yet: the step waits, its Health saying
+//   logged with the workstation. A claim that fails is tried again after the
+//   usual backoff, the workstation given back meanwhile and its seat kept;
+//   one that fails for images the workstation lacks and could not pull
+//   (workstation:claim's 5, ASS-473) says so on the Health, each image named
+//   with its error, while it waits. Not yet: the step waits, its Health saying
 //   why (held by another — a holder from before, or a planning step in
 //   workstation mode — starting, about 80 seconds, being set
 //   up, its setup failed, its login to renew; AC5) while control connects and
@@ -67,7 +71,8 @@
 //   credentials, token and binding removed, the holder cleared), or
 //   vm:step-end for one in its VM (the same, the VM kept). A push that
 //   failed is logged and on the variation's Health (PUSH_HEALTH, cleared by
-//   its next clean end); an end that fails (a tree not clean, the
+//   its next clean end) — ASS-478: only a push of its own branch (ownBranch),
+//   never another ticket's; an end that fails (a tree not clean, the
 //   connection gone) keeps the machine and is tried again after the usual
 //   backoff. Released, a lease another step of the variation asks for is
 //   wanted again; else forgotten.
@@ -78,6 +83,29 @@
 // migration) — is released the same way once no assignment is on its
 // variation (releaseStale): its committed work pushed, what it left
 // uncommitted discarded (its step did not complete), its folder removed.
+//
+// ASS-480: a step's end always runs on the machine it ran on. A step that
+// goes on in its VM is recorded as a pending end (step-ends.js, the
+// project's step-ends.json: `vm` on its lease) until its vm:step-end has
+// succeeded, so the VM lifecycle keeps that VM — starting it when stopped,
+// never stopping, deleting or reclaiming it meanwhile (vm-lifecycle.js,
+// vm.bash reconcile_vms) — and a control restarted meanwhile takes the end up
+// again (a lease in vm made from the record). The end waits, uncounted, while
+// its VM is not up; once the VM is gone (deleted, not stopped: limactl list
+// has no such instance) it can never run: logged once as an error naming the
+// step and the repositories and branches the variation's plan had — any
+// commits that step had not pushed were lost with the VM — shown on the
+// variation's Health (LOST_HEALTH, cleared by a later step's clean end) and
+// dropped, never retried. A step's end pushes only the variation's own
+// branch (ASS-478); another ticket's stray local branch found in the shared
+// repositories that has parted from GitLab's (a push of it would be
+// rejected), at a step's start or end, is set aside (step-trees.sh, kept
+// under refs/harness/stray/…, never pushed) and reported — logged, and on the
+// Health of the ticket the branch belongs to (STRAY_HEALTH), named from the
+// branch (change/<KEY>-<id>, change/<KEY>.<variation>-<id>), never the
+// releasing one's. A step waiting for its VM to be made or started says so on
+// its Health as waiting for its VM (workstations.js VM_HEALTH), never its
+// workstation: a planning step never uses one (ASS-469).
 import { runsInVm } from './vm.js';
 import { stepOf, engineSteps } from './engine.js';
 import { enginesFor } from './state.js';
@@ -86,6 +114,7 @@ import { loadWorkstations, workstationUsable, loginExpired } from './workstation
 import { loadSeats, seatOf, seatCapacity } from './seat-kinds.js';
 import { slotKind } from './plan.js';
 import { statusIn } from './engine.js';
+import { loadEnds, pendEnd, endDone, vmGone, recover } from './step-ends.js';
 
 const PHASE = 'workstation';
 export const CLAIM_GRACE = 2 * 60_000;
@@ -95,6 +124,9 @@ const MACHINE_SCRIPT = /(^|\s)(\.\/)?agent\.sh vm:(refresh-repositories|test-rep
 export const WORKSTATION_HEALTH = 'Waiting for its workstation:';
 export const PUSH_HEALTH = 'Could not push its committed work:';
 export const MASTER_HEALTH = 'Commits on master were discarded:';
+// ASS-480: LOST_HEALTH — a step's end that could not run, its VM gone; STRAY_HEALTH — a ticket's stray local branch set aside.
+export const LOST_HEALTH = 'A step\'s end could not run, its VM gone:';
+export const STRAY_HEALTH = 'Commits of a stray local branch were set aside:';
 
 // usesWorkstations(project) — its tickets run on its workstations (workstation or vm+workstation mode, ASS-431).
 export const usesWorkstations = project => ['workstation', 'vm+workstation'].includes(project?.devEnvironments?.mode) && (project.devEnvironments.workstations?.length ?? 0) > 0;
@@ -215,29 +247,45 @@ export async function tendSteps(ctx, project, settings, dir, health) {
   const state = ctx.load(), now = ctx.now().getTime();
   const fresh = state.projects.find(p => p.id === project.id) ?? project;
   const leases = leasesOf(ctx), waiting = [];
+  resume(ctx, fresh, dir, leases);
   for (const [k, l] of leases) {
     if (l.project !== project.id) continue;
     const t = fresh.tickets?.find(x => same(x.key, l.key)), v = t?.variations?.find(x => x.name === l.variation && !x['is-deleted']);
     const who = `${l.key} ${l.variation}`;
     if (inUse(ctx, state, l)) { l.used = true; continue; }
-    if (now < l.until) { if (l.why && v) waiting.push([t, v, l.why]); continue; }
+    if (now < l.until) { if (l.why && v) waiting.push([t, v, l.why, l.whyKind]); continue; }
     const ended = !v || l.used || l.want !== l.visit || now - (l.wantedAt ?? 0) > CLAIM_GRACE;
     if (l.state === 'held' || l.state === 'vm') {
       if (!ended) continue;
       const was = l.state;
       l.state = 'releasing';   // no step goes on it meanwhile (stepWaits)
-      if (!await end(ctx, project, l, who, t, v, was)) { l.state = was; continue; }
+      const done = await end(ctx, fresh, dir, l, who, t, v, was);
+      if (done === LOST) { leases.delete(k); continue; }   // ASS-480 AC2: its VM gone, its end dropped
+      if (!done) { l.state = was; continue; }
       if (v && l.want != null && l.want !== l.visit && now - (l.wantedAt ?? 0) <= CLAIM_GRACE) Object.assign(l, { state: 'wanted', visit: null, ws: null, used: false });
       else { leases.delete(k); continue; }
     }
     if (!v || now - (l.wantedAt ?? 0) > CLAIM_GRACE) { leases.delete(k); continue; }   // nothing asks for it any more
     if (l.state === 'wanted') await claim(ctx, state, fresh, settings, dir, l, who, t, v);
-    if (l.state === 'vm-wanted') await readyVm(ctx, project, l, who, v);
-    if ((l.state === 'wanted' || l.state === 'vm-wanted') && l.why) waiting.push([t, v, l.why]);
+    if (l.state === 'vm-wanted') await readyVm(ctx, fresh, dir, l, who, v);
+    if ((l.state === 'wanted' || l.state === 'vm-wanted') && l.why) waiting.push([t, v, l.why, l.whyKind]);
   }
   await releaseStale(ctx, project, settings, dir, state);
-  for (const [t, v, why] of waiting) await health(t, v, why);
+  for (const [t, v, why, kind] of waiting) await health(t, v, why, kind);
   return new Set(waiting.map(([t, v]) => `${t.key} ${v.name}`));
+}
+
+// resume(ctx, project, dir, leases) — ASS-480: each pending VM step end recorded in step-ends.json (step-ends.js; the
+// migration's first, once) that no lease holds — its step ran under a control since restarted — taken up again as a
+// lease in vm, its step used, so tendSteps ends it once nothing of the variation's uses the VM (or drops it, AC2).
+function resume(ctx, project, dir, leases) {
+  recover(ctx, project, dir);
+  for (const rec of Object.values(loadEnds(dir).ends)) {
+    const k = keyOf(project.id, rec.key, rec.variation);
+    if (!rec?.vm || leases.has(k)) continue;
+    leases.set(k, { project: project.id, key: rec.key, variation: rec.variation, state: 'vm', vm: rec.vm, step: rec.step ?? null, completed: Boolean(rec.completed), used: true, visit: null, want: null, wantedAt: 0, scripts: new Set(), dispatching: 0, failures: 0, until: 0 });
+    ctx.log(PHASE, `${rec.key} ${rec.variation}: its step${rec.step ? ` "${rec.step}"` : ''}'s end is pending on its VM ${rec.vm} (since ${rec.since ?? '?'}): it runs there before anything else of it does`);
+  }
 }
 
 // claim(…) — the lease's step placed by its variation's seat (placeOf, ASS-469): its workstation (or, with no seat
@@ -245,9 +293,10 @@ export async function tendSteps(ctx, project, settings, dir, health) {
 // The seats are read from seats.json here, at the moment of choosing, so a move this tick made is seen at once.
 async function claim(ctx, state, project, settings, dir, l, who, t, v) {
   const seats = loadSeats(dir), entries = loadWorkstations(dir), place = placeOf(state, project, seats, l, v);
+  l.whyKind = null;   // a workstation's wait (ASS-480: a VM's is readyVm's, 'vm')
   if (place.wait) { l.why = null; return; }   // seats.js' to settle: a seat to be given, or a free workstation seat to move into
   if (place.vm) {
-    Object.assign(l, { state: 'vm-wanted', why: null });
+    Object.assign(l, { state: 'vm-wanted', why: null, whyKind: 'vm' });
     ctx.log(PHASE, `${l.who ?? who}: ${place.vm}: its step runs on its VM`);
     return;
   }
@@ -259,12 +308,18 @@ async function claim(ctx, state, project, settings, dir, l, who, t, v) {
       Object.assign(l, { state: 'held', ws: out.name, visit: l.want, used: false, completed: false, failures: 0, until: 0, why: null });
       const moved = (out.unclean?.length ? `; not checked out: ${out.unclean.map(u => `${u.repository} (${u.why})`).join(', ')}` : '') + (out.discarded?.length ? `; discarded what an unfinished step left uncommitted: ${out.discarded.map(d => `${d.repository} (${d.files.join(', ')})`).join('; ')}` : '');
       ctx.log(PHASE, `${project.id} ${out.name}: claimed for ${l.who ?? who}: its repositories on ${who}'s branches${moved}`);
+      await setAside(ctx, project, out, who, `${project.id} ${out.name}'s claim for ${who}`);
       return;
     } catch (error) {
       if (error.code !== 4) {
         const wait = backoffDelay(++l.failures);
         l.until = ctx.now().getTime() + wait;
         ctx.log('error', `${PHASE} ${project.id}: workstation:claim for ${who} failed (${l.failures} in a row; next try in ${held(wait)}): ${error.message}`);
+        // ASS-473 AC2: images it needs could not be pulled onto the workstation and are not there (claim's 5, its last
+        // line naming each with its error): the variation's Health says so while it waits out the backoff (tendSteps
+        // keeps a waiting lease's `why` on it), cleared once a claim succeeds. The workstation was given back, and
+        // nothing here touches its seat: it is still usable (seat-kinds.js lostWhy), so the seat stays the ticket's.
+        l.why = error.code === 5 ? missingWhy(error.message, ready[0], wait) : null;
         return;
       }
     }
@@ -277,19 +332,34 @@ async function claim(ctx, state, project, settings, dir, l, who, t, v) {
   l.why = why;
 }
 
+// missingWhy(message, id, wait) — ASS-473: a Health's why for a claim that failed for images missing on workstation
+// `id`, from workstation:claim's last line ("…: images it needs could not be pulled and are not there: <image>
+// (<error>); …; it is given back").
+function missingWhy(message, id, wait) {
+  const line = String(message).split('\n').at(-1);
+  const what = /images it needs could not be pulled and are not there: (.*?)(; it is given back)?$/.exec(line)?.[1] ?? line;
+  return `${id} lacks images its step needs, which could not be pulled: ${what}. Its claim is tried again in ${held(wait)}, the images pulled again`;
+}
+
 // readyVm(…) — vm+workstation: the step's VM (a VM-seat holder's, or a planning step's, ASS-469), made when the variation has none, up, its repositories moved to the variation's branches.
-async function readyVm(ctx, project, l, who, v) {
+// ASS-480: its Health then says it waits for its VM (whyKind 'vm', AC5); once the step goes on there its end is recorded as pending on that VM.
+async function readyVm(ctx, project, dir, l, who, v) {
+  l.whyKind = 'vm';
   try {
     if (!v.vm?.name || (v.vm.kind ?? 'lima') !== 'lima') {
-      l.why = 'its VM is being made for its step';
+      l.why = 'it is being made for its step';
       ctx.log(PHASE, `${who}: has no VM: making one for its step (vm:create --vm)`);
       await ctx.cli(['vm:create', project.id, l.key, v.name, '--vm']);
       return;
     }
-    if (!ctx.memory.vmsUp?.has(v.vm.name)) { l.why = `its VM ${v.vm.name} is starting`; return; }
-    await ctx.cli(['vm:step-start', project.id, l.key, v.name]);
-    Object.assign(l, { state: 'vm', visit: l.want, used: false, completed: false, failures: 0, until: 0, why: null, ws: null });
+    if (!ctx.memory.vmsUp?.has(v.vm.name)) { l.why = `${v.vm.name} is starting`; return; }
+    const out = await ctx.cli(['vm:step-start', project.id, l.key, v.name]);
+    Object.assign(l, { state: 'vm', vm: v.vm.name, visit: l.want, used: false, completed: false, failures: 0, until: 0, why: null, ws: null });
+    pendEnd(ctx, dir, { key: l.key, variation: l.variation, vm: v.vm.name, step: l.step, completed: false });
     ctx.log(PHASE, `${l.who ?? who}: runs on its VM ${v.vm.name}, its repositories moved to its branches`);
+    let summary = null;
+    try { summary = JSON.parse(out || 'null'); } catch { /* an older summary, or none: nothing set aside to report */ }
+    if (summary) await setAside(ctx, project, summary, who, `${who}'s step start on its VM ${v.vm.name}`);
   } catch (error) {
     const wait = backoffDelay(++l.failures);
     l.until = ctx.now().getTime() + wait;
@@ -297,15 +367,31 @@ async function readyVm(ctx, project, l, who, v) {
   }
 }
 
-// end(…) — the step's end on its machine (AC3, AC9, AC10), logged; true once done.
-async function end(ctx, project, l, who, t, v, was) {
+// end(…) — the step's end on its machine (AC3, AC9, AC10), logged; true once done, LOST once dropped (ASS-480 AC2:
+// its VM gone). ASS-480 AC1: one in a VM is recorded pending (step-ends.js) until it has succeeded; while the VM is not
+// up (the VM lifecycle starts it for this end) it waits, no failure counted.
+const LOST = 'lost';
+async function end(ctx, project, dir, l, who, t, v, was) {
   const onVm = was === 'vm', completed = l.completed ? ['--completed', l.step ?? 'its step'] : [];
+  if (onVm) {
+    l.vm ??= v?.vm?.name;
+    if (l.vm) pendEnd(ctx, dir, { key: l.key, variation: l.variation, vm: l.vm, step: l.step, completed: l.completed });
+    if (vmGone(ctx, l.vm)) { await lost(ctx, project, dir, l, who, t); return LOST; }
+    if (l.vm && !ctx.memory.vmsUp?.has(l.vm)) {
+      const said = `vm-end/${project.id}/${l.vm}`;
+      if (!ctx.memory.warned.has(said)) { ctx.memory.warned.add(said); ctx.log(PHASE, `${who}: its step's end waits for its VM ${l.vm} to be up (the VM lifecycle starts it for the end)`); }
+      return false;
+    }
+    ctx.memory.warned.delete(`vm-end/${project.id}/${l.vm}`);
+  }
   try {
     const out = JSON.parse(await ctx.cli(onVm ? ['vm:step-end', project.id, l.key, l.variation, ...completed] : ['workstation:release', project.id, l.ws, '--force', ...completed]));
     l.failures = 0; l.until = 0;
+    if (onVm) { endDone(ctx, dir, l.key, l.variation); l.vm = null; }
     await reported(ctx, project, out, onVm ? `${who}: its step${l.completed ? '' : ' (not completed)'} ended on its VM` : `${project.id} ${l.ws}: released by ${who}${l.completed ? '' : ' (its step not completed)'}`, who, t, v);
     return true;
   } catch (error) {
+    if (onVm && vmGone(ctx, l.vm)) { await lost(ctx, project, dir, l, who, t); return LOST; }
     const wait = backoffDelay(++l.failures);
     l.until = ctx.now().getTime() + wait;
     ctx.log('error', `${PHASE} ${who}: ending its step on ${onVm ? 'its VM' : `workstation ${l.ws}`} failed (${l.failures} in a row; next try in ${held(wait)}): ${error.message}`);
@@ -313,16 +399,27 @@ async function end(ctx, project, l, who, t, v, was) {
   }
 }
 
+// ownBranch(t, v, branch) — ASS-478: whether a branch is the variation's own: one its merge-request plan names, or
+// one named for it (change/<KEY>-<id>; change/<KEY>.<variation>-<id> for a variation other than A).
+export function ownBranch(t, v, branch) {
+  if (!t || !v || !branch) return false;
+  if ((v['merge-request'] ?? []).some(m => m?.branch === branch)) return true;
+  const slug = v.name === 'A' ? t.key : `${t.key}.${v.name}`;
+  return new RegExp(`^change/${slug.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}-\\d+$`, 'i').test(branch);
+}
+
 // reported(ctx, project, out, head, who, t, v) — what a step's end did (workstation:release's or vm:step-end's
 // summary), logged: what it pushed; a completed step's leftovers it committed, as a warning (AC9: each step
-// commits its own work); what it discarded, per repository; and on the variation's Health a push that failed
-// (PUSH_HEALTH) and commits on master it reset away (MASTER_HEALTH, AC10) — each cleared by a later end without.
-async function reported(ctx, project, out, head, who, t, v) {
+// commits its own work); what it discarded, per repository; and on the variation's Health a push of its own branch
+// that failed (PUSH_HEALTH; ASS-478: another ticket's branch's is only logged, never on this one's Health) and
+// commits on master it reset away (MASTER_HEALTH, AC10) — each cleared by a later end without.
+export async function reported(ctx, project, out, head, who, t, v) {
   const pushed = out.pushed?.length ? `pushed ${out.pushed.map(p => `${p.repository} ${p.branch} (${p.commits})`).join(', ')}` : 'nothing to push';
   ctx.log(PHASE, `${head}: ${pushed}; its repositories back on master`);
   for (const c of out.committed ?? []) ctx.log(PHASE, `warning: ${who}: its step completed but left ${c.repository} uncommitted on ${c.branch}; committed and pushed by the harness (${c.files.join(', ')})`);
   for (const d of out.discarded ?? []) ctx.log(PHASE, `${who}: discarded what was not committed in ${d.repository} (on ${d.branch}): ${d.files.join(', ')}`);
-  const failed = out['push-failed'] ?? [], reset = out['master-reset'] ?? [];
+  const failedAll = out['push-failed'] ?? [], reset = out['master-reset'] ?? [];
+  const failed = failedAll.filter(f => ownBranch(t, v, f.branch)), others = failedAll.filter(f => !ownBranch(t, v, f.branch));
   const health = async (prefix, items, short, rest) => {
     if (!t || !v) return;
     if (items.length) {
@@ -333,9 +430,63 @@ async function reported(ctx, project, out, head, who, t, v) {
     }
   };
   if (failed.length) ctx.log('error', `${PHASE} ${who}: could not push its committed work (${failed.map(f => `${f.repository} ${f.branch}: ${f.why}`).join('; ')}); the commits stay on the local branch for its next step`);
+  if (others.length) ctx.log('error', `${PHASE} ${who}: its step's end could not push ${others.map(f => `${f.repository} ${f.branch}: ${f.why}`).join('; ')} — not its own branch${others.length > 1 ? 'es' : ''} (ASS-478), so not on its Health`);
   if (reset.length) ctx.log('error', `${PHASE} ${who}: commits on master are never kept (ASS-468); reset to GitLab's, discarding ${reset.map(r => `${r.repository} ${r.branch}: ${r.commits}`).join('; ')}`);
   await health(PUSH_HEALTH, failed.map(f => `${f.repository} ${f.branch}: ${f.why}`), 'Could not push', 'Its step\'s other work is kept: the commits stay on the local branch, pushed again at the end of its next step on the machine.');
   await health(MASTER_HEALTH, reset.map(r => `${r.repository} ${r.branch}: ${r.commits}`), 'Commits on master discarded', 'Nothing is ever committed on master: those commits were reset to GitLab\'s at the step\'s end. Commit on the ticket\'s branch (change/<KEY>-<id>) instead.');
+  if (!failed.length) await health(LOST_HEALTH, [], '', '');   // ASS-480 AC2: a later step's clean end clears it
+  await setAside(ctx, project, out, who, `${who}'s step end`);
+}
+
+// ownerOf(branch) — ASS-480: { key, variation } of the ticket variation a branch belongs to, from its name
+// (change/<KEY>-<id>, change/<KEY>.<variation>-<id>), or null.
+export function ownerOf(branch) {
+  const m = /^change\/([A-Za-z][A-Za-z0-9_]*-\d+)(?:\.([A-Za-z0-9]+))?-\d+$/.exec(String(branch ?? ''));
+  return m ? { key: m[1].toUpperCase(), variation: m[2] ?? 'A' } : null;
+}
+
+// setAside(ctx, project, out, who, where) — ASS-480 AC3, AC4: each stray local branch a step's start or end set aside
+// (step-trees.sh's "set-aside": never pushed, kept under refs/harness/stray/…, its local branch deleted) logged as an
+// error, and shown on the Health of the ticket variation the branch belongs to (STRAY_HEALTH) — not the one whose step
+// found it, unless it is its own (a branch of its own that had parted from GitLab's).
+async function setAside(ctx, project, out, who, where) {
+  const items = out?.['set-aside'] ?? [];
+  if (!items.length) return;
+  const state = ctx.load(), fresh = state.projects.find(p => p.id === project.id) ?? project, byOwner = new Map();
+  for (const a of items) {
+    const owner = ownerOf(a.branch), whose = owner ? `${owner.key} ${owner.variation}'s` : 'no ticket\'s (its name is not change/<KEY>-<id>)';
+    ctx.log('error', `${PHASE} ${where}: set aside ${a.repository} ${a.branch}, ${a.commits} commit(s) GitLab lacks, under ${a.ref} (${a.why}); never pushed, its local branch deleted so it is checked out fresh from GitLab; it is ${whose}`);
+    if (!owner) continue;
+    const k = `${owner.key} ${owner.variation}`;
+    byOwner.set(k, [...(byOwner.get(k) ?? []), a]);
+  }
+  for (const [k, list] of byOwner) {
+    const [key, name] = k.split(' ');
+    const t = fresh.tickets?.find(x => same(x.key, key)), v = t?.variations?.find(x => x.name === name && !x['is-deleted']);
+    if (!t || !v) continue;
+    const what = list.map(a => `${a.repository} ${a.branch} (${a.commits} commit(s), kept under ${a.ref})`).join('; ');
+    const on = same(who, k) ? 'its own step' : `${who}'s step`;
+    const long = `${STRAY_HEALTH} ${what}, found by ${on} on the machine it ran on (${list[0].why}). They were never pushed, nor force-pushed; the local branch was deleted, so this ticket's next step takes the branch from GitLab. To keep them, look at the commits (git log <ref> in that repository on that machine) and cherry-pick what is wanted onto the branch.`;
+    await ctx.attempt(PHASE, k, () => ctx.cli(['ticket:set-ai-feedback', project.id, t.key, v.name, `Stray commits set aside: ${what}`.slice(0, 120), long]));
+  }
+}
+
+// lost(ctx, project, dir, l, who, t) — ASS-480 AC2: the step's end can never run, its VM gone: logged once as an error
+// naming the step and the repositories and branches the variation's plan had (any commits that step had not pushed
+// were lost with the VM), shown on the variation's Health (LOST_HEALTH, cleared by a later step's clean end), and the
+// pending end dropped — never retried.
+async function lost(ctx, project, dir, l, who, t) {
+  const v = t?.variations?.find(x => x.name === l.variation);
+  const repo = url => String(url).replace(/\.git$/, '').split('/').at(-1);
+  const plan = (v?.['merge-request'] ?? []).filter(m => m.repository && m.branch && !['Merged', 'Closed'].includes(m.status)).map(m => `${repo(m.repository)} ${m.branch}`);
+  const branches = plan.length ? plan.join(', ') : 'none planned';
+  const step = l.step ? `"${l.step}"` : 'its last step';
+  ctx.log('error', `${PHASE} ${who}: the end of its step ${step} could not run: its VM ${l.vm} is gone (deleted before the end ran); any commits that step had not pushed were lost with it (its plan's repositories and branches: ${branches}); the pending end is dropped`);
+  endDone(ctx, dir, l.key, l.variation);
+  ctx.memory.warned.delete(`vm-end/${project.id}/${l.vm}`);
+  if (!t || !v || v['is-deleted']) return;
+  const long = `${LOST_HEALTH} the end of its step ${step} (push its commits, clean up, back on master) never ran in its VM ${l.vm}, which was deleted first. Any commits that step made and had not pushed were lost with the VM (its plan's repositories and branches: ${branches}). Check those branches on GitLab against what the step was to do, and redo what is missing. Cleared once a later step of it ends cleanly.`;
+  await ctx.attempt(PHASE, who, () => ctx.cli(['ticket:set-ai-feedback', project.id, t.key, v.name, `Step end lost with its VM ${l.vm}: ${step}'s unpushed commits lost`.slice(0, 120), long]));
 }
 
 // releaseStale(…) — a holder no lease here holds (see the module comment), with no assignment on its variation,

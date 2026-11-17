@@ -7,10 +7,14 @@ set -euo pipefail
 # workstation:release ends one on a workstation (step-trees.sh end): with
 # --completed "<the step>" (its agent's turn ended without error, its script
 # exited 0) what it left uncommitted is committed on its branch with a
-# message naming the ticket and step, else discarded, each file named; every
-# local branch's commits GitLab lacks pushed to that branch (never forced,
+# message naming the ticket and step, else discarded, each file named; its
+# planned branch's commits GitLab lacks pushed to that branch (ASS-478: only
+# its own, never one GitLab deleted after its merge; never forced,
 # never master: a local master ahead of GitLab's reset to it, its commits
-# named), master checked out at the latest. The VM is kept. Prints the
+# named; ASS-480: another's parted branch set aside under
+# refs/harness/stray/), master checked out at the latest. The VM is kept.
+# ASS-480: control keeps the VM — never stopped, deleted or reclaimed,
+# started for this — until this has succeeded (src/control/step-ends.js). Prints the
 # summary (workstation-variation.bash wsv_trees); fails (1) when a tree could
 # not be made clean, or the VM is not running.
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../vm.bash"

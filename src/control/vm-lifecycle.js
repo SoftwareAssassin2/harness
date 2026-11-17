@@ -113,6 +113,18 @@
 // is released (vm:hold off), when its step's rules apply again — stopped,
 // where they say so. The TUI shows the hold on the ticket.
 //
+// ASS-480 AC1: a step's end always runs on the machine it ran on. A VM a
+// step's end is pending on (step-ends.js pendingVmEnds: a lease in vm or
+// releasing, or a step that ran there whose vm:step-end has not succeeded,
+// recorded in step-ends.json) is to run whatever its step, a pause, a wait or
+// a rate limit says — started when stopped, so the end can run there, never
+// stopped or deleted (a `vm: released` step's delete waits for the end) —
+// logged once, when its rules would have stopped or deleted it; nor is it
+// recreated when gone: its end can never run (workstation-steps.js drops it,
+// AC2), and a fresh clone would only let it "succeed" on nothing. Once the
+// end has succeeded its step's rules apply again. vm.bash reconcile_vms keeps
+// it from make_room's and reclaim-all's deletes too.
+//
 // A step judged while its VM is still starting reads it as down (ASS-133:
 // Check Setup Complete sent a set-up ticket on to Create VM), so a variation
 // at a step that runs its VM, whose recorded VM control has not seen Running
@@ -153,6 +165,7 @@ import { diskHeld } from './disk.js';
 import { memoryShort, memoryHeldVm, liftMemoryHolds, unhold } from './host-memory.js';
 import { humanPause, moveTicket } from './moves.js';
 import { declaredCredentials } from './vm-credentials.js';
+import { pendingVmEnds } from './step-ends.js';
 
 const PHASE = 'vm';
 
@@ -369,6 +382,12 @@ function vmsOf(ctx, state, project) {
       ...(hold ? { run: true, waits: false, ready: false, dependsOn: [], busy, paused: undefined, keep: false, release: false, rateLimited: null }
         : { run, waits, ready, dependsOn, busy, paused, keep, release, rateLimited, seated }) });
   }
+  // ASS-480 AC1: a step's end pending on it keeps it running (started when stopped), never stopped, deleted or recreated.
+  for (const [name, end] of pendingVmEnds(ctx, project.id)) {
+    const vm = vms.get(name);
+    if (!vm) continue;
+    vms.set(name, { ...vm, pendingEnd: end, overridden: !vm.run || vm.release, run: true, release: false, keep: false });
+  }
   return vms;
 }
 
@@ -475,6 +494,17 @@ function holdLog(ctx, id, name, vm) {
   else if (!vm.hold && held.has(name)) { held.delete(name); ctx.log(PHASE, `${id} ${name}: its operator hold released (vm:hold off); its step's rules apply again`); }
 }
 
+// pendingLog(ctx, id, name, vm, s) — ASS-480 AC1: a VM its step's rules would stop or delete, kept (and started) for
+// a step's end pending on it, logged once per pending end; memory.warned `vm-end-keep/<name>/<since>`.
+function pendingLog(ctx, id, name, vm, s) {
+  const end = vm.pendingEnd;
+  if (!end || !vm.overridden || s == null) return;
+  const said = `vm-end-keep/${name}/${end.since ?? end.step ?? ''}`;
+  if (ctx.memory.warned.has(said)) return;
+  ctx.memory.warned.add(said);
+  ctx.log(PHASE, `${id} ${name}: kept${s === 'Running' ? '' : ' and started'} for ${end.key} ${end.variation}'s step end${end.step ? ` ("${end.step}")` : ''}, pending on it: not stopped or deleted until it has run there (${vm.ticket} ${vm.variation} at ${vm.state ?? '?'})`);
+}
+
 // One project's pass, by `status` (limactl list's, read this tick): each VM
 // not yet reached but Running is probed (ASS-169: a VM is `Running` a few
 // seconds before its sshd accepts connections) — silently, so a VM not yet
@@ -499,10 +529,12 @@ async function match(ctx, id, vms, r, status, diskHold = false, stampEvery = CRE
       try { await probe(ctx, name); isUp(ctx, name); } catch { /* not yet reachable; probed again next job */ }
     }
     let args, did, refreshing = false, first = null, changed = [];
+    pendingLog(ctx, id, name, vm, s);   // ASS-480 AC1
+    if (vm.pendingEnd && s == null) continue;   // ASS-480: gone with its step's end pending — never recreated for it (workstation-steps.js drops the end, AC2)
     if (vm.release && s == null) continue;   // ASS-325: deleted already
     if (vm.release) [first, args, did] = [s === 'Running' ? ['vm:stop', id, name] : null, ['vm:delete', id, name], `deleted (${vm.ticket} ${vm.variation} at ${vm.state}: released)`];
     else if (vm.run && s == null) [args, did] = [['vm:create', id, vm.ticket, vm.variation], `recreated (${vm.ticket} ${vm.variation} at ${vm.state}; it had been deleted)`];
-    else if (vm.run && s != null && s !== 'Running') [args, did] = [['vm:start', id, vm.ticket, vm.variation], `started (${vm.ticket} ${vm.variation} at ${vm.state}${vm.hold ? '; held for the operator' : ''})`];
+    else if (vm.run && s != null && s !== 'Running') [args, did] = [['vm:start', id, vm.ticket, vm.variation], `started (${vm.ticket} ${vm.variation} at ${vm.state}${vm.hold ? '; held for the operator' : ''}${vm.pendingEnd && vm.overridden ? `; for its step's end, pending on it` : ''})`];
     else if (!vm.run && s === 'Running') {
       const why = `${vm.ticket} ${vm.variation} ${vm.state ? `at ${vm.state}` : vm.unlinked ? 'not linked to its variation' : 'is not in the sprint'}${vm.waits ? (vm.ready ? '; planned, waits for a build seat' : '; waits for a slot') : ''}${vm.dependsOn?.length ? `; waits on ${vm.dependsOn.join(', ')}` : ''}${vm.paused ? `; ${vm.paused === 'all' ? 'all projects are' : `${id} is`} paused` : ''}${vm.rateLimited ? `; rate-limited until ${vm.rateLimited.until}, no API fallback` : ''}${vm.seated ? '; it holds a workstation seat, its steps run there' : ''}`;
       if (vm.busy) {   // ASS-349: an assignment on its variation — its agent at work in it — holds the stop till it ends

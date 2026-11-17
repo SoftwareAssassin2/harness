@@ -13,7 +13,10 @@
 // workstation mode, its Health saying why; a holder no step of control's
 // holds is released. ASS-469: in vm+workstation mode a VM-seat holder's step
 // runs on its VM, and once a workstation seat frees it moves there between
-// its steps, its next step on the workstation.
+// its steps, its next step on the workstation. ASS-473: a step whose claim
+// fails for an image the workstation lacks and could not pull waits, its
+// Health naming the image, the workstation given back and its seat kept,
+// and goes on once a later claim pulls it.
 import { test, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFile, execFileSync } from 'node:child_process';
@@ -28,6 +31,7 @@ import { tick } from '../../src/control/tick.js';
 import { fakeVm } from '../support/fake-vm.js';
 import { until } from '../support/until.js';
 import { fakeHindsight } from '../support/fake-hindsight.js';
+import { fakeRegistry, fakeMetadata } from '../support/fake-registry.js';
 
 const run = promisify(execFile);
 const ROOT = join(import.meta.dirname, '..', '..');
@@ -272,4 +276,40 @@ test('ASS-469 AC3, AC4, AC8: in vm+workstation mode a VM-seat holder\'s step run
     assert.equal(git(join(v.root, 'repos', 'harness'), 'rev-parse', '--abbrev-ref', 'HEAD'), 'main', 'the VM left on master');
     assert.equal(c.variation().vm.name, 'abc-3-a', 'its VM kept');
   } finally { c.ctx.stopAgents(); }
+});
+
+test('ASS-473 AC2, AC4: a claim that fails for an image the workstation lacks and could not pull keeps the step waiting, no agent sent, its Health naming the image and the error; the workstation is given back, its seat kept; tried again after the backoff, it goes on once the image pulls', { timeout: 240_000 }, async () => {
+  const h = await tickFixture();
+  const { c, s, at, ticks, log } = h;
+  const TOKEN = 'ya29.service-account-token-TEST', AR = 'us-central1-docker.pkg.dev', image = `${AR}/example-project/containers/devcontainer:1.8.12`;
+  const ar = await fakeRegistry({ token: TOKEN }), metadata = await fakeMetadata(TOKEN);
+  try {
+    c.ctx.env = { ...c.ctx.env, FAKE_AR_URL: ar.url, HARNESS_WS_METADATA_URL: metadata.url, HARNESS_WS_PULL_RETRY_SECONDS: '0' };
+    // Artifact Registry alone (no zot), and an image it does not have.
+    edit(at('projects', 'p', 'project.json'), p => { p.registry = { upstream: { host: AR, credentials: 'gcloud' } }; p['golden-image'] = { folder: 'projects/p/golden-image' }; });
+    mkdirSync(at('projects', 'p', 'golden-image'), { recursive: true });
+    writeFileSync(at('projects', 'p', 'golden-image', 'images.txt'), `${image}\n`);
+    atGenerateSolution(h);
+    assert.equal((await s.result('workstation:connect', 'p', ID)).code, 0);
+    await ticks(20, () => /lacks images/.test(c.variation()['ai-feedback-long'] ?? ''));
+    assert.equal(c.variation()['ai-feedback-long'], `Waiting for its workstation: ${ID} lacks images its step needs, which could not be pulled: ${image} (Artifact Registry: Error response from daemon: manifest for ${image} not found: manifest unknown: manifest unknown; and the project has no zot to fall back on). Its claim is tried again in 30s, the images pulled again. Its step waits, and no agent or script of it starts, until a workstation is claimed for it; control keeps working on it (connecting, starting, setting up). Only a sign-in or a failed setup needs you.`, log());
+    assert.ok(c.lines.some(l => /^error workstation p: workstation:claim for ABC-3 A failed \(1 in a row; next try in 30s\): [\s\S]*images it needs could not be pulled and are not there/.test(l)), log());
+    assert.equal(c.assignments().assignments.filter(a => a['work-item'] === 'ABC-3').length, 0, 'no agent sent');
+    assert.equal(s.entry().holder, undefined, 'the workstation given back');
+    assert.deepEqual(seatsOf(h).map(x => [x.key, x.kind, x.workstation]), [['ABC-3', 'workstation', ID]], 'its seat kept');
+    // Waiting out the backoff, nothing is tried; the Health stays.
+    await ticks(2, () => false);
+    assert.equal(c.lines.filter(l => /workstation:claim for ABC-3 A failed/.test(l)).length, 1, log());
+    assert.match(c.variation()['ai-feedback-short'] ?? '', /^Waiting for its workstation: ada-dev lacks images/);
+
+    // The registry has it now; the backoff over, the claim pulls it and the step goes on, its Health cleared.
+    ar.put('example-project/containers/devcontainer', '1.8.12', `sha256:${'a'.repeat(64)}`);
+    for (const l of c.ctx.memory.workstationSteps.values()) l.until = 0;
+    let record;
+    await ticks(40, () => (record = c.assignments().assignments.find(a => a['work-item'] === 'ABC-3' && a.state === 'generate-solution')));
+    assert.ok(record, log());
+    assert.ok(c.lines.some(l => /^workstation p ada-dev: claimed for ABC-3 A generate-solution/.test(l)), log());
+    assert.equal(s.entry()['images-boot-id'], s.entry().setup['boot-id']);
+    assert.equal(c.variation()['ai-feedback-long'] ?? null, null, 'its Health cleared');
+  } finally { c.ctx.stopAgents(); await ar.close(); await metadata.close(); }
 });

@@ -202,24 +202,32 @@ async function keep(ctx, state, project, settings, needs, r) {
 }
 
 export { WORKSTATION_HEALTH } from './workstation-steps.js';
-const healthOf = why => ({ short: `Waiting for its workstation: ${why.length > 90 ? `${why.slice(0, 87)}...` : why}`, long: `${WORKSTATION_HEALTH} ${why}. Its step waits, and no agent or script of it starts, until a workstation is claimed for it; control keeps working on it (connecting, starting, setting up). Only a sign-in or a failed setup needs you.` });
+// ASS-480 AC5: a step waiting for its VM — made for it, or starting (workstation-steps.js readyVm: a VM-seat holder's, or
+// a planning step's, which never uses a workstation, ASS-469) — says so, VM_HEALTH, never "Waiting for its workstation".
+export const VM_HEALTH = 'Waiting for its VM:';
+const short = (prefix, why) => `${prefix} ${why.length > 90 ? `${why.slice(0, 87)}...` : why}`;
+export const healthOf = (why, kind) => (kind === 'vm'
+  ? { short: short(VM_HEALTH, why), long: `${VM_HEALTH} ${why}. Its step waits, and no agent or script of it starts, until its VM is up and its repositories on its branches; control is making or starting it. Nothing for you to do.` }
+  : { short: short('Waiting for its workstation:', why), long: `${WORKSTATION_HEALTH} ${why}. Its step waits, and no agent or script of it starts, until a workstation is claimed for it; control keeps working on it (connecting, starting, setting up). Only a sign-in or a failed setup needs you.` });
 
 // tend(ctx, state, project, settings, dir, r) — ASS-468 (see the module
 // comment): the steps' claims and releases (workstation-steps.js tendSteps),
 // and the Health of those waiting for a workstation written or cleared.
 async function tend(ctx, state, project, settings, dir) {
-  const healthy = await tendSteps(ctx, project, settings, dir, (t, v, why) => health(ctx, project, t, v, why, new Set()));
-  // Cleared from those no longer waiting on a workstation (unless written over since).
+  const healthy = await tendSteps(ctx, project, settings, dir, (t, v, why, kind) => health(ctx, project, t, v, why, new Set(), kind));
+  // Cleared from those no longer waiting on a workstation or their VM (unless written over since).
   for (const t of ctx.load().projects.find(p => p.id === project.id)?.tickets ?? []) for (const v of t.variations ?? []) {
-    if (v['is-deleted'] || healthy.has(`${t.key} ${v.name}`) || !v['ai-feedback-long']?.startsWith(WORKSTATION_HEALTH)) continue;
+    const long = v['ai-feedback-long'];
+    if (v['is-deleted'] || healthy.has(`${t.key} ${v.name}`) || !(long?.startsWith(WORKSTATION_HEALTH) || long?.startsWith(VM_HEALTH))) continue;
     await ctx.attempt(PHASE, `${t.key} ${v.name}`, () => ctx.cli(['ticket:clear-ai-feedback', project.id, t.key, v.name, v['ai-feedback-long']]));
   }
 }
 
-// health(ctx, project, t, v, why, healthy) — the variation's Health says it waits on its workstation, and why (AC7): written when it differs.
-async function health(ctx, project, t, v, why, healthy) {
+// health(ctx, project, t, v, why, healthy, kind) — the variation's Health says it waits on its workstation (or, kind
+// 'vm', its VM: ASS-480 AC5), and why (AC7): written when it differs.
+async function health(ctx, project, t, v, why, healthy, kind) {
   healthy.add(`${t.key} ${v.name}`);
-  const h = healthOf(why);
+  const h = healthOf(why, kind);
   if (v['ai-feedback-long'] === h.long) return;
   await ctx.attempt(PHASE, `${t.key} ${v.name}`, () => ctx.cli(['ticket:set-ai-feedback', project.id, t.key, v.name, h.short, h.long]));
 }

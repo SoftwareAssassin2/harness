@@ -8,7 +8,8 @@
 #                                               # 4 when none can be used ($wsv_why). Claims nothing.
 #   wsv_claim <project> <key> <variation> [<id>]   # a free, usable workstation (only <id>, given: ASS-469) claimed for one step: its holder set, the variation's
 #                                               # `workstation` recorded, readied (wsv_start) and its trees on the variation's
-#                                               # branches (wsv_trees start); prints { name, machine, … }; 4 when none is free ($wsv_why)
+#                                               # branches (wsv_trees start); prints { name, machine, … }; 4 when none is free ($wsv_why);
+#                                               # 5 when an image it needs could not be pulled and is not there (ASS-473)
 #   wsv_start <project> <key> <variation> <machine>    # readied for its holder: credentials, forwarder token, ticket copy, images
 #   wsv_pull_images <project> <id> <boot-id>        # images.txt pulled there, Artifact Registry first, zot the fallback (ASS-472)
 #   wsv_release <command> <project> <id> [<why>]       # the holder's step ended: its trees committed or cleaned, pushed, its
@@ -16,6 +17,8 @@
 #   wsv_specs <command> <project> <key> <variation>    # a "<name>:<branch>:<base>:<url>" line per repository (step-trees.sh)
 #   wsv_trees <command> <machine> start <project> <key> <variation>   # step-trees.sh (git-hooks.sh before it) run there;
 #   wsv_trees <command> <machine> end <project> <key> <variation> <completed|incomplete> [<message>]   # prints a summary
+#                                               # (ASS-480: its "set-aside", [{ repository, branch, ref, commits, why }],
+#                                               # the stray local branches step-trees.sh kept under refs/harness/stray/, start or end)
 #
 # ASS-468 (operator decision, 2026-11-15): a workstation is held only while
 # one of a ticket variation's steps runs on it — claimed at the step's start
@@ -119,7 +122,7 @@ wsv_set_on() {
 }
 
 wsv_claim() {
-  local project="$1" key="$2" variation="$3" only="${4:-}" ws id hk hv home w why=() chosen="" machine root summary kind
+  local project="$1" key="$2" variation="$3" only="${4:-}" ws id hk hv home w why=() chosen="" machine root summary kind rc=0
   wsv_pool_lock workstation:claim "$project"
   while IFS= read -r ws; do
     id="$(jq -r .id <<< "$ws")"
@@ -140,18 +143,24 @@ wsv_claim() {
   # The shared root, standing in for a VM's: repos, the ticket's copy (and mnt/ticket to it), run/harness the runtime folder.
   if wsv_set_on "$project" "$key" "$variation" "$id" "$root" && workstation_ssh "$project" "$id" bash -c 'set -e; . "$HOME/harness/env"; f="$1"
       mkdir -p "$f/repos" "$f/mnt" "$f/run" "$f/ticket"; ln -sfn ../ticket "$f/mnt/ticket"; ln -sfn "$HARNESS_RUNTIME" "$f/run/harness"' harness-ws "$root" </dev/null \
-    && kind="$(wsv_start "$project" "$key" "$variation" "$machine" | jq -r '.["credential-kind"] // ""')" \
+    && { kind="$(wsv_start "$project" "$key" "$variation" "$machine" | jq -r '.["credential-kind"] // ""')" || rc=$?; [[ $rc -eq 0 ]]; } \
     && summary="$(wsv_trees workstation:claim "$machine" start "$project" "$key" "$variation")"; then
     jq -c --arg n "$id" --arg m "$machine" --arg k "$kind" '{ name: $n, machine: $m, "credential-kind": (if $k == "" then null else $k end) } + .' <<< "$summary"
     return 0
   fi
-  echo "workstation:claim: $key $variation's step could not be readied on workstation $id; it is given back" >&2
   wsv_release workstation:claim "$project" "$id" "its claim failed" >/dev/null || true
+  # ASS-473 AC2: an image missing there fails the claim apart (5), its last line naming each with its error, for
+  # control's Health; the workstation given back meanwhile, as for any failed claim.
+  if [[ $rc -eq 5 ]]; then
+    echo "workstation:claim: $key $variation's step cannot start on workstation $id: images it needs could not be pulled and are not there: $(wsv_missing_images "$project" "$id"); it is given back" >&2
+    return 5
+  fi
+  echo "workstation:claim: $key $variation's step could not be readied on workstation $id; it is given back" >&2
   return 1
 }
 
 wsv_start() {
-  local project="$1" key="$2" variation="$3" machine="$4" entry kind token binding boot
+  local project="$1" key="$2" variation="$3" machine="$4" entry kind token binding boot registry
   wsm_parts "${machine#workstation:}" || exit 1
   [[ "$wsm_project" == "$project" ]] || { echo "vm:start: $key $variation's workstation machine is $wsm_project's, not $project's" >&2; return 1; }
   workstation_entry "$project" "$wsm_id" | jq -e --arg k "$key" --arg v "$variation" '.holder.ticket == $k and .holder.variation == $v' >/dev/null \
@@ -159,6 +168,16 @@ wsv_start() {
   wsv_ready "$project" "$wsm_id" || { echo "vm:start: $wsv_why" >&2; return 1; }
   workstation_ssh "$wsm_project" "$wsm_id" bash -c '. "$HOME/harness/env"; mkdir -p "$1/repos" "$1/run" && ln -sfn "$HARNESS_RUNTIME" "$1/run/harness"' harness-ws "$wsm_folder" </dev/null \
     || { echo "vm:start: could not link $wsm_folder/run/harness on workstation $wsm_id" >&2; return 1; }
+
+  # ASS-477: the harness's Docker config (~/harness/docker, DOCKER_CONFIG in the harness's sessions) made again from
+  # the owner's ~/.docker/config.json at each step's claim, so a change the owner made since reaches this step's
+  # agents, the project's Artifact Registry host still sent to docker-credential-harness (the workstation's service
+  # account). Its failure is a warning: the config the last setup or claim wrote stays.
+  registry="$(jq -r '.registry.upstream.host // empty' "$projects/$project/project.json")"
+  if [[ -n "$registry" ]]; then
+    workstation_ssh "$wsm_project" "$wsm_id" bash -c '. "$HOME/harness/env"; docker-credential-harness configure "$1"' harness-ws "$registry" </dev/null \
+      || echo "vm:start: warning: the harness's Docker config on workstation $wsm_id could not be made again from the owner's; the last one stays" >&2
+  fi
 
   kind="$("$agent" vm:credentials "$project" "$machine" 7>&-)" || return 1
   [[ "$kind" =~ ^(claude|anthropic|both)?$ ]] || { echo "vm:start: vm:credentials printed no credential kind for $machine: '$kind'" >&2; return 1; }
@@ -179,8 +198,13 @@ wsv_start() {
   # step's claim: its Docker's images persist under /home. ASS-472: straight from Artifact Registry there, zot the
   # fallback (wsv_pull_images).
   boot="$(workstation_entry "$project" "$wsm_id" | jq -r '.setup["boot-id"] // empty')"
+  # ASS-473 AC2: an image that could not be pulled and is not there fails the step's readying (5, each named with
+  # its error), so no agent of it starts without it; images-boot-id unrecorded, the next claim pulls again.
   if [[ "$(workstation_entry "$project" "$wsm_id" | jq -r '.["images-boot-id"] // empty')" != "$boot" ]]; then
     if wsv_pull_images "$project" "$wsm_id" "$boot"; then workstation_record "$project" "$wsm_id" --arg b "$boot" '.["images-boot-id"] = $b'
+    elif [[ $? -eq 5 ]]; then
+      echo "vm:start: workstation $wsm_id lacks images its step needs, which could not be pulled: $(wsv_missing_images "$project" "$wsm_id")" >&2
+      return 5
     else echo "vm:start: the images could not be pulled on workstation $wsm_id; they are tried again at its next step's claim" >&2; fi
   fi
 
@@ -197,10 +221,12 @@ wsv_start() {
 # 127.0.0.1:<registry.port> (the connection's forward) as before. Each pull logged as it ends (vm:start: workstation
 # <id>: pulled <image> from Artifact Registry in 4s (downloaded) …), and the run's summary recorded on the
 # workstation's live data as `last-image-pull` { at, boot-id, seconds, from-registry, from-zot, failed, up-to-date,
-# zot: [{ image, why }], failures: [{ image, why }] } (AC3). An image that fails both ways leaves the workstation
-# the one it has, as before (ASS-473 is to retry it and fail the claim). Nothing to pull (no upstream, no
-# images.txt): nothing run or recorded. Fails only when the session itself fails (nothing then recorded as pulled
-# for the boot, so the next claim tries again).
+# zot: [{ image, why }], failures: [{ image, why, present }], missing } (AC3). ASS-473: each source tried 3 times
+# with backoff (pull-images.sh tries); an image that still fails leaves the workstation the one it has — `present`
+# when it has one (an older version: a warning, as on a VM), else counted `missing`. Nothing to pull (no upstream,
+# no images.txt): nothing run or recorded. Fails (1) when the session itself fails, and (5) when the session ran
+# but an image is missing (wsv_missing_images names each): nothing then recorded as pulled for the boot, so the
+# next claim tries again.
 wsv_pull_images() {
   local project="$1" id="$2" boot="${3:-}" folder zot fallback image images=() out rc=0 started summary
   source "$here_wsv/registry/registry.bash"   # $root, $local_namespace, registry_upstream
@@ -222,18 +248,27 @@ wsv_pull_images() {
     | def count(f): [$p[] | select(f)] | length;
     { "boot-id": (if $b == "" then null else $b end), seconds: $s,
       "from-registry": count(.source == "registry"), "from-zot": count(.source == "zot"), failed: count(.source == "failed"),
-      "up-to-date": count(.status == "up-to-date"),
-      zot: [$p[] | select(.source == "zot") | { image, why }], failures: [$p[] | select(.source == "failed") | { image, why }] }')"
+      "up-to-date": count(.status == "up-to-date"), missing: count(.source == "failed" and .status == "missing"),
+      zot: [$p[] | select(.source == "zot") | { image, why }],
+      failures: [$p[] | select(.source == "failed") | { image, why, present: (.status != "missing") }] }')"
   [[ $rc -eq 0 ]] || summary="$(jq -c --arg e "the session on the workstation failed (exit $rc)" '. + { error: $e }' <<< "$summary")"
   workstation_record "$project" "$id" --argjson s "$summary" '.["last-image-pull"] = ({ at: $at } + $s)'
-  jq -r '"vm:start: workstation \($id): images pulled in \(.seconds)s: \(.["from-registry"]) from Artifact Registry, \(.["from-zot"]) through zot, \(.failed) failed (\(.["up-to-date"]) already up to date)"' --arg id "$id" <<< "$summary" >&2
-  return "$rc"
+  jq -r '"vm:start: workstation \($id): images pulled in \(.seconds)s: \(.["from-registry"]) from Artifact Registry, \(.["from-zot"]) through zot, \(.failed) failed\(if .missing > 0 then ", \(.missing) of them not there" else "" end) (\(.["up-to-date"]) already up to date)"' --arg id "$id" <<< "$summary" >&2
+  [[ $rc -eq 0 ]] || return "$rc"
+  if jq -e '.missing > 0' >/dev/null <<< "$summary"; then return 5; fi
+}
+
+# wsv_missing_images <project> <id> — ASS-473: the images its last pull could not pull and it lacks, each with its
+# error ("<image> (<why>); …"), from its last-image-pull.
+wsv_missing_images() {
+  workstation_entry "$1" "$2" | jq -r '[.["last-image-pull"].failures[]? | select(.present == false) | "\(.image) (\(.why))"] | join("; ")'
 }
 
 wsv_specs() {
   local command="$1" project="$2" key="$3" variation="$4" plan
   # A variation set aside or gone from the sprint has none to read: every repository then on master (a step's end
-  # needs no branch: it pushes whatever local branch has commits).
+  # needs no branch, and pushes nothing then — ASS-478: only its own planned branches are pushed; what it committed
+  # stays on its local branch, never pruned while it has work master lacks).
   plan="$("$agent" ticket:merge-request-plan "$project" "$key" "$variation" 2>/dev/null 7>&-)" || { echo "$command: could not read $key $variation's merge-request plan; its repositories are taken as planning nothing" >&2; plan='[]'; }
   # Its branch in each repository: the plan's entry there not Merged or Closed (an entry naming no repository —
   # an id-less one ticket:sync found on the forge, ASS-321 — is in none, and is passed over).
@@ -247,17 +282,17 @@ wsv_trees() {
   local args=()
   out="$(wsv_specs "$command" "$project" "$key" "$variation")" || return 1
   [[ -z "$out" ]] || mapfile -t specs <<< "$out"
+  slug="$key"; [[ "$variation" == A ]] || slug="$key.$variation"   # its branches' change/<slug>-<id> (ASS-480: its own, the only ones pushed)
   if [[ "$mode" == start ]]; then
-    slug="$key"; [[ "$variation" == A ]] || slug="$key.$variation"
     args=(start "$slug")
   else
-    args=(end "${7:-incomplete}" "${8:-$key $variation: work its step left uncommitted, committed by the harness at the end of the step (ASS-468)}")
+    args=(end "$slug" "${7:-incomplete}" "${8:-$key $variation: work its step left uncommitted, committed by the harness at the end of the step (ASS-468)}")
   fi
   tmp="$(mktemp -d)"
   cat "$wsv_hooks_script" "$wsv_trees_script" | machine_run --workdir / "$machine" -- bash -s -- "${args[@]}" "${specs[@]+"${specs[@]}"}" > "$tmp/out" 2> "$tmp/err" 7>&- || rc=$?
   sed "s/^/$command: $key $variation: /" "$tmp/err" >&2
   grep -v '^!' "$tmp/out" | sed "s/^/$command: $key $variation: /" >&2
-  awk -F'\t' -v rc="$rc" 'BEGIN { p = ""; f = ""; c = ""; d = ""; m = ""; u = "" }
+  awk -F'\t' -v rc="$rc" 'BEGIN { p = ""; f = ""; c = ""; d = ""; m = ""; u = ""; sa = "" }
     function q(s) { gsub(/\\/, "\\\\", s); gsub(/"/, "\\\"", s); return "\"" s "\"" }
     function list(s) { n = split(s, a, ","); r = ""; for (i = 1; i <= n; i++) if (a[i] != "") r = r (r ? "," : "") q(a[i]); return "[" r "]" }
     $1 == "!pushed" { p = p (p ? "," : "") "{\"repository\":" q($2) ",\"branch\":" q($3) ",\"commits\":" ($4 + 0) "}" }
@@ -266,7 +301,8 @@ wsv_trees() {
     $1 == "!discarded" { d = d (d ? "," : "") "{\"repository\":" q($2) ",\"branch\":" q($3) ",\"files\":" list($4) "}" }
     $1 == "!master-reset" { m = m (m ? "," : "") "{\"repository\":" q($2) ",\"branch\":" q($3) ",\"commits\":" q($4) "}" }
     $1 == "!unclean" { u = u (u ? "," : "") "{\"repository\":" q($2) ",\"why\":" q($3) "}" }
-    END { print "{\"pushed\":[" p "],\"push-failed\":[" f "],\"committed\":[" c "],\"discarded\":[" d "],\"master-reset\":[" m "],\"unclean\":[" u "],\"exit\":" rc "}" }' "$tmp/out"
+    $1 == "!set-aside" { sa = sa (sa ? "," : "") "{\"repository\":" q($2) ",\"branch\":" q($3) ",\"ref\":" q($4) ",\"commits\":" ($5 + 0) ",\"why\":" q($6) "}" }
+    END { print "{\"pushed\":[" p "],\"push-failed\":[" f "],\"committed\":[" c "],\"discarded\":[" d "],\"master-reset\":[" m "],\"unclean\":[" u "],\"set-aside\":[" sa "],\"exit\":" rc "}" }' "$tmp/out"
   rm -rf "$tmp"
   [[ $rc -eq 0 ]] || { echo "$command: $key $variation's working trees in $machine are not clean (exit $rc)" >&2; return 1; }
 }
@@ -276,7 +312,7 @@ wsv_release() {
   holder="$(workstation_entry "$project" "$id" | jq -c '.holder // empty')"
   [[ -n "$holder" ]] || { jq -nc '{ released: null }'; return 0; }
   IFS=$'\t' read -r key variation folder < <(jq -r '[.ticket, .variation, (.folder // "")] | @tsv' <<< "$holder")
-  summary='{"pushed":[],"push-failed":[],"committed":[],"discarded":[],"master-reset":[],"unclean":[]}'
+  summary='{"pushed":[],"push-failed":[],"committed":[],"discarded":[],"master-reset":[],"unclean":[],"set-aside":[]}'
   if [[ -n "$folder" ]]; then
     [[ "$folder" == /*/harness || "$folder" == /*/harness/* ]] && [[ "$folder" != *:* ]] || { echo "$command: $project's workstation $id records a folder outside ~/harness ($folder); not touched" >&2; return 1; }
     [[ "$folder" == */harness ]] || old=old   # ASS-435's folder of its own (~/harness/<KEY>-<variation>): the migration (below)
