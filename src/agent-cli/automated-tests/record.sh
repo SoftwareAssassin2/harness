@@ -10,7 +10,8 @@ set -euo pipefail
 # the path, the call a bare one), that file — one JSON value, must
 # be [] (manual-only, ASS-49) or a list of { "list": "<command>", "run":
 # "<command>" }, each a string — the shape automated-tests.bash checks — and
-# optionally "reproduces": true or false (ASS-227: red on master by design, see
+# optionally "reproduces": true or false (ASS-227: red on master by design;
+# master sets aside only the failures it names too, ASS-487 — see
 # verify-success.sh). It is
 # stored verbatim (byte for byte), under the file's lock, through a temp file
 # renamed over it (json-file.bash replace_file), so a reader sees the old file

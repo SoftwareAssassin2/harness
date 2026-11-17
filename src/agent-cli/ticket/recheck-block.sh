@@ -12,7 +12,10 @@ set -euo pipefail
 # — never one that changes anything outside the ticket). That command is run
 # again here, as control ran it: ./agent.sh at the repository's root, on the
 # Mac (a step run in the VM is an agent.sh command, which the VM forwards to
-# the Mac anyway), its output kept.
+# the Mac anyway), its output kept. ASS-487: in vm+workstation mode, a
+# variation on a Lima VM has it moved onto the ticket's branches first
+# (vm:step-start, as control's readyVm does before a step; vm:step-end left
+# it on master): a step-start that fails is a failed re-check, never a resume.
 #
 # Prints and exits:
 #   0  it passes now: { needs-fix: false, rechecked: true, recheck-passed:
@@ -55,6 +58,13 @@ source "$here_vm/code.bash"
 source "$here_vm/work.bash"
 
 command=ticket:recheck-block
+# on_branches — vm:step-start, in vm+workstation mode on a Lima VM (no ":": not workstation:…, which step-start refuses); else nothing.
+on_branches() {
+  local vm
+  [[ "$(dev_environments_mode "$command" "$project" 2> /dev/null)" == vm+workstation ]] || return 0
+  vm="$(recorded_vm "$command" "$project" "$key" "$variation" 2> /dev/null)" && [[ $vm != *:* ]] || return 0
+  "$here_vm/../../agent.sh" vm:step-start "$project" "$key" "$variation" > /dev/null
+}
 step="${RECHECK_STEP:-Check First}" next_pass="${RECHECK_NEXT_PASS:-No agent dispatched; the ticket resumes.}" next_fail="${RECHECK_NEXT_FAIL:-On to Troubleshoot.}"
 [[ $# -eq 3 ]] || { echo "usage: $command <project> <ticket-key> <variation>" >&2; exit 1; }
 project="$1" key="$(upper "$2")" variation="$3"
@@ -82,7 +92,7 @@ if jq -e '.loop != null' <<< "$choice" > /dev/null; then
   argv=()
   while IFS= read -r word; do argv+=("$word"); done < <(jq -r '.check.argv[1:][]' <<< "$choice")
   code=0
-  output="$("$here_vm/../../agent.sh" "${argv[@]}" 2>&1 < /dev/null)" || code=$?
+  output="$({ on_branches && "$here_vm/../../agent.sh" "${argv[@]}"; } 2>&1 < /dev/null)" || code=$?
   tail_lines="$(tail -n 20 <<< "$output" | cut -c 1-300)"
   if [[ "$code" -eq 0 && -n "${RECHECK_LOOP_PASS:-}" ]]; then
     blocked_log "$project" "$key" "$variation" "$step" "$intro Passed on re-check: re-ran \`$line\` (the step that kept failing, $failing): exit 0. $next_pass"
@@ -110,7 +120,7 @@ at="$(jq -r .at <<< "$choice")" line="$(jq -r .command <<< "$choice")"
 argv=()
 while IFS= read -r word; do argv+=("$word"); done < <(jq -r '.argv[1:][]' <<< "$choice")
 code=0
-output="$("$here_vm/../../agent.sh" "${argv[@]}" 2>&1 < /dev/null)" || code=$?
+output="$({ on_branches && "$here_vm/../../agent.sh" "${argv[@]}"; } 2>&1 < /dev/null)" || code=$?
 if [[ "$code" -eq 0 ]]; then
   blocked_log "$project" "$key" "$variation" "$step" "Passed on re-check; nothing to fix. Re-ran \`$line\` (the step $at, where it was blocked): exit 0. $next_pass"
   jq -nc --arg at "$at" --arg line "$line" '{ "needs-fix": false, rechecked: true, "recheck-passed": true, summary: "Passed on re-check; nothing to fix", recheck: { at: $at, command: $line, exit: 0 } }'

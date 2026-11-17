@@ -14,6 +14,7 @@ import { join } from 'node:path';
 import { execFile } from 'node:child_process';
 import { fixture, run, AGENT } from './harness-fixture.js';
 import { fakeForge } from '../support/fake-forge.js';
+import { lima, git } from './vm-fixture.js';
 
 const RUN = '77777777-7777-4777-8777-777777777777';
 const APP = 'https://gitlab.com/g/app', IMAGES = 'https://gitlab.com/g/images';
@@ -23,9 +24,9 @@ const outcome = promise => promise.then(r => ({ code: 0, out: JSON.parse(r.stdou
 
 // ABC-3 A of project p on engine `dev` (Plan, Build — a group running sub-build, whose check is
 // `check` and Await Sequential Merge — Test, Done), blocked from build/<blockedAt>; its work folder made;
-// p's repositories app and images; the Blocked run RUN holding `output`.
-function setup({ check = './agent.sh ticket:set-paused {project} {ticket} {variation} false', blockedAt = 'check', output = {}, buildEngine = true } = {}) {
-  const f = fixture(), forge = fakeForge();
+// p's repositories app and images (vm: a lima() fixture to use, its repositories kept); the Blocked run RUN holding `output`.
+function setup({ check = './agent.sh ticket:set-paused {project} {ticket} {variation} false', blockedAt = 'check', output = {}, buildEngine = true, vm } = {}) {
+  const f = vm ? { ...vm.f, env: vm.env } : fixture(), forge = fakeForge();
   const at = (...rest) => join(f.dir, ...rest);
   const group = (id, sequence, engine) => ({ id, sequence, 'return-to-state': id, action: { type: 'state-engine', engine }, 'exit-events': [{ condition: { 'is-done': true }, 'move-to-state': 'done' }] });
   write(at('engines', 'dev', 'state-engine.json'), { steps: [
@@ -45,7 +46,7 @@ function setup({ check = './agent.sh ticket:set-paused {project} {ticket} {varia
     { id: 'blocked', sequence: 6, 'is-done': true, action: { type: 'none' } },
   ] });
   write(at('engines', 'sub-test', 'state-engine.json'), { steps: [{ id: 'test', sequence: 1, action: { type: 'prompt', prompt: 't' } }, { id: 'done', sequence: 2, 'is-done': true, action: { type: 'none' } }] });
-  edit(at('projects', 'p', 'project.json'), p => { p['execution-state-engine'] = 'dev'; p.repositories = [{ url: APP }, { url: IMAGES }]; });
+  edit(at('projects', 'p', 'project.json'), p => { p['execution-state-engine'] = 'dev'; if (!vm) p.repositories = [{ url: APP }, { url: IMAGES }]; });
   const c = (from, to, sub) => ({ 'state-engine': 'dev', 'from-state': from, 'to-state': to, timestamp: '2026-11-12T09:00:00Z', 'agent-dispatch-log': [], ...(sub ? { 'sub-state-change': sub } : {}) });
   const s = (from, to) => c('build', 'build', { 'state-engine': 'sub-build', 'from-state': from, 'to-state': to });
   edit(at('projects', 'p', 'sprints', 'sprint-10', 'sprint.json'), sprint => {
@@ -56,7 +57,7 @@ function setup({ check = './agent.sh ticket:set-paused {project} {ticket} {varia
   a['transient-state-engines'].push({ id: RUN, project: 'p', 'state-engine': 'grouped-blocked', state: 'x', parent: { 'work-item': 'ABC-3', variation: 'A', 'state-engine': 'dev', state: 'blocked' }, 'is-done': false, 'structured-output': output });
   writeFileSync(at('assignments.json'), JSON.stringify(a));
   mkdirSync(at('projects', 'p', 'work', 'ABC-3'), { recursive: true });
-  const env = { ...f.env, PATH: forge.path };
+  const env = { ...f.env, PATH: vm ? `${forge.path.split(':')[0]}:${f.env.PATH}` : forge.path };
   const agent = (...args) => run(AGENT, args, { env });
   const log = () => (existsSync(at('projects', 'p', 'work', 'ABC-3', 'change-log-A.md')) ? readFileSync(at('projects', 'p', 'work', 'ABC-3', 'change-log-A.md'), 'utf8') : '');
   const variation = () => JSON.parse(readFileSync(at('projects', 'p', 'sprints', 'sprint-10', 'sprint.json'), 'utf8')).features[0].variations[0];
@@ -328,4 +329,63 @@ test('ASS-474: ticket:fix-attempts counts a loop Troubleshoot found nothing to f
   assert.deepEqual((await attempts()).out, { 'fix-attempts': 0 });
   const { blockHistory } = await import('../../src/control/facts.js');
   assert.match(blockHistory({ blocks: [looped] }), /A loop: build\/check ran out of visits, build\/check sending it back each time\. .*Ended: nothing wrong found, resumed — blocked again\./);
+});
+
+// ASS-487: blocked at Automated Testing, a VM's repositories left on main (as
+// vm:step-end leaves them): Check First moves them to the ticket's branches
+// (vm:step-start) before re-running automated-tests:verify-success — in
+// vm+workstation mode, on a Lima VM. The recorded test logs the branch it ran
+// on, and passes only on change/ABC-3-1.
+function blockedInVm({ mode = 'vm+workstation', machine, running = true } = {}) {
+  const l = lima();
+  if (running) l.v.instance('abc-3-a', 'Running');
+  l.mount();
+  const s = setup({ check: './agent.sh automated-tests:verify-success {project} {ticket} {variation}', blockedAt: 'check', vm: l });
+  edit(s.at('projects', 'p', 'project.json'), p => {
+    p['dev-environments'] = { mode, ...(mode === 'vm' ? {} : { workstations: [{ id: 'ada-dev', 'gcp-project': 'example-gcp-project', region: 'us-central1', cluster: 'example-workstations', config: 'example-config' }] }) };
+  });
+  s.setVariation({ vm: { name: 'abc-3-a', ip: '192.168.64.9', 'created-at': '2026-10-19T00:00:00Z' }, ...(machine ? { workstation: machine } : {}),
+    'merge-request': [{ id: 1, repository: 'https://github.com/o/harness', branch: 'change/ABC-3-1', status: 'Open' }] });
+  const ran = join(l.v.dir, 'ran.log');
+  writeFileSync(s.at('projects', 'p', 'work', 'ABC-3', 'automated-tests-A.json'), JSON.stringify([{ list: 'echo t',
+    run: `cd harness && b="$(git rev-parse --abbrev-ref HEAD)" && echo "$b" >> ${ran} && [ "$b" = change/ABC-3-1 ]` }]));
+  const repo = l.vmFile('repos', 'harness');
+  return { ...s, l, repo, on: () => git(repo, 'rev-parse', '--abbrev-ref', 'HEAD'), ran: () => (existsSync(ran) ? readFileSync(ran, 'utf8').trim().split('\n') : []) };
+}
+
+test('ASS-487 AC3: ticket:recheck-block in vm+workstation mode runs vm:step-start — the VM\'s repository on the ticket\'s branch — before automated-tests:verify-success, which passes there', async () => {
+  const s = blockedInVm();
+  assert.equal(s.on(), 'main');
+  const r = await outcome(s.agent('ticket:recheck-block', 'p', 'ABC-3', 'A'));
+  assert.equal(r.code, 0, `${r.stderr}\n${JSON.stringify(r.out)}`);
+  assert.equal(r.out['recheck-passed'], true);
+  assert.equal(r.out.recheck.command, './agent.sh automated-tests:verify-success p ABC-3 A');
+  assert.deepEqual(s.ran()[0], 'change/ABC-3-1');                            // the test's first run already on the branch: step-start ran first
+  assert.equal(s.on(), 'change/ABC-3-1');
+});
+
+test('ASS-487 AC3: in plain vm mode ticket:recheck-block runs no vm:step-start — the VM\'s repository stays where it was', async () => {
+  const s = blockedInVm({ mode: 'vm' });
+  const r = await outcome(s.agent('ticket:recheck-block', 'p', 'ABC-3', 'A'));
+  assert.equal(r.code, 3);
+  assert.equal(s.ran()[0], 'main');
+  assert.equal(s.on(), 'main');
+  assert.doesNotMatch(r.out.recheck.output, /vm:step-start/);
+});
+
+test('ASS-487 AC3: vm:step-start failing (the VM not running) is a failed re-check — exit 3, its error in the output — never resumed, the test never run', async () => {
+  const s = blockedInVm({ running: false });
+  const r = await outcome(s.agent('ticket:recheck-block', 'p', 'ABC-3', 'A'));
+  assert.equal(r.code, 3);
+  assert.equal(r.out['recheck-passed'], undefined);
+  assert.match(r.out.recheck.output, /vm:step-start/);
+  assert.deepEqual(s.ran(), []);
+});
+
+test('ASS-487 AC3: a variation recorded on a workstation (workstation:…) gets no vm:step-start from ticket:recheck-block', async () => {
+  const s = blockedInVm({ machine: { name: 'ada-dev', project: 'p', folder: '/home/me/ABC-3-A' } });   // machine.bash: workstation:p:ada-dev:/home/me/ABC-3-A
+  const r = await outcome(s.agent('ticket:recheck-block', 'p', 'ABC-3', 'A'));
+  assert.equal(r.code, 3);
+  assert.doesNotMatch(r.out.recheck.output, /vm:step-start/);
+  assert.equal(s.on(), 'main');
 });
