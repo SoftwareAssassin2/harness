@@ -35,9 +35,13 @@ set -euo pipefail
 # leaving it be.
 #
 # A test marked "reproduces": true (ASS-227) is red on master by design — it
-# reproduces the ticket's bug — so it is not run on master: red on the branch,
-# and again on a re-run, it failed (exit 1, for Generate Solution, whose
-# max-visits caps it), named tests or none.
+# reproduces the ticket's bug — so master only sets aside the failed tests it
+# names too (ASS-487: a whole suite red on master for reasons of its own,
+# CLW-84's): any other failure, or a red run naming no test, red on the branch
+# and again on a re-run, failed (exit 1, for Generate Solution, whose
+# max-visits caps it) — never exit 3, master red or not. One timed out on the
+# branch is not run on master (a timeout is never master's); with master's
+# tests not to be had (changes not committed) it is judged with no master.
 #
 # Every run that gets as far as its tests records them on the variation's
 # local-testing (ASS-241): number-of-relevant-automated-tests, the commands
@@ -143,7 +147,8 @@ for i in "${!commands[@]}"; do
   # ASS-353: red, its list failing too (and running) — the recorded file gone: stale, not red.
   listed="$(run_test "$1" "${lists[i]}" "$tmp/list-$i")"
   if [[ $listed -ne 0 ]] && runnable "$listed" "$tmp/list-$i"; then stale[i]="$listed"; continue; fi
-  [[ ${reproduces[i]} == true ]] || ! ran "${statuses[i]}" "$tmp/branch-$i" || red+=("$i")
+  ran "${statuses[i]}" "$tmp/branch-$i" || continue
+  [[ ${reproduces[i]} == true ]] && timed_out "${statuses[i]}" "$tmp/branch-$i" > /dev/null || red+=("$i")
 done
 
 # Master's runs of the red commands: the ones recorded for master's SHA, the rest run now.
@@ -180,17 +185,19 @@ for i in "${!commands[@]}"; do
   if [[ -n "${stale[i]:-}" ]]; then gone=$((gone + 1))
     report+=$'\n'"## ↻ $command ($(exit_of "$status" "$out"): its recorded test is gone, record it again)"$'\n\n'"Its list command fails too (exit ${stale[i]}), so the file it names was moved or renamed after it was recorded: \`${lists[i]}\`"$'\n'"$(block "$tmp/list-$i")"$'\n'"$(block "$out")"$'\n'; continue; fi
   if ! ran "$status" "$out"; then unrunnable=$((unrunnable + 1)); report+=$'\n'"## ⚠ $command (exit $status: could not run)"$'\n'"$(block "$out")"$'\n'; continue; fi
-  master_status=- master=- new="New failures, failing again on a re-run:"
-  if [[ ${reproduces[i]} != true ]]; then
-    if [[ -n "$baseline_error" ]]; then unrunnable=$((unrunnable + 1)); report+=$'\n'"## ⚠ $command (exit $status: could not run master's tests: $baseline_error)"$'\n'"$(block "$out")"$'\n'; continue; fi
+  master_status=- master=- new="New failures, failing again on a re-run:" as=()
+  [[ ${reproduces[i]} != true ]] || as=(--reproduces)
+  if [[ -n "$baseline_error" ]]; then
+    [[ ${reproduces[i]} == true ]] || { unrunnable=$((unrunnable + 1)); report+=$'\n'"## ⚠ $command (exit $status: could not run master's tests: $baseline_error)"$'\n'"$(block "$out")"$'\n'; continue; }
+  elif [[ -f "$baseline" ]] && jq -e --arg run "$command" '.tests[$run] != null' "$baseline" > /dev/null; then
     master_status="$(jq --arg run "$command" '.tests[$run].status' "$baseline")" master="$tmp/master-$i" new="New failures, not failing on master, and failing again on a re-run:"
     jq -j --arg run "$command" '.tests[$run].output' "$baseline" > "$tmp/master-$i"
   fi
-  verdict="$(node "$judge_js" "$master_status" "$master" "$status" "$out")" why="every failure is one master has too"
+  verdict="$(node "$judge_js" ${as[@]+"${as[@]}"} "$master_status" "$master" "$status" "$out")" why="every failure is one master has too"
   if [[ "$(jq -r .verdict <<< "$verdict")" == failed ]]; then
     why="no new failure failed again on a re-run"
     rerun="$(run_test "$1" "$command" "$tmp/rerun-$i")"
-    verdict="$(node "$judge_js" "$master_status" "$master" "$status" "$out" "$rerun" "$tmp/rerun-$i")"
+    verdict="$(node "$judge_js" ${as[@]+"${as[@]}"} "$master_status" "$master" "$status" "$out" "$rerun" "$tmp/rerun-$i")"
     extra=$'\n'"### Re-run ($(exit_of "$rerun" "$tmp/rerun-$i"))"$'\n'"$(block "$tmp/rerun-$i")"$'\n'
   fi
   case "$(jq -r .verdict <<< "$verdict")" in
@@ -199,6 +206,8 @@ for i in "${!commands[@]}"; do
       [[ -z "$listed" ]] || listed=$'\n\n'"Pre-existing failures, failing on master too:"$'\n'"$listed"
       report+=$'\n'"## ✓ $command ($(exit_of "$status" "$out"): $why)$listed"$'\n'"$(block "$out")"$'\n'"$extra" ;;
     failed) failed=$((failed + 1))
+      # a reproducing check master set nothing aside from: its failures compared with no master's
+      [[ ${reproduces[i]} != true || "$(jq '.["pre-existing"] | length' <<< "$verdict")" -gt 0 ]] || new="New failures, failing again on a re-run:"
       report+=$'\n'"## ✗ $command ($(exit_of "$status" "$out"))"$'\n\n'"$new"$'\n'"$(jq -r '.new[] | "- \(.)"' <<< "$verdict")"$'\n'"$(block "$out")"$'\n'"$extra" ;;
     blocked) blocked=$((blocked + 1)) why="red on master too, with no test results to compare"
       ! timed_out "$master_status" "$tmp/master-$i" > /dev/null || why="timed out on master too, nothing to compare"

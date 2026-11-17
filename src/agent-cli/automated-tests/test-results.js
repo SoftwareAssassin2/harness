@@ -2,13 +2,14 @@
 // automated-tests:verify-success (verify-success.sh) for a test command that
 // failed on the ticket's branch:
 //
-//   node test-results.js <master's exit code> <master's output file> <exit code> <output file> [<exit code> <output file>]
+//   node test-results.js [--reproduces] <master's exit code> <master's output file> <exit code> <output file> [<exit code> <output file>]
 //   node test-results.js timed-out <exit code> <output file>
 //
 // prints judge()'s verdict as JSON: the command's run on master, then its run
 // on the branch and, when the first was judged failed, its re-run. For a
 // check that reproduces the ticket's bug (ASS-227: "reproduces": true, red on
-// master by design) master's exit code and file are each "-": no master. Node rather
+// master by design) --reproduces comes first (ASS-487); with no master to
+// compare (none run), master's exit code and file are each "-". Node rather
 // than bash: the outputs run to a megabyte of interleaved runner, psql and
 // docker lines, and telling a test line from the rest, a TODO from a failure,
 // a file that came up short of its plan, takes a parser — one that is tested
@@ -26,7 +27,14 @@
 // branch's run names no failure, or master's red run no test at all, there is
 // nothing to compare by test: red on master and red here is blocked (for a
 // human, with both outputs); green on master and red here failed. With no
-// master (null: a reproducing check) every failure is new.
+// master (null) every failure is new.
+//
+// judge(master, runs, { reproduces: true }) — a reproducing check (ASS-227,
+// ASS-487): each run is judged as with no master, then master's red run sets
+// aside only the failures it names too, as pre-existing; any other failure is
+// new. A run naming no test ("the ticket's bug still reproduces") or timed
+// out is never master's, so never blocked: master timed out, green or red
+// naming no test sets aside nothing.
 //
 // ASS-329: a run stopped at verify-success's time limit (timedOut) never
 // finished, so its output is not compared by test: timed out where master
@@ -142,7 +150,14 @@ function running(output) {
 
 const described = t => `timed out after ${t.minutes} minutes${t.in.length ? `, in ${t.in.join(', ')}` : ''}`;
 
-function judgeRun(master, run) {
+function judgeRun(master, run, reproduces) {
+  if (reproduces) {
+    const alone = judgeRun(null, run);
+    if (alone.verdict !== 'failed' || !master || master.status === 0 || timedOut(master)) return alone;
+    const there = failures(master.output).failed, fresh = new Map(), pre = new Map();
+    for (const [key, name] of alone.new) (there.has(key) ? pre : fresh).set(key, name);
+    return { verdict: fresh.size ? 'failed' : 'passed', new: fresh, pre, timedOut: alone.timedOut };
+  }
   if (run.status === 0) return { verdict: 'passed', new: new Map(), pre: new Map() };
   const out = timedOut(run);
   if (master && timedOut(master)) return { verdict: 'blocked', new: new Map(), pre: new Map() };
@@ -159,8 +174,8 @@ function judgeRun(master, run) {
   return { verdict: fresh.size ? 'failed' : 'passed', new: fresh, pre };
 }
 
-export function judge(master, runs) {
-  const each = runs.map(run => judgeRun(master, run));
+export function judge(master, runs, { reproduces = false } = {}) {
+  const each = runs.map(run => judgeRun(master, run, reproduces));
   const shape = (verdict, fresh, pre) => ({ verdict, new: [...fresh.values()], 'pre-existing': [...pre.values()] });
   const passed = each.find(r => r.verdict === 'passed');
   if (passed) return shape('passed', new Map(), passed.pre);
@@ -174,9 +189,10 @@ if (import.meta.url === pathToFileURL(process.argv[1]).href && process.argv[2] =
   const t = timedOut({ status: Number(process.argv[3]), output: readFileSync(process.argv[4], 'utf8') });
   if (t) console.log(described(t));
 } else if (import.meta.url === pathToFileURL(process.argv[1]).href) {
-  const [masterStatus, masterFile, ...rest] = process.argv.slice(2);
+  const args = process.argv.slice(2), reproduces = args[0] === '--reproduces';
+  const [masterStatus, masterFile, ...rest] = reproduces ? args.slice(1) : args;
   const read = (status, file) => ({ status: Number(status), output: readFileSync(file, 'utf8') });
   const runs = [];
   for (let i = 0; i < rest.length; i += 2) runs.push(read(rest[i], rest[i + 1]));
-  console.log(JSON.stringify(judge(masterFile === '-' ? null : read(masterStatus, masterFile), runs)));
+  console.log(JSON.stringify(judge(masterFile === '-' ? null : read(masterStatus, masterFile), runs, { reproduces })));
 }
