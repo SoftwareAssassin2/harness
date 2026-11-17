@@ -277,6 +277,25 @@ async function withTests(tests, f = workspace()) {
   return { ...f, folder, worktree: join(f.ws, '.worktrees', 'ABC-3'), results: () => readFileSync(join(folder, 'automated-test-results-A.md'), 'utf8') };
 }
 
+// ASS-498: withTests, plus two merge requests planned in the one repository — change/ABC-3-<id>, each branch (off master) holding only its own test file
+// (files[id-1]) — recorded on ABC-3 A as set-merge-request-plan leaves them. The workspace stays on master, the worktree on change/ABC-3.
+async function withMergeRequestBranches(tests, files = ['a.test.js', 'b.test.js']) {
+  const f = await withTests(tests);
+  const plan = files.map((name, i) => {
+    const branch = `change/ABC-3-${i + 1}`;
+    git(f.ws, 'checkout', '-q', '-b', branch, 'master');
+    writeFileSync(join(f.ws, name), `// only on ${branch}\n`);
+    git(f.ws, 'add', name); git(f.ws, 'commit', '-q', '-m', `test on ${branch}`);
+    return { id: i + 1, repository: 'https://gitlab.com/group/project', branch, contents: 'c', 'depends-on': [], status: 'Not Created', key: null, url: null, 'build-status': null };
+  });
+  git(f.ws, 'checkout', '-q', 'master');
+  const file = join(f.dir, 'projects', 'p', 'sprints', 'sprint-10', 'sprint.json');
+  const sprint = JSON.parse(readFileSync(file, 'utf8'));
+  sprint.features[0].variations[0]['merge-request'] = plan;
+  writeFileSync(file, JSON.stringify(sprint, null, 4));
+  return { ...f, plan };
+}
+
 test('automated-tests:verify-exist-and-runnable runs each test\'s list command in the worktree: every one must succeed and find a test; the tests may fail', async () => {
   const f = await withTests([{ list: 'pwd -P > where.txt && echo api.spec.ts', run: 'exit 1' }, { list: 'echo web.spec.ts', run: 'exit 1' }]);
   const { stdout } = await f.agent('automated-tests:verify-exist-and-runnable', 'p', 'abc-3', 'A');
