@@ -398,6 +398,17 @@ and a red run whose `list` command fails too (it ran, so the file it names is
 gone), compared with no master. The flat engines send exit 4 to Generate
 Solution, as any exit but 0 and 3.
 
+Two merge requests in one repository (ASS-498): each entry for a test there
+also gets `"merge-request": <id>`, the one whose branch holds the test, and
+each test is committed on that branch (`automated-tests:record` refuses an id
+that is not a positive integer).
+`automated-tests:verify-exist-and-runnable` checks that branch out in the
+repository holding it to run the entry's `list`, then puts the repository back
+where it was (on failure too); it fails, switching nothing, on an id not in
+the merge-request plan, a branch no repository has, or changes not committed.
+Entries without it run as before. `automated-tests:verify-success` does not
+read the field yet: its `run` commands still all run in one checkout.
+
 CI Checks (ASS-249; grouped Build only — v2-build and the flat engines have
 none — `ci-checks:verify`, in the VM, max-visits 3) runs, between Automated
 Testing and Code Review, the merge-request CI checks the project declares for
