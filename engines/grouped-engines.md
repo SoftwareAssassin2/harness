@@ -679,7 +679,10 @@ step it was at when it entered Blocked, read from its state changes as
 group, the step that left for the group's done step), when that step is a
 script step — Automated Testing's being the recorded automated tests — whose
 command needs no value of a run and changes nothing outside the ticket (never
-a merge, a restart, a VM made, a merge request opened or marked). Passing now,
+a merge, a restart, a VM made, a merge request opened or marked). In
+vm+workstation mode, a variation on a Lima VM is moved onto the ticket's
+branches first (`vm:step-start`, as before any VM step; ASS-487: `vm:step-end`
+left it on master); a step-start that fails is a failed re-check. Passing now,
 the run ends at done with `needs-fix: false`, `recheck-passed: true` and "Passed
 on re-check; nothing to fix" in the change log, and the ticket resumes as it
 does when Troubleshoot finds nothing wrong; still failing, or nothing to
