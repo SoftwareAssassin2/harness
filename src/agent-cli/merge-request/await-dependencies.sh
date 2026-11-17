@@ -58,7 +58,10 @@ set -euo pipefail
 #      comes back here once its turn is complete, under its max-visits (3),
 #      then Blocked. A note in execution-plan-<variation>.md names which and
 #      what each needs. A draft or an approval alone is no agent's to act
-#      on: still 2, polled — unless merged early (5);
+#      on: still 2, polled — unless merged early (5). Nor (ASS-482) is a
+#      build-failed whose pipeline has no failed job or bridge to show
+#      (mr_failed_jobs: [] — a canceled one, say): polled (2), the operator
+#      told its pipeline's URL;
 #   5  (ASS-365) merged early: control set MERGES_AWAITED=1 (a step of the
 #      variation's status chain says merges-awaited: true), the ticket has
 #      one variation in play, and one waits on a dependency with nothing
@@ -154,7 +157,10 @@ refresh_merge_requests "$command" "$project" "$key" "$variation"
 waiting="$(jq -c "$WAITING" <<< "$MRS")"
 [[ "$waiting" != '[]' ]] || none_waiting
 
-# What each dependency waited on needs, by its index: { "<at>": { needs, jobs, approvals, from } } — from: its review comments' authors (ASS-361).
+# OWN: the needs an agent acts on in Address Merge Request Feedback (ASS-361, exit 4).
+OWN='["open-threads", "review-comments", "build-failed", "needs-rebase"]'
+# What each dependency waited on needs, by its index: { "<at>": { needs, own, jobs, pipeline, approvals, from } } — from: its review comments'
+# authors (ASS-361); own: its needs of OWN, a build-failed with no failed job or bridge to show aside (ASS-482); pipeline: its URL.
 found='{}'
 for at in $(jq -r '[.[].at] | unique | .[]' <<< "$waiting"); do
   view="$(jq -c --argjson i "$at" '.[$i]' <<< "$VIEWS")"
@@ -164,16 +170,17 @@ for at in $(jq -r '[.[].at] | unique | .[]' <<< "$waiting"); do
     if jq -e 'any(.reasons[]; . == "build-failed")' <<< "$view" >/dev/null; then jobs="$(mr_failed_jobs "$command" "$at" "$view")"; fi
     comments="$(mr_review_comments "$command" "$at" "$project")"
   fi
-  found="$(jq -c --arg at "$at" --argjson view "$view" --argjson jobs "$jobs" --arg approvals "$approvals" --argjson comments "$comments" --argjson mrs "$MRS" '
+  found="$(jq -c --arg at "$at" --argjson view "$view" --argjson jobs "$jobs" --arg approvals "$approvals" --argjson comments "$comments" --argjson mrs "$MRS" --argjson own "$OWN" '
     ($mrs[$at | tonumber]) as $d
-    | .[$at] = { jobs: $jobs, approvals: $approvals, from: [$comments[].author] | unique, count: ($comments | length),
+    | .[$at] = { jobs: $jobs, pipeline: ($view.pipeline.url // null), approvals: $approvals, from: [$comments[].author] | unique, count: ($comments | length),
         needs: (if $d.key == null then ["not-created"]
                 elif $view == null then []
                 else [ (if $view.draft then "draft" else empty end),
                        ("build-failed", "open-threads" | select(IN($view.reasons[]))),
                        (if $comments != [] then "review-comments" else empty end),
                        ("needs-rebase" | select(IN($view.reasons[]))),
-                       (if $approvals != "0" then "needs-approval" else empty end) ] end) }' <<< "$found")"
+                       (if $approvals != "0" then "needs-approval" else empty end) ] end) }
+    | .[$at].own = [.[$at].needs[] | select(IN($own[])) | select(. != "build-failed" or $jobs != [])]' <<< "$found")"
 done
 
 # Build merges the awaited ones itself (ASS-365) where the project's workflow
@@ -190,8 +197,6 @@ if [[ "${MERGES_AWAITED:-}" == 1 ]]; then
 fi
 
 # The feedback: each dependency that needs something, named and said in plain words; the needs that changed it.
-# OWN: the needs an agent acts on in Address Merge Request Feedback (ASS-361, exit 4).
-OWN='["open-threads", "review-comments", "build-failed", "needs-rebase"]'
 FEEDBACK='
   def repo: .repository // "" | rtrimstr(".git") | sub("^[a-z]+://[^/]+/"; "");
   def name: if .key then repo + " " + .key else "MR \(.id) (" + repo + ")" end;
@@ -199,7 +204,8 @@ FEEDBACK='
   def said: . as $f | if .needs == [] then ["is not merged yet"] else [ .needs[] | {
       "not-created": "was never created",
       draft: "is a draft",
-      "build-failed": ("its pipeline failed" + (if $f.jobs == [] then "" else " (" + ($f.jobs | join(", ")) + ")" end)),
+      "build-failed": (if $f.jobs != [] then "its pipeline failed (" + ($f.jobs | join(", ")) + ")"
+        else "its pipeline failed with no failed job or bridge to show" + (if $f.pipeline then " (" + $f.pipeline + ")" else "" end) end),
       "open-threads": "it has unresolved review threads",
       "review-comments": ((if $f.count == 1 then "it has a review comment from " else "it has \($f.count) review comments from " end) + ($f.from | join(", "))),
       "needs-rebase": "it needs a rebase onto its target branch",
@@ -211,7 +217,7 @@ FEEDBACK='
   | [ $waiting | group_by(.at)[] | { at: .[0].at, dep: .[0]["depends-on"], by: map("MR \(.id)") }
     | . + $found[.at | tostring] | select(.needs != [] or $held) ] as $deps
   | [ $deps[] | select(.needs | index("not-created")) | .dep | name ] as $unmade
-  | [ $deps[] | select(any(.needs[]; IN($own[]))) | .dep | name ] as $ours
+  | [ $deps[] | select(.own != []) | .dep | name ] as $ours
   | (if $held then " Build does not merge it early: the ticket has \($count) variations in play, until Variation Selection sets all but one aside." else "" end) as $why
   | if $deps == [] then { needs: null, short: "", long: "" } else
       (if $unmade != [] then "Never created: " + ($unmade | join(", ")) + "; back to Generate Solution"
@@ -224,12 +230,12 @@ FEEDBACK='
           elif $early == "merge" then " Build merges it: Code Review and Security Review at its head commit, then out of draft and set to auto-merge; this step goes on once it has merged."
           else " The tests run once it merges: act on it on the forge, and this step goes on by itself." + $why end)) as $long
     | { needs: [$deps[] | { id: .dep.id, key: .dep.key, needs } + (if .from != [] then { from } else {} end) + (if $early != "" then { early: $early } else {} end)], short: $short, long: $long } end'
-feedback="$(jq -nc --argjson found "$found" --argjson waiting "$waiting" --argjson own "$OWN" --arg early "$early" "$FEEDBACK")"
+feedback="$(jq -nc --argjson found "$found" --argjson waiting "$waiting" --arg early "$early" "$FEEDBACK")"
 
 # A dependency never created (exit 3), else feedback of its own to act on (exit 4), else, merged early, the merge loop (exit 5).
 unmade="$(jq -r --argjson found "$found" '[.[] | select($found[.at | tostring].needs | index("not-created"))]
   | if . == [] then empty else "MR \([.[]["depends-on"].id] | unique | join(", MR ")) never created, though MR \([.[].id] | unique | join(", MR ")) in another repository depends on it" end' <<< "$waiting")"
-ours="$(jq -r --argjson found "$found" --argjson own "$OWN" '[.[] | .at as $at | ($found[$at | tostring].needs | map(select(IN($own[])))) as $n
+ours="$(jq -r --argjson found "$found" '[.[] | .at as $at | $found[$at | tostring].own as $n
     | select($n != []) | "MR \(.["depends-on"].id) (\(.["depends-on"].key)) has \($n | join(", "))"] | unique
   | if . == [] then empty else join("; ") end' <<< "$waiting")"
 merging=false

@@ -16,7 +16,8 @@
 #                                               # a new planned merge request for <repository-url>: prints { id, repository, branch, base } (ASS-423)
 #   mr_files <command> <index>                 # each path its diff on the forge touches (a rename's both names), one per line (ASS-423)
 #   mr_approvals_left <command> <index> <view>  # approvals it still needs: a number, "unknown" (GitHub: review required), else 0 (ASS-359)
-#   mr_failed_jobs <command> <index> <view>     # its failed pipeline's job names (GitHub: failed checks'), a JSON array (ASS-359)
+#   mr_failed_jobs <command> <index> <view>     # its failed pipeline's job and bridge names (GitHub: failed checks'), a JSON array (ASS-359, ASS-482)
+#   mr_failed_bridges <command> <url> <pipeline-id> [--logs]   # GitLab: a pipeline's failed bridges and their downstream failed jobs, [{ name, url, log? }] (ASS-482)
 #   mr_review_comments <command> <index> <project>   # its plain review comments not yet answered, a JSON array [{ id, author, body, created }] (ASS-361)
 #   mr_harness_accounts <command> <url> <project>    # the logins the harness writes as on <url>'s forge, a JSON array (ASS-361)
 #   mr_comment <command> <index> <comment-id>   # { author, url } of a plain comment on it; fails unless <comment-id> names one (ASS-361)
@@ -203,7 +204,7 @@ GITLAB_VIEW='((.head_pipeline // .pipeline) // null) as $p
              (if ($p.status // "") == "failed" or (($p.status // "") == "canceled" and ($p.sha == null or .sha == null or $p.sha == .sha)) then "build-failed" else empty end),
              (if .has_conflicts == true or (.detailed_merge_status | IN("need_rebase", "conflict")) then "needs-rebase" else empty end) ],
   "auto-merge": (.merge_when_pipeline_succeeds == true), "merged-at": .merged_at, head: .sha,
-  pipeline: (if $p then { id: $p.id, "created-at": $p.created_at, status: $p.status, sha: $p.sha } else null end) }'
+  pipeline: (if $p then { id: $p.id, "created-at": $p.created_at, status: $p.status, sha: $p.sha, url: $p.web_url } else null end) }'
 # ASS-388: on GitHub the rollup is the head commit's own, so a head moved on is a new rollup already; a
 # CANCELLED check there is superseded, no failure, when the same check (its name or context) started again
 # later on that commit and was not cancelled.
@@ -224,7 +225,7 @@ GITHUB_VIEW='def check_name: .name // .context // "";
 
 # mr_view — { state: Open|Merged|Closed, base, title, draft, reasons, auto-merge, merged-at, head, pipeline }, reasons
 # as merge-request:check names them; merged-at the forge's time it merged (null until then); head its head commit's
-# sha (ASS-388; null when the forge gives none); pipeline its head pipeline { id, created-at, status, sha } on GitLab,
+# sha (ASS-388; null when the forge gives none); pipeline its head pipeline { id, created-at, status, sha, url } on GitLab,
 # on GitHub its failed checks { created-at: the latest started, runs: their workflow run ids, jobs: their names }
 # (null when none failed); on GitHub also review-required (its review decision REVIEW_REQUIRED: an approval is
 # still needed).
@@ -413,15 +414,49 @@ mr_approvals_left() {
 
 # mr_failed_jobs <command> <index> <view> — the names of the jobs that failed
 # in its head pipeline (ASS-359), a JSON array: on GitLab that pipeline's
-# failed jobs (GET …/pipelines/<id>/jobs?scope=failed, its id from <view>);
-# on GitHub the failed checks <view> names. Best effort: [] when none is known.
+# failed jobs (GET …/pipelines/<id>/jobs?scope=failed, its id from <view>, an
+# allowed failure aside) and its failed bridges with their downstream
+# pipeline's failed jobs (mr_failed_bridges, ASS-482); on GitHub the failed
+# checks <view> names. Best effort: [] when none is known.
 mr_failed_jobs() {
-  local command="$1" url iid planned pipeline
+  local command="$1" url iid planned pipeline jobs
   IFS=$'\t' read -r url iid planned < <(mr_at "$2")
   if on_github "$url"; then jq -c '.pipeline.jobs // []' <<< "$3"; return; fi
   pipeline="$(jq -r '.pipeline.id // empty' <<< "$3")"
   [[ -n "$pipeline" ]] || { echo '[]'; return; }
-  lab "$command" "$url" "/pipelines/$pipeline/jobs?scope=failed" 2>/dev/null | jq -c '[.[]? | .name // empty] | unique' 2>/dev/null || echo '[]'
+  jobs="$(lab "$command" "$url" "/pipelines/$pipeline/jobs?scope=failed" 2>/dev/null | jq -c '[.[]? | select(.allow_failure | not) | .name // empty]' 2>/dev/null)" || jobs='[]'
+  jq -c --argjson b "$(mr_failed_bridges "$command" "$url" "$pipeline")" '. + [$b[].name] | unique' <<< "${jobs:-[]}"
+}
+
+# mr_failed_bridges <command> <url> <pipeline-id> [--logs] — GitLab (ASS-482):
+# the pipeline's failed bridges (trigger jobs, which …/jobs leaves out: GET
+# …/pipelines/<id>/bridges), an allowed failure aside, each { name, url }, and
+# for one with a downstream pipeline that pipeline's failed jobs (its own
+# project, one level only), each { name: "<bridge> > <job>", url } — with
+# --logs, each with its log's last 60 lines as log. A JSON array. Best effort:
+# a call that fails (no bridges endpoint, a project the token cannot read)
+# adds none, never failing the caller.
+mr_failed_bridges() {
+  local command="$1" url="$2" pipeline="$3" logs="${4:-}" host bridges out='[]' bridge name down jobs job
+  host="$(host_of "$url")"
+  bridges="$(lab "$command" "$url" "/pipelines/$pipeline/bridges?per_page=100" 2>/dev/null \
+    | jq -c '[.[]? | select(.status == "failed" and (.allow_failure | not)) | { name, url: .web_url, down: .downstream_pipeline }]' 2>/dev/null)" || bridges='[]'
+  while IFS= read -r bridge; do
+    [[ -n "$bridge" ]] || continue
+    out="$(jq -c --argjson b "$bridge" '. + [$b | { name, url }]' <<< "$out")"
+    down="$(jq -r '.down | if .id and .project_id then "\(.project_id)/pipelines/\(.id)" else empty end' <<< "$bridge")"
+    [[ -n "$down" ]] || continue
+    name="$(jq -r '.name' <<< "$bridge")"
+    jobs="$(glab_run "$command" api "projects/$down/jobs?per_page=100" --hostname "$host" 2>/dev/null \
+      | jq -c --arg b "$name" '[.[]? | select(.status == "failed" and (.allow_failure | not)) | { id, name: "\($b) > \(.name)", url: .web_url }]' 2>/dev/null)" || jobs='[]'
+    if [[ "$logs" == --logs ]]; then
+      for job in $(jq -r '.[].id' <<< "${jobs:-[]}"); do
+        jobs="$(jq -c --argjson job "$job" --arg log "$(glab_run "$command" api "projects/${down%%/*}/jobs/$job/trace" --hostname "$host" 2>/dev/null | tail -n 60)" 'map(if .id == $job then .log = $log else . end)' <<< "$jobs")"
+      done
+    fi
+    out="$(jq -c --argjson j "${jobs:-[]}" '. + [$j[] | del(.id)]' <<< "$out")"
+  done < <(jq -c '.[]' <<< "${bridges:-[]}")
+  echo "$out"
 }
 
 # mr_harness_accounts <command> <url> <project> — the forge logins the
