@@ -344,7 +344,7 @@ function blockedInVm({ mode = 'vm+workstation', machine, running = true } = {}) 
   edit(s.at('projects', 'p', 'project.json'), p => {
     p['dev-environments'] = { mode, ...(mode === 'vm' ? {} : { workstations: [{ id: 'ada-dev', 'gcp-project': 'example-gcp-project', region: 'us-central1', cluster: 'example-workstations', config: 'example-config' }] }) };
   });
-  s.setVariation({ vm: { name: 'abc-3-a', ip: '192.168.64.9', 'created-at': '2026-10-19T00:00:00Z', ...(machine ? { machine } : {}) },
+  s.setVariation({ vm: { name: 'abc-3-a', ip: '192.168.64.9', 'created-at': '2026-10-19T00:00:00Z' }, ...(machine ? { workstation: machine } : {}),
     'merge-request': [{ id: 1, repository: 'https://github.com/o/harness', branch: 'change/ABC-3-1', status: 'Open' }] });
   const ran = join(l.v.dir, 'ran.log');
   writeFileSync(s.at('projects', 'p', 'work', 'ABC-3', 'automated-tests-A.json'), JSON.stringify([{ list: 'echo t',
@@ -383,7 +383,7 @@ test('ASS-487 AC3: vm:step-start failing (the VM not running) is a failed re-che
 });
 
 test('ASS-487 AC3: a variation recorded on a workstation (workstation:…) gets no vm:step-start from ticket:recheck-block', async () => {
-  const s = blockedInVm({ machine: 'workstation:p:ada-dev:/home/me/ABC-3-A' });
+  const s = blockedInVm({ machine: { name: 'ada-dev', project: 'p', folder: '/home/me/ABC-3-A' } });   // machine.bash: workstation:p:ada-dev:/home/me/ABC-3-A
   const r = await outcome(s.agent('ticket:recheck-block', 'p', 'ABC-3', 'A'));
   assert.equal(r.code, 3);
   assert.doesNotMatch(r.out.recheck.output, /vm:step-start/);
