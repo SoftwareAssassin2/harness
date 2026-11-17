@@ -108,9 +108,9 @@ if [[ "$LOOP" == true ]]; then MRS="$(variation_field '.["merge-request"] // []'
 refresh_merge_requests "$command" "$project" "$key" "$variation"
 
 # ASS-388: each Open one of the set gets the head commit this check saw as its checked-head, and its
-# feedback-acted (merge-request:reply and :resolve set it) cleared — written only when either changes. The
+# feedback-acted (merge-request:reply, :resolve and :retry set it) cleared — written only when either changes. The
 # check is what sends a merge request to Address Merge Request Feedback, so these are the round's start:
-# merge-request:feedback-round tells a round that pushed, replied to and resolved nothing by them.
+# merge-request:feedback-round tells a round that pushed, replied to, resolved and retried nothing by them.
 while IFS=$'\t' read -r i fields; do
   set_merge_request "$command" "$project" "$key" "$variation" "$i" "$fields"
 done < <(jq -r --argjson views "$VIEWS" --argjson only "$ONLY" "$MR_ONLY"'

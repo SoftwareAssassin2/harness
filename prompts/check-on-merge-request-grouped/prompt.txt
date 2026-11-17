@@ -5,7 +5,7 @@ Resolve whatever is blocking ticket {ticket}'s merge requests, variation {variat
 The merge requests: {agent-sh} ticket:merge-request-plan {project} {ticket} {variation} lists each one's id, repository, branch, base, url and status. Look at every one that is Open with `{agent-sh} merge-request:view {project} {ticket} {variation} <id>` — its unresolved threads and failed jobs, with their logs — and, in its repository's checkout, for each that needs it:
 
 1. Open review threads: read each one and make the requested change. Where you disagree, or it needs the operator: reply saying why and leave it unresolved.
-2. Failed build: read the failed jobs' logs, find the cause, and fix it. Don't skip or disable failing tests.
+2. Failed build: read the failed jobs' logs, find the cause, and fix it. Don't skip or disable failing tests. If a failed job's log shows no test ran (a runner, Docker daemon or scheduling failure: infra), don't change code: retry it with `{agent-sh} merge-request:retry {project} {ticket} {variation} <id>`, once per head; if it is refused, the failure is real: fix it, or reply and leave it for the operator.
 3. Needs rebase: git fetch origin, rebase onto origin/<base> and resolve conflicts as Conflicts, below, says.
 4. Run the automated tests, then commit every change on its branch and push it once; before you finish, nothing is left uncommitted, and nothing is committed on its base (the harness refuses a commit on the default branch).
 5. Then, for each thread you addressed: reply with what changed and its commit, then resolve it.

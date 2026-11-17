@@ -6,8 +6,8 @@ set -euo pipefail
 # Check the Feedback Round; a project Release's own), so a round that did
 # nothing spends none of that step's max-visits. merge-request:check, which
 # sends a merge request to the round, records the head commit it saw on its
-# row (checked-head) and clears feedback-acted; merge-request:reply and
-# :resolve set feedback-acted. So, for each Open one of the set (--only
+# row (checked-head) and clears feedback-acted; merge-request:reply,
+# :resolve and :retry set feedback-acted. So, for each Open one of the set (--only
 # <ids>, comma-separated, or - for every one; every Open one without it), its
 # head is read from its forge (mr_head) and the round changed it when that
 # head is not its checked-head, it has none recorded, or it has

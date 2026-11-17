@@ -317,6 +317,16 @@ test('ASS-239 AC1: merge-request:reply and :resolve are allowed for the VM\'s ow
   assert.match(may('merge-request:reply', 'harness', 'ASS-74', 'A', '1', 'd1', '/mnt/ticket/reply.md').refuse, /must be "-"/);
 });
 
+// ASS-483: a VM agent retries an infra-flaked failed job (no test ran) on its merge request through the host.
+test('ASS-483 AC1: merge-request:retry is allowed for the VM\'s own ticket variation; another ticket, variation or project is refused', () => {
+  const f = fixture(), { tokens, assignments } = bindings(f.dir);
+  const may = (...argv) => authorize(tokens, assignments, 'harness-token', argv);
+  assert.deepEqual(may('merge-request:retry', 'harness', 'ASS-74', 'A', '1').argv, ['merge-request:retry', 'harness', 'ASS-74', 'A', '1']);
+  assert.match(may('merge-request:retry', 'harness', 'ASS-70', 'A', '1').refuse, /^ticket "ASS-70"/);
+  assert.match(may('merge-request:retry', 'harness', 'ASS-74', 'B', '1').refuse, /^variation "B"/);
+  assert.match(may('merge-request:retry', 'example', 'ASS-74', 'A', '1').refuse, /^project "example"/);
+});
+
 // ASS-241: a VM agent records each acceptance criterion's dev or testing status through the host.
 test('ASS-241 AC1: ticket:set-ac-status is allowed for the VM\'s own ticket variation; another ticket, variation or project is refused', () => {
   const f = fixture(), { tokens, assignments } = bindings(f.dir);
