@@ -145,6 +145,56 @@ test('ASS-412 AC3: No work in progress notifies only once it has stayed up 5 min
   assert.deepEqual(fresh.check(idle, NOW + 2 * IDLE_AFTER_MS), []);
 });
 
+// ASS-511: a sprint ticket running a script — its detailed step a script step
+// (gb's await-fix), not held at a gate, not paused: runsScript, the 💻 icon's rule.
+const scripting = (key, extra = {}, variation = {}) => ({ key, title: 'T', ...extra, variations: [{ name: 'A', 'harness-status': { state: 'build', 'state-engine': 'e', 'sub-status': { state: 'await-fix', 'state-engine': 'gb' } }, ...variation }] });
+const onlyQBusy = (features, more = {}) => stateOf([project('p', {}, features), project('q')], { assignments: busy([project('q')]), ...more });
+const idleIn = (state, i = 0) => headerWarnings({ ...state, project: i }, NOW).some(w => w.id === 'idle');
+
+test('ASS-511 AC1/AC2: with no agent on its sprint but a ticket running a script, No work in progress is not up — in the header and the notifications alike', async () => {
+  const st = onlyQBusy([scripting('P-1'), ticket('P-2')]);
+  assert.equal(idleIn(st), false);
+  const out = render(st, { columns: 260, rows: 50, now: new Date(NOW) });
+  assert.ok(!out.some(l => l.includes('No work in progress')), out.map(strip).join('\n'));
+  assert.deepEqual(liveWarnings(st, NOW), {});
+  const h = harness(), n = h.make();
+  n.check(two(), NOW);
+  for (const t of [NOW, NOW + 60e3, NOW + 2 * IDLE_AFTER_MS]) assert.deepEqual(n.check(st, t), []);
+  assert.equal(n.due(NOW + 10 * IDLE_AFTER_MS), false);
+  await n.sent();
+  assert.deepEqual(h.sent(), []);
+  // The script done (the ticket back on a prompt step, no agent on it): idle again, as before.
+  assert.equal(idleIn(onlyQBusy([ticket('P-1'), ticket('P-2')])), true);
+});
+
+test('ASS-511 AC3: a script step paused (ticket or variation) or held at a gate is no work: No work in progress shows, and notifies after its 5 minutes', async () => {
+  for (const [why, t] of [
+    ['ticket paused', scripting('P-1', { 'is-paused': true })],
+    ['variation paused', scripting('P-1', {}, { 'is-paused': true })],
+    ['held at a gate', scripting('P-1', { 'pending-requirements-change': { title: 'x' } })],
+  ]) {
+    const st = onlyQBusy([t]);
+    assert.equal(idleIn(st), true, why);
+    assert.deepEqual(Object.keys(liveWarnings(st, NOW)), ['p'], why);
+  }
+  const st = onlyQBusy([scripting('P-1', { 'is-paused': true })]);
+  const h = harness(), n = h.make();
+  n.check(two(), NOW);
+  assert.deepEqual(n.check(st, NOW), []);
+  assert.deepEqual(n.check(st, NOW + IDLE_AFTER_MS).map(e => `${e.project}/${e.id}`), ['p/idle']);
+  await n.sent();
+  assert.deepEqual(h.sent().map(s => [s.title, s.subtitle]), [['No work in progress', 'Project p']]);
+});
+
+test('ASS-511 AC4: a past day, or no sprint, shows no No work in progress, a script running or not', () => {
+  for (const features of [[ticket('P-1')], [scripting('P-1')]]) {
+    const st = onlyQBusy(features);
+    const past = { ...st, day: '2026-09-30', projects: st.projects.map((p, i) => (i ? p : { ...p, days: { '2026-09-30': p.sprint } })) };
+    assert.equal(idleIn(past), false);
+    assert.equal(idleIn(withProject(st, 'p', { sprint: null })), false);
+  }
+});
+
 test('ASS-412 AC3: warnings the operator caused — Background work off, the operator\'s own pause — never notify', async () => {
   const h = harness(), n = h.make();
   n.check(two());

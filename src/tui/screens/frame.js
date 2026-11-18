@@ -36,12 +36,16 @@ const shownAt = (state, now) => (state.day ? Date.parse(`${state.day}T23:59:00Z`
 // Whether no agent of the selected project works a ticket of its active
 // sprint (ASS-59), whatever its status or variation: only today, since
 // assignments describe it, and only with an active sprint. Health checks (no
-// work-item) and backlog refinement are not sprint work.
+// work-item) and backlog refinement are not sprint work. ASS-511: nor is it
+// idle while a ticket of the sprint runs a script — runsScript over the rows
+// the sprint screen shows (sprintTickets), the 💻 icon's rule, so a script
+// step held at a gate or paused is no work.
 function idle(state) {
   const sprint = state.projects[state.project]?.sprint;
   if (state.day || !sprint) return false;
   const keys = new Set(Object.keys(ICONS).flatMap(type => sprint[type] ?? []).map(t => t.key.toLowerCase()));
-  return !liveAssignments(state).some(a => !refining(state, a) && keys.has(String(a['work-item']).toLowerCase()));
+  if (liveAssignments(state).some(a => !refining(state, a) && keys.has(String(a['work-item']).toLowerCase()))) return false;
+  return !sprintTickets(state).tickets.some(t => runsScript(state, t));
 }
 // ASS-412: the selected project's warnings, one list for the header and the
 // Mac notifications (src/notify/warnings.js evaluates it for every project,

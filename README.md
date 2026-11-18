@@ -161,6 +161,9 @@ selects that project.
   and comes back. Warnings already up when the dashboard starts don't notify
   (the seen set is kept in `data/header-warnings-seen.json`).
 - "No work in progress" notifies only once it has stayed up for 5 minutes.
+  It is up only while no agent works a sprint ticket and no sprint ticket is
+  running a script (the sprint screen's 💻; one paused or held at a gate
+  does not count).
 - Warnings you caused yourself (Background work off, your own pause) never
   notify.
 - Harness-wide warnings (Out of memory, Out of disk space, the disk low,
