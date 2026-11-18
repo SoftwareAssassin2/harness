@@ -142,7 +142,7 @@ test('AC2: the Health a lost end left is cleared by a later step\'s clean end on
   }
 });
 
-test('AC3: a stray branch a step\'s end set aside is reported — logged, and on the Health of the ticket it belongs to, never the releasing one\'s', async () => {
+test('AC3 (ASS-510 AC1): a stray branch a step\'s end set aside is reported — logged, and on the Health of the ticket it belongs to, never the releasing one\'s', async () => {
   const s = fixture({ state: 'plan', status: 'Running' });
   s.c.ctx.memory.vmsUp = new Set(['abc-3-a']);
   const ref = 'refs/harness/stray/change/ABC-9-1/20261116T230000Z';
@@ -150,9 +150,11 @@ test('AC3: a stray branch a step\'s end set aside is reported — logged, and on
   s.c.ctx.memory.workstationSteps = new Map([['p/ABC-3/A', { project: 'p', key: 'ABC-3', variation: 'A', state: 'vm', vm: 'abc-3-a', step: 'Build', used: true, scripts: new Set(), dispatching: 0, failures: 0, until: 0 }]]);
   const calls = await s.tend();
   assert.ok(s.c.lines.includes(`error workstation ABC-3 A's step end: set aside example-corpus change/ABC-9-1, 2 commit(s) GitLab lacks, under ${ref} (not this ticket variation's branch); never pushed, its local branch deleted so it is checked out fresh from GitLab; it is ABC-9 A's`), s.log());
-  const set = calls.filter(x => x.startsWith('ticket:set-ai-feedback'));
+  // ASS-510 AC1: reported as a notice beside ABC-9 A's feedback (ticket:add-ai-notice, its source the step that found it), never replacing it.
+  assert.equal(calls.filter(x => x.startsWith('ticket:set-ai-feedback p ABC-9')).length, 0, calls.join('\n'));
+  const set = calls.filter(x => x.startsWith('ticket:add-ai-notice'));
   assert.equal(set.length, 1, calls.join('\n'));
-  assert.match(set[0], /^ticket:set-ai-feedback p ABC-9 A Stray commits set aside: example-corpus change\/ABC-9-1/);
+  assert.match(set[0], /^ticket:add-ai-notice p ABC-9 A ABC-3 A's step end Stray commits set aside: example-corpus change\/ABC-9-1/);
   assert.ok(set[0].includes(`${STRAY_HEALTH} example-corpus change/ABC-9-1 (2 commit(s), kept under ${ref}), found by ABC-3 A's step`), set[0]);
   assert.deepEqual([ownerOf('change/ABC-9-1'), ownerOf('change/ABC-9.B-12'), ownerOf('feature/x')], [{ key: 'ABC-9', variation: 'A' }, { key: 'ABC-9', variation: 'B' }, null]);
 });
