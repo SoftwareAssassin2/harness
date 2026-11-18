@@ -1548,7 +1548,7 @@ test('ASS-388 AC1: on GitHub a CANCELLED check is not build-failed when the same
   assert.deepEqual((await checked(f)).reasons, []);
   prView(f, 12, { isDraft: false, headRefOid: HEAD, statusCheckRollup: [run('test', 'CANCELLED', '2026-11-10T10:00:00Z'), run('lint', 'SUCCESS', '2026-11-10T10:05:00Z')] });
   assert.deepEqual((await checked(f)).reasons, ['build-failed']);
-  prView(f, 12, { isDraft: false, headRefOid: HEAD, statusCheckRollup: [run('test', 'CANCELLED', '2026-11-10T10:00:00Z'), run('test', 'FAILURE', '2026-11-10T10:05:00Z')] });
+  prView(f, 12, { isDraft: false, headRefOid: NEW, statusCheckRollup: [run('test', 'CANCELLED', '2026-11-10T10:00:00Z'), run('test', 'FAILURE', '2026-11-10T10:05:00Z')] });
   assert.deepEqual((await checked(f)).reasons, ['build-failed']);
 });
 
@@ -1821,6 +1821,91 @@ test('ASS-505 AC2: after await-dependencies sends a build-failed dependency to A
   assert.equal(r.code, 0, r.err);
   assert.deepEqual(JSON.parse(r.out), { changed: false, 'merge-requests': [
     { id: 1, key: '!7', head: HEAD, 'checked-head': HEAD, acted: false }, { id: 2, key: '!9', head: OLD, 'checked-head': OLD, acted: false }] });
+});
+
+// ASS-513: merge-request:check sends a build-failed MR to Address Merge Request Feedback once per head: it records the
+// head it reported build-failed at (build-failed-head); at that head, checked-head unchanged and nothing acted on
+// (feedback-acted not true), it polls it (build-pending why sent-unchanged, counted as waiting), as await-dependencies
+// does since ASS-505. A new head, or a reply, resolve or retry, sends it again.
+const RED = { draft: false, sha: HEAD, head_pipeline: { id: 55, status: 'failed' } };
+const SENT = { 'needs-attention': true, reasons: ['build-failed'], 'auto-merge': false, merged: false };
+const POLLED = { 'needs-attention': false, reasons: [], 'auto-merge': true, merged: false, 'build-pending': [{ id: 1, key: '!7', why: 'sent-unchanged' }] };
+const rowHeads = f => [f.mrs()[0]['checked-head'], f.mrs()[0]['build-failed-head']];
+
+test('ASS-513 AC1: a build-failed MR already sent at an unchanged head, nothing acted on, is polled — needs-attention false, no build-failed, counted as waiting — however often the check runs', async () => {
+  const f = await single(RED);
+  assert.deepEqual(await checked(f), SENT, 'the first send');
+  assert.deepEqual(rowHeads(f), [HEAD, HEAD], 'checked-head and build-failed-head recorded');
+  for (let i = 0; i < 3; i++) assert.deepEqual(await checked(f), POLLED, `run ${i + 2}: polled`);
+});
+
+test('ASS-513 AC1: with --only, the grouped-merge loop polls it too and tells the operator it was already sent and waits for a new commit or the operator', async () => {
+  const f = await single(RED);
+  noted(f, 'app', 7, []);
+  const loop = async () => JSON.parse((await f.agent('merge-request:check', 'p', 'ABC-5', 'A', '--only', '1')).stdout);
+  assert.deepEqual(await loop(), SENT);
+  assert.deepEqual(await loop(), POLLED);
+  const told = variationOf(f)['ai-feedback-long'] ?? '';
+  assert.match(told, /already sent to Address Merge Request Feedback/, told);
+  assert.match(told, /waits for a new commit or the operator/, told);
+});
+
+test('ASS-513 AC1: a checked-head left while the pipeline still ran (no build-failed-head) does not hold back the first send; it then records build-failed-head', async () => {
+  const f = await single(RED);
+  f.record({ 1: { 'checked-head': HEAD } });
+  assert.deepEqual(await checked(f), SENT);
+  assert.deepEqual(rowHeads(f), [HEAD, HEAD]);
+  assert.deepEqual(await checked(f), POLLED);
+});
+
+test('ASS-513 AC1: a polled MR with a new open thread at the same head needs attention for the thread alone; build-failed stays dropped', async () => {
+  const f = await single(RED);
+  await checked(f);
+  view(f, 'app', 7, { ...RED, blocking_discussions_resolved: false });
+  const out = await checked(f);
+  assert.deepEqual([out['needs-attention'], out.reasons], [true, ['open-threads']], JSON.stringify(out));
+});
+
+test('ASS-513 AC1: an MR held for an unmerged dependency stays held with its own why, never also sent-unchanged', async () => {
+  const f = await dependent({}, { ...failedAt(BEFORE), sha: HEAD });
+  for (let i = 0; i < 2; i++) {
+    const out = await checked(f);
+    assert.deepEqual(out['build-pending'], [{ id: 2, key: '!9', why: 'dependency-unmerged' }], JSON.stringify(out));
+    assert.ok(!out.reasons.includes('build-failed'));
+  }
+});
+
+test('ASS-513 AC1: an MR whose view has no head is never polled — build-failed every run', async () => {
+  const f = await single({ draft: false, head_pipeline: { id: 55, status: 'failed' } });
+  for (let i = 0; i < 3; i++) assert.deepEqual(await checked(f), SENT, `run ${i + 1}`);
+});
+
+test('ASS-513 AC2: a new head with the pipeline still failed is sent again (needs-attention, build-failed), both heads recorded, then polled at it', async () => {
+  const f = await single(RED);
+  await checked(f);
+  assert.deepEqual(await checked(f), POLLED);
+  view(f, 'app', 7, { ...RED, sha: NEW });
+  assert.deepEqual(await checked(f), SENT);
+  assert.deepEqual(rowHeads(f), [NEW, NEW]);
+  assert.deepEqual(await checked(f), POLLED);
+});
+
+test('ASS-513 AC2: feedback acted on (feedback-acted true) at the same head is sent again, then polled once the check has cleared it', async () => {
+  const f = await single(RED);
+  await checked(f);
+  assert.deepEqual(await checked(f), POLLED);
+  f.record({ 1: { 'feedback-acted': true } });
+  assert.deepEqual(await checked(f), SENT);
+  assert.equal(f.mrs()[0]['feedback-acted'] ?? null, null, 'cleared by the check');
+  assert.deepEqual(await checked(f), POLLED);
+});
+
+test('ASS-513 AC2: a Merged MR with a stale build-failed-head is ignored — not build-pending, merged', async () => {
+  const f = await single({ ...RED, state: 'merged' });
+  f.record({ 1: { status: 'Merged', 'build-failed-head': HEAD, 'checked-head': HEAD } });
+  const out = await checked(f);
+  assert.equal(out['build-pending'], undefined, JSON.stringify(out));
+  assert.equal(out.merged, true);
 });
 
 // ASS-508: a GitLab thread a reviewer holds open (only they may resolve it)
