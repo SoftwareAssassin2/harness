@@ -457,6 +457,7 @@ If the fix really is deployed and the ticket still sits in Blocked, **resume it 
 ```
 
 - **Resume at the right step:** use `resume-at` from `fix-resume-step`, or the step the ticket was blocked at when it prints none. You can read that step from the variation's last `state-changes` into `blocked`.
+- **Visit counts restart:** the move records cause `fix-landed`, so steps visited before the block don't count toward max-visits.
 - **Move it first, then clear the wait.** Clearing `waits-on` while the ticket is still in Await the Fix sends it to Blocked for Human (`fix-landed` exits 4).
 - **Control ends the Blocked run itself** once the ticket has left Blocked.
 - **All of this is for Blocked only.** Blocked for Human is a different workflow, the operator's step: don't use `change-state` there. Follow "Operator Needed tickets" (Resolved, or Have AI Try Again).

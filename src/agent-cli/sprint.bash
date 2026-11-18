@@ -48,7 +48,9 @@
 # merges it into the change; ticket:sync's reset ("requirements-changed") and
 # ticket:restart-refinement's ("migrated") write their own. A move an exit
 # made carries none, except a block cleared by a landed fix ("fix-landed",
-# ASS-309), which restarts step visit counts.
+# ASS-309), which restarts step visit counts. ticket:change-state records
+# "fix-landed" too on a move out of blocked given no MOVE_CAUSE — a manual
+# resume (ASS-514).
 # After a move, sync_paired_status makes the ticket system follow: the
 # ticket's ticket-system-status becomes the paired-ticket-system-status of the
 # variation's step (in its state-engine) when that differs, through

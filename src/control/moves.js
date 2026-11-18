@@ -208,7 +208,9 @@ export async function moveTicket(ctx, phase, project, ticket, variation, to, why
     await holdAtGate(ctx, phase, project.id, ticket.key, variation, `${ticket.key} ${variation.name} ${from}`, { from, to, reason: why ?? 'exit', ...(startAt ? { 'start-sub-engine-at': startAt } : {}) });
     return false;
   }
-  const said = await ctx.cli(['ticket:change-state', project.id, ticket.key, variation.name, from, to, ...(startAt ? [startAt] : [])], causeEnv(cause));
+  // Always an explicit MOVE_CAUSE ('{}' with no cause): change-state records fix-landed on a move out of
+  // blocked without one (a manual resume, ASS-514), which control's own cause-less clears must not get.
+  const said = await ctx.cli(['ticket:change-state', project.id, ticket.key, variation.name, from, to, ...(startAt ? [startAt] : [])], causeEnv(cause) ?? { MOVE_CAUSE: '{}' });
   ctx.log(phase, `${ticket.key} ${variation.name} ${from} → ${to}${startAt ? ` at ${startAt}` : ''}${why ? ` (${why})` : ''}`);
   const status = /ticket system status → (.*)$/m.exec(said);
   if (status) ctx.log(phase, `${ticket.key} ticket system status → ${status[1]}`);
