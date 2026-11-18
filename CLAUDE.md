@@ -196,6 +196,38 @@ jq -c 'to_entries[] | {id: .key, state: .value.state, connected: .value.connecte
 - Planning seats aren't in `seats.json`. The dashboard's footer shows every seat and machine: `local virtual machines` (free build and planning seats included), `gcp workstations` and `cloud virtual machines`. Its sprint screen marks each ticket's seat: 💺 VM, ⛅ workstation, 🌐 cloud VM.
 - Other machine commands: `workstation:connect|disconnect|ssh|setup`.
 
+### Adding machines to a project
+
+No CLI covers these settings, so they are the hand edits to `data/projects/<project>/project.json` allowed above. Get the operator's go-ahead first. Write the file whole, `jq … > tmp && mv tmp project.json`, never half-written. Control rereads `project.json` every tick, so no restart is needed. Watch the footer and control's log after the change.
+
+**More local VMs** (Lima): a VM is made per ticket automatically, so "adding" one means adding seats:
+- `max-tickets-in-progress`: the project's VM seats (builds). `max-tickets-in-planning`: its planning seats (planning always runs on local VMs).
+- `data/harness.json`'s `max-tickets-in-progress` caps all projects together. Its `vm-disk-limit-gb` caps the VMs' disk.
+- Before raising seats, check the Mac can carry them: each VM needs the golden image's memory and disk (`vm:inventory`, "Watch the machine"). Too many give **Out of memory** or **Out of disk space** holds.
+- The project needs a current golden image (`./agent.sh vm:golden-status <project>`; build it with `vm:build-golden`).
+
+**A cloud VM** (a GCP Compute Engine VM): the harness never creates, resizes or stops one. It must already exist, and then:
+1. **Prerequisites on the GCP side:** the VM runs Linux with Docker. The operator's gcloud account can reach it through IAP on port 22, with OS Login, and can start it. It stops itself when idle (the harness expects an idle self-stop, about 60 minutes).
+2. **The gcloud login that reaches it:** `CLOUDSDK_CONFIG=<folder> gcloud auth login` when it isn't the default config. Check the login with `gcloud compute instances describe <id> --zone <zone> --project <gcp-project>` under the same config.
+3. **Add it** under `dev-environments` in `project.json`. The `id` must be unique across workstations and cloud VMs:
+   ```json
+   "dev-environments": {
+     "mode": "vm+workstation",
+     "cloud-vms": [
+       { "id": "<vm-name>", "gcp-project": "<gcp-project>", "zone": "<zone>",
+         "gcloud-config": "~/.config/<name>/gcloud", "ssh-user": "<os-login-user>" }
+     ]
+   }
+   ```
+   - `gcloud-config` and `ssh-user` are optional. `ssh-user` defaults to the gcloud account's OS Login name (`ada.lovelace@example.com` becomes `ada_lovelace_example_com`).
+   - `mode` must be `workstation` (remote seats only) or `vm+workstation` (remote first, then local VMs). In `vm` mode cloud VMs are ignored.
+   - Each cloud VM is one more seat, taken after the workstations and before the VM seats.
+4. **Check it:** `./agent.sh workstation:connect <project> <id>`, then `workstation:setup <project> <id>`, then `workstation:status <project> <id>`. Control does the same by itself. A bad entry is logged by control naming the field, and then neither workstations nor cloud VMs are used. Setup failures show as **Cloud VM `<id>` setup failed**.
+
+**A GCP Cloud Workstation:** the same steps, under `dev-environments.workstations`, each `{ id, gcp-project, region, cluster, config, gcloud-config? }`. The workstation must already exist. The harness connects with `gcloud workstations ssh`.
+
+Remove a machine by deleting its entry, but only while no ticket holds its seat (check `seats.json`).
+
 ## Tickets
 
 Every change gets a ticket, and the harness works every ticket. That is the happy path. Work a ticket by hand (`./agent.sh ticket:set-manual <project> <KEY> on`) only when the operator insists on making the change directly. A hand-made change merges into `main` only while the harness is stopped.
