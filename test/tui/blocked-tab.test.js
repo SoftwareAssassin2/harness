@@ -5,7 +5,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { initialState as flagged, handleKey, render } from '../../src/tui/app.js';
-import { tabsOf, tabNumber, needsYou, defaultTab, quickLines, blockedSteps, blockedOf, blockedLines, gateTab, TABS } from '../../src/tui/ticket.js';
+import { tabsOf, tabNumber, needsYou, defaultTab, quickLines, ticketLines, blockedSteps, blockedOf, blockedLines, gateTab, TABS } from '../../src/tui/ticket.js';
 
 const strip = s => s.replace(/\x1b\[[0-9;]*m|\x1b\]8;;[^\x1b]*\x1b\\/g, '');
 const wide = { columns: 200, rows: 60, now: new Date('2026-11-14T22:00:00Z') };
@@ -309,4 +309,60 @@ test('ASS-439: a screen left on the Blocked tab once the ticket moves on shows A
   assert.match(bar(out), new RegExp(`^${NO_BLOCK} ─`));
   assert.ok(tabText(out).some(l => l.includes('Set manual priority')));
   assert.equal(press(moved, 'tab').ticketTab, 'details');
+});
+
+// ASS-510 AC2: a notice from outside the variation's flow (ai-notices, e.g. the stray-branch set-aside) is shown after the block's own
+// feedback, marked "Notice (<time> UTC, <source>)" — on the Blocked tab, the Details tab's Health and the quick panel's Health.
+const NOTICE = { timestamp: '2026-11-18T08:42:00Z', source: 'ABC-9 A\'s step end', short: 'Stray commits set aside: example-corpus change/ABC-1770-1', long: 'Commits of a stray local branch were set aside: example-corpus change/ABC-1770-1 (2 commit(s), kept under refs/harness/stray/x)' };
+const NOTICE2 = { timestamp: '2026-11-18T09:10:00Z', source: 'ABC-7 A\'s step start', short: 'Second notice', long: 'The second notice, recorded later' };
+const FEEDBACK = { 'ai-feedback-short': 'Reviewer thread open on example-api !12', 'ai-feedback-long': 'Operator: post the timings on example-api !12 so the reviewer resolves the thread, then resume' };
+const MARK = 'Notice (2026-11-18 08:42 UTC, ABC-9 A\'s step end): ';
+const details = fields => ticketLines({ key: 'ABC-1770', title: 'T', variation: variation({ 'harness-status': hs('blocked-for-human'), ...fields }) },
+  { status: 'Blocked for Human', stepName: id => id, prompted: () => false, agents: [], columns: 200, steps }).details.map(strip);
+const quick = fields => quickLines({ key: 'ABC-1770', title: 'T', variation: variation({ 'harness-status': hs('blocked-for-human'), ...fields }) }, { status: 'Blocked for Human', now: wide.now, width: 200 }).map(strip);
+
+test('ASS-510 AC2: noticeText marks a notice with its time and source, its short or long text after', async () => {
+  const { noticeText } = await import('../../src/tui/ticket.js');
+  assert.equal(typeof noticeText, 'function', 'noticeText is exported');
+  assert.equal(noticeText(NOTICE), MARK + NOTICE.long);
+  assert.equal(noticeText(NOTICE, 'short'), MARK + NOTICE.short);
+});
+
+test('ASS-510 AC2: blockedOf gives the block\'s feedback and its notices', () => {
+  const info = blockedOf({ key: 'ABC-1770', variation: variation({ 'harness-status': hs('blocked-for-human'), blocks: [...EARLIER, OWN], ...FEEDBACK, 'ai-notices': [NOTICE] }) }, steps);
+  assert.equal(info.feedback, FEEDBACK['ai-feedback-long']);
+  assert.deepEqual(info.notices, [NOTICE]);
+});
+
+test('ASS-510 AC2: at Blocked for Human the Blocked tab shows the block\'s Health, then its notices, each marked, in the order recorded', () => {
+  const out = tabText(lines(atHuman({ ...FEEDBACK, 'ai-notices': [NOTICE, NOTICE2] })));
+  const health = out.findIndex(l => l.startsWith('Health') && l.includes(FEEDBACK['ai-feedback-long'].slice(0, 40)));
+  const first = out.findIndex(l => l.includes('Notice (2026-11-18 08:42 UTC, ABC-9 A\'s step end)'));
+  const second = out.findIndex(l => l.includes('Notice (2026-11-18 09:10 UTC, ABC-7 A\'s step start)'));
+  assert.ok(health >= 0 && first > health && second > first, out.join('\n'));
+  assert.ok(out.some(l => l.startsWith('Notices')), out.join('\n'));
+});
+
+test('ASS-510 AC2: the Details tab\'s Health lists the block\'s feedback first, then the notice, marked; a notice without feedback is shown alone, still marked', () => {
+  const out = details({ ...FEEDBACK, 'ai-notices': [NOTICE] }).join('\n');
+  const feedback = out.indexOf(FEEDBACK['ai-feedback-long'].slice(0, 40)), notice = out.indexOf(MARK.trimEnd());
+  assert.ok(feedback >= 0 && notice > feedback, out);
+  const alone = details({ 'ai-notices': [NOTICE] });
+  assert.ok(alone.some(l => l.startsWith('Health') && l.includes('Notice (')), alone.join('\n'));
+});
+
+test('ASS-510 AC2: the quick panel shows Health: <feedback>, then the notice\'s short text, marked, on the next line', () => {
+  const out = quick({ ...FEEDBACK, 'ai-notices': [NOTICE] });
+  const at = out.findIndex(l => l.startsWith('Health: '));
+  assert.ok(at >= 0 && out[at].includes(FEEDBACK['ai-feedback-long'].slice(0, 30)), out.join('\n'));
+  assert.equal(out[at + 1], `  ${MARK}${NOTICE.short}`);
+});
+
+test('ASS-510 AC2: without notices the Blocked tab, Health and quick panel are as before', () => {
+  for (const notices of [undefined, []]) {
+    const fields = { ...FEEDBACK, ...(notices ? { 'ai-notices': notices } : {}) };
+    assert.deepEqual(details(fields), details(FEEDBACK));
+    assert.deepEqual(quick(fields), quick(FEEDBACK));
+    assert.ok(!tabText(lines(atHuman(fields))).some(l => l.includes('Notice')));
+  }
 });

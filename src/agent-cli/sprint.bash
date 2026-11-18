@@ -34,7 +34,8 @@
 # <state> gets work-is-done, a change to $to is appended (no agent dispatched,
 # its work not yet done), harness-status becomes $to in the same state engine,
 # any sub-status dropped, and its health
-# (ai-feedback-short and -long) is cleared to null, being about the state left.
+# (ai-feedback-short and -long) is cleared to null, and its notices (ai-notices,
+# ASS-510) dropped, being about the state left.
 # The change appended is the variation's history (ASS-42): a sprint
 # variation's state-changes in sprint.json are its path through the
 # development engine, a backlog variation's in backlog.json (see backlog_too)
@@ -201,7 +202,7 @@ update_ticket() {
       else . end' --arg name "$variation" --arg state "$state" --argjson cause "$cause" "${@:1:$#-1}" '
     def move_to($to):
       .["harness-status"] = { state: $to, "state-engine": .["harness-status"]["state-engine"] }
-      | .["ai-feedback-short"] = null | .["ai-feedback-long"] = null
+      | .["ai-feedback-short"] = null | .["ai-feedback-long"] = null | del(.["ai-notices"])
       | .["state-changes"] = ((.["state-changes"] // [])
           | if length > 0 and .[-1]["to-state"] == $state then .[-1]["work-is-done"] = true else . end)
         + [{ "state-engine": .["harness-status"]["state-engine"], "from-state": $state, "to-state": $to, timestamp: $at, "agent-dispatch-log": [], "work-is-done": false } + $cause];

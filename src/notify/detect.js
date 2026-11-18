@@ -6,7 +6,7 @@ import { readFileSync, writeFileSync, renameSync } from 'node:fs';
 import { blocksTicket } from '../control/engine.js';
 import { operatorNeeded, sprintTickets, CREDENTIALS_ITEM } from '../tui/screens/shared.js';
 import { problemText } from '../control/credentials.js';
-import { gateWaits, needsYou } from '../tui/ticket.js';
+import { gateWaits, needsYou, noticeText } from '../tui/ticket.js';
 
 // How much of one field goes to the summarizer: enough for its point, never a whole document.
 const FIELD = 1500;
@@ -27,6 +27,8 @@ export const blockingQuestions = (project, key) => (project.questions ?? [])
 // those it has — `gate` (needsYou's "what", without its tab), the step's
 // human-action `instructions` and the gate's `choices`; `blocked` with the
 // variation's ai-feedback `short` and `long` at its engine's blocked state;
+// after them its `notices` from outside its flow (ai-notices, ASS-510), each
+// marked as a notice (noticeText);
 // the open blocking `questions`' text; the pending requirements `change`'s
 // new description.
 export function reasonOf(project, row) {
@@ -40,6 +42,7 @@ export function reasonOf(project, row) {
     ...(gate?.step?.action?.instructions ? { instructions: cut(gate.step.action.instructions) } : {}),
     ...(cut(v['ai-feedback-short']) ? { short: cut(v['ai-feedback-short']) } : {}),
     ...(cut(v['ai-feedback-long']) ? { long: cut(v['ai-feedback-long']) } : {}),
+    ...(v['ai-notices']?.length ? { notices: v['ai-notices'].map(n => cut(noticeText(n))) } : {}),
     ...(questions.length ? { questions } : {}),
   };
 }

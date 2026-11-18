@@ -448,7 +448,8 @@ export function ownerOf(branch) {
 // setAside(ctx, project, out, who, where) — ASS-480 AC3, AC4: each stray local branch a step's start or end set aside
 // (step-trees.sh's "set-aside": never pushed, kept under refs/harness/stray/…, its local branch deleted) logged as an
 // error, and shown on the Health of the ticket variation the branch belongs to (STRAY_HEALTH) — not the one whose step
-// found it, unless it is its own (a branch of its own that had parted from GitLab's).
+// found it, unless it is its own (a branch of its own that had parted from GitLab's). ASS-510: as a notice beside its
+// feedback (ticket:add-ai-notice, its source <where>), never replacing it: a block's reason stays shown.
 async function setAside(ctx, project, out, who, where) {
   const items = out?.['set-aside'] ?? [];
   if (!items.length) return;
@@ -467,7 +468,7 @@ async function setAside(ctx, project, out, who, where) {
     const what = list.map(a => `${a.repository} ${a.branch} (${a.commits} commit(s), kept under ${a.ref})`).join('; ');
     const on = same(who, k) ? 'its own step' : `${who}'s step`;
     const long = `${STRAY_HEALTH} ${what}, found by ${on} on the machine it ran on (${list[0].why}). They were never pushed, nor force-pushed; the local branch was deleted, so this ticket's next step takes the branch from GitLab. To keep them, look at the commits (git log <ref> in that repository on that machine) and cherry-pick what is wanted onto the branch.`;
-    await ctx.attempt(PHASE, k, () => ctx.cli(['ticket:set-ai-feedback', project.id, t.key, v.name, `Stray commits set aside: ${what}`.slice(0, 120), long]));
+    await ctx.attempt(PHASE, k, () => ctx.cli(['ticket:add-ai-notice', project.id, t.key, v.name, where, `Stray commits set aside: ${what}`.slice(0, 120), long]));
   }
 }
 

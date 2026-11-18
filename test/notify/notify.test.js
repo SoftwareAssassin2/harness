@@ -308,3 +308,35 @@ test('ASS-391 AC3: a ticket waiting at Blocked\'s Await Rate Limit — its Healt
   await n.sent();
   assert.equal(h.notified().length, 0);
 });
+
+// ASS-510 AC2: a notice from outside the variation's flow (ai-notices) comes after the block's own feedback, marked as a notice — never in its place.
+const NOTICE = { timestamp: '2026-11-18T08:42:00Z', source: 'ABC-9 A\'s step end', short: 'Stray commits set aside: example-corpus change/ABC-3-1', long: 'Commits of a stray local branch were set aside: example-corpus change/ABC-3-1 (2 commit(s), kept under refs/harness/stray/x)' };
+const BLOCKED = { 'ai-feedback-short': 'Reviewer thread open on example-api !12', 'ai-feedback-long': 'Operator: post the timings on example-api !12 so the reviewer resolves the thread, then resume' };
+
+test('ASS-510 AC2: reasonOf of a Blocked for Human ticket with feedback and a notice has the block\'s short and long, then the notice, marked', () => {
+  const [row] = neededTickets(stateOf([project('p', [ticket('ABC-3', 'stuck', { ...BLOCKED, 'ai-notices': [NOTICE] })])])).p;
+  assert.equal(row.reason.short, BLOCKED['ai-feedback-short']);
+  assert.equal(row.reason.long, BLOCKED['ai-feedback-long']);
+  assert.equal(row.reason.notices?.length, 1, JSON.stringify(row.reason));
+  assert.match(row.reason.notices[0], /^Notice \(/);
+  assert.ok(row.reason.notices[0].includes('ABC-9 A\'s step end'), row.reason.notices[0]);
+  assert.ok(row.reason.notices[0].includes('Stray commits set aside') || row.reason.notices[0].includes('stray local branch'), row.reason.notices[0]);
+  const keys = Object.keys(row.reason);
+  assert.ok(keys.indexOf('short') < keys.indexOf('long') && keys.indexOf('long') < keys.indexOf('notices'), keys.join(','));
+});
+
+test('ASS-510 AC2: a notice over the field limit is cut like the feedback; without notices reasonOf has no notices key', () => {
+  const huge = { ...NOTICE, long: 'x'.repeat(5000) };
+  const [row] = neededTickets(stateOf([project('p', [ticket('ABC-3', 'stuck', { ...BLOCKED, 'ai-notices': [huge] })])])).p;
+  assert.ok(row.reason.notices?.[0]?.endsWith('…') && row.reason.notices[0].length < 5000, JSON.stringify(row.reason.notices));
+  const [plain] = neededTickets(stateOf([project('p', [ticket('ABC-3', 'stuck', BLOCKED)])])).p;
+  assert.equal('notices' in plain.reason, false);
+});
+
+test('ASS-510 AC2: promptOf lists the AI feedback before the notice, marked not why it waits; the fallback is still the block\'s feedback', () => {
+  const [row] = neededTickets(stateOf([project('p', [ticket('ABC-3', 'stuck', { ...BLOCKED, 'ai-notices': [NOTICE] })])])).p;
+  const prompt = promptOf(row);
+  const feedback = prompt.indexOf('AI feedback (long)'), notice = prompt.indexOf('Notice (not why it waits)');
+  assert.ok(feedback >= 0 && notice > feedback, prompt);
+  assert.equal(fallback(row), `Blocked for Human: ${BLOCKED['ai-feedback-short']}`);
+});
