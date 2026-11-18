@@ -479,3 +479,12 @@ test('ASS-407 AC2: export-project fails, writing nothing, naming the file, when 
   const t = setup({ project: { 'worktree-setup': `JIRA_TOKEN=${ATLASSIAN_TOKEN} pnpm install` } });
   fails(t, /project\.json holds a token-shaped string/);
 });
+
+test('ASS-508 AC1: export-project carries project.json\'s review-gate-jobs as it is, like advisory-review-bots', () => {
+  const s = setup({ project: { 'review-gate-jobs': ['review-gate', 'gate'], 'advisory-review-bots': ['review-helper'] } });
+  const r = s.exportProject('p', 'b.tar.gz');
+  assert.equal(r.status, 0, r.stderr);
+  const project = s.unpack(s.at('out', 'b.tar.gz')).json('project.json');
+  assert.deepEqual(project['advisory-review-bots'], ['review-helper']);
+  assert.deepEqual(project['review-gate-jobs'], ['review-gate', 'gate']);
+});

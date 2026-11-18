@@ -205,3 +205,73 @@ test('ASS-351 AC4: once an MR set to auto-merge has waited past approval-wait-da
     f.ctx.stopAgents();
   }
 });
+
+// ASS-508: app's !7 (MR 1) held by a reviewer — its only open thread answered
+// by the harness last, only its review gate failed — while !8 waits on it and
+// lib's !9 is set to auto-merge. merge-request:check says it waits on the
+// reviewer, so Team Code Review keeps polling, spending no visit, and never
+// sends it to Address Merge Request Feedback.
+function heldRelease(rows) {
+  const mrs = mergeRequests(rows);
+  mrs.view('lib', 9, { merge_when_pipeline_succeeds: true });
+  mrs.hold(7);
+  return mrs;
+}
+const toFeedback = f => f.moves().filter(m => /address-merge-request-feedback|ensure-auto-merge/.test(m));
+
+test('ASS-508 AC2: Release on an MR held by a reviewer on a thread we answered waits at team-code-review poll after poll — no visit spent, never Address Merge Request Feedback or Ensure Auto-Merge — and once the reviewer speaks again the wait ends', async () => {
+  const mrs = heldRelease();
+  const f = fixture(EXAMPLE, mrs);
+  try {
+    await tick(f.ctx);
+    assert.equal(f.run()?.state, 'team-code-review', f.lines.join('\n'));
+    await f.poll(12);
+    assert.deepEqual(toFeedback(f), [], f.moves().join('\n'));
+    assert.equal(f.run()?.state, 'team-code-review', f.lines.join('\n'));
+    assert.deepEqual(f.moves(), [], 'no visit spent waiting');
+    assert.equal(f.calls.filter(c => c === 'merge-request:check').length, 12, f.calls.join('\n'));
+    assert.equal(f.variation()['harness-status'].state, 'local-testing');
+    // The reviewer answers us on d1: theirs is the last word, so it is ours to act on.
+    mrs.hold(7, { last: 'pm' });
+    await f.poll();
+    assert.deepEqual(f.moves(), ['team-code-review→address-merge-request-feedback'], f.lines.join('\n'));
+  } finally {
+    f.ctx.stopAgents();
+  }
+});
+
+test('ASS-508 AC2: a held MR past approval-wait-days ends the Release at Blocked for Human, the feedback naming the MR and its thread', async () => {
+  const since = new Date(Date.now() - 4 * 86400e3).toISOString().replace(/\.\d+Z$/, 'Z');
+  const mrs = heldRelease({ 1: { 'approval-wait-since': since } });
+  const f = fixture(EXAMPLE, mrs);
+  try {
+    writeFileSync(join(mrs.dir, 'harness.json'), JSON.stringify({}));
+    await tick(f.ctx);
+    await f.poll();
+    assert.deepEqual(f.moves(), ['team-code-review→blocked-for-human'], f.lines.join('\n'));
+    await tick(f.ctx);
+    const v = f.variation();
+    assert.equal(v['harness-status'].state, 'blocked-for-human', f.lines.join('\n'));
+    assert.match(v['ai-feedback-long'], /MR 1 \(!7\)/);
+    assert.match(v['ai-feedback-long'], /d1/);
+    assert.equal(f.calls.filter(c => c === 'merge-request:ensure-auto-merge').length, 0);
+  } finally {
+    f.ctx.stopAgents();
+  }
+});
+
+test('ASS-508 AC2: once the reviewer resolves the thread, a review gate still failed is build-failed — sent to Address Merge Request Feedback to retry it, no longer waiting', async () => {
+  const mrs = heldRelease();
+  const f = fixture(EXAMPLE, mrs);
+  try {
+    await tick(f.ctx);
+    await f.poll(2);
+    assert.deepEqual(f.moves(), [], f.lines.join('\n'));
+    mrs.forge.route('glab', /^api projects\/g%2Fapp\/merge_requests\/7\/discussions\?per_page=100 --hostname gitlab.com$/, { out: [] });
+    mrs.view('app', 7, { blocking_discussions_resolved: true, head_pipeline: { id: 55, status: 'failed' } });
+    await f.poll();
+    assert.deepEqual(f.moves(), ['team-code-review→address-merge-request-feedback'], f.lines.join('\n'));
+  } finally {
+    f.ctx.stopAgents();
+  }
+});
