@@ -333,6 +333,52 @@ When the operator wants a ticket built more than one way (say, following another
    The brief is kept as `work/<KEY>/variation-brief-<var>.md`. The ticket must be in the active sprint and not Done.
 3. At **Variation Selection** (an Operator Needed gate), present each variation's result (`explanation-<var>.md`, `test-results-<var>.md`, its merge requests) with a recommendation. Then record the operator's pick, which soft-deletes the others (see the table below).
 
+## Human gates
+
+Some steps in a workflow are **human gates**: steps with `action.type: "human"`, where the ticket waits until the operator decides. Examples are Human Review, the Payment Gate, Variation Selection, Blocked for Human, Awaiting the Plan Answer, and a backlog's Awaiting Approval. Each gate's choices are its `exit-events`' `human-review` decisions. Gates differ by project and engine, so **read the active `state-engine.json` files** to know where the operator will have to act. List a project's gates through its execution engine and every sub-engine it reaches:
+
+```sh
+P=<project> bash <<'EOF'
+p=$P; todo=$(jq -r '."execution-state-engine"' data/projects/$p/project.json); seen=" "
+while [ -n "${todo// /}" ]; do
+  set -- $todo; n=$1; shift; todo="$*"
+  [[ "$seen" == *" $n "* ]] && continue; seen="$seen$n "
+  f=""; for d in data/projects/$p/engines engines; do [ -f "$d/$n/state-engine.json" ] && { f="$d/$n/state-engine.json"; break; }; done
+  [ -z "$f" ] && continue
+  jq -r --arg n "$n" '.steps[] | select(.action.type=="human") | "\($n)/\(.id)\t\(.name)\t\([."exit-events"[]? | .condition | (.["human-review"] // (if .["variation-selected"] then "pick a variation" else empty end))] | join(" | "))"' "$f"
+  todo="$todo $(jq -r '[.steps[] | select(.action.type=="state-engine") | .action.engine] | unique | join(" ")' "$f")"
+done
+EOF
+```
+
+(It runs under `bash`, because zsh doesn't split `$todo` into words.) For the backlog's gates, start from the project's backlog refinement engine instead.
+
+There are two more kinds of gate:
+- **Gates added to one variation:** `ticket:set-gate-when-leaving-state <project> <KEY> <var> <engine>/<state>…` makes that variation wait for approval when it leaves those states. They are in the variation's `gate-when-leaving-state`.
+- **Steps switched off** in the engine are skipped, gates included.
+
+When a ticket reaches a gate, it becomes **Operator Needed** (below). Tell the operator before the gate when you can see a ticket heading for one: "<KEY> will stop at the Payment Gate after Review". Record the operator's decision with the listing's `choices` argv, `ticket:human-review`, or `ticket:approve-gate` for an added gate.
+
+### When requirements change after a ticket has started
+
+The downloader's `ticket:sync` notices when a sprint ticket's description changes in its ticket system. It doesn't overwrite the description. It **holds** the change as the ticket's `pending-requirements-change`, pauses the variations being worked, and the ticket becomes **Operator Needed** at that decision. The operator decides:
+
+- **Take new: build against the latest requirements.** `./agent.sh ticket:take-new <project> <KEY>`. The new description becomes the ticket's and the variations are un-paused. A variation at Plan or later (steps flagged `recheck-on-requirements-change`) then takes the **Requirements Changed** detour (`grouped-requirements-changed`):
+  1. It revises the acceptance criteria.
+  2. It judges the built work, or the plan, against them.
+  3. If everything still passes, it returns to its group. Otherwise it goes back into Plan at Root Cause Analysis to adjust the build plan.
+  
+  A variation earlier than Plan just takes the new description.
+- **Keep current: defer the late requirements** to a separate ticket delivered after this one. `./agent.sh ticket:keep-current <project> <KEY>`. The current description stays and the variations are un-paused. The ticket doesn't hold this change again unless the description changes once more. **Keep current doesn't create the follow-up ticket.** Create it yourself, with the operator's go-ahead:
+  - **Jira:** upstream, holding the late requirements, linked as depending on this ticket. Put the original requirements back on this ticket in Jira if the operator wants the two to match.
+  - **Off-board:** `off-board.sh ticket:create`, then `ticket:set-dependencies` on it, naming this ticket.
+
+To present the decision, compare the held text (`pending-requirements-change.description` in the sprint file) with the current description and `requirements-history.jsonl`. Then say what changed, how far the ticket has got, and what Take new would cost (re-planning, re-build). Recommend one.
+
+Two related cases:
+- **A ticket already Done:** a description change isn't held. It is noted (`requirements-change-notified`) with a comment on the ticket. Late requirements there always need a new ticket.
+- **A non-blocking question answered differently from its assumption** is a requirements change too, and starts the same Requirements Changed detour.
+
 ## Operator Needed tickets
 
 A ticket is **Operator Needed** when it can't move without the operator: it's Blocked for Human, waiting at a human step or gate, has an open blocking question, or has a pending requirements change. List them, with why each one waits and its ready-to-run choices:
