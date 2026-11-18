@@ -428,7 +428,11 @@ pushes only its own ticket's branches (ASS-478); another ticket's local
 branch in a workstation's shared repositories that has parted from GitLab's
 (so it could never be pushed) is set aside under
 `refs/harness/stray/<branch>/<time>` in that repository, never pushed, and
-reported on that ticket's Health.
+reported on that ticket's Health as a notice after its feedback
+(`ticket:add-ai-notice`, ASS-510): a notice never replaces a variation's
+feedback, so a block's reason stays shown first — on the Health, the
+Blocked tab and the Operator Needed notification. Notices are cleared with
+the feedback when the variation moves to another state.
 
 ## Arm64 builds of images a project publishes for amd64 only
 
