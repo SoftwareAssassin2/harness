@@ -807,6 +807,18 @@ function noted(f, repo, iid, notes, commitAt = 10) {
   f.forge.route('glab', new RegExp(`^api projects/g%2F${repo}/merge_requests/${iid}/notes\\?per_page=100 --hostname gitlab.com$`), { out: notes });
   f.forge.route('glab', new RegExp(`^api projects/g%2F${repo}/merge_requests/${iid}/commits\\?per_page=100 --hostname gitlab.com$`), { out: [{ id: 'c2', committed_date: T(commitAt).replace('Z', '+00:00') }, { id: 'c1', committed_date: T(8) }] });
 }
+// ASS-508: a blocking thread's note (resolvable, unresolved) and <repo> !<iid>'s
+// discussions as given, the harness's logins (push account, host-me) and, given
+// `jobs`, its pipeline 55's failed jobs. HELD: one thread a reviewer opened and
+// the harness answered last — held by the reviewer.
+const blocking = (id, author, h, v = {}) => note(id, author, h, { resolvable: true, resolved: false, ...v });
+const HELD = [{ id: 'd1', notes: [blocking(2, 'sam', 11), blocking(7, 'host-me', 12)] }];
+function held(f, repo, iid, discussions = HELD, { jobs } = {}) {
+  ours(f);
+  f.forge.route('glab', /^api user --hostname gitlab.com$/, { out: { username: 'host-me' } });
+  f.forge.route('glab', new RegExp(`^api projects/g%2F${repo}/merge_requests/${iid}/discussions\\?per_page=100 --hostname gitlab.com$`), { out: discussions });
+  if (jobs) f.forge.route('glab', new RegExp(`^api projects/g%2F${repo}/pipelines/55/jobs\\?scope=failed --hostname gitlab.com$`), { out: jobs.map(name => ({ name, allow_failure: false })) });
+}
 // o/h #12's issue comments and reviews as given, its latest commit at 10 o'clock.
 const discussed = (f, comments, reviews = []) => f.forge.route('gh', /^pr view 12 --repo o\/h --json comments,reviews,commits$/, { out: { comments, reviews, commits: [{ oid: 'c1', committedDate: '2026-11-11T10:00:00Z' }] } });
 const SAM = { id: 'IC_1', author: { login: 'sam' }, body: 'Renumber V12; it collides with master', createdAt: T(11) };
@@ -1794,4 +1806,145 @@ test('ASS-505 AC2: after await-dependencies sends a build-failed dependency to A
   assert.equal(r.code, 0, r.err);
   assert.deepEqual(JSON.parse(r.out), { changed: false, 'merge-requests': [
     { id: 1, key: '!7', head: HEAD, 'checked-head': HEAD, acted: false }, { id: 2, key: '!9', head: OLD, 'checked-head': OLD, acted: false }] });
+});
+
+// ASS-508: a GitLab thread a reviewer holds open (only they may resolve it)
+// that the harness answered last, its review gate (project.json
+// "review-gate-jobs", ["review-gate"] by default) failing on it, needs no
+// agent: merge-request:check reports it waiting-on-reviewer, not open-threads
+// or build-failed, and counts it as waiting (auto-merge, the approval-wait
+// bound). A thread whose last word is a reviewer's, or any other failed job,
+// still needs attention. The engine side: test/control/tick-approval-wait.test.js.
+const HELD_URL = `${APP}/-/merge_requests/7`;
+const FAILED_55 = { draft: false, blocking_discussions_resolved: false, head_pipeline: { id: 55, status: 'failed' } };
+// App's !7 (MR 1) Open, its view as given (FAILED_55: an open thread, pipeline 55 failed).
+async function heldOne(v = FAILED_55) {
+  const f = await planned([{ id: 1, repository: APP }]);
+  f.record({ 1: { status: 'Open', key: '!7', url: HELD_URL, base: 'master' } });
+  view(f, 'app', 7, v);
+  return f;
+}
+const checkOf = async (f, ...args) => {
+  const r = await ran(f, 'merge-request:check', 'p', 'ABC-5', 'A', ...args);
+  assert.equal(r.code, 0, r.err);
+  return JSON.parse(r.out);
+};
+const NOT_HELD = { 'needs-attention': true, reasons: ['open-threads', 'build-failed'], 'auto-merge': false, merged: false };
+const setGateJobs = (f, jobs) => writeFileSync(join(f.dir, 'p', 'project.json'), JSON.stringify({ repositories: [{ url: APP }, { url: LIB }, { url: HUB }], 'review-gate-jobs': jobs }));
+
+test('ASS-508 AC1: an MR whose only open thread\'s last note is ours and whose only failed job is the review gate is not needs-attention — no open-threads, no build-failed — but waiting-on-reviewer naming the thread, counted as waiting', async () => {
+  const f = await heldOne();
+  held(f, 'app', 7, HELD, { jobs: ['review-gate'] });
+  const out = await checkOf(f);
+  assert.equal(out['needs-attention'], false, JSON.stringify(out));
+  assert.deepEqual(out.reasons, []);
+  assert.equal(out['auto-merge'], true, 'waiting: Ensure Auto-Merge not asked');
+  assert.equal(out.merged, false);
+  assert.deepEqual(out['waiting-on-reviewer'], [{ id: 1, key: '!7', url: HELD_URL, threads: ['d1'] }]);
+  assert.ok(f.mrs()[0]['approval-wait-since'], 'its approval wait starts');
+});
+
+test('ASS-508 AC1: an open thread ours last and no failed pipeline is waiting-on-reviewer too', async () => {
+  const f = await heldOne({ draft: false, blocking_discussions_resolved: false });
+  held(f, 'app', 7);
+  const out = await checkOf(f);
+  assert.deepEqual([out['needs-attention'], out.reasons, out['auto-merge']], [false, [], true], JSON.stringify(out));
+  assert.deepEqual(out['waiting-on-reviewer'], [{ id: 1, key: '!7', url: HELD_URL, threads: ['d1'] }]);
+});
+
+test('ASS-508 AC1: a system note after our last note is not a reviewer\'s word — the thread still waits on the reviewer', async () => {
+  const f = await heldOne();
+  held(f, 'app', 7, [{ id: 'd1', notes: [...HELD[0].notes, note(8, 'sam', 13, { system: true })] }], { jobs: ['review-gate'] });
+  const out = await checkOf(f);
+  assert.deepEqual([out['needs-attention'], out.reasons], [false, []], JSON.stringify(out));
+  assert.deepEqual(out['waiting-on-reviewer']?.[0]?.threads, ['d1']);
+});
+
+test('ASS-508 AC1: two open threads, one ours last and one a reviewer\'s last — nothing is held back: open-threads and build-failed, needs-attention, no waiting-on-reviewer', async () => {
+  const f = await heldOne();
+  held(f, 'app', 7, [HELD[0], { id: 'd2', notes: [blocking(3, 'host-me', 11), blocking(4, 'sam', 12)] }], { jobs: ['review-gate'] });
+  const out = await checkOf(f);
+  assert.deepEqual(out, NOT_HELD);
+});
+
+test('ASS-508 AC1: our last word on the thread, but a failed job beyond the review gate — a real failure is not hidden: open-threads and build-failed kept', async () => {
+  const f = await heldOne();
+  held(f, 'app', 7, HELD, { jobs: ['review-gate', 'unit'] });
+  assert.deepEqual(await checkOf(f), NOT_HELD);
+});
+
+test('ASS-508 AC1: our last word on the thread, a failed pipeline whose failed jobs are unknown (none listed) — build-failed and open-threads kept', async () => {
+  const f = await heldOne();
+  held(f, 'app', 7, HELD, { jobs: [] });
+  assert.deepEqual(await checkOf(f), NOT_HELD);
+});
+
+test('ASS-508 AC1: project.json "review-gate-jobs" names the review gate — honoured in place of the default; an invalid one fails the check naming it', async () => {
+  const f = await heldOne();
+  setGateJobs(f, ['gate']);
+  held(f, 'app', 7, HELD, { jobs: ['gate'] });
+  const custom = await checkOf(f);
+  assert.deepEqual([custom['needs-attention'], custom.reasons], [false, []], JSON.stringify(custom));
+  assert.deepEqual(custom['waiting-on-reviewer']?.[0]?.threads, ['d1']);
+  held(f, 'app', 7, HELD, { jobs: ['review-gate'] });
+  assert.deepEqual(await checkOf(f), NOT_HELD, 'review-gate is no gate once the project names its own');
+  for (const bad of ['x', [1], ['']]) {
+    setGateJobs(f, bad);
+    const r = await ran(f, 'merge-request:check', 'p', 'ABC-5', 'A');
+    assert.notEqual(r.code, 0, JSON.stringify(bad));
+    assert.match(r.err, /review-gate-jobs/, JSON.stringify(bad));
+  }
+});
+
+test('ASS-508 AC1: best effort — GitLab not giving the discussions, or our login, leaves the view as it was (open-threads, build-failed) and the check still runs', async () => {
+  const f = await heldOne();
+  held(f, 'app', 7, HELD, { jobs: ['review-gate'] });
+  f.forge.route('glab', /^api projects\/g%2Fapp\/merge_requests\/7\/discussions\?per_page=100 --hostname gitlab.com$/, { exit: 1 });
+  assert.deepEqual(await checkOf(f), NOT_HELD);
+  const g = await heldOne();
+  held(g, 'app', 7, HELD, { jobs: ['review-gate'] });
+  g.forge.route('glab', /^api user --hostname gitlab.com$/, { exit: 1 });
+  assert.deepEqual(await checkOf(g), NOT_HELD, 'host-me not known as ours: the reviewer\'s thread is not answered');
+});
+
+test('ASS-508 AC1: on GitHub, changes requested stay open-threads as before — no thread is asked of the forge', async () => {
+  const g = await planned([{ id: 1, repository: HUB }]);
+  g.record({ 1: { status: 'Open', key: '#12', url: 'https://github.com/o/h/pull/12', base: 'main' } });
+  prView(g, 12, { isDraft: false, reviewDecision: 'CHANGES_REQUESTED' });
+  const out = await checkOf(g);
+  assert.deepEqual([out['needs-attention'], out.reasons, out['waiting-on-reviewer']], [true, ['open-threads'], undefined]);
+  assert.ok(!g.forge.log('gh').some(l => /reviewThreads|graphql/.test(l)), g.forge.log('gh').join('\n'));
+  assert.ok(!g.forge.log('glab').some(l => /discussions/.test(l)));
+});
+
+test('ASS-508 AC1: resolved threads do not count — only an open (resolvable, unresolved) one is named; an MR without open-threads asks for no discussions', async () => {
+  const f = await heldOne();
+  held(f, 'app', 7, [{ id: 'd0', notes: [blocking(1, 'sam', 10, { resolved: true })] }, ...HELD], { jobs: ['review-gate'] });
+  const out = await checkOf(f);
+  assert.deepEqual([out['needs-attention'], out.reasons], [false, []], JSON.stringify(out));
+  assert.deepEqual(out['waiting-on-reviewer']?.[0]?.threads, ['d1']);
+  const g = await heldOne({ draft: false, head_pipeline: { id: 55, status: 'failed' } });
+  held(g, 'app', 7, HELD, { jobs: ['review-gate'] });
+  const plain = await checkOf(g);
+  assert.deepEqual([plain['needs-attention'], plain.reasons, plain['waiting-on-reviewer']], [true, ['build-failed'], undefined]);
+  assert.ok(!g.forge.log('glab').some(l => /discussions/.test(l)), g.forge.log('glab').join('\n'));
+});
+
+test('ASS-508 AC1: with --only, a held MR of the set is waiting-on-reviewer in the same shape, and the loop\'s feedback says it waits on a reviewer, naming the thread', async () => {
+  const f = await heldOne();
+  held(f, 'app', 7, HELD, { jobs: ['review-gate'] });
+  noted(f, 'app', 7, []);
+  const out = await checkOf(f, '--only', '1');
+  assert.deepEqual([out['needs-attention'], out.reasons, out['auto-merge']], [false, [], true], JSON.stringify(out));
+  assert.deepEqual(out['waiting-on-reviewer'], [{ id: 1, key: '!7', url: HELD_URL, threads: ['d1'] }]);
+  const short = variationOf(f)['ai-feedback-short'] ?? '';
+  assert.match(short, /reviewer/, short);
+  assert.match(short, /d1/, short);
+  assert.doesNotMatch(short, /Address Merge Request Feedback/);
+});
+
+test('ASS-508 AC3: a single open thread whose last note is the reviewer\'s, the review gate failed — open-threads and build-failed, needs-attention, no waiting-on-reviewer', async () => {
+  const f = await heldOne();
+  held(f, 'app', 7, [{ id: 'd1', notes: [blocking(7, 'host-me', 11), blocking(2, 'sam', 12)] }], { jobs: ['review-gate'] });
+  assert.deepEqual(await checkOf(f), NOT_HELD);
 });

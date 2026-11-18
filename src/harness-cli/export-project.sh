@@ -17,7 +17,7 @@ set -euo pipefail
 # project.json keeps name, execution-state-engine, dev-container, uses-points,
 # merge-request-area-of-interest, worktree-setup, every max-*
 # and check-for-expired-*, dev-container-env, story-point-scale,
-# raised-bug-priority, merge-request-title, numbered-files (ASS-385), advisory-review-bots (ASS-389) and vm-full-checks as they are, and
+# raised-bug-priority, merge-request-title, numbered-files (ASS-385), advisory-review-bots (ASS-389), review-gate-jobs (ASS-508) and vm-full-checks as they are, and
 #   work-sources        each without api-email and api-token (ASS-407: the
 #                       jira source's Jira REST credentials, ASS-406's analytics
 #                       download; install-project tells the operator to add them)
@@ -159,7 +159,7 @@ done
 # 2. project.json's setup fields.
 jq '
   def only($keys): with_entries(select(.key as $k | $keys | index($k)));
-  with_entries(select(.key | test("^(name|execution-state-engine|dev-container|uses-points|merge-request-area-of-interest|work-sources|repositories|local-environments|worktree-setup|dev-container-env|registry|hindsight|golden-image|story-point-scale|raised-bug-priority|merge-request-title|numbered-files|advisory-review-bots|vm-full-checks)$|^max-|^check-for-expired-")))
+  with_entries(select(.key | test("^(name|execution-state-engine|dev-container|uses-points|merge-request-area-of-interest|work-sources|repositories|local-environments|worktree-setup|dev-container-env|registry|hindsight|golden-image|story-point-scale|raised-bug-priority|merge-request-title|numbered-files|advisory-review-bots|review-gate-jobs|vm-full-checks)$|^max-|^check-for-expired-")))
   | if (.["work-sources"] | type) == "array" then .["work-sources"] |= map(if type == "object" then del(.["api-email"], .["api-token"]) else . end) else . end
   | if has("repositories") then .repositories |= map(only(["url", "description"])
       + (if .["work-space"].branch? != null then {"work-space": {branch: .["work-space"].branch}} else {} end)) else . end

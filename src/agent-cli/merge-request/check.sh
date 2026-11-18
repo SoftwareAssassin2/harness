@@ -48,6 +48,17 @@ set -euo pipefail
 #
 #   "build-pending": [{ "id", "key", "why": "dependency-unmerged" | "re-run" }]
 #
+# A GitLab one held by a reviewer (ASS-508: mr_reviewer_held) — every open
+# blocking thread's last note ours, the reviewer holding the resolve, and its
+# failed jobs, if any, only project.json's review-gate-jobs (["review-gate"]
+# by default; an invalid list fails the check, naming it) — is not
+# open-threads nor that build-failed: it waits like one set to auto-merge
+# (auto-merge, the approval wait and its bound below, the expiry's feedback
+# naming its threads; with --only, "<label> waits on a reviewer to resolve
+# thread <ids> we answered"), listed only when there is one:
+#
+#   "waiting-on-reviewer": [{ "id", "key", "url", "threads": [<ids>] }]
+#
 # The wait for approvals is bounded (ASS-351). An Open one set to auto-merge
 # with no reason of its own (a held-back pipeline aside) records when it was
 # first seen so, as approval-wait-since on its row; one seen otherwise has it
@@ -107,6 +118,18 @@ merge_request_options "$command" "$USAGE" "${@:4}"
 if [[ "$LOOP" == true ]]; then MRS="$(variation_field '.["merge-request"] // []' "$command" "$project" "$key" "$variation")"; only_checked "$command" "$key" "$variation"; fi
 refresh_merge_requests "$command" "$project" "$key" "$variation"
 
+# ASS-508: an Open GitLab one of the set whose open threads a reviewer holds, each answered by us last, and whose
+# failed jobs, if any, are only its review gate (mr_reviewer_held) waits on that reviewer: its view loses open-threads
+# (and that build-failed) and has waiting-on-reviewer, its threads' ids, so it is counted as waiting below.
+gates=""
+for i in $(jq -r --argjson views "$VIEWS" --argjson only "$ONLY" "$MR_ONLY"'
+  to_entries[] | select(.value.status == "Open" and .value.key != null and (.value | in_set($only)) and any($views[.key].reasons[]?; . == "open-threads")) | .key' <<< "$MRS"); do
+  [[ -n "$gates" ]] || gates="$(review_gate_jobs "$command" "$projects/$project/project.json")" || exit 1
+  hold="$(mr_reviewer_held "$command" "$i" "$(jq -c ".[$i]" <<< "$VIEWS")" "$project" "$gates")"
+  [[ "$hold" == null ]] || VIEWS="$(jq -c --argjson i "$i" --argjson h "$hold" '.[$i] |= (.reasons -= ["open-threads"] + (if $h["build-failed"] then ["build-failed"] else [] end)
+    | .["waiting-on-reviewer"] = $h.threads)' <<< "$VIEWS")"
+done
+
 # ASS-388: each Open one of the set gets the head commit this check saw as its checked-head, and its
 # feedback-acted (merge-request:reply, :resolve and :retry set it) cleared — written only when either changes. The
 # check is what sends a merge request to Address Merge Request Feedback, so these are the round's start:
@@ -157,7 +180,7 @@ done < <(jq -r --argjson views "$VIEWS" --argjson pending "$pending" --arg now "
   . as $all
   | range(length) as $i | $all[$i] as $m | $views[$i] as $v
   | select($m.status == "Open" and ($m | in_set($only)) and $v != null)
-  | ($v["auto-merge"] == true and ([$v.reasons[] | select(. != "build-failed" or (any($pending[]; .i == $i) | not))] == []) and $comments[$i | tostring] == null) as $waits
+  | (($v["auto-merge"] == true or $v["waiting-on-reviewer"] != null) and ([$v.reasons[] | select(. != "build-failed" or (any($pending[]; .i == $i) | not))] == []) and $comments[$i | tostring] == null) as $waits
   | if $waits and $m["approval-wait-since"] == null then [$i, ($now | tojson)]
     elif ($waits | not) and $m["approval-wait-since"] != null then [$i, "null"]
     else empty end
@@ -182,20 +205,22 @@ result="$(jq -nc --argjson mrs "$MRS" --argjson views "$VIEWS" --argjson pending
   # One a build step planned mid-build (planned-by, ASS-424) and not yet created is no ASS-354 leftover: the ticket needs it, so it is not-created and the set not merged.
   | [$mrs[] | select(.["planned-by"] != null and .status == "Not Created" and in_set($only)) | .id] as $unbuilt
   | ["open-threads", "review-comments", "build-failed", "needs-rebase", "not-created"] | map(select(IN($all[], (if $unbuilt != [] then "not-created" else empty end)))) as $reasons
-  | ($live != [] and all($live[]; .m.status == "Merged" or (.m.status == "Open" and (.v["auto-merge"] == true or (.m | waits))))) as $auto
+  | ($live != [] and all($live[]; .m.status == "Merged" or (.m.status == "Open" and (.v["auto-merge"] == true or .v["waiting-on-reviewer"] != null or (.m | waits))))) as $auto
   | (($live != [] or $loop) and all($live[]; .m.status == "Merged") and $unbuilt == []) as $merged
   # Each Open one set to auto-merge that has waited past the bound, when the whole group is only waiting.
   | ($now | epoch) as $at
   | [if $reasons == [] and $auto and ($merged | not) then
-       $live[] | select(.m.status == "Open" and .v["auto-merge"] == true and .m["approval-wait-since"] != null)
+       $live[] | select(.m.status == "Open" and (.v["auto-merge"] == true or .v["waiting-on-reviewer"] != null) and .m["approval-wait-since"] != null)
        | ([.m["approval-wait-since"], $entered] | map(select(. != null) | epoch) | max) as $since
        | select($at - $since >= $days * 86400)
        | { id: .m.id, key: .m.key, url: .m.url, since: .m["approval-wait-since"] }
      else empty end] as $expired
+  | [$live[] | select(.m.status == "Open" and .v["waiting-on-reviewer"] != null) | { id: .m.id, key: .m.key, url: .m.url, threads: .v["waiting-on-reviewer"] }] as $reviewer
   | ($expired | map(name) | join(", ")) as $names
   | (if $days == 1 then "1 day" else "\($days) days" end) as $bound
   | { "needs-attention": ($reasons | length > 0), reasons: $reasons, "auto-merge": $auto, merged: $merged }
   + (if $pending == [] then {} else { "build-pending": [$pending[] | { id, key, why }] } end)
+  + (if $reviewer == [] then {} else { "waiting-on-reviewer": $reviewer } end)
   + (if $unbuilt == [] then {} else { "not-created": $unbuilt, "needs-build": true } end)
   + (if $expired == [] then {} else {
       "approval-wait-expired": true, "awaiting-approval": $expired,
@@ -203,6 +228,7 @@ result="$(jq -nc --argjson mrs "$MRS" --argjson views "$VIEWS" --argjson pending
       "ai-feedback-long": ("Set to auto-merge with nothing for an agent to do, these merge requests have not merged within \($bound) (harness.json approval-wait-days): "
         + ([$expired[] | "\(name)\(if .url then " \(.url)" else "" end), waiting since \(.since)"] | join("; ")) + ". "
         + ([$live[] | select(.m.status == "Open" and (.m | waits)) | .m | name] | if . == [] then "" else "Waiting for those before them to merge: \(join(", ")). " end)
+        + ($reviewer | if . == [] then "" else "Waiting on a reviewer to resolve threads we answered: \(map("\(name) threads \(.threads | join(", "))") | join("; ")). " end)
         + "They need a reviewer'"'"'s approval, or their pipeline to pass, on the forge. Once they have it, choose Resolved: the wait starts again.") } end)')"
 echo "$result"
 [[ "$LOOP" == true ]] || exit 0
@@ -228,6 +254,8 @@ said="$(jq -c --argjson views "$VIEWS" --argjson only "$ONLY" --argjson comments
         | ["open-threads", "review-comments", "build-failed", "needs-rebase"] - (["open-threads", "review-comments", "build-failed", "needs-rebase"] - .)) as $own
      | ($m | mr_label) as $l | ($m | unmerged_deps($all)) as $deps
      | if $own != [] then { act: true, text: ($l + ": " + ($own | map(words) | join(", "))), url: $m.url }
+       elif $v["waiting-on-reviewer"] != null then
+         { text: ($l + " waits on a reviewer to resolve thread" + (if ($v["waiting-on-reviewer"] | length) > 1 then "s " else " " end) + ($v["waiting-on-reviewer"] | join(", ")) + " we answered"), url: $m.url }
        elif $v["auto-merge"] == true and (($approvals[$i | tostring] // "0") != "0") then
          { text: ($l + " waits for " + approvals($approvals[$i | tostring]) + (if $m["approval-wait-since"] then " since " + $m["approval-wait-since"] else "" end)), url: $m.url }
        elif $v["auto-merge"] == true then { text: ("Auto-merge set on " + $l + "; waiting for it to merge"), url: $m.url }
