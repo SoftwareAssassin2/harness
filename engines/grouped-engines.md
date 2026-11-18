@@ -13,7 +13,7 @@ rollback.
 | Backlog, Committed | (plain steps) | |
 | Setup | `grouped-setup` | Check Setup Complete, Create VM, Mark Setup Complete |
 | Plan | `grouped-plan` | Extract Acceptance Criteria, Root Cause Analysis, Review Root Cause Analysis, Write Execution Plan, Write Test Plan, Enrich Automated Test Data, Review Plan |
-| Build | `grouped-build` | Refresh the Reference Repositories, Generate Automated Tests, Generate Solution, Address Merge Request Feedback (only from Await Sequential Merge), Merge the Awaited (`grouped-merge`; only from Await Sequential Merge, only with `merges-awaited`), Await Sequential Merge, Refresh the Reference Repositories Before Testing, Automated Testing, CI Checks, Code Review, Security Review |
+| Build | `grouped-build` | Refresh the Reference Repositories, Generate Automated Tests, Generate Solution, Address Merge Request Feedback (only from Await Sequential Merge), Check the Feedback Round, Merge the Awaited (`grouped-merge`; only from Await Sequential Merge, only with `merges-awaited`), Await Sequential Merge, Refresh the Reference Repositories Before Testing, Automated Testing, CI Checks, Code Review, Security Review |
 | Test | `grouped-test` | Local Testing (`grouped-local-testing`), Steps to Test (`grouped-steps-to-test`) |
 | Document | `grouped-document` | Update Documentation, Update Merge Request Details, Check Merge Request Details, Add Screenshots to Merge Request |
 | Review | `grouped-review` | Explain the Change, Risk Assessment, AI Token Expense Check, Payment Gate, Variation Selection |
@@ -159,8 +159,19 @@ and their downstream pipeline's failed jobs (ASS-482), all from the pipeline
 the `build-failed` was judged on. A `build-failed` with no failed job or
 bridge to show (a canceled pipeline, say) is no agent's to act on either: it
 keeps polling, exit 2, the feedback naming the pipeline's URL.
-Once its turn is complete it goes back to Await Sequential Merge, which reads the
-forge again. It has its own max-visits (3), then Blocked. A control line in
+Once its turn is complete, Check the Feedback Round (ASS-505) runs
+`merge-request:feedback-round` (no `--only`) and it goes back to Await
+Sequential Merge, which reads the forge again. It has its own max-visits (3),
+then Blocked — but a round that changed nothing is not counted (cause
+`no-op-round`, as the merge loop's ASS-388 check below). Before exit 4 the
+step records the round's start, as `merge-request:check` does: each Open
+merge request's head as its `checked-head`, `feedback-acted` cleared. A
+`build-failed` it already sent at that head (its kept
+`awaited-dependency-needs` had it) with nothing replied to, resolved or
+retried since is not sent again: it polls, exit 2, the feedback adding
+"Address Merge Request Feedback already had a round at this head: a new
+commit or a reply sends it back". So a merge request that fails by plan until
+the operator acts polls rather than going to Blocked. A control line in
 `execution-plan-<variation>.md` names the merge request and what it needs,
 and the feedback adds "sent to Address Merge Request Feedback". A dependency
 that is only a draft or only needs approval is no agent's to act on: it keeps
