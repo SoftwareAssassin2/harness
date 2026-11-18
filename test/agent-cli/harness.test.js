@@ -96,7 +96,9 @@ test('harness:request-restart with no control running records a null pid, and an
   await fails(f.agent('harness:restarted', 'HD-9'), /no restart was requested for HD-9/);
   writeFileSync(join(f.home, 'run.pid'), `${live()}\n`);
   assert.equal(JSON.parse((await f.agent('harness:restarted', 'HD-2')).stdout).restarted, true);
-  await fails(f.agent('harness:request-restart'), /usage: harness:request-restart <ticket-key>/);
+  await fails(f.agent('harness:request-restart', 'HD-1', 'HD-2'), /usage: harness:request-restart \[<ticket-key>\]/);
+  await fails(f.agent('harness:request-restart', ''), /usage: harness:request-restart \[<ticket-key>\]/);   // an engine's empty {ticket} is not the operator
+  await fails(f.agent('harness:restarted', 'HD-1', 'HD-2'), /usage: harness:restarted \[<ticket-key>\]/);
 });
 
 test('with a control per project, the request names every control running; restarted once none of them still runs', async () => {
@@ -147,4 +149,66 @@ test('ASS-255: harness:restarted exits 1 only while the restart is pending — a
   writeFileSync(join(f.home, 'run.pid'), `${next}\n`);
   assert.equal(await code(f.agent('harness:restarted', 'HD-1')), 0);
   assert.equal(await code(home(old).agent('harness:restarted', 'HD-1')), 2);                     // no request at all
+});
+
+// ASS-507: the operator's restart — harness:request-restart with no ticket key,
+// recorded as "operator": true with no tickets of its own; harness:restarted
+// with none says whether the latest request, whoever made it, was fulfilled.
+test('ASS-507: a keyless request is the operator\'s, the same request otherwise; harness:restarted with no key is 1 until it is fulfilled, then true and stamped, and 2 with no request', async () => {
+  const code = promise => promise.then(() => 0, e => e.code);
+  const [old, next] = [live(), live()];
+  const f = home(old);
+  assert.equal(await code(f.agent('harness:restarted')), 2);                                       // no request at all
+  await fails(f.agent('harness:restarted'), /harness:restarted: no restart was requested$/m);
+  const request = JSON.parse((await f.agent('harness:request-restart')).stdout);
+  assert.match(request.since, STAMP);
+  assert.deepEqual(request, { tickets: [], since: request.since, 'control-pids': [old], operator: true });
+  assert.deepEqual(JSON.parse(readFileSync(join(f.home, 'restart-requested.json'), 'utf8')), request);
+  assert.equal(await code(f.agent('harness:restarted')), 1);
+  await fails(f.agent('harness:restarted'), new RegExp(`not yet — control ${old} still runs`));
+  writeFileSync(join(f.home, 'run.pid'), `${DEAD}\n`);
+  await fails(f.agent('harness:restarted'), /not yet — no control runs/);
+  writeFileSync(join(f.home, 'run.pid'), `${next}\n`);
+  for (let i = 0; i < 2; i++) assert.deepEqual(JSON.parse((await f.agent('harness:restarted')).stdout), { tickets: [], operator: true, restarted: true, 'control-pids': [next] });
+  const kept = JSON.parse(readFileSync(join(f.home, 'restart-requested.json'), 'utf8'));
+  assert.match(kept['restarted-at'], STAMP);
+  assert.deepEqual(kept, { ...request, restarted: true, 'restarted-at': kept['restarted-at'] });
+  await fails(f.agent('harness:restarted', 'HD-1'), /no restart was requested for HD-1/);          // the keyed form: no ticket asked
+  // The next keyless request is a fresh one, not yet; a fulfilled operator's request carries no tickets forward.
+  assert.deepEqual(JSON.parse((await f.agent('harness:request-restart')).stdout), { tickets: [], since: JSON.parse(readFileSync(join(f.home, 'restart-requested.json'), 'utf8')).since, 'control-pids': [next], operator: true });
+  assert.equal(await code(f.agent('harness:restarted')), 1);
+});
+
+test('ASS-507: a keyed request then a keyless one is one restart, the ticket kept and its Await the Restart passing; keyless then keyed the same', async () => {
+  for (const order of [['HD-1', null], [null, 'HD-1']]) {
+    const [old, next] = [live(), live()];
+    const f = home(old);
+    const ask = key => f.agent('harness:request-restart', ...(key ? [key] : []));
+    const first = JSON.parse((await ask(order[0])).stdout);
+    const joined = JSON.parse((await ask(order[1])).stdout);
+    assert.deepEqual(joined, { tickets: ['HD-1'], since: first.since, 'control-pids': [old], operator: true }, `order ${order}`);
+    assert.deepEqual(JSON.parse((await ask(order[0])).stdout), joined);                          // asked again: the same request
+    await fails(f.agent('harness:restarted', 'HD-1'), new RegExp(`not yet — control ${old} still runs`));
+    await fails(f.agent('harness:restarted'), new RegExp(`not yet — control ${old} still runs`));
+    writeFileSync(join(f.home, 'run.pid'), `${next}\n`);
+    assert.deepEqual(JSON.parse((await f.agent('harness:restarted', 'HD-1')).stdout), { ticket: 'HD-1', restarted: true, 'control-pids': [next] });
+    assert.deepEqual(JSON.parse((await f.agent('harness:restarted')).stdout), { tickets: ['HD-1'], operator: true, restarted: true, 'control-pids': [next] });
+    // After it, a keyless request is fresh, HD-1 carried forward in restarted-before and still true.
+    const fresh = JSON.parse((await ask(null)).stdout);
+    assert.deepEqual(fresh, { tickets: [], since: fresh.since, 'control-pids': [next], operator: true, 'restarted-before': ['HD-1'] });
+    assert.equal(JSON.parse((await f.agent('harness:restarted', 'HD-1')).stdout).restarted, true);
+    await fails(f.agent('harness:restarted'), new RegExp(`not yet — control ${next} still runs`));
+  }
+});
+
+test('ASS-507: a keyed request alone is unchanged — no "operator" — and harness:restarted with no key answers for it too', async () => {
+  const [old, next] = [live(), live()];
+  const f = home(old);
+  const request = JSON.parse((await f.agent('harness:request-restart', 'HD-1')).stdout);
+  assert.deepEqual(request, { tickets: ['HD-1'], since: request.since, 'control-pids': [old] });
+  await fails(f.agent('harness:restarted'), new RegExp(`not yet — control ${old} still runs`));
+  writeFileSync(join(f.home, 'run.pid'), `${next}\n`);
+  assert.deepEqual(JSON.parse((await f.agent('harness:restarted')).stdout), { tickets: ['HD-1'], operator: false, restarted: true, 'control-pids': [next] });
+  assert.equal(JSON.parse(readFileSync(join(f.home, 'restart-requested.json'), 'utf8')).restarted, true);
+  assert.deepEqual(JSON.parse((await f.agent('harness:restarted', 'HD-1')).stdout), { ticket: 'HD-1', restarted: true, 'control-pids': [next] });
 });

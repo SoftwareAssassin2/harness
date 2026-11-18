@@ -13,6 +13,7 @@ import { loadProjects, loadWorkflows, loadPauses, loadSelfHealing, loadAssignmen
 import { operatorNeededNotifier, headerWarningNotifier } from '../notify/notifier.js';
 import { startControl } from '../control/process.js';
 import { ender, stillNamed, vmStopper, goldenBuilds } from './shutdown.js';
+import { restartRequestedBy } from '../control/tick.js';
 import { limaEnv } from '../control/vm.js';
 import { sessionDir, readSession, readSessionTail, sessionModified } from '../agents/session.js';
 import { readUsage } from '../agents/session-usage.js';
@@ -214,7 +215,7 @@ function runControl(p) {
   return startControl({
     args: ['--project', p.id],
     logFile: controlLogFiles[p.id],
-    // A control exits with 75 when a fix asks for a restart (harness:request-restart, which names every control), once it has drained its agents (ASS-200):
+    // A control exits with 75 when a fix — or, keyless, the operator (ASS-507) — asks for a restart (harness:request-restart, which names every control), once it has drained its agents (ASS-200):
     // once no control the request names still runs, the dashboard stops the rest and waits for them, then exits with 75, and harness-cli/tui.sh starts it again on the new code (ASS-193).
     onExit: code => {
       ended.add(p.id);
@@ -263,11 +264,11 @@ controls.forEach((c, i) => { state = controlStarted(state, controlIds[i], { pid:
 // restartWaitsFor() — the controls still running that harness:request-restart's request names (stillNamed).
 const ended = new Set();
 const RESTART = join(process.env.HARNESS_HOME ?? join(homedir(), '.harness'), 'restart-requested.json');
+const readRestart = () => { try { return JSON.parse(readFileSync(RESTART, 'utf8')); } catch { return null; } };
 function restartWaitsFor() {
-  let request = null;
-  try { request = JSON.parse(readFileSync(RESTART, 'utf8')); } catch { /* none */ }
-  return stillNamed(request, controls.filter((c, i) => !ended.has(controlIds[i])).map(c => c.pid));
+  return stillNamed(readRestart(), controls.filter((c, i) => !ended.has(controlIds[i])).map(c => c.pid));
 }
+const restartRequest = () => { const request = readRestart(); return request ? restartRequestedBy(request) : 'no request found'; };
 // The downloader, started the same way; its lines join control's on the
 // control screen, marked, and go to their own log file.
 const DOWNLOADER_LOG = join(LOGS, 'downloader.log');
@@ -311,8 +312,9 @@ const end = ender({
     counted: n => { state = { ...state, vmsStopping: n }; draw(); },
   }),
 }, code => process.exit(code));
+// ASS-507: a restart's line names who asked (restartRequestedBy) — the operator, or the fixes' tickets.
 function quit(code = 0) {
-  log(code === 75 ? 'restarting: a control asked for it' : 'shutting down');
+  log(code === 75 ? `restarting: a control asked for it (${restartRequest()})` : 'shutting down');
   end(code);
 }
 

@@ -12,6 +12,16 @@ import { gateWaits, needsYou } from '../tui/ticket.js';
 const FIELD = 1500;
 const cut = text => (text == null || text === '' ? undefined : String(text).length > FIELD ? `${String(text).slice(0, FIELD)}…` : String(text));
 
+// blockingQuestions(project, key) — the open blocking questions (blocksTicket)
+// asked on ticket `key` among the project's (load.js loadQuestions), each
+// { question, where, index }: its text cut as reasonOf gives it, and where it
+// is — `where` 'global' or the ticket's work folder, `index` its place (from 0)
+// in that questions file —, what question:answer takes to answer it (ASS-506:
+// ticket:operator-needed shows them so). One with no text is left out.
+export const blockingQuestions = (project, key) => (project.questions ?? [])
+  .filter(q => blocksTicket(q) && String(q['asked-on-ticket'] ?? '').toLowerCase() === key.toLowerCase() && cut(q.question))
+  .map(q => ({ question: cut(q.question), where: q.source ?? null, index: q.index ?? null }));
+
 // reasonOf(project, row) — why the ticket of sprintTickets' `row` waits on the
 // operator, as the ticket screen shows it (ASS-383 AC3): only these fields,
 // those it has — `gate` (needsYou's "what", without its tab), the step's
@@ -21,8 +31,7 @@ const cut = text => (text == null || text === '' ? undefined : String(text).leng
 // new description.
 export function reasonOf(project, row) {
   const v = row.variation ?? {};
-  const questions = (project.questions ?? []).filter(q => blocksTicket(q) && String(q['asked-on-ticket'] ?? '').toLowerCase() === row.key.toLowerCase())
-    .map(q => cut(q.question)).filter(Boolean);
+  const questions = blockingQuestions(project, row.key).map(q => q.question);
   const gate = gateWaits(row.gate) ? row.gate : null;
   return {
     ...(row['pending-requirements-change'] ? { change: cut(row['pending-requirements-change'].description) ?? '' } : {}),
@@ -33,6 +42,15 @@ export function reasonOf(project, row) {
     ...(cut(v['ai-feedback-long']) ? { long: cut(v['ai-feedback-long']) } : {}),
     ...(questions.length ? { questions } : {}),
   };
+}
+
+// neededRow(tickets, key) — of sprintTickets' `tickets`, the row (variation)
+// of ticket `key` that waits: one at a gate or the blocked state ahead of the
+// rest, else its first. neededTickets reports it; ticket:operator-needed
+// (ASS-506) takes its gate's choices from it.
+export function neededRow(tickets, key) {
+  const rows = tickets.filter(t => t.key === key);
+  return rows.find(t => gateWaits(t.gate) || t.step?.['is-blocked-state'] === true) ?? rows[0];
 }
 
 // neededTickets(state) — { <project id>: [{ key, title, variation, step, reason }] }:
@@ -50,8 +68,7 @@ export function neededTickets(state) {
     return [project.id, [...keys].map(key => {
       // ASS-395: the project held by its credentials, one item for the project: its problems the reason.
       if (key === CREDENTIALS_ITEM) return { key, title: 'Project blocked by credentials', variation: null, step: null, project: true, reason: { credentials: project.credentialsHold.problems.map(problemText).join('; ') } };
-      const rows = tickets.filter(t => t.key === key);
-      const row = rows.find(t => gateWaits(t.gate) || t.step?.['is-blocked-state'] === true) ?? rows[0];
+      const row = neededRow(tickets, key);
       const step = row.gate?.step ?? row.status?.detailStep ?? row.step;
       return { key, title: row.title ?? '', variation: row.variation?.name ?? null, step: step?.name ?? step?.id ?? null, reason: reasonOf(project, row) };
     })];

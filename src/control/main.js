@@ -84,7 +84,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'node
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { createContext, tick, startDrain, drained, waitForData, dataRecovered } from './tick.js';
+import { createContext, tick, startDrain, drained, waitForData, dataRecovered, restartRequestedBy } from './tick.js';
 import { troubleOf } from './read.js';
 import { stopStarted, killStarted } from './stop.js';
 import { startForwarder } from './forwarder.js';
@@ -270,7 +270,7 @@ while (!stopping) {
     const request = restart ? null : restartRequested();
     if (request?.['control-pid'] === process.pid || request?.['control-pids']?.includes(process.pid)) {
       restart = request;
-      say('shutdown', `a restart was requested (self-healing, ${(request.tickets ?? [request.ticket]).join(', ')}); control exits with code 75 to be started again`);
+      say('shutdown', `a restart was requested (${restartRequestedBy(request)}); control exits with code 75 to be started again`);
       startDrain(ctx);
     }
     if (restart && drained(ctx)) break;

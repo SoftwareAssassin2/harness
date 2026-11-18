@@ -10,7 +10,7 @@ import { reviewLines, splitProposalLines, ticketScreenshots, ticketDocuments } f
 import { stateOf, enginesOf } from '../status.js';
 import { scrollBox, scrollLast } from '../table.js';
 import { visible, wrap } from '../text.js';
-import { ticketLines, overlapsOf, workedByHand, vmHeld, refinementHistory, humanGate, gateLines, stateCounts, statesColumn, pendingChange, quickLines, stripLines, needsYou, defaultTab, gateWaits, tabWidth, panelWidth, ticketTabs, tabsOf, RETURN_STEPS, blockedOf, blockedLines, gateTab, tabNumber } from '../ticket.js';
+import { ticketLines, overlapsOf, workedByHand, vmHeld, refinementHistory, humanGate, gateLines, stateCounts, statesColumn, pendingChange, quickLines, stripLines, needsYou, defaultTab, gateWaits, tabWidth, panelWidth, ticketTabs, tabsOf, RETURN_STEPS, blockedOf, blockedLines, gateTab, tabNumber, choiceCommand } from '../ticket.js';
 import { featureOn } from '../features.js';
 import { below, headerLines, platform } from './frame.js';
 import { chatBox, viewLog } from './log.js';
@@ -521,7 +521,7 @@ const chosen = (state, panel) => (state.ticketTab === 'blocked' ? panel?.blocked
 const deselected = (state, panel, choice, gate = false) => (state.ticketTab === 'blocked' ? { ticketBlockedChoice: -1 }
   : gate || panel.gate?.choices.includes(choice) ? { ticketChoice: -1 } : { ticketChoice: state.ticketChoice });
 // A choice names its whole command (decide), or one run at its step (at: a gate's, its detailed step) or the variation's state.
-const decideOf = (state, t, choice) => choice.decide ?? [choice.command, state.projects[state.project].id, t.key, t.variation.name, choice.at ?? stateOf(t.variation), ...choice.args];
+const decideOf = (state, t, choice) => choiceCommand(state.projects[state.project].id, t, choice);
 export function viewTicket(state, key, size) {
   if (key.name === 'escape') return { ...state, ...CLOSED_TICKET };
   const { pane, panel, paged, tabs, tab } = ticketView(state, size);

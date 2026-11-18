@@ -352,6 +352,17 @@ export function dataRecovered(ctx) {
   ctx.log('data', `recovered: it reads again after ${Math.round((ctx.now().getTime() - wait.since) / 1000)}s (${wait.file}); control carries on with its agents, VMs and workstations`);
 }
 
+// restartRequestedBy(request) — ASS-507: who asked for a restart, as control's
+// log and the dashboard name it: "by the operator" for harness:request-restart's
+// keyless request ("operator": true), "self-healing, <tickets>" for the fixes'
+// (an old-shape request's one "ticket" too), both joined by "; " when they were;
+// a request naming neither (none the command writes) is "no ticket named".
+export function restartRequestedBy(request) {
+  const tickets = (request?.tickets ?? [request?.ticket]).filter(t => typeof t === 'string' && t !== '');
+  const by = [request?.operator === true ? 'by the operator' : null, tickets.length > 0 ? `self-healing, ${tickets.join(', ')}` : null].filter(Boolean);
+  return by.length > 0 ? by.join('; ') : 'no ticket named';
+}
+
 // startDrain(ctx) — a restart was asked for (ASS-200): from now the ticks
 // start no agent (see tick) while the running agents — every control's —
 // end their turns, for up to harness.json's restart-drain-seconds (300 by default;

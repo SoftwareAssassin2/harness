@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import { writeFileSync, readFileSync, rmSync } from 'node:fs';
 import { hs } from '../agent-cli/harness-fixture.js';
 import { controlFixture } from './control-fixture.js';
-import { tick, startDrain, drained } from '../../src/control/tick.js';
+import { tick, startDrain, drained, restartRequestedBy } from '../../src/control/tick.js';
 import { until } from '../support/until.js';
 
 const turnsEnd = ctx => until(() => [...ctx.agents.values()].every(a => a.result));
@@ -109,4 +109,12 @@ test('ASS-236 AC2: a control whose own agents are done stays drained-but-running
   clock += 300_000;
   assert.equal(drained(f.ctx), true);                                     // not forever
   assert.ok(f.lines.includes('restart 1 agent of other controls still running after 300s: this control exits all the same'), f.lines.join('\n'));
+});
+
+test('ASS-507: restartRequestedBy names the operator\'s keyless request, the fixes\' tickets, or both — never an empty or undefined list', () => {
+  assert.equal(restartRequestedBy({ tickets: [], operator: true, 'control-pids': [1] }), 'by the operator');
+  assert.equal(restartRequestedBy({ tickets: ['HD-1', 'HD-2'], 'control-pids': [1] }), 'self-healing, HD-1, HD-2');
+  assert.equal(restartRequestedBy({ tickets: ['HD-1'], operator: true }), 'by the operator; self-healing, HD-1');
+  assert.equal(restartRequestedBy({ ticket: 'HD-1', 'control-pid': 1 }), 'self-healing, HD-1');           // an old-shape request
+  assert.equal(restartRequestedBy({ 'control-pids': [1] }), 'no ticket named');
 });

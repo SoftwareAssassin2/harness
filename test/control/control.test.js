@@ -220,6 +220,21 @@ test('control exits with code 75, its agents stopped, when harness:request-resta
   }
 });
 
+// ASS-507: the operator's restart (harness:request-restart with no key) is the same exit 75, its log naming the operator, not a ticket list.
+test('ASS-507: control exits with code 75 on the operator\'s keyless request, its log saying it was the operator\'s', async () => {
+  const f = processFixture();
+  const control = run(f, ['--tick-ms', '100']);
+  try {
+    assert.ok(await until(() => existsSync(f.pidfile)));
+    const pid = Number(readFileSync(f.pidfile, 'utf8'));
+    writeFileSync(join(f.home, 'restart-requested.json'), JSON.stringify({ tickets: [], since: '2026-11-18T10:00:00Z', 'control-pids': [pid], operator: true }));
+    assert.deepEqual(await within(control.exit), { code: 75, signal: null });
+    assert.ok(control.lines.some(l => / shutdown a restart was requested \(by the operator\); control exits with code 75 to be started again$/.test(l)), control.lines.join('\n'));
+  } finally {
+    control.child.kill('SIGKILL');
+  }
+});
+
 test('control --project p: its own pidfile, only p\'s stale assignments removed, and a restart request naming it among every control\'s pids', async () => {
   const f = processFixture();
   const [mine] = JSON.parse((await f.agent('assignments:create', 'p', 'example-development', 'backlog', 'review-plan', '1', 'false', 'ABC-3', '-', '-')).stdout);

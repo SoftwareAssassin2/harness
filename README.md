@@ -79,6 +79,18 @@ this repo.
    never deleted. A restart (a fix asking the harness to load new code)
    leaves the VMs running.
 
+   To restart the harness yourself — to load a change, or just to restart —
+   run `./agent.sh harness:request-restart` with no ticket key (ASS-507). It
+   is the same restart a fix asks for: each control dispatches nothing more,
+   lets its running agents end their turns (up to `restart-drain-seconds`),
+   exits with 75, and the dashboard starts again on the new code, VMs left
+   running. `~/.harness/restart-requested.json` records it as
+   `"operator": true`; a fix's pending request and yours join into one
+   restart, keeping its tickets. `./agent.sh harness:restarted` with no key
+   says whether the latest request has been fulfilled (exit 1 while it is
+   pending, 2 when there is none); control's log says the restart was
+   requested "by the operator".
+
    A control that crashes is started again by the dashboard after 5 s, 30 s,
    2 min, then every 5 min; after 5 crashes in 10 minutes it stays down until
    you press `R` on the control screen. Either way the header shows it in red
@@ -126,6 +138,12 @@ notifies again only after it has stopped waiting and starts again.
 - To turn them off for a project, set `"operator-needed-notifications": false`
   in its `data/projects/<project>/project.json`. They are on when it is
   absent.
+- `./agent.sh ticket:operator-needed [<project>]` prints the same Operator
+  Needed set as JSON, whether or not the harness is running, and writes
+  nothing: each ticket's reason, an open blocking question's `where` and
+  `index` for `question:answer`, and the dashboard's choices, each with the
+  `argv` to run (`./agent.sh <argv…>`; one marked `needs-reason` takes the
+  reason last).
 
 ### Header warning notifications
 

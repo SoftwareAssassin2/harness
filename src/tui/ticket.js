@@ -526,6 +526,15 @@ export function humanGate(t, steps, { engines = {}, runs = [], project } = {}) {
   return { choices: run ? [{ decision: 'Approve State Transition', leadsTo: next.name, decide: ['transient-state-engine:change-state', run.id, level.state, next.id] }] : [], step: level.step };
 }
 
+// choiceCommand(project, t, choice) — the agent.sh argv a gate's `choice`
+// (humanGate's) runs on sprint ticket variation `t` of `project` (its id): its
+// whole command (decide), or `command <project> <ticket> <variation> <state>
+// ...args`, <state> the step it was offered at (at: a gate's, its detailed
+// step) or the variation's state. A choice with form 'reason' takes the reason
+// after these (and, with returnSteps, a RETURN_STEPS id after that). The ticket
+// screen records a choice by it, and ticket:operator-needed (ASS-506) prints it.
+export const choiceCommand = (project, t, choice) => choice.decide ?? [choice.command, project, t.key, t.variation.name, choice.at ?? stateOf(t.variation), ...choice.args];
+
 // gateLines({ title, choices, selected, focused, recorded, held, past, message, width }) —
 // the human actions on a ticket screen's Actions tab (ASS-101 AC9, ASS-184): "Steer this
 // ticket by hand.", the gate's title when it has one, the choices (each `decision → leadsTo`, or the decision

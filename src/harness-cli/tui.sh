@@ -53,7 +53,8 @@ if [[ "${HARNESS_SKIP_INSTALL:-}" != 1 ]] && ! installed && interactive; then
 fi
 
 # The dashboard exits with code 75 when control asked for a restart (a
-# self-healing fix went in, harness:request-restart): it is started again, on
+# self-healing fix went in, harness:request-restart; ASS-507: or the operator
+# asked, harness:request-restart with no key): it is started again, on
 # the new code. Any other exit ends it, with that code. The check above runs
 # once, never on a restart.
 while :; do

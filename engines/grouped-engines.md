@@ -2758,6 +2758,13 @@ stay the reference to copy from.
   Update the Harness, Request a Restart, Await the Restart. A script step
   held at a gate on leaving it is not run again by a restarted control, so
   gating Request a Restart restarts control once, not over and over.
+  ASS-507: the operator's keyless `harness:request-restart` (no ticket key,
+  recorded as `"operator": true` with no tickets of its own) joins a pending
+  Request a Restart's request, and one made after it joins the operator's,
+  so either order is one restart with the tickets kept, and Await the
+  Restart's `harness:restarted {ticket}` passes as before. The steps' keyed
+  commands are unchanged; an empty key is refused, never taken for the
+  operator's.
 - **The merge queue (ASS-197), v2's own.** v2-release's Merge Pull Request
   is no longer grouped-release-harness's: it runs
   `merge-request:merge-in-turn … npm test` on a one-minute timer. One ticket
