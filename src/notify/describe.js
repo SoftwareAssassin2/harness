@@ -37,6 +37,7 @@ export function promptOf({ key, title, step, reason = {} }) {
     ['In the blocked state (Blocked for Human)', reason.blocked ? 'yes' : undefined],
     ['AI feedback (short)', reason.short],
     ['AI feedback (long)', reason.long],
+    ...(reason.notices ?? []).map(n => ['Notice (not why it waits)', n]),   // ASS-510: after the block's own feedback
     ...(reason.questions ?? []).map(q => ['Blocking question', q]),
     ['Pending requirements change, new description', reason.change],
     ['Project blocked by credentials (what fails, and the fix)', reason.credentials],

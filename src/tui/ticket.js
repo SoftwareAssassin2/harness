@@ -253,7 +253,10 @@ export function ticketLines(t, { status, stepName, prompted, agents, columns, st
     ...field('Total Time Planning', time(planningTime(v, steps))),
     ...field('Total Time Executing', time(executingTime(v, steps))),
     '',
-    ...field('Health', v['ai-feedback-long']),
+    // ASS-510: notices from outside the variation's flow (ai-notices) after its own feedback, each marked as a notice.
+    ...field('Health', v['ai-notices']?.length
+      ? [...(v['ai-feedback-long'] ? wrap(String(v['ai-feedback-long']), width) : []), ...v['ai-notices'].flatMap(n => wrap(noticeText(n), width))]
+      : v['ai-feedback-long']),
     ...field('Automated tests', tests && `${tests[0]}/${tests[1]} passing`),
     ...field('Gates', v['gate-when-leaving-state']?.map(gate).join(', ')),
     '',
@@ -625,6 +628,11 @@ const BLOCKED_NOW = {
   'blocked-for-human': () => 'Handing it to you',
 };
 
+// noticeText(n, which) — ASS-510: a notice from outside a variation's flow
+// (ai-notices, ticket:add-ai-notice) marked as one, with its time and source,
+// then its `which` ('long' or 'short') text.
+export const noticeText = (n, which = 'long') => `Notice (${String(n?.timestamp ?? '?').replace('T', ' ').slice(0, 16)} UTC, ${n?.source ?? '?'}): ${n?.[which] ?? n?.short ?? ''}`;
+
 // blockedOf(t, steps, { engines, runs, hold, project }) — what the Blocked tab
 // explains (ASS-439 AC3), or null when sprint ticket `t`'s variation is at
 // none of blockedSteps: { step, human — at Blocked for Human (a human step)
@@ -635,7 +643,8 @@ const BLOCKED_NOW = {
 // far (`runs`, transient-state-engines), earlier — the variation's other kept
 // runs, newest first, now — at Blocked its sub-engine's step (harness-status
 // sub-status) as words (BLOCKED_NOW), hold — the project's credentials hold
-// (credentials-hold.json, ASS-395), attempts and budget }.
+// (credentials-hold.json, ASS-395), attempts and budget, feedback — its Health
+// (ai-feedback-long) and notices — its ai-notices (ASS-510) }.
 export function blockedOf(t, steps, { engines = {}, runs = [], hold = null, project } = {}) {
   const v = t.variation ?? {};
   const family = blockedSteps(steps);
@@ -667,7 +676,8 @@ export function blockedOf(t, steps, { engines = {}, runs = [], hold = null, proj
   const engine = step.action?.engine ?? steps.find(s => s.action?.type === 'state-engine' && family.includes(s))?.action?.engine;
   const subSteps = engine ? engineSteps(engines, engine)?.steps ?? [] : [];
   const restart = (subSteps.find(s => s.id === 'troubleshoot') ?? subSteps[0])?.name ?? 'Troubleshoot';
-  return { step, human, back, backName, since, block, earlier: earlier.toReversed(), now, hold, restart, attempts: block?.['fix-attempts'] ?? null, budget: FIX_BUDGET };
+  return { step, human, back, backName, since, block, earlier: earlier.toReversed(), now, hold, restart, attempts: block?.['fix-attempts'] ?? null, budget: FIX_BUDGET,
+    feedback: v['ai-feedback-long'] ?? null, notices: v['ai-notices'] ?? [] };
 }
 
 // blockedChoiceText(choice, info) — a blocked choice with what it does (ASS-439
@@ -687,6 +697,7 @@ export function blockedChoiceText(choice, info, steps = []) {
 // blockedLines(info, { width, now, choices, selected, focused, recorded, past, message }) — the
 // Blocked tab (ASS-439 AC3, AC4), top to bottom: where it blocked (the step it
 // goes back to) and since when; the current block's summary and root cause;
+// with notices (ASS-510) its Health, then each notice, marked;
 // what Classify found — the issue, the failing repository, file, job and
 // assertion, whether it is the ticket's own code (and an own-branch fix's
 // source and planned merge request, ASS-423/424), master's evidence; what it
@@ -735,6 +746,8 @@ export function blockedLines(info, { width, now = new Date(), steps = [], choice
     ...field(info.human ? 'Blocked for you' : 'Blocked', info.backName ? `at ${info.backName}: it goes back there once resolved` : info.step.name),
     ...field('Since', sinceText),
     ...group(field('Summary', b.summary), field('Root cause', b['root-cause'])),
+    // ASS-510: with notices from outside its flow, the block's own Health first, then each notice, marked.
+    ...(info.notices?.length ? group(field('Health', info.feedback), field('Notices', info.notices.map(n => noticeText(n)))) : []),
     ...group(
       field('Issue', b.issue),
       field('Repository', b['failing-repository']),
@@ -933,6 +946,7 @@ export function quickLines(t, { status, agents = [], needs, chatSpend = 0, runni
     ...(mrs.length > 3 ? [`     +${mrs.length - 3} more — tab ${tabNumber(tabs, 'merges')}`] : []),
     testsOf(v),
     `Health: ${v['ai-feedback-long']?.split('\n')[0] || NONE}`,
+    ...(v['ai-notices'] ?? []).map(n => `  ${noticeText(n, 'short')}`),   // ASS-510: after the feedback, marked
     '',
     // With agents running (ASS-270) the spend's mark leaves no room for the agent time beside it: it goes beneath.
     ...(running > 0 ? [spendOf(v, chatSpend, running), `Agent time ${time == null ? NONE : duration(time)}`] : [`${spendOf(v, chatSpend)} · Agent time ${time == null ? NONE : duration(time)}`]),
