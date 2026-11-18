@@ -17,7 +17,11 @@ set -euo pipefail
 # even fetched; an entry of the plan naming no repository — an id-less one
 # ticket:sync found on the forge — is in none, and is passed over (ASS-321).
 # Prints "<repository>: <what happened>" for each, and exits 0
-# whatever any one repository did; fails (1) only with no running VM.
+# whatever any one repository did; fails (1) only with no running VM, or
+# (ASS-503) when, once refreshed, a repository's deps could not be installed:
+# each of the project's repositories, the ticket's own too, whose
+# pnpm-lock.yaml changed since they were gets `pnpm install --frozen-lockfile`
+# (vm.bash vm_install_deps), a line on stderr naming it; not while it waits.
 #
 # ASS-396: a passing hiccup is not a block. A VM it cannot reach (limactl
 # shell failing: ssh's 255, the in-VM agent.sh's 125 "host forwarder
@@ -75,7 +79,7 @@ ran() {
   [[ "$(variation_field '.["refresh-wait"] != null' "$command" "$project" "$key" "$variation" 2> /dev/null)" == true ]] || return 0
   if forget_wait; then echo "$command: $key $variation: refreshed; its retry feedback cleared" >&2; else echo "$command: could not clear $key $variation's retry feedback" >&2; fi
 }
-[[ ${#refs[@]} -gt 0 ]] || { ran; printf '%s' "$lines"; exit 0; }
+[[ ${#refs[@]} -gt 0 ]] || { ran; printf '%s' "$lines"; vm_install_deps "$command" "$vm" "$project" || exit 1; exit 0; }
 
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
@@ -131,7 +135,7 @@ for s in ${sleeps[@]+"${sleeps[@]}"} last; do
   [[ ${#pending[@]} -gt 0 ]] || break
   [[ "$s" == last ]] || sleep "$s"
 done
-[[ ${#pending[@]} -gt 0 ]] || { ran; printf '%s' "$lines"; exit 0; }
+[[ ${#pending[@]} -gt 0 ]] || { ran; printf '%s' "$lines"; vm_install_deps "$command" "$vm" "$project" || exit 1; exit 0; }
 printf '%s' "$lines" >&2
 
 # Still failing after its retries: what it could not reach, and each failing call with its last error.

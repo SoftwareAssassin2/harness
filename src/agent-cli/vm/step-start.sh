@@ -20,7 +20,10 @@ set -euo pipefail
 # at the step's end, so nothing
 # a step did is lost wherever the next one runs. The VM must be running.
 # Prints the summary step-trees gives (workstation-variation.bash wsv_trees);
-# fails when a repository could not be checked out.
+# fails when a repository could not be checked out. ASS-503: then each
+# repository whose pnpm-lock.yaml changed since its deps were installed gets
+# `pnpm install --frozen-lockfile` (vm.bash vm_install_deps), a line on stderr
+# for each saying installed or skipped; fails when one could not be, naming it.
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../vm.bash"
 
 command=vm:step-start
@@ -29,3 +32,4 @@ project="$1" key="$(tr '[:lower:]' '[:upper:]' <<< "$2")" variation="$3"
 vm="$(running_vm "$command" "$project" "$key" "$variation")"
 ! machine_remote "$vm" || { echo "$command: $key $variation's machine is a workstation's or a cloud VM's ($vm): workstation:claim starts its steps there" >&2; exit 1; }
 wsv_trees "$command" "$vm" start "$project" "$key" "$variation" -
+vm_install_deps "$command" "$vm" "$project" || exit 1

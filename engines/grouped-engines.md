@@ -348,7 +348,7 @@ check, say) is compared with CI's. The ticket's own repositories are untouched.
 A merge request with no repository — an id-less one `ticket:sync` found on the
 forge, matching no planned branch — is in none, and is passed over, here and
 by CI Checks below (ASS-321).
-Only a VM not running fails it: Blocked. Test's Rebuild enters Build at
+Only a VM not running, or deps not installed (below), fails it: Blocked. Test's Rebuild enters Build at
 Generate Solution, past the first refresh; the second still runs.
 
 A passing hiccup at either Refresh step is no block (ASS-396). A VM the
@@ -368,6 +368,15 @@ gives up: exit 3 to Blocked, its output (`record-script-output`) the
 other fetch failure (no such repository) is left as is, as before, and no
 running VM (exit 1) blocks at once. Run elsewhere (by hand) it exits
 3 at once. Any other exit (4, an unexpected failure) matches none: tried again.
+
+Once its checkouts have moved, `vm:refresh-repositories` (not while it waits)
+and `vm:step-start` re-install a repository's deps when they are stale
+(ASS-503): in the VM, each of the project's repositories whose `pnpm-lock.yaml`
+differs from the one its `node_modules` was installed from (the harness's copy,
+`node_modules/.harness-installed-lock.yaml`; none in a golden-installed one)
+gets `pnpm install --frozen-lockfile` (`vm/in-vm/install-deps.sh`), so pnpm's
+verify-deps does not refuse its commands; a line on stderr says installed or
+skipped. A failed install fails the command (exit 1), naming the repository.
 
 Generate Automated Tests (grouped/v2 Build, `generate-automated-tests-grouped`)
 records an entry only once its `run` command, not just its `list`, runs in
@@ -1932,7 +1941,8 @@ folder per variation.
   (`vm:create … --vm`, recorded as its `vm` and kept for its later steps),
   and before the step its
   repositories are moved to the variation's branches, their hooks set
-  (`vm:step-start`, `step-trees.sh start` there); at the step's end
+  (`vm:step-start`, `step-trees.sh start` there, then stale deps
+  re-installed, ASS-503); at the step's end
   `vm:step-end [--completed <step>]` commits, pushes and cleans them the same
   way, so a variation
   moves between its VM and the workstation from step to step without losing
