@@ -501,8 +501,7 @@ advisory_bots() {
 }
 
 # REVIEW_GATE_JOBS_DEFAULT — the CI job names that are a project's review gate
-# (ASS-508): a job failing only while a reviewer's thread is open, e.g.
-# case-law's review-gate.
+# (ASS-508): a job failing only while a reviewer's thread is open.
 REVIEW_GATE_JOBS_DEFAULT='["review-gate"]'
 
 # review_gate_jobs <command> <project.json> — the review-gate job names
