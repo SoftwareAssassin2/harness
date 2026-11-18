@@ -366,6 +366,69 @@ test('ticket:sync keeps a variation\'s planned merge requests (ASS-80), filling 
   ]);
 });
 
+// ASS-512: a planned merge request (ASS-80) Closed on its branch, with a url, hands its plan — id, repository, base,
+// contents, depends-on — to a new one scanned there, the closed one kept as an id-less record (ASS-321).
+const REPO = 'https://gitlab.com/g/app';
+const plan = (id, extra = {}) => ({ id, repository: REPO, base: 'main', branch: `change/ABC-2-${id}`, contents: `part ${id}`, 'depends-on': [], status: 'Not Created', key: null, url: null, 'build-status': null, ...extra });
+const closedPlan = (id = 1, iid = 4413) => plan(id, { status: 'Closed', key: `!${iid}`, url: `u${iid}`, 'build-status': 'Failed' });
+const scan = (iid, extra = {}) => ({ key: `!${iid}`, 'build-status': 'Running', url: `u${iid}`, status: 'Open', branch: 'change/abc-2-1', ticket: 'ABC-2', ...extra });
+const withPlan = (dir, mrs) => { const s = sprint(dir); s.bugs[0].variations[0]['merge-request'] = mrs; writeFileSync(join(dir, 'p', 'sprints', 'sprint-10', 'sprint.json'), JSON.stringify(s)); };
+const syncBug = (dir, mrs) => sync(dir, 'p', 'sprint', file(dir, { tickets: [fetched('ABC-2', { 'issue-type': 'Bug' })], 'merge-requests': mrs }));
+const bugMrs = dir => sprint(dir).bugs[0].variations[0]['merge-request'];
+const idless = (iid, extra = {}) => ({ key: `!${iid}`, url: `u${iid}`, 'build-status': 'Failed', status: 'Closed', branch: 'change/ABC-2-1', ...extra });
+
+test('ASS-512 AC1: a new merge request scanned on a Closed planned one\'s branch takes over its id, repository and base in its place; the closed one stays as an id-less record', async () => {
+  const dir = projects();
+  withPlan(dir, [closedPlan()]);
+  await syncBug(dir, [scan(4447)]);
+  assert.deepEqual(bugMrs(dir), [plan(1, { key: '!4447', url: 'u4447', status: 'Open', 'build-status': 'Running' }), idless(4413)]);
+});
+
+test('ASS-512 AC1: a second sync scanning both the closed and the new merge request leaves the hand-over as it is', async () => {
+  const dir = projects();
+  withPlan(dir, [closedPlan()]);
+  await syncBug(dir, [scan(4447)]);
+  await syncBug(dir, [scan(4413, { status: 'Closed', 'build-status': 'Failed' }), scan(4447)]);
+  assert.deepEqual(bugMrs(dir), [plan(1, { key: '!4447', url: 'u4447', status: 'Open', 'build-status': 'Running' }), idless(4413)]);
+});
+
+test('ASS-512 AC1: a Closed merge request scanned on a Closed planned one\'s branch is added id-less; the planned one keeps its id and url', async () => {
+  const dir = projects();
+  withPlan(dir, [closedPlan()]);
+  await syncBug(dir, [scan(4440, { status: 'Closed', 'build-status': 'Failed' })]);
+  assert.deepEqual(bugMrs(dir), [closedPlan(), idless(4440, { branch: 'change/abc-2-1' })]);
+});
+
+test('ASS-512 AC1: the replacement closed in turn hands the id on again to the next one on the branch; exactly one entry holds the id', async () => {
+  const dir = projects();
+  withPlan(dir, [closedPlan()]);
+  await syncBug(dir, [scan(4447)]);
+  await syncBug(dir, [scan(4447, { status: 'Closed', 'build-status': 'Failed' }), scan(4450)]);
+  const mrs = bugMrs(dir);
+  assert.deepEqual(mrs[0], plan(1, { key: '!4450', url: 'u4450', status: 'Open', 'build-status': 'Running' }));
+  assert.deepEqual(mrs.slice(1).sort((a, b) => a.key.localeCompare(b.key)), [idless(4413), idless(4447)]);
+  assert.equal(mrs.filter(m => m.id === 1).length, 1);
+});
+
+test('ASS-512 AC1: a never-created planned slot on the branch is filled first (ASS-80); the Closed planned one is left untouched', async () => {
+  const dir = projects();
+  withPlan(dir, [closedPlan(1), plan(2, { branch: 'change/ABC-2-1' })]);
+  await syncBug(dir, [scan(4447)]);
+  assert.deepEqual(bugMrs(dir), [closedPlan(1), plan(2, { branch: 'change/ABC-2-1', key: '!4447', url: 'u4447', status: 'Open', 'build-status': 'Running' })]);
+});
+
+test('ASS-512 AC3: a merge request on a branch with no Closed planned one — the closed one on another branch, or a Merged one on its own — is added id-less as before', async () => {
+  const dir = projects();
+  withPlan(dir, [closedPlan(2)]);
+  await syncBug(dir, [scan(4447)]);
+  assert.deepEqual(bugMrs(dir), [closedPlan(2), { key: '!4447', url: 'u4447', 'build-status': 'Running', status: 'Open', branch: 'change/abc-2-1' }]);
+  const merged = projects();
+  const done = plan(1, { status: 'Merged', key: '!4413', url: 'u4413', 'build-status': 'Passed' });
+  withPlan(merged, [done]);
+  await syncBug(merged, [scan(4447)]);
+  assert.deepEqual(bugMrs(merged), [done, { key: '!4447', url: 'u4447', 'build-status': 'Running', status: 'Open', branch: 'change/abc-2-1' }]);
+});
+
 // A merge request as the downloader's scan sends it (ASS-92/98): every one it fetched, each with the ticket it belongs to, or null.
 const scanned = (iid, ticket, extra = {}) => ({ key: `!${iid}`, 'build-status': 'Passed', url: `https://gitlab.com/g/p/-/merge_requests/${iid}`, status: 'Open', branch: `change/${ticket ?? 'other'}`, ticket, ...extra });
 const variationMrs = (dir, key) => [...sprint(dir).features, ...sprint(dir).bugs].find(t => t.key === key).variations.map(v => v['merge-request']);
