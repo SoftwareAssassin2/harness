@@ -1726,3 +1726,72 @@ test('ASS-482 AC3: merge-request:view and await-dependencies show failures of th
   assert.deepEqual(await failedJobs(none), []);
   assert.ok(!none.forge.log('glab').some(l => /\/(jobs|bridges)/.test(l)), none.forge.log('glab').join('\n'));
 });
+
+// ASS-505: await-dependencies records each Open MR's head as checked-head when it sends the ticket to Address
+// Merge Request Feedback (exit 4), so grouped-build's Check the Feedback Round can tell a no-op round; a build-failed
+// dependency (failed job shown) already sent at that head, nothing acted on, is then polled (exit 2), not sent again.
+// MR 2 (app !9, head OLD) depending on MR 1 (lib !7, head `head`), its pipeline 55 failed with job unit.
+async function sentAt(head = HEAD, v = {}) {
+  const f = await dependedOn({ draft: false, sha: head, head_pipeline: { id: 55, status: 'failed' }, ...v });
+  view(f, 'app', 9, { sha: OLD });
+  pipelineOf(f, 'lib', 55, { jobs: [{ name: 'unit', status: 'failed', allow_failure: false }], bridges: [] });
+  return f;
+}
+
+test('ASS-505 AC3: a build-failed dependency sent to Address Merge Request Feedback at a head is polled (exit 2) at that head until it changes or feedback is acted on; a new head with the job still failed exits 4 again', async () => {
+  const f = await sentAt();
+  f.record({ 1: { 'feedback-acted': true } });
+  const first = await awaiting(f);
+  assert.equal(first.code, 4, first.err);
+  assert.deepEqual(f.mrs().map(m => [m.id, m['checked-head'], m['feedback-acted'] ?? null]), [[1, HEAD, null], [2, OLD, null]], 'the round\'s start: every Open MR\'s head, feedback-acted cleared');
+  assert.ok(variationOf(f)['awaited-dependency-needs'].needs.some(n => n.id === 1 && n.needs.includes('build-failed')), 'the send kept');
+  // The round changed nothing: same head, nothing acted on — polled, the operator told why, however often it runs.
+  for (let i = 0; i < 3; i++) {
+    const again = await awaiting(f);
+    assert.equal(again.code, 2, again.err);
+    assert.deepEqual(again.out.waiting[0].needs, ['build-failed']);
+  }
+  const told = variationOf(f)['ai-feedback-long'];
+  assert.match(told, /its pipeline failed \(unit\)/);
+  assert.match(told, /already had a round at this head/);
+  // A reply or resolve (feedback-acted): sent again.
+  f.record({ 1: { 'feedback-acted': true } });
+  assert.equal((await awaiting(f)).code, 4);
+  assert.equal((await awaiting(f)).code, 2, 'and polled again after it, at the same head');
+  // A new commit, the job still failing: sent again, the new head recorded.
+  view(f, 'lib', 7, { web_url: LIB_7, draft: false, sha: NEW, head_pipeline: { id: 55, status: 'failed' } });
+  const moved = await awaiting(f);
+  assert.equal(moved.code, 4, moved.err);
+  assert.equal(f.mrs()[0]['checked-head'], NEW);
+});
+
+test('ASS-505 AC3: only this step\'s own send at the head is gated — a checked-head left by another check (no build-failed kept) still exits 4, as does a new open thread at the same head; a build-failed with no job to show still polls as before', async () => {
+  // checked-head == head from Release's merge-request:check, the pipeline failing only since: the first send goes.
+  const stale = await sentAt();
+  stale.record({ 1: { 'checked-head': HEAD }, 2: { 'checked-head': OLD } });
+  const s = await awaiting(stale);
+  assert.equal(s.code, 4, s.err);
+  // After a no-op round at the same head, a new open thread: its own to act on, sent.
+  const thread = await sentAt();
+  assert.equal((await awaiting(thread)).code, 4);
+  assert.equal((await awaiting(thread)).code, 2);
+  view(thread, 'lib', 7, { web_url: LIB_7, draft: false, sha: HEAD, head_pipeline: { id: 55, status: 'failed' }, blocking_discussions_resolved: false });
+  const t = await awaiting(thread);
+  assert.equal(t.code, 4, t.err);
+  assert.ok(t.out.waiting[0].needs.includes('open-threads'), JSON.stringify(t.out));
+  // No failed job or bridge to show: polled, the pipeline URL told, as ASS-482 AC2.
+  const P = `${LIB}/-/pipelines/55`;
+  const quiet = await dependedOn({ draft: false, sha: HEAD, head_pipeline: { id: 55, status: 'failed', web_url: P } });
+  pipelineOf(quiet, 'lib', 55, { jobs: [], bridges: [] });
+  assert.equal((await awaiting(quiet)).code, 2);
+  assert.ok(variationOf(quiet)['ai-feedback-long'].includes(P));
+});
+
+test('ASS-505 AC2: after await-dependencies sends a build-failed dependency to Address Merge Request Feedback, a round that pushed, replied to and resolved nothing reads changed false at ticket scope', async () => {
+  const f = await sentAt();
+  assert.equal((await awaiting(f)).code, 4);
+  const r = await ran(f, 'merge-request:feedback-round', 'p', 'ABC-5', 'A');
+  assert.equal(r.code, 0, r.err);
+  assert.deepEqual(JSON.parse(r.out), { changed: false, 'merge-requests': [
+    { id: 1, key: '!7', head: HEAD, 'checked-head': HEAD, acted: false }, { id: 2, key: '!9', head: OLD, 'checked-head': OLD, acted: false }] });
+});

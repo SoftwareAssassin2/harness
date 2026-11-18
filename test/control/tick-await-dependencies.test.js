@@ -17,7 +17,7 @@ import { engineDir } from '../support/engine-walk.js';
 const edit = (file, change) => { const json = JSON.parse(readFileSync(file, 'utf8')); change(json); writeFileSync(file, JSON.stringify(json)); };
 const sprint = f => join(f.dir, 'projects', 'p', 'sprints', 'sprint-10', 'sprint.json');
 const grouped = JSON.parse(readFileSync(join(engineDir('grouped-build'), 'state-engine.json'), 'utf8'));
-const KEPT = ['generate-solution', 'address-merge-request-feedback', 'await-dependencies', 'refresh-before-testing', 'done', 'blocked'];
+const KEPT = ['generate-solution', 'address-merge-request-feedback', 'check-feedback-round', 'await-dependencies', 'refresh-before-testing', 'done', 'blocked'];
 
 // The control fixture with ABC-3 A at local-testing, which runs grouped-build's own await-dependencies, generate-solution
 // (its exits, max-visits and on-max-visits as they are; its agent the fixture's test prompt, on the host) and the refresh
