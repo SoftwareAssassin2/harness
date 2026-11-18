@@ -337,6 +337,41 @@ Read the ticket's work folder (and recall from Hindsight) before recommending. T
 
 The variation (`<var>`) is usually `A`. A `""` to-state records the choice and lets control take the step's exit (for Blocked for Human, back to the step the ticket was blocked in). Decision names come from the step's `exit-events` in the engine.
 
+## Blocked tickets waiting on a fix
+
+This section is about **Blocked**, the AI's own troubleshooting state, not Blocked for Human. When a ticket is Blocked, its Blocked run (`engines/grouped-blocked`) troubleshoots and classifies the problem. A harness or project problem gets a fix: a fix ticket (in the harness project, or the ticket's own project's ticket system), or a fix merge request. The blocked ticket then **waits on it**:
+- **Wait on the Fix** (`ticket:wait-on`) records the variation's `waits-on`.
+- **Await the Fix** (or **Await the Fix Merge Request**) runs `ticket:fix-landed` every 5 minutes.
+
+The fix has **landed** when its ticket is Done and either went through a merge step, or has a commit starting `<FIX-KEY>:` on its project's default branch. A merge request fix has landed when the merge request has merged. A **harness** fix also needs the running controls restarted on code that contains it. Until then the ticket's Health says "Fix `<KEY>` landed; waiting for a harness restart to load it", and the header shows **Restart to load N landed fixes**.
+
+Once it has landed, **Find Where to Resume** (`ticket:fix-resume-step`) picks the step to go back to: the fix ticket's declared `resume-at`, else the earliest step the fix's commits or changed work files touch, else the step it blocked at. The ticket then **resumes automatically**, with no operator needed. A fix ticket that closed without landing sends the ticket round Blocked again.
+
+### When a ticket doesn't resume although its fix is deployed
+
+Find the cause first:
+
+```sh
+./agent.sh ticket:fix-landed <project> <KEY> <var>   # safe to run: { waits-on, status, landed, awaiting-restart? } (it only refreshes the restart flag and Health)
+```
+
+- **Exit 1 with `awaiting-restart`:** the fix is merged but not loaded. Restart: `./agent.sh harness:request-restart`. Don't move the ticket by hand.
+- **Exit 1 otherwise:** the fix isn't seen as landed. The fix ticket isn't Done yet, or it is Done with no merge step and no `<FIX-KEY>:` commit on the default branch (for example a squash or merge commit named otherwise). Or `waits-on` names the wrong ticket.
+- **Exit 3:** the fix ticket closed without landing. **Exit 4:** the ticket waits on nothing.
+
+If the fix really is deployed and the ticket still sits in Blocked, **resume it yourself**. Tell the operator which ticket and why.
+
+```sh
+./agent.sh ticket:fix-resume-step <project> <KEY> <var>        # prints { resume-at, resume-source, resume-why } — read-only
+./agent.sh ticket:change-state <project> <KEY> <var> blocked <resume-at>
+./agent.sh ticket:wait-on <project> <KEY> <var> -              # then clear the finished wait
+```
+
+- **Resume at the right step:** use `resume-at` from `fix-resume-step`, or the step the ticket was blocked at when it prints none. You can read that step from the variation's last `state-changes` into `blocked`.
+- **Move it first, then clear the wait.** Clearing `waits-on` while the ticket is still in Await the Fix sends it to Blocked for Human (`fix-landed` exits 4).
+- **Control ends the Blocked run itself** once the ticket has left Blocked.
+- **All of this is for Blocked only.** Blocked for Human is a different workflow, the operator's step: don't use `change-state` there. Follow "Operator Needed tickets" (Resolved, or Have AI Try Again).
+
 ## Priorities
 
 Control ranks the sprint by itself (ticket-system priority, bugs first, dependencies, closeness to done, points). The operator can override it:
