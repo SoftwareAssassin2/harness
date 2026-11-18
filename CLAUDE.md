@@ -278,6 +278,49 @@ acli jira workitem search --jql 'project = <KEY> AND sprint in openSprints() AND
 
 Show a short ranked list with each ticket's priority, type, and why it fits. Assign only the ones the operator picks, upstream.
 
+## Looking things up in Jira
+
+There are two ways in. Pick by what you need.
+
+**The Atlassian CLI (`acli`)** is signed in on this machine as the operator (`acli jira auth status`). It's good for quick reads and for changes:
+
+```sh
+acli jira workitem view <KEY> --fields 'summary,status,assignee,priority,issuetype' --json
+acli jira workitem search --jql '<jql>' --fields 'key,summary,status,assignee,priority,issuetype' --json [--limit N | --paginate]
+acli jira workitem assign --key <KEY> --assignee "@me"
+```
+
+Its quirks:
+- `search` returns only a fixed set of fields: **no sprint, no issue links, no custom fields**. `--fields key` alone gives nulls, so add another field.
+- `view --fields '*all'` works, but search doesn't.
+
+**The Jira REST API** is what the harness's own analytics use (`src/downloader/jira-rest.js`). It uses basic auth with the Jira work source's `api-email` and `api-token` from `data/projects/<project>/project.json`. The site and board id come from that work source's `url` (`https://<site>/jira/software/c/projects/<KEY>/boards/<id>`). **The API is the only way to see which sprint a ticket is in.** That's the work source's `sprint-field` (`customfield_10020` by default), with every sprint the ticket has been in and each one's `state` (`active`, `closed`, `future`). It also gives full changelogs, other people's tickets, and links.
+
+```sh
+p=<project>
+ws=$(jq -c '[."work-sources"[] | select(.type=="jira")][0]' data/projects/$p/project.json)
+site=$(jq -r '.url | capture("^(?<s>https://[^/]+)").s' <<<"$ws")
+sf=$(jq -r '."sprint-field" // "customfield_10020"' <<<"$ws")
+auth=$(jq -r '"\(."api-email"):\(."api-token")"' <<<"$ws")    # never echo this
+# a ticket's sprints, status and assignee (any JQL works)
+curl -s -u "$auth" -G "$site/rest/api/3/search/jql" --data-urlencode "jql=key = <KEY>" \
+  --data-urlencode "fields=summary,status,assignee,priority,issuetype,issuelinks,$sf" \
+  | jq -c --arg sf "$sf" '.issues[] | {key, status: .fields.status.name, assignee: .fields.assignee.displayName,
+      sprints: [.fields[$sf][]? | {name, state}]}'
+unset auth
+```
+
+Other calls the harness uses:
+- `GET /rest/api/3/search/jql?jql=…&fields=…&expand=changelog&maxResults=100`: pages with `nextPageToken` until `isLast`. Add `expand=changelog` for status and assignee history.
+- `GET /rest/api/3/issue/<KEY>/changelog?startAt=&maxResults=100`: the rest of a long changelog.
+- `GET /rest/agile/1.0/board/<board-id>/sprint?state=active,closed,future`: the board's sprints (`id`, `name`, `state`, dates).
+- `GET /rest/api/3/myself`: checks the token works.
+
+Notes:
+- Search answers **200 with no issues** when it rejects the token, so an empty result can mean bad credentials. Check `/myself` first: it gives 401 or 403 for a rejected token (that's the **Jira API token rejected** warning).
+- Never print or log the token. Keep it in a variable, as above.
+- For past data without calling Jira, `data/projects/<project>/analytics/tickets.json` holds every ticket's status and assignee history, refreshed by the downloader.
+
 ## Building a ticket several ways (variations)
 
 When the operator wants a ticket built more than one way (say, following another answer to one of its questions), add a variation. Each variation gets its own seat, VM, branches (`change/<KEY>.<var>-<id>`) and `-<var>` work files. The ticket's other variations carry on unchanged.
