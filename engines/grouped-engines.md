@@ -2349,7 +2349,10 @@ contents and depends-on; the harness names the branch, `change/<KEY>-<id>`
 (`change/<KEY>.<variation>-<id>` for a variation other than A). A replan
 matched by id keeps a created one's key, url, build status and status, and
 never drops one. A new one is `Not Created`; its status goes on to `Open`,
-then `Merged` or `Closed`.
+then `Merged` or `Closed`. A new merge request `ticket:sync` finds on a
+`Closed` one's branch takes over its id, repository and base, in its place,
+so `merge-request:view` reaches it by that id; the closed one stays as an
+id-less record (ASS-512).
 
 Generate Solution creates them (ASS-81), one at a time in depends-on order.
 For each, it has control read them all (`merge-request:check`), builds the
