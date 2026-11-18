@@ -495,6 +495,21 @@ test('ASS-238 AC1, ASS-239 AC2: merge-request:view <id> on GitLab prints the MR 
   await fails(f.agent('merge-request:view', 'p', 'ABC-5', 'A'), /usage: merge-request:view <project> <ticket-key> <variation> <id>/);
 });
 
+test('ASS-512 AC2: after ticket:sync hands a Closed planned merge request\'s id to a new one on its branch, merge-request:view <id> resolves to the new one', async () => {
+  const f = await planned([{ id: 1, repository: APP }]);
+  f.record({ 1: { status: 'Closed', key: '!7', url: `${APP}/-/merge_requests/7`, base: 'master' } });
+  const fetchedFile = join(f.dir, 'fetched.json');
+  writeFileSync(fetchedFile, JSON.stringify({
+    tickets: [{ key: 'ABC-5', title: 'Close the account', description: 'D', url: 'https://jira.example.com/browse/ABC-5', 'ticket-system-status': 'In Progress', 'ticket-system-priority': null, 'ticket-system-assignment': null, points: null, 'issue-type': 'Story', dependencies: [], overlaps: [], 'sprint-tag': null }],
+    'merge-requests': [{ key: '!8', url: `${APP}/-/merge_requests/8`, status: 'Open', branch: 'change/ABC-5-1', ticket: 'ABC-5', 'build-status': 'Running' }],
+  }));
+  await run(AGENT, ['ticket:sync', 'p', 'sprint', fetchedFile], { env: { ...process.env, PROJECTS_DIR: f.dir, PATH: f.forge.path, ACLI_DISABLED: '1' } });
+  view(f, 'app', 8, { source_branch: 'change/ABC-5-1' });   // !7 unrouted: resolving the closed one fails
+  f.forge.route('glab', /^api projects\/g%2Fapp\/merge_requests\/8\/discussions\?per_page=100 --hostname gitlab.com$/, { out: [] });
+  const shown = JSON.parse((await f.agent('merge-request:view', 'p', 'ABC-5', 'A', '1')).stdout);
+  assert.deepEqual([shown.id, shown.url, shown.base], [1, `${APP}/-/merge_requests/8`, 'master']);
+});
+
 test('ASS-238 AC1, ASS-239 AC2: merge-request:view <id> on GitHub prints the pull request the same way, its unresolved review threads from GraphQL and its failing checks', async () => {
   const f = await planned([{ id: 1, repository: HUB }]);
   f.record({ 1: { status: 'Open', key: '#12', base: 'main' } });
