@@ -108,7 +108,7 @@
             "id": "address-merge-request-feedback",
             "sequence": 4,
             "name": "Address Merge Request Feedback",
-            "description": "Act on the review threads, plain review comments, failed pipeline or needed rebase of the ticket's own merge request that another of its merge requests waits on at Await Sequential Merge (its exit 4), then wait again; Release's own Address Merge Request Feedback comes after the very tests that wait (ASS-361)",
+            "description": "Act on the review threads, plain review comments, failed pipeline or needed rebase of the ticket's own merge request that another of its merge requests waits on at Await Sequential Merge (its exit 4), then wait again; Release's own Address Merge Request Feedback comes after the very tests that wait (ASS-361); Check the Feedback Round tells a round that changed nothing, not counted toward its max-visits (ASS-505)",
             "max-visits": 3,
             "on-max-visits": "blocked",
             "action": {
@@ -123,14 +123,59 @@
                     "condition": {
                         "turn-complete": true
                     },
-                    "move-to-state": "await-dependencies"
+                    "move-to-state": "check-feedback-round"
                 }
             ],
             "run-location": "vm"
         },
         {
-            "id": "merge-awaited",
+            "id": "check-feedback-round",
             "sequence": 5,
+            "name": "Check the Feedback Round",
+            "description": "Whether Address Merge Request Feedback changed anything: a commit pushed to a merge request of the ticket (its head is not the one Await Sequential Merge saw when it sent it), or a thread or comment replied to or resolved. A round that changed nothing goes back to Await Sequential Merge with cause no-op-round, and control counts no visit for it, so a merge request that fails by plan until the operator acts is polled, not sent to Blocked by do-nothing rounds; one that changed something, or a failure here, goes back as before (ASS-505, as grouped-merge's ASS-388). A forge read, so its VM is stopped here (ASS-418)",
+            "vm": "stopped",
+            "max-visits": 5,
+            "on-max-visits": "blocked",
+            "action": {
+                "type": "script",
+                "command": "./agent.sh merge-request:feedback-round {project} {ticket} {variation}"
+            },
+            "exit-events": [
+                {
+                    "condition": {
+                        "all": [
+                            {
+                                "exit-code": 0
+                            },
+                            {
+                                "script-output": {
+                                    "changed": false
+                                }
+                            }
+                        ]
+                    },
+                    "move-to-state": "await-dependencies",
+                    "cause": "no-op-round"
+                },
+                {
+                    "condition": {
+                        "exit-code": 0
+                    },
+                    "move-to-state": "await-dependencies"
+                },
+                {
+                    "condition": {
+                        "not": {
+                            "exit-code": 0
+                        }
+                    },
+                    "move-to-state": "await-dependencies"
+                }
+            ]
+        },
+        {
+            "id": "merge-awaited",
+            "sequence": 6,
             "name": "Merge the Awaited",
             "shows-merge-train": true,
             "description": "Only from Await Sequential Merge's exit 5, where a step of the variation's status chain says merges-awaited: true (ASS-365): grouped-merge, the merge loop, over the merge requests waited on (its merge-request-ids) — Code Review and Security Review at their head commits, out of draft, Address Merge Request Feedback, auto-merge — until they are merged, then back to Await Sequential Merge. Merged here, the awaited merge request merges before the ticket's Test, Document, Review and Human Review",
@@ -193,7 +238,7 @@
         },
         {
             "id": "await-dependencies",
-            "sequence": 6,
+            "sequence": 7,
             "name": "Await Sequential Merge",
             "shows-merge-train": true,
             "description": "Wait until every merge request a merge request of the ticket depends on in another repository is merged, so its tests do not run against what that repository has not yet published; polling while one is not (exit 2, its waiting-exit-code: no failure, ASS-335); nothing to wait for passes at once. What each dependency needs (draft, failed pipeline, open threads, rebase, approval) is the operator's feedback, written when it changes; one of the ticket's own planned merge requests never created is not waited on but sent back to Generate Solution (exit 3, under its max-visits) (ASS-359). One with review threads, review comments, a failed pipeline with a failed job or bridge to show (one without: polled, the operator told its URL, ASS-482) or a needed rebase of its own goes to Address Merge Request Feedback (exit 4, under its max-visits) (ASS-361); a draft or an approval alone keeps polling. Where the project's workflow opts in (merges-awaited: true on a step of the variation's status chain, read by control) and the ticket has one variation in play, one awaited with nothing of its own to act on — a draft, an approval, or the merge itself — goes to Merge the Awaited (exit 5) (ASS-365). ASS-418: a forge poll, so its VM is stopped here (started again, by the lifecycle, at the next step that needs it)",
@@ -235,7 +280,7 @@
         },
         {
             "id": "refresh-before-testing",
-            "sequence": 7,
+            "sequence": 8,
             "name": "Refresh the Reference Repositories Before Testing",
             "description": "Bring the repositories the ticket does not change up to their default branch again, so the tests run against current upstream. A VM it cannot reach (exit 125, 255, any) or a fetch failing as a network does (a timeout, a reset, a 5xx) is tried 3 times in the command; still failing, the step waits (exit 2, its waiting-exit-code: polled every 5 minutes, no visit or failure counted, the variation's feedback saying what it can't reach) for up to 30 minutes since it was entered, then ends Build at Blocked (exit 3, its feedback naming the failing call and its last error); no running VM (exit 1) blocks at once. Any other exit matches none: tried again (ASS-396)",
             "record-script-output": true,
@@ -269,7 +314,7 @@
         },
         {
             "id": "check-numbered-files",
-            "sequence": 8,
+            "sequence": 9,
             "name": "Check Numbered Files",
             "description": "Each numbered file (a migration, a numbered test) the ticket's merge requests add must be above the highest on its target branch and taken by no older open merge request in its repository, by project.json's numbered-files (ASS-385): on the host, its checkouts read in the VM, the other open merge requests from the forge. One that is not goes back to Generate Solution (exit 1) with each file and the free number to use. A forge or VM call that fails is tried 3 times in the command; still failing, the step waits (exit 2, its waiting-exit-code: polled every 5 minutes, no visit or failure counted, the variation's feedback saying what it can't reach) for up to 30 minutes since it was entered, then ends Build at Blocked (exit 3, its feedback naming what kept failing and its last error), as a check that could not run at all (a malformed declaration, no VM) does at once (ASS-386). Any other exit matches none: tried again",
             "max-visits": 3,
@@ -305,7 +350,7 @@
         },
         {
             "id": "automated-testing",
-            "sequence": 9,
+            "sequence": 10,
             "name": "Automated Testing",
             "description": "Run automated tests",
             "max-visits": 3,
@@ -346,7 +391,7 @@
         },
         {
             "id": "ci-checks",
-            "sequence": 10,
+            "sequence": 11,
             "name": "CI Checks",
             "description": "Run the merge-request CI checks the project declares (ci-checks.json) for each repository the ticket changes; a project that declares none passes with nothing run",
             "max-visits": 3,
@@ -381,7 +426,7 @@
         },
         {
             "id": "code-review",
-            "sequence": 11,
+            "sequence": 12,
             "name": "Code Review",
             "description": "Reviewing the solution",
             "max-visits": 3,
@@ -429,7 +474,7 @@
         },
         {
             "id": "security-review",
-            "sequence": 12,
+            "sequence": 13,
             "name": "Security Review",
             "description": "Security review",
             "max-visits": 3,
@@ -483,7 +528,7 @@
             "action": {
                 "type": "none"
             },
-            "sequence": 13
+            "sequence": 14
         },
         {
             "id": "blocked",
@@ -493,7 +538,7 @@
             "action": {
                 "type": "none"
             },
-            "sequence": 14
+            "sequence": 15
         },
         {
             "id": "blocked-for-human",
@@ -503,7 +548,7 @@
             "action": {
                 "type": "none"
             },
-            "sequence": 15
+            "sequence": 16
         }
     ]
 }

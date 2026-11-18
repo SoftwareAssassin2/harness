@@ -584,8 +584,8 @@ test('ASS-335 AC1/AC2: grouped-build waits at Await Sequential Merge before ever
   // Every way into Automated Testing passes the gate: only the refresh moves there, and only the gate moves to the refresh.
   const into = id => build.steps.filter(s => (s['exit-events'] ?? []).some(e => e['move-to-state'] === id)).map(s => s.id);
   // ASS-361: Address Merge Request Feedback, reached only from the gate, comes back to it; so does Merge the Awaited (ASS-365).
-  // ASS-385: Check Numbered Files sits between the refresh and the tests.
-  assert.deepEqual([into('automated-testing'), into('check-numbered-files'), into('refresh-before-testing'), into('await-dependencies')], [['check-numbered-files'], ['refresh-before-testing'], ['await-dependencies'], ['generate-solution', 'address-merge-request-feedback', 'merge-awaited']]);
+  // ASS-385: Check Numbered Files sits between the refresh and the tests. ASS-505: Address MR Feedback comes back by Check the Feedback Round.
+  assert.deepEqual([into('automated-testing'), into('check-numbered-files'), into('refresh-before-testing'), into('await-dependencies')], [['check-numbered-files'], ['refresh-before-testing'], ['await-dependencies'], ['generate-solution', 'check-feedback-round', 'merge-awaited']]);
   // AC1: a dependency in another repository not merged — the tests are not run, and nothing sends the ticket back to Generate Solution.
   assert.equal(nextState(step, build, { exitCode: 2 }, []), null, 'waiting stays');
   assert.equal(nextState(step, build, { exitCode: 1 }, []), null, 'an error matches no exit, so it is tried again where it is');
@@ -635,16 +635,18 @@ test('ASS-361 AC3: Await Sequential Merge\'s exit 4 goes to Build\'s own Address
   assert.deepEqual(step['exit-events'].map(e => [e.condition, e['move-to-state']]), [[{ 'exit-code': 0 }, 'refresh-before-testing'], [{ 'exit-code': 3 }, 'generate-solution'], [{ 'exit-code': 4 }, 'address-merge-request-feedback'], [{ 'exit-code': 5 }, 'merge-awaited']]);
   assert.deepEqual([address.name, address.action, address['run-location'], address['max-visits'], address['on-max-visits']],
     ['Address Merge Request Feedback', { type: 'prompt', prompt: 'check-on-merge-request-build-grouped', 'agent-count': 1, 'run-in-dev-container': true, model: 'claude-opus-5-5' }, 'vm', 3, 'blocked']);
-  assert.deepEqual(address['exit-events'], [{ condition: { 'turn-complete': true }, 'move-to-state': 'await-dependencies' }]);
+  // ASS-505: by Check the Feedback Round, which goes back to the gate.
+  assert.deepEqual(address['exit-events'], [{ condition: { 'turn-complete': true }, 'move-to-state': 'check-feedback-round' }]);
   // Only the gate sends a run there.
   assert.deepEqual(build.steps.filter(s => (s['exit-events'] ?? []).some(e => e['move-to-state'] === 'address-merge-request-feedback')).map(s => s.id), ['await-dependencies']);
   const visits = n => Array.from({ length: n }, () => [
     { 'from-state': 'await-dependencies', 'to-state': 'address-merge-request-feedback' },
-    { 'from-state': 'address-merge-request-feedback', 'to-state': 'await-dependencies' }]).flat();
+    { 'from-state': 'address-merge-request-feedback', 'to-state': 'check-feedback-round' },
+    { 'from-state': 'check-feedback-round', 'to-state': 'await-dependencies' }]).flat();
   assert.deepEqual(nextState(step, build, { exitCode: 4 }, []), { to: 'address-merge-request-feedback', exit: step['exit-events'][2], reason: 'exit' });
   assert.equal(nextState(step, build, { exitCode: 4 }, visits(2)).to, 'address-merge-request-feedback');
   assert.deepEqual(nextState(step, build, { exitCode: 4 }, visits(3)), { to: 'blocked', exit: step['exit-events'][2], reason: 'max-visits' });
-  assert.equal(nextState(address, build, { turnComplete: true }, visits(1)).to, 'await-dependencies');
+  assert.equal(nextState(address, build, { turnComplete: true }, visits(1)).to, 'check-feedback-round');
   assert.equal(nextState(step, build, { exitCode: 2 }, visits(3)), null, 'a draft or an approval alone: waiting stays');
   assert.equal(nextState(step, build, { exitCode: 3 }, []).to, 'generate-solution');
   assert.deepEqual(validateStateEngine(build, ROOT, 'grouped-build', EXAMPLE_ENGINES), []);
