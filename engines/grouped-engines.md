@@ -2417,7 +2417,8 @@ A GitLab merge request held by a reviewer waits too (ASS-508): when every
 open blocking thread's last note (a system note aside) is the harness's
 (`mr_harness_accounts`), the reviewer holding the resolve, and its failed
 jobs, if any, are only its review gate (project.json `review-gate-jobs`,
-`["review-gate"]` by default; a job outside it, or failed jobs unknown, keep
+`["review-gate"]` by default, a list of non-empty job names or the check
+fails naming it; a job outside it, or failed jobs unknown, keep
 `build-failed`), the check drops `open-threads` and that `build-failed`,
 counts it as waiting like auto-merge set, and lists `"waiting-on-reviewer":
 [{ id, key, url, threads }]`. Team Code Review keeps polling, spending no
