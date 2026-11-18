@@ -348,7 +348,7 @@ check, say) is compared with CI's. The ticket's own repositories are untouched.
 A merge request with no repository — an id-less one `ticket:sync` found on the
 forge, matching no planned branch — is in none, and is passed over, here and
 by CI Checks below (ASS-321).
-Only a VM not running fails it: Blocked. Test's Rebuild enters Build at
+Only a VM not running, or deps not installed (below), fails it: Blocked. Test's Rebuild enters Build at
 Generate Solution, past the first refresh; the second still runs.
 
 A passing hiccup at either Refresh step is no block (ASS-396). A VM the
