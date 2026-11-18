@@ -470,7 +470,7 @@ function depsVm() {
     Object.assign(sp.features[0].variations[0], { vm: { name: 'abc-3-a', ip: '192.168.64.9', 'created-at': '2026-10-19T00:00:00Z' }, 'merge-request': [{ id: 1, repository: 'https://github.com/o/harness', branch: 'change/ABC-3-1', status: 'Open' }] });
   });
   const log = join(l.v.dir, 'pnpm.log'), exit = join(l.v.dir, 'pnpm-exit');
-  l.v.inVm('pnpm', `echo "$PWD|$*|CI=\${CI-}" >> '${log}'; mkdir -p node_modules
+  l.v.inVm('pnpm', `echo "$(pwd -P)|$*|CI=\${CI-}" >> '${log}'; mkdir -p node_modules
 rc=$(cat '${exit}' 2>/dev/null || echo 0); [ "$rc" -eq 0 ] || echo "ERR_STUB_PNPM: lockfile broken" >&2; exit "$rc"`);
   const calls = () => (existsSync(log) ? readFileSync(log, 'utf8').trim().split('\n').map(x => { const [cwd, args, ci] = x.split('|'); return { cwd, args, ci }; }) : []);
   const ref = l.vmFile('repos', 'example-corpus');

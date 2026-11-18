@@ -196,7 +196,7 @@ test('ASS-396 AC2: a fetch failing for want of a repository is not retried: left
 // The VM's pnpm a stub: logs "<cwd>|<args>|CI=<CI>", makes node_modules, exits per <dir>/pnpm-exit-<repo> or <dir>/pnpm-exit.
 function pnpmStub(v) {
   const log = join(v.dir, 'pnpm.log');
-  v.inVm('pnpm', `echo "$PWD|$*|CI=\${CI-}" >> '${log}'; mkdir -p node_modules
+  v.inVm('pnpm', `echo "$(pwd -P)|$*|CI=\${CI-}" >> '${log}'; mkdir -p node_modules
 rc=$(cat "${v.dir}/pnpm-exit-$(basename "$PWD")" 2>/dev/null || cat '${v.dir}/pnpm-exit' 2>/dev/null || echo 0)
 [ "$rc" -eq 0 ] || echo "ERR_STUB_PNPM: lockfile broken in $(basename "$PWD")" >&2
 exit "$rc"`);
