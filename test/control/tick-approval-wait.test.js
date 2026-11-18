@@ -59,7 +59,17 @@ function mergeRequests(rows = {}) {
     forge.route('glab', new RegExp(`^api projects/g%2F${repo}/merge_requests/${iid}/merge --hostname gitlab.com -X PUT -f merge_when_pipeline_succeeds=true$`), { out: {}, touch: `set${iid}` });
   }
   const set = () => forge.log('glab').filter(l => /\/merge --hostname/.test(l)).map(l => Number(/merge_requests\/(\d+)/.exec(l)[1]));
-  return { dir, forge, view, set, rows: () => JSON.parse(readFileSync(join(dir, 'p', 'sprints', 'sprint-10', 'sprint.json'), 'utf8')).features[0].variations[0]['merge-request'] };
+  // ASS-508: !<iid> (app) held by a reviewer — one blocking thread d1, a
+  // reviewer's note then the harness's (host-me) last — and its pipeline 55's
+  // failed jobs as given; `last` the thread's last author.
+  const hold = (iid, { jobs = ['review-gate'], last = 'host-me' } = {}) => {
+    const note = (id, author) => ({ id, author: { username: author }, body: `note ${id}`, system: false, resolvable: true, resolved: false });
+    forge.route('glab', /^api user --hostname gitlab.com$/, { out: { username: 'host-me' } });
+    forge.route('glab', new RegExp(`^api projects/g%2Fapp/merge_requests/${iid}/discussions\\?per_page=100 --hostname gitlab.com$`), { out: [{ id: 'd1', notes: [note(2, 'pm'), note(7, last)] }] });
+    forge.route('glab', /^api projects\/g%2Fapp\/pipelines\/55\/jobs\?scope=failed --hostname gitlab.com$/, { out: jobs.map(name => ({ name, allow_failure: false })) });
+    view('app', iid, { blocking_discussions_resolved: false, head_pipeline: { id: 55, status: 'failed' } });
+  };
+  return { dir, forge, view, hold, set, rows: () => JSON.parse(readFileSync(join(dir, 'p', 'sprints', 'sprint-10', 'sprint.json'), 'utf8')).features[0].variations[0]['merge-request'] };
 }
 
 // The control fixture with p's local-testing step running `release` (the

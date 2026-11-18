@@ -807,6 +807,18 @@ function noted(f, repo, iid, notes, commitAt = 10) {
   f.forge.route('glab', new RegExp(`^api projects/g%2F${repo}/merge_requests/${iid}/notes\\?per_page=100 --hostname gitlab.com$`), { out: notes });
   f.forge.route('glab', new RegExp(`^api projects/g%2F${repo}/merge_requests/${iid}/commits\\?per_page=100 --hostname gitlab.com$`), { out: [{ id: 'c2', committed_date: T(commitAt).replace('Z', '+00:00') }, { id: 'c1', committed_date: T(8) }] });
 }
+// ASS-508: a blocking thread's note (resolvable, unresolved) and <repo> !<iid>'s
+// discussions as given, the harness's logins (push account, host-me) and, given
+// `jobs`, its pipeline 55's failed jobs. HELD: one thread a reviewer opened and
+// the harness answered last — held by the reviewer.
+const blocking = (id, author, h, v = {}) => note(id, author, h, { resolvable: true, resolved: false, ...v });
+const HELD = [{ id: 'd1', notes: [blocking(2, 'sam', 11), blocking(7, 'host-me', 12)] }];
+function held(f, repo, iid, discussions = HELD, { jobs } = {}) {
+  ours(f);
+  f.forge.route('glab', /^api user --hostname gitlab.com$/, { out: { username: 'host-me' } });
+  f.forge.route('glab', new RegExp(`^api projects/g%2F${repo}/merge_requests/${iid}/discussions\\?per_page=100 --hostname gitlab.com$`), { out: discussions });
+  if (jobs) f.forge.route('glab', new RegExp(`^api projects/g%2F${repo}/pipelines/55/jobs\\?scope=failed --hostname gitlab.com$`), { out: jobs.map(name => ({ name, allow_failure: false })) });
+}
 // o/h #12's issue comments and reviews as given, its latest commit at 10 o'clock.
 const discussed = (f, comments, reviews = []) => f.forge.route('gh', /^pr view 12 --repo o\/h --json comments,reviews,commits$/, { out: { comments, reviews, commits: [{ oid: 'c1', committedDate: '2026-11-11T10:00:00Z' }] } });
 const SAM = { id: 'IC_1', author: { login: 'sam' }, body: 'Renumber V12; it collides with master', createdAt: T(11) };
