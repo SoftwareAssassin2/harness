@@ -137,10 +137,11 @@ test('ASS-396 AC1, AC3: a fetch reset twice is retried in the command and the re
   const { stdout } = await s.refresh();
   assert.match(stdout, /^example-corpus: brought from/m);
   assert.deepEqual(s.head(s.ref), [origin, 'master']);
-  assert.equal(s.shells(), 3, 'the VM reached 3 times');
+  // +1 each run that got through: ASS-503's deps install (vm_install_deps), one shell after the refresh's.
+  assert.equal(s.shells(), 3 + 1, 'the VM reached 3 times, then the install');
   assert.deepEqual([s.variation()['refresh-wait'], s.variation()['ai-feedback-short']], [undefined, undefined]);
   await s.refresh();
-  assert.equal(s.shells(), 4);
+  assert.equal(s.shells(), 4 + 2);
 });
 
 test('ASS-396 AC1, AC3: a VM not reached after 3 tries waits (exit 2), its feedback saying so; a later timer tick that reaches it refreshes and clears the feedback', async () => {
@@ -186,7 +187,7 @@ test('ASS-396 AC2: a fetch failing for want of a repository is not retried: left
   const work = s.origins['example-corpus'].work;
   renameSync(work, `${work}.gone`);
   assert.match((await s.refresh()).stdout, /^example-corpus: left as is: could not fetch$/m);
-  assert.equal(s.shells(), 1);
+  assert.equal(s.shells(), 1 + 1, 'once, then ASS-503\'s deps install');
 });
 
 // ASS-503: after a refresh, each repository whose pnpm-lock.yaml differs from the one its node_modules was installed

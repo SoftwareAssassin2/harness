@@ -565,4 +565,17 @@ reclaim_all() {
   jq -n --argjson d "$deleted" --argjson dry "$( [[ -n "$dry" ]] && echo true || echo false)" --argjson w "$warn" --argjson b "$before" --argjson f "$free" \
     '{ "dry-run": $dry, "warn-bytes": $w, "free-bytes-before": $b, "free-bytes": $f, deleted: $d, short: ($f < $w) }'
 }
+# vm_install_deps <command> <vm> <project> — ASS-503: in the VM, each of the project's repositories whose
+# pnpm-lock.yaml changed since its deps were installed gets `pnpm install --frozen-lockfile` (in-vm/install-deps.sh),
+# once a checkout has moved; its lines on stderr (stdout stays the caller's). Fails (1) when one could not be
+# installed, naming it.
+vm_install_deps() {
+  local command="$1" vm="$2" project="$3" repos=() out
+  out="$(jq -r '.repositories[]?.url | sub("\\.git$"; "") | split("/") | last' "$projects/$project/project.json")" || return 1
+  [[ -z "$out" ]] || mapfile -t repos <<< "$out"
+  [[ ${#repos[@]} -gt 0 ]] || return 0
+  # pipefail (the callers'): a failing install fails the pipeline.
+  machine_run --workdir / "$vm" -- bash -s -- "${repos[@]}" < "$here_vm/vm/in-vm/install-deps.sh" 2>&1 | sed "s/^/$command: /" >&2 \
+    || { echo "$command: dependencies could not be installed in $vm (see above)" >&2; return 1; }
+}
 source "$here_vm/workstation-variation.bash"
