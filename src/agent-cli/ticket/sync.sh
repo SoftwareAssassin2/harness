@@ -32,7 +32,9 @@ set -euo pipefail
 # merge request it fetched, each with the ticket it belongs to or null): a
 # recorded one is never removed or moved, only refreshed from the fetched one
 # with its url; one fetched for the ticket that it does not record yet is added
-# (scanned, below); an empty or absent list changes nothing;
+# (scanned, below) — a planned one Closed on its branch hands its plan (id,
+# repository, base…) to the new one and stays as an id-less record (ASS-512);
+# an empty or absent list changes nothing;
 # its priority, manual-priority (manual-backlog-priority in the backlog,
 # ASS-100), qa, and everything else of its variations
 # are the harness's and stay; a changed title or description, in a sprint or
@@ -266,10 +268,19 @@ update_json "$json" --slurpfile in "$file" --arg target "$target" --arg state "$
         reduce ([$scan[] | select((.ticket // "" | lc) == $key and ((.url | ident) as $u | $u != "" and ($have | index([$u]) | not)))] | unique_by(.url | ident) | .[] | del(.ticket)) as $m (.;
           ($m.branch // "" | lc) as $b
           | def planned: .id != null and .url == null and (.branch // "" | lc) == $b;
+          def replaced: .id != null and .status == "Closed" and .url != null and (.branch // "" | lc) == $b;
           (first($live[] as $i | select(any(.[$i]["merge-request"][]?; planned)) | $i) // null) as $p
+          | (if $p != null or ($m.status // "") == "Closed" then null
+             else first($live[] as $i | select(any(.[$i]["merge-request"][]?; replaced)) | $i) // null end) as $r
           | if $p != null then
               # A planned merge request (ASS-80) on its branch is filled from it.
               .[$p]["merge-request"] |= (first(to_entries[] | select(.value | planned) | .key) as $j | .[$j] += ($m | { key, url, "build-status", status }))
+            elif $r != null then
+              # A planned one Closed on its branch hands its plan (id, repository, base…) to
+              # the new one, in its place, and stays as an id-less record (ASS-512).
+              .[$r]["merge-request"] |= (first(to_entries[] | select(.value | replaced) | .key) as $j | .[$j] as $old
+                | .[$j] = $old + ($m | { key, url, "build-status", status })
+                | . + [$old | { key, url, "build-status", status, branch }])
             else
               # Else it goes to the variation on its branch — its build branch, else the one named for it,
               # change/<key>[.<name>] — or on one of its -<id> or -fix-<n> branches (merge

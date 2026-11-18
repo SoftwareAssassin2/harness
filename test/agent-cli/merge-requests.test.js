@@ -505,6 +505,7 @@ test('ASS-512 AC2: after ticket:sync hands a Closed planned merge request\'s id 
   }));
   await run(AGENT, ['ticket:sync', 'p', 'sprint', fetchedFile], { env: { ...process.env, PROJECTS_DIR: f.dir, PATH: f.forge.path, ACLI_DISABLED: '1' } });
   view(f, 'app', 8, { source_branch: 'change/ABC-5-1' });   // !7 unrouted: resolving the closed one fails
+  f.forge.route('glab', /^api projects\/g%2Fapp\/merge_requests\/8\/discussions\?per_page=100 --hostname gitlab.com$/, { out: [] });
   const shown = JSON.parse((await f.agent('merge-request:view', 'p', 'ABC-5', 'A', '1')).stdout);
   assert.deepEqual([shown.id, shown.url, shown.base], [1, `${APP}/-/merge_requests/8`, 'master']);
 });
