@@ -2413,6 +2413,20 @@ dependency merges, a merge request it unblocks that is not set yet makes
 resumes. Each wave of dependency merges costs one visit of each, so a chain
 deeper than Ensure Auto-Merge's `max-visits` allows still blocks.
 
+A GitLab merge request held by a reviewer waits too (ASS-508): when every
+open blocking thread's last note (a system note aside) is the harness's
+(`mr_harness_accounts`), the reviewer holding the resolve, and its failed
+jobs, if any, are only its review gate (project.json `review-gate-jobs`,
+`["review-gate"]` by default; a job outside it, or failed jobs unknown, keep
+`build-failed`), the check drops `open-threads` and that `build-failed`,
+counts it as waiting like auto-merge set, and lists `"waiting-on-reviewer":
+[{ id, key, url, threads }]`. Team Code Review keeps polling, spending no
+Address Merge Request Feedback visit on a thread already answered; the
+approval-wait bound below ends it at Blocked for Human, the feedback naming
+the threads. A reviewer's new last note, or the thread resolved with the gate
+still failed, makes it needs-attention again. GitHub is unchanged (changes
+requested is a review, not threads).
+
 The wait for approvals has its own bound (ASS-351): harness.json's
 `approval-wait-days`, 3 by default. An Open merge request set to auto-merge
 with nothing of its own to act on records when it was first seen so

@@ -500,6 +500,53 @@ advisory_bots() {
   jq -c --argjson d "$ADVISORY_BOTS_DEFAULT" '$d + (.["advisory-review-bots"] // []) | unique' "$json"
 }
 
+# REVIEW_GATE_JOBS_DEFAULT — the CI job names that are a project's review gate
+# (ASS-508): a job failing only while a reviewer's thread is open, e.g.
+# case-law's review-gate.
+REVIEW_GATE_JOBS_DEFAULT='["review-gate"]'
+
+# review_gate_jobs <command> <project.json> — the review-gate job names
+# (ASS-508), a JSON array matched exactly: project.json's "review-gate-jobs",
+# else REVIEW_GATE_JOBS_DEFAULT. Fails, naming the problem, when that is not a
+# list of non-empty strings; a missing project.json has the default.
+review_gate_jobs() {
+  local command="$1" json="$2" problem
+  [[ -f "$json" ]] || { echo "$REVIEW_GATE_JOBS_DEFAULT"; return 0; }
+  problem="$(jq -r 'if has("review-gate-jobs") | not then empty
+    elif (.["review-gate-jobs"] | type) != "array" then "\"review-gate-jobs\" must be a list of job names"
+    else first(.["review-gate-jobs"] | to_entries[] | select((.value | type) != "string" or .value == "")
+      | "review-gate-jobs[\(.key)] must be a non-empty string") // empty end' "$json" 2>/dev/null)" \
+    || { echo "$command: $json is not valid JSON" >&2; return 1; }
+  [[ -z "$problem" ]] || { echo "$command: $json: $problem" >&2; return 1; }
+  jq -c --argjson d "$REVIEW_GATE_JOBS_DEFAULT" '.["review-gate-jobs"] // $d' "$json"
+}
+
+# mr_reviewer_held <command> <index> <view> <project> <gates> — GitLab (ASS-508):
+# whether the merge request only waits on a reviewer, who holds threads the
+# harness answered. Its open blocking threads (GET …/discussions: a note
+# resolvable and not resolved) are each one whose last note, a system note
+# aside, is the harness's (mr_harness_accounts); and its view's build-failed,
+# if any, is only <gates>' jobs failing (mr_failed_jobs, none unknown). Then
+# { threads: [<discussion ids>], "build-failed": <bool, dropped> }, else null.
+# GitHub (changes requested is a review, not threads): null. Best effort: a
+# forge call that fails is null, the view as it was.
+mr_reviewer_held() {
+  local command="$1" view="$3" gates="$5" url iid planned discussions accounts held jobs
+  IFS=$'\t' read -r url iid planned < <(mr_at "$2")
+  on_github "$url" && { echo null; return 0; }
+  discussions="$(lab "$command" "$url" "/merge_requests/$iid/discussions?per_page=100" 2>/dev/null)" || { echo null; return 0; }
+  accounts="$(mr_harness_accounts "$command" "$url" "$4")"
+  held="$(jq -c --argjson ours "$accounts" '[.[]? | select(any(.notes[]?; .resolvable == true and (.resolved | not)))]
+    | if . != [] and all(.[]; ([.notes[]? | select(.system | not)] | last | .author.username // "" | ascii_downcase) | IN($ours[]))
+      then map(.id) else null end' <<< "$discussions" 2>/dev/null)" || { echo null; return 0; }
+  [[ -n "$held" && "$held" != null ]] || { echo null; return 0; }
+  if jq -e 'any(.reasons[]; . == "build-failed")' <<< "$view" >/dev/null; then
+    jobs="$(mr_failed_jobs "$command" "$2" "$view")"
+    jq -e --argjson g "$gates" 'length > 0 and all(.[]; IN($g[]))' <<< "$jobs" >/dev/null || { echo null; return 0; }
+    jq -nc --argjson t "$held" '{ threads: $t, "build-failed": true }'
+  else jq -nc --argjson t "$held" '{ threads: $t, "build-failed": false }'; fi
+}
+
 # REVIEW_COMMENTS — jq over { notes: [{ id, author, body, created, resolvable,
 # system, bot }], commits: [<time>], accounts: [<login>], advisory: [<pattern>] }
 # (ASS-361): the plain review comments still to be acted on — each note neither
