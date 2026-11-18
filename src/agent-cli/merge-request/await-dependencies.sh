@@ -57,7 +57,13 @@ set -euo pipefail
 #      Request Feedback (check-on-merge-request-build-grouped, in the VM), which
 #      comes back here once its turn is complete, under its max-visits (3),
 #      then Blocked. A note in execution-plan-<variation>.md names which and
-#      what each needs. A draft or an approval alone is no agent's to act
+#      what each needs. Each Open merge request's head is then its
+#      checked-head, its feedback-acted cleared (ASS-505, as merge-request:check
+#      does): the round's start, so grouped-build's Check the Feedback Round
+#      (merge-request:feedback-round) tells a no-op round, not counted. A
+#      build-failed this step already sent at that head (its kept needs had
+#      it), nothing acted on since (feedback-acted), is not sent again: polled
+#      (2), the operator told a new commit or a reply sends it back. A draft or an approval alone is no agent's to act
 #      on: still 2, polled — unless merged early (5). Nor (ASS-482) is a
 #      build-failed whose pipeline has no failed job or bridge to show
 #      (mr_failed_jobs: [] — a canceled one, say): polled (2), the operator
@@ -117,12 +123,12 @@ WAITING="$MR_DEPS"'
       | { id: $m.id, repository: $m.repository, "depends-on": ($d | { id, repository, status, key, url }),
           at: first(range($all | length) as $k | select($all[$k].id == $d.id) | $k) } ]'
 
-# record_feedback <needs-json|null> <short> <long> — the operator's feedback written only when the needs changed.
+# record_feedback <needs-json|null> <short> <long> — the operator's feedback written only when the needs or its words changed.
 record_feedback() {
   local needs="$1" short="$2" long="$3" was
   was="$(variation_field '{ kept: .["awaited-dependency-needs"], long: .["ai-feedback-long"] }' "$command" "$project" "$key" "$variation")"
   if [[ "$needs" != null ]]; then
-    jq -e --argjson needs "$needs" '.kept != null and .kept.needs == $needs and .long == .kept.feedback' <<< "$was" >/dev/null && return 0
+    jq -e --argjson needs "$needs" --arg long "$long" '.kept != null and .kept.needs == $needs and .long == .kept.feedback and .long == $long' <<< "$was" >/dev/null && return 0
     update_whole_ticket "$command" "$project" "$key" --arg name "$variation" --argjson needs "$needs" --arg short "$short" --arg long "$long" '
       .variations |= map(if .name != $name or .["is-deleted"] then . else
         .["ai-feedback-short"] = $short | .["ai-feedback-long"] = $long | .["awaited-dependency-needs"] = { needs: $needs, feedback: $long } end)'
@@ -157,10 +163,13 @@ refresh_merge_requests "$command" "$project" "$key" "$variation"
 waiting="$(jq -c "$WAITING" <<< "$MRS")"
 [[ "$waiting" != '[]' ]] || none_waiting
 
+# This step's needs as last kept: a build-failed already sent at an unchanged head is polled, not sent again (ASS-505).
+kept="$(variation_field '.["awaited-dependency-needs"].needs // []' "$command" "$project" "$key" "$variation")"
 # OWN: the needs an agent acts on in Address Merge Request Feedback (ASS-361, exit 4).
 OWN='["open-threads", "review-comments", "build-failed", "needs-rebase"]'
 # What each dependency waited on needs, by its index: { "<at>": { needs, own, jobs, pipeline, approvals, from } } — from: its review comments'
-# authors (ASS-361); own: its needs of OWN, a build-failed with no failed job or bridge to show aside (ASS-482); pipeline: its URL.
+# authors (ASS-361); own: its needs of OWN, a build-failed with no failed job or bridge to show aside (ASS-482), or one this step
+# already sent at this head with nothing acted on since (left, ASS-505); pipeline: its URL.
 found='{}'
 for at in $(jq -r '[.[].at] | unique | .[]' <<< "$waiting"); do
   view="$(jq -c --argjson i "$at" '.[$i]' <<< "$VIEWS")"
@@ -170,8 +179,10 @@ for at in $(jq -r '[.[].at] | unique | .[]' <<< "$waiting"); do
     if jq -e 'any(.reasons[]; . == "build-failed")' <<< "$view" >/dev/null; then jobs="$(mr_failed_jobs "$command" "$at" "$view")"; fi
     comments="$(mr_review_comments "$command" "$at" "$project")"
   fi
-  found="$(jq -c --arg at "$at" --argjson view "$view" --argjson jobs "$jobs" --arg approvals "$approvals" --argjson comments "$comments" --argjson mrs "$MRS" --argjson own "$OWN" '
+  found="$(jq -c --arg at "$at" --argjson view "$view" --argjson jobs "$jobs" --arg approvals "$approvals" --argjson comments "$comments" --argjson mrs "$MRS" --argjson own "$OWN" --argjson kept "$kept" '
     ($mrs[$at | tonumber]) as $d
+    | ($jobs != [] and $view != null and $view.head != null and $d["checked-head"] == $view.head and $d["feedback-acted"] != true
+       and any($kept[]; .id == $d.id and (.needs | index("build-failed")))) as $left
     | .[$at] = { jobs: $jobs, pipeline: ($view.pipeline.url // null), approvals: $approvals, from: [$comments[].author] | unique, count: ($comments | length),
         needs: (if $d.key == null then ["not-created"]
                 elif $view == null then []
@@ -180,7 +191,8 @@ for at in $(jq -r '[.[].at] | unique | .[]' <<< "$waiting"); do
                        (if $comments != [] then "review-comments" else empty end),
                        ("needs-rebase" | select(IN($view.reasons[]))),
                        (if $approvals != "0" then "needs-approval" else empty end) ] end) }
-    | .[$at].own = [.[$at].needs[] | select(IN($own[])) | select(. != "build-failed" or $jobs != [])]' <<< "$found")"
+    | .[$at].left = $left
+    | .[$at].own = [.[$at].needs[] | select(IN($own[])) | select(. != "build-failed" or ($jobs != [] and ($left | not)))]' <<< "$found")"
 done
 
 # Build merges the awaited ones itself (ASS-365) where the project's workflow
@@ -205,6 +217,7 @@ FEEDBACK='
       "not-created": "was never created",
       draft: "is a draft",
       "build-failed": (if $f.jobs != [] then "its pipeline failed (" + ($f.jobs | join(", ")) + ")"
+          + (if $f.left then "; Address Merge Request Feedback already had a round at this head: a new commit or a reply sends it back" else "" end)
         else "its pipeline failed with no failed job or bridge to show" + (if $f.pipeline then " (" + $f.pipeline + ")" else "" end) end),
       "open-threads": "it has unresolved review threads",
       "review-comments": ((if $f.count == 1 then "it has a review comment from " else "it has \($f.count) review comments from " end) + ($f.from | join(", "))),
@@ -255,6 +268,13 @@ fi
 
 # Feedback of its own to act on (ASS-361): to Address Merge Request Feedback, told which in its execution plan.
 if [[ -n "$ours" ]]; then
+  # The round's start (ASS-505, as merge-request:check): each Open one's head its checked-head, feedback-acted cleared.
+  while IFS=$'\t' read -r i fields; do
+    set_merge_request "$command" "$project" "$key" "$variation" "$i" "$fields"
+  done < <(jq -r --argjson views "$VIEWS" '
+    range(length) as $i | .[$i] as $m | $views[$i] as $v
+    | select($m.status == "Open" and $v != null and $v.head != null and ($m["checked-head"] != $v.head or $m["feedback-acted"] != null))
+    | [$i, ({ "checked-head": $v.head, "feedback-acted": null } | tojson)] | @tsv' <<< "$MRS")
   plan_note "$project" "$key" "$variation" "$ours, and another repository's merge request of this ticket waits on it: to Address Merge Request Feedback to act on it (merge-request:view lists its threads, comments and failed jobs)."
   exit 4
 fi

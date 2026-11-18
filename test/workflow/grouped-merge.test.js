@@ -121,6 +121,43 @@ test('ASS-388 AC2/AC4: grouped-merge and a project Release check the round after
   }
 });
 
+// ASS-505: grouped-build's Address Merge Request Feedback round is checked as grouped-merge's is (ASS-388): a round
+// that changed nothing goes back to Await Sequential Merge with cause no-op-round, so a build-failed dependency an
+// agent can only leave for the operator polls, never Blocked by do-nothing rounds; changed rounds still count.
+test('ASS-505 AC1/AC2: grouped-build checks the round after Address Merge Request Feedback — five no-op rounds on an unchanged build-failed dependency never end at Blocked and count no visit; changed rounds, and failed checks, still do', () => {
+  assert.deepEqual(errorsFor(build), []);
+  const wait = stepOf(build, 'await-dependencies'), feedback = stepOf(build, 'address-merge-request-feedback'), round = stepOf(build, 'check-feedback-round');
+  assert.ok(round, 'grouped-build has check-feedback-round');
+  assert.deepEqual(feedback['exit-events'].map(e => e['move-to-state']), ['check-feedback-round']);
+  assert.equal(round.action.command, './agent.sh merge-request:feedback-round {project} {ticket} {variation}');
+  assert.equal(round.vm, 'stopped');
+  assert.deepEqual([round['max-visits'], round['on-max-visits']], [5, 'blocked']);
+  assert.deepEqual(round['exit-events'].map(e => [e.condition, e['move-to-state'], e.cause]), [
+    [{ all: [{ 'exit-code': 0 }, { 'script-output': { changed: false } }] }, 'await-dependencies', 'no-op-round'],
+    [{ 'exit-code': 0 }, 'await-dependencies', undefined],
+    [{ not: { 'exit-code': 0 } }, 'await-dependencies', undefined]]);
+  assert.ok(into(build, 'await-dependencies').includes('check-feedback-round'));
+  // Driven as control drives it, each move recorded with its exit's cause: exit 4 → a round → its check, `outcomes` in turn.
+  const drive = outcomes => {
+    const changes = [{ 'from-state': 'generate-solution', 'to-state': 'await-dependencies' }];
+    const go = (step, facts) => { const next = nextState(step, build, facts, changes); changes.push({ 'from-state': step.id, 'to-state': next.to, ...(next.exit.cause ? { cause: next.exit.cause } : {}) }); return next.to; };
+    for (const facts of outcomes) {
+      if (go(wait, { exitCode: 4 }) !== 'address-merge-request-feedback') return changes.at(-1)['to-state'];
+      go(feedback, { turnComplete: true });
+      assert.equal(go(round, facts), 'await-dependencies');
+      if (facts.exitCode === 0 && facts.scriptOutput?.changed === false) assert.equal(changes.at(-1).cause, 'no-op-round');
+      else assert.equal(changes.at(-1).cause, undefined);
+    }
+    return nextState(wait, build, { exitCode: 4 }, changes).to;
+  };
+  const noOp = { exitCode: 0, scriptOutput: { changed: false } }, changed = { exitCode: 0, scriptOutput: { changed: true } }, failed = { exitCode: 1 };
+  assert.equal(drive(Array(5).fill(noOp)), 'address-merge-request-feedback', 'five no-op rounds: still sent on, never Blocked');
+  assert.equal(drive([changed, changed, ...Array(4).fill(noOp)]), 'address-merge-request-feedback', 'two changed, then no-op ones: only the changed count');
+  assert.equal(drive([changed, changed, ...Array(4).fill(noOp), changed]), 'blocked', 'a third changed round spends max-visits');
+  assert.equal(drive(Array(3).fill(changed)), 'blocked', 'three changed rounds: Blocked, as before');
+  assert.equal(drive(Array(3).fill(failed)), 'blocked', 'a failed check counts as a change');
+});
+
 test('ASS-365 AC2: merges-awaited is read anywhere in the status chain, never a step id or name; no engine in this repository sets it', () => {
   const top = flag => ({ steps: [{ id: 'build', action: { type: 'state-engine', engine: 'grouped-build' }, ...(flag ? { 'merges-awaited': true } : {}) }] });
   const level = (engine, state, sub) => ({ 'state-engine': engine, state, ...(sub ? { 'sub-status': sub } : {}) });
