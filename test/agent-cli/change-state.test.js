@@ -34,6 +34,19 @@ const sprintFile = dir => join(dir, 'p', 'sprints', 'sprint-10', 'sprint.json');
 const move = (dir, ...args) => run(AGENT, ['ticket:change-state', ...args], { env: { ...process.env, PROJECTS_DIR: dir } });
 const variations = dir => JSON.parse(readFileSync(sprintFile(dir), 'utf8')).features[0].variations;
 
+// ASS-514: p on example-github-development (test max-visits 3, on-max-visits blocked), ABC-3 A at blocked
+// after `history`; testVisits is 3 build→test visits, each back to build, then test→blocked.
+const gh = (from, to, extra = {}) => ({ 'state-engine': 'example-github-development', 'from-state': from, 'to-state': to, timestamp: '2026-11-17T18:02:00Z', 'agent-dispatch-log': [], 'work-is-done': true, ...extra });
+const testVisits = () => [gh('plan', 'build'), ...[1, 2, 3].flatMap(() => [gh('build', 'test'), gh('test', 'build')]).slice(0, -1), gh('test', 'blocked')];
+function blockedProjects(history = testVisits()) {
+  const dir = projects();
+  writeFileSync(join(dir, 'p', 'project.json'), JSON.stringify({ 'execution-state-engine': 'example-github-development' }));
+  const sprint = JSON.parse(readFileSync(sprintFile(dir), 'utf8'));
+  sprint.features[0].variations[0] = { name: 'A', 'harness-status': { state: 'blocked', 'state-engine': 'example-github-development' }, 'ai-feedback-short': null, 'ai-feedback-long': null, 'state-changes': history };
+  writeFileSync(sprintFile(dir), JSON.stringify(sprint, null, 4));
+  return dir;
+}
+
 test('ticket:change-state moves the variation and records the change, its work not yet done; the state left is done, with any sub-status, and the health cleared', async () => {
   const dir = projects();
   await move(dir, 'p', 'abc-3', 'A', 'generate-solution', 'automated-testing');
