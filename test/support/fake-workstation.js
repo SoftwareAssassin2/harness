@@ -1,8 +1,9 @@
 // A GCP workstation for the tests (ASS-433): fakeWorkstation(env) —
 // fake-gcloud.js as `gcloud` and fake-ssh.js as `ssh`, first on the PATH of
 // the env it returns (`env`, process.env by default, extended), their calls
-// logged; HARNESS_HOME a short folder of its own under /tmp (a unix socket's
-// path is at most 104 bytes, and the master's lives there).
+// logged; HARNESS_HOME a short folder of its own under tmpdir() — npm test's
+// /tmp/harness-test.XXXXXX (test/run.sh, ASS-515) — (a unix socket's path is at
+// most 104 bytes, and the master's lives there).
 // workstation(id, state) makes one (STATE_STOPPED by default), state(id)
 // reads it and setState(id, s) sets it; mark(id, name) and unmark(id, name)
 // put and take a marker file in its folder (drop, hang, refuse-forward,
