@@ -85,6 +85,19 @@ set -euo pipefail
 # Blocked for Human, the feedback becoming the variation's (steps.js, with
 # record-script-output on the step; engines/grouped-engines.md).
 #
+# ASS-516: when every created one of the variation (a key; the whole
+# variation, not only an --only set) is Closed unmerged and none is planned
+# and not yet built, nothing is live and Ensure Auto-Merge, which sets only
+# Open ones, has nothing to set. The check says so, "all-closed" last among
+# reasons (needs-attention true, auto-merge and merged false):
+#
+#   "all-closed": true, "closed": [{ "id", "key", "url" }],
+#   "ai-feedback-short": "Every merge request is Closed unmerged: MR 1 (!7)",
+#   "ai-feedback-long": "…each with its url; reopen them, or re-plan; then choose Resolved"
+#
+# for the check's all-closed exit, ahead of needs-attention, to go to Blocked
+# for Human, the feedback becoming the variation's.
+#
 # --only <ids> (ASS-365: engines/grouped-merge, the merge loop; ids
 # comma-separated, or - for every one; merge_request_options,
 # merge-requests.bash) reports over the set alone: every merge request is
@@ -100,8 +113,9 @@ set -euo pipefail
 # <time>" (approvals left asked of the forge, mr_approvals_left), "Auto-merge
 # set on acme/api !12; waiting for it to merge", "<repo> <key> waits for
 # <repo> <key> to merge first"; cleared once the set has merged; an expired
-# wait's feedback is the output's, as without it. merged is true once every
-# one of the set is Merged or Closed, a set all Closed too, so the loop ends.
+# wait's feedback, or all-closed's, is the output's, as without it. merged
+# is true once every one of the set is Merged or Closed, a set all Closed too
+# (unless every created one of the variation is: all-closed), so the loop ends.
 # Fails on an id the variation has not planned. Without --only, all as before.
 #
 # A merge request a build step planned mid-build (ticket:add-merge-request,
@@ -226,9 +240,14 @@ result="$(jq -nc --argjson mrs "$MRS" --argjson views "$VIEWS" --argjson pending
   | [$live[] | select(.m.status == "Open") | .held as $held | (.v.reasons[] | select(($held and . == "build-failed") | not)), (if $comments[.i | tostring] then "review-comments" else empty end)] as $all
   # One a build step planned mid-build (planned-by, ASS-424) and not yet created is no ASS-354 leftover: the ticket needs it, so it is not-created and the set not merged.
   | [$mrs[] | select(.["planned-by"] != null and .status == "Not Created" and in_set($only)) | .id] as $unbuilt
-  | ["open-threads", "review-comments", "build-failed", "needs-rebase", "not-created"] | map(select(IN($all[], (if $unbuilt != [] then "not-created" else empty end)))) as $reasons
+  # ASS-516: every created one of the variation (not only the set) Closed unmerged, none planned and not yet built:
+  # nothing live, nothing for Ensure Auto-Merge to set, so it is all-closed, for Blocked for Human.
+  | [$mrs[] | select(.key != null)] as $created
+  | ($created != [] and all($created[]; .status == "Closed") and ([$mrs[] | select(.["planned-by"] != null and .status == "Not Created")] == [])) as $allclosed
+  | ["open-threads", "review-comments", "build-failed", "needs-rebase", "not-created", "all-closed"]
+    | map(select(IN($all[], (if $unbuilt != [] then "not-created" else empty end), (if $allclosed then "all-closed" else empty end)))) as $reasons
   | ($live != [] and all($live[]; .m.status == "Merged" or (.m.status == "Open" and (.v["auto-merge"] == true or .v["waiting-on-reviewer"] != null or (.m | waits) or .why == "sent-unchanged")))) as $auto
-  | (($live != [] or $loop) and all($live[]; .m.status == "Merged") and $unbuilt == []) as $merged
+  | (($live != [] or $loop) and all($live[]; .m.status == "Merged") and $unbuilt == [] and ($allclosed | not)) as $merged
   # Each Open one set to auto-merge that has waited past the bound, when the whole group is only waiting.
   | ($now | epoch) as $at
   | [if $reasons == [] and $auto and ($merged | not) then
@@ -251,13 +270,19 @@ result="$(jq -nc --argjson mrs "$MRS" --argjson views "$VIEWS" --argjson pending
         + ([$expired[] | "\(name)\(if .url then " \(.url)" else "" end), waiting since \(.since)"] | join("; ")) + ". "
         + ([$live[] | select(.m.status == "Open" and (.m | waits)) | .m | name] | if . == [] then "" else "Waiting for those before them to merge: \(join(", ")). " end)
         + ($reviewer | if . == [] then "" else "Waiting on a reviewer to resolve threads we answered: \(map("\(name) threads \(.threads | join(", "))") | join("; ")). " end)
-        + "They need a reviewer'"'"'s approval, or their pipeline to pass, on the forge. Once they have it, choose Resolved: the wait starts again.") } end)')"
+        + "They need a reviewer'"'"'s approval, or their pipeline to pass, on the forge. Once they have it, choose Resolved: the wait starts again.") } end)
+  + (if $allclosed | not then {} else [$created[] | { id, key, url }] as $closed | {
+      "all-closed": true, closed: $closed,
+      "ai-feedback-short": "Every merge request is Closed unmerged: \($closed | map(name) | join(", "))",
+      "ai-feedback-long": ("Every merge request created for this variation is Closed without merging, so there is nothing to merge or set to auto-merge: "
+        + ([$closed[] | "\(name)\(if .url then " \(.url)" else "" end)"] | join("; ")) + ". "
+        + "Reopen them on the forge, or re-plan the change; then choose Resolved.") } end)')"
 echo "$result"
 [[ "$LOOP" == true ]] || exit 0
 
 # The merge loop's word to the operator (ASS-365): what the set waits for, from this check alone; cleared once it has merged.
 if jq -e '.merged' <<< "$result" >/dev/null; then loop_feedback "$command" "$project" "$key" "$variation" "" ""; exit 0; fi
-jq -e '.["approval-wait-expired"] != true' <<< "$result" >/dev/null || exit 0
+jq -e '.["approval-wait-expired"] != true and .["all-closed"] != true' <<< "$result" >/dev/null || exit 0
 # Approvals left, asked only of the set's ones set to auto-merge with nothing of their own to act on: { "<i>": <left> }.
 approvals='{}'
 while read -r i; do

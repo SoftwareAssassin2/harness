@@ -255,7 +255,7 @@ it names none, so a project's Release could run it over the whole variation).
 | Code Review, Security Review (max 3 each, in the VM) | `code-review-grouped`, `security-review-grouped` | approved on; rejected to `rebuild` |
 | Mark Reviewed (max 5) | `merge-request:reviewed-at-head … --only … --mark` | 0 back to the gate |
 | Take out of Draft Mode (max 5) | `code:take-out-of-draft-mode … --only` | 0 to the check; else tried again |
-| Check the Merge Requests (`check`, timer 5 min, max 10, record-script-output) | `merge-request:check … --only` | needs-attention to Address Merge Request Feedback; merged to `done`; approval-wait-expired to `blocked-for-human`; auto-merge false to Ensure Auto-Merge; only waiting polls, no visit spent |
+| Check the Merge Requests (`check`, timer 5 min, max 10, record-script-output) | `merge-request:check … --only` | all-closed (every created merge request of the variation Closed unmerged, ASS-516) to `blocked-for-human`; needs-attention to Address Merge Request Feedback; merged to `done`; approval-wait-expired to `blocked-for-human`; auto-merge false to Ensure Auto-Merge; only waiting polls, no visit spent |
 | Address Merge Request Feedback (max 3, in the VM) | `check-on-merge-request-build-grouped` | to Check the Feedback Round |
 | Check the Feedback Round (`check-feedback-round`, max 5; ASS-388) | `merge-request:feedback-round … --only` | changed false back to the check, cause `no-op-round`, no visit counted; else back to the gate |
 | Ensure Auto-Merge (max 3) | `merge-request:ensure-auto-merge … --only` | 0 to the check; else `blocked` |
@@ -2564,6 +2564,14 @@ run's recorded output carries the feedback, which control sets on the
 variation after the move (`steps.js`, as for Create VM's out-of-disk
 reason). A Release without them is unchanged: the check's new fields match
 none of its exits, and the group waits on.
+When every created merge request of the variation is Closed unmerged and none
+is planned and not yet built, the check says `"all-closed": true` (reason
+`all-closed`, needs-attention true), `"closed": [{ id, key, url }]` and
+`ai-feedback-short` / `ai-feedback-long` naming them (ASS-516): Ensure
+Auto-Merge sets only Open ones, so the group would loop to Blocked. A project
+Release adds the exit `{ "all": [{ "exit-code": 0 }, { "script-output": {
+"all-closed": true } }] }` → `blocked-for-human` the same way, on Team Code
+Review before its needs-attention exit, as `grouped-release-example` has it.
 `merge-request:check` holds back a failed pipeline that only reflects a
 dependency (ASS-346), so a group across several repositories still reaches
 Ensure Auto-Merge: while any of a merge request's depends-on, in its
