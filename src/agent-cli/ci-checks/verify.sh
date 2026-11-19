@@ -55,6 +55,15 @@ set -euo pipefail
 # is skipped there, said so in the results; the repository's other checks run
 # as before (on master, compared with master).
 #
+# ASS-509: master is the current origin/<base>: `base` fetches origin first
+# (twice; origin not reachable, it is compared as last fetched and the
+# results say "not fetched" — a forge outage blocks no ticket), and master's
+# run in the results names the commit it ran on. Before any check,
+# each of the variation's branches checked out in the VM that is behind its
+# origin/<base> has the base brought in, as automated-tests:verify-success
+# does (catch-up-base.bash), said at the top of the results — only when told
+# CATCH_UP_BASE=1 (control's own run of the step, or a re-check), as there.
+#
 # Each check's job name, command, exit code and output (its last
 # $TAIL lines; master's too when compared) go to the ticket's folder,
 # ci-checks-results-<variation>.md, replaced each run, for Generate Solution
@@ -66,6 +75,7 @@ set -euo pipefail
 # declaration malformed) (→ Blocked).
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../automated-tests.bash"
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../work.bash"
+source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../catch-up-base.bash"
 judge_js="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../automated-tests/test-results.js"
 command=ci-checks:verify
 TAIL=200
@@ -121,13 +131,14 @@ vm="$(vm_of "$command" "$project" "$key" "$variation")" || exit 3
 
 # The checkout's git, run in /repos/<repository> in the VM: `head` prints the
 # branch checked out (HEAD when detached) and origin's default branch; `base
-# <branch>` origin/<branch>'s SHA, the merge base, then each file changed since
+# <branch>` whether origin was fetched (fetched|not-fetched), origin/<branch>'s SHA, the merge base, then each file changed since
 # it; `to <sha>` switches to it, detached, printing where it was — refusing
 # when a tracked file has changes not committed; `back <ref>` returns.
 GIT='set -euo pipefail
 case "$1" in
   head) git symbolic-ref -q --short HEAD || echo HEAD; ref="$(git symbolic-ref -q --short refs/remotes/origin/HEAD || echo origin/master)"; echo "${ref#origin/}" ;;
-  base) git rev-parse -q --verify "origin/$2^{commit}" || { echo "no origin/$2" >&2; exit 1; }
+  base) if ! git remote get-url origin > /dev/null 2>&1 || git fetch -q origin 2> /dev/null || git fetch -q origin 2> /dev/null; then echo fetched; else echo not-fetched; fi
+    git rev-parse -q --verify "origin/$2^{commit}" || { echo "no origin/$2" >&2; exit 1; }
     mb="$(git merge-base HEAD "origin/$2")" || { echo "no merge base with origin/$2" >&2; exit 1; }; echo "$mb"
     { git diff --name-only "$mb"; git ls-files --others --exclude-standard; } | sort -u ;;
   to) [ -z "$(git status --porcelain --untracked-files=no)" ] || { echo "changes not committed" >&2; exit 1; }
@@ -153,8 +164,12 @@ matches() {
     ($globs | map(re)) as $res | any($files | split("\n")[] | select(. != ""); . as $f | any($res[]; . as $r | $f | test($r)))' > /dev/null
 }
 
+# ASS-509: each branch checked out in the VM that is behind its origin/<base> brought up to date first.
+moved='[]'
+[[ "${CATCH_UP_BASE:-}" != 1 ]] || moved="$(jq -c '[.[] | select(.status | IN("up-to-date", "skipped") | not)]' <<< "$(catch_up_base "$command" "$project" "$key" "$variation" "$vm" yes)")"
 passed=0 failed=0 skipped=0 unrunnable=0 total=0
 report="$heading"
+[[ "$moved" == '[]' ]] || report+=$'\n'"Brought up to date with the base first (ASS-509):"$'\n'"$(catch_up_lines "$moved")"$'\n'
 for repo in "${repos[@]}"; do
   checks="$(jq -c --arg r "$repo" '.repositories[$r]' "$declared")"
   n="$(jq length <<< "$checks")"
@@ -165,8 +180,9 @@ for repo in "${repos[@]}"; do
     [.[] | select(.status != "Closed" and .repository != null and (.repository | sub("\\.git$"; "") | split("/") | last) == $r)] | sort_by(.id)
     | (first(.[] | select(.branch == $b)) // first) | .base // $d' <<< "$plan")"
   if ! in_repo "$repo" base "$base" > "$tmp/base" 2>&1; then could_not "$(tr '\n' ' ' < "$tmp/base")"; continue; fi
-  master="$(sed -n 1p "$tmp/base")" merge_base="$(sed -n 2p "$tmp/base")"
-  sed '1,2d' "$tmp/base" > "$tmp/changed"
+  fetched="$(sed -n 1p "$tmp/base")" master="$(sed -n 2p "$tmp/base")" merge_base="$(sed -n 3p "$tmp/base")"
+  sed '1,3d' "$tmp/base" > "$tmp/changed"
+  compared="fetched for this check"; [[ "$fetched" == fetched ]] || compared="not fetched: origin not reachable, as last fetched"
   report+=$'\n'"CI_CHECK_BASE for $repo: $merge_base (the merge base of $branch and origin/$base)"$'\n'
   # ASS-474: every planned merge request in it Merged (none Open or Not Created): no merge request range to scan.
   all_merged="$(jq -r --arg r "$repo" '[.[] | select(.status != "Closed" and .repository != null and (.repository | sub("\\.git$"; "") | split("/") | last) == $r) | .status]
@@ -227,7 +243,7 @@ for repo in "${repos[@]}"; do
     if [[ -n "$baseline_error" ]]; then unrunnable=$((unrunnable + 1)); report+=$'\n'"## ⚠ $repo: $name (exit $status: no master run to compare with: $baseline_error)"$'\n'"$body"; continue; fi
     master_status="$(jq --arg r "$repo" --arg c "$c" '.[$r].checks[$c].status' "$baseline")"
     jq -j --arg r "$repo" --arg c "$c" '.[$r].checks[$c].output' "$baseline" > "$tmp/master-$i"
-    on_master=$'\n'"### On master (exit $master_status)"$'\n'"$(block "$tmp/master-$i")"
+    on_master=$'\n'"### On master (exit $master_status; origin/$base at $master, $compared)"$'\n'"$(block "$tmp/master-$i")"
     verdict="$(node "$judge_js" "$master_status" "$tmp/master-$i" "$status" "$out")"
     case "$(jq -r .verdict <<< "$verdict")" in
       passed|blocked) passed=$((passed + 1))

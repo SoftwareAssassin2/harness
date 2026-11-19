@@ -43,6 +43,29 @@ set -euo pipefail
 # branch is not run on master (a timeout is never master's); with master's
 # tests not to be had (changes not committed) it is judged with no master.
 #
+# ASS-509: "red on master" means red on the current origin/<base>, never a
+# stale local copy: `key` fetches origin in each repository first (twice; a
+# repository whose origin cannot be reached is compared as last fetched, and
+# the results say so — "not fetched: <repository>"), and each
+# result compared with master names the commit compared ("origin/<branch> at
+# <sha>", the repositories the command names, else all). A run that names no
+# test is compared by the make targets that failed (test-results.js), so a
+# check the branch fails and master passes, master red only for another
+# target, is the branch's failure, not master's. And before any test runs,
+# in a VM (or the workstation the step holds), each of the variation's
+# branches checked out there that is behind its origin/<base> has the base
+# brought in (catch-up-base.bash: rebased and pushed --force-with-lease, or
+# merged in when its merge request is open on the forge; left as it was on
+# a conflict or changes not committed), said at the top of the results — so
+# a re-run of a failing check after master moved is not doomed to repeat.
+# Only when told CATCH_UP_BASE=1: control's own run of the step (the
+# forwarder sets it for a call made while no agent of the variation is at
+# work, forwarder.js forwardedEnv) and ticket:recheck-block's re-run; an
+# agent calling it mid-step gets the read-only check, as before. Only here and in
+# ci-checks:verify, not at every step start: a push to an open merge request
+# resets its approvals and restarts its pipeline, which the steps after the
+# checks (reviews, release) must not have done under them.
+#
 # Every run that gets as far as its tests records them on the variation's
 # local-testing (ASS-241): number-of-relevant-automated-tests, the commands
 # run, and number-of-passing-relevant-automated-tests, those that passed —
@@ -71,6 +94,7 @@ set -euo pipefail
 # or renumbered by a later step, so its failure is the record's, not the
 # code's: neither is compared with master, both named in the results.
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../automated-tests.bash"
+source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../catch-up-base.bash"
 judge_js="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/test-results.js"
 compose_js="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/compose-reset.js"
 
@@ -100,9 +124,10 @@ fi
 # changes not committed or cannot be switched.
 CHECKOUT='set -euo pipefail
 repos() { if git rev-parse --is-inside-work-tree > /dev/null 2>&1; then echo .; else for d in */; do [ -e "$d.git" ] && echo "${d%/}"; done; fi; return 0; }
+fetch() { git -C "$1" remote get-url origin > /dev/null 2>&1 || return 0; git -C "$1" fetch -q origin 2> /dev/null || git -C "$1" fetch -q origin 2> /dev/null || echo "$1 (origin not reachable: as last fetched)" >&2; }
 master() { local ref; ref="$(git -C "$1" symbolic-ref -q --short refs/remotes/origin/HEAD || echo origin/master)"; git -C "$1" rev-parse -q --verify "$ref^{commit}" || { echo "$1: no $ref" >&2; return 1; }; }
 case "$1" in
-  key) repos | while read -r r; do sha="$(master "$r")"; if [ "$r" = . ]; then echo "$sha"; else echo "$r@$sha"; fi; done | paste -sd " " - ;;
+  key) repos | while read -r r; do fetch "$r"; sha="$(master "$r")"; if [ "$r" = . ]; then echo "$sha"; else echo "$r@$sha"; fi; done | paste -sd " " - ;;
   to-master)
     moving=() switched=()
     while read -r r; do [ "$(git -C "$r" rev-parse HEAD)" = "$(master "$r" 2> /dev/null)" ] || moving+=("$r"); done < <(repos)
@@ -137,6 +162,26 @@ ran() { timed_out "$1" "$2" > /dev/null || runnable "$1" "$2"; }
 exit_of() { local why; if why="$(timed_out "$1" "$2")"; then echo "exit $1: $why"; else echo "exit $1"; fi; }
 block() { printf '\n```\n%s\n```\n' "$(cat "$1")"; }
 
+# ASS-509: each branch checked out here that is behind its origin/<base> brought up to date first (in a VM or workstation).
+caught_note=""
+if [[ -n "$vm" && "${CATCH_UP_BASE:-}" == 1 ]]; then
+  caught="$(catch_up_base automated-tests:verify-success "$1" "$key" "$3" "$vm" yes)"
+  moved="$(jq -c '[.[] | select(.status | IN("up-to-date", "skipped") | not)]' <<< "$caught")"
+  if [[ "$moved" != '[]' ]]; then
+    caught_note=$'\n'"Brought up to date with the base first (ASS-509):"$'\n'"$(catch_up_lines "$moved")"$'\n'
+    echo "automated-tests:verify-success: $(catch_up_lines "$moved")" >&2
+  fi
+fi
+# on_master <command> — the commit(s) master's run was on: those of the repositories the command names, else all.
+on_master() {
+  local named="" t
+  [[ "${sha:-}" == *@* ]] || { echo "origin's default branch at ${sha:0:12}${unfetched:+, not fetched: origin not reachable, as last fetched}"; return; }
+  for t in $sha; do [[ " $1 " =~ [^A-Za-z0-9._-]${t%@*}[^A-Za-z0-9._-] ]] && named+="${named:+, }${t%@*} at ${t#*@}"; done
+  [[ -n "$named" ]] || named="$(tr ' ' '\n' <<< "$sha" | sed 's/@/ at /' | paste -sd, - | sed 's/,/, /g')"
+  echo "origin's default branch, fetched for this check: $named${unfetched:+; not fetched: $unfetched}"
+}
+unfetched=""
+
 mapfile -t commands < <(jq -r '.[].run' <<< "$tests")
 mapfile -t lists < <(jq -r '.[].list' <<< "$tests")
 mapfile -t reproduces < <(jq -r '.[].reproduces == true' <<< "$tests")
@@ -156,6 +201,7 @@ baseline_error=""
 if [[ ${#red[@]} -gt 0 ]]; then
   if ! sha="$(in_checkout key 2> "$tmp/error")"; then baseline_error="$(cat "$tmp/error")"
   else
+    unfetched="$(grep -F '(origin not reachable' "$tmp/error" | paste -sd, - | sed 's/,/, /g' || true)"
     [[ -f "$baseline" ]] && jq -e --arg sha "$sha" '.master == $sha' "$baseline" > /dev/null 2>&1 || jq -n --arg sha "$sha" '{ master: $sha, tests: {} }' | replace_file "$baseline"
     missing=()
     for i in "${red[@]}"; do jq -e --arg run "${commands[i]}" '.tests[$run] | . != null and (.["timed-out"] | not)' "$baseline" > /dev/null || missing+=("$i"); done
@@ -178,7 +224,7 @@ fi
 
 passed=0 failed=0 unrunnable=0 blocked=0 gone=0
 pre_existing='[]'
-report="# Automated test results — $key $3, $(date -u +%Y-%m-%dT%H:%M:%SZ)"$'\n'
+report="# Automated test results — $key $3, $(date -u +%Y-%m-%dT%H:%M:%SZ)"$'\n'"$caught_note"
 for i in "${!commands[@]}"; do
   command="${commands[i]}" status="${statuses[i]}" out="$tmp/branch-$i" extra=""
   if [[ $status -eq 0 ]]; then passed=$((passed + 1)); report+=$'\n'"## ✓ $command (exit 0)"$'\n'"$(block "$out")"$'\n'; continue; fi
@@ -209,9 +255,9 @@ for i in "${!commands[@]}"; do
       # a reproducing check master set nothing aside from: its failures compared with no master's
       [[ ${reproduces[i]} != true || "$(jq '.["pre-existing"] | length' <<< "$verdict")" -gt 0 ]] || new="New failures, failing again on a re-run:"
       report+=$'\n'"## ✗ $command ($(exit_of "$status" "$out"))"$'\n\n'"$new"$'\n'"$(jq -r '.new[] | "- \(.)"' <<< "$verdict")"$'\n'"$(block "$out")"$'\n'"$extra" ;;
-    blocked) blocked=$((blocked + 1)) why="red on master too, with no test results to compare"
-      ! timed_out "$master_status" "$tmp/master-$i" > /dev/null || why="timed out on master too, nothing to compare"
-      report+=$'\n'"## ⚠ $command ($(exit_of "$status" "$out"): $why)"$'\n'"$(block "$out")"$'\n\n'"### On master ($(exit_of "$master_status" "$tmp/master-$i"))"$'\n'"$(block "$tmp/master-$i")"$'\n'"$extra" ;;
+    blocked) blocked=$((blocked + 1)) why="red on master too ($(on_master "$command")), with no test results to compare"
+      ! timed_out "$master_status" "$tmp/master-$i" > /dev/null || why="timed out on master too ($(on_master "$command")), nothing to compare"
+      report+=$'\n'"## ⚠ $command ($(exit_of "$status" "$out"): $why)"$'\n'"$(block "$out")"$'\n\n'"### On master ($(exit_of "$master_status" "$tmp/master-$i"); $(on_master "$command"))"$'\n'"$(block "$tmp/master-$i")"$'\n'"$extra" ;;
   esac
 done
 printf '%s' "$report" | replace_file "$results"

@@ -380,7 +380,7 @@ test('AC7: when no fix ticket can be raised or waited on, the ticket never resum
 // ASS-418: Classify (a host agent) and Check on the Latest Master (a forge read) need no VM, so they stop it.
 test('ASS-75, ASS-240 AC2, ASS-418: the grouped Blocked runs its VM where it works in it — from its first step (count-attempts), troubleshooting and repairing — and stops it for Classify and Check on the Latest Master', () => {
   const vm = engines['grouped-blocked'].steps.filter(s => s.vm).map(s => [s.id, s.vm]);
-  assert.deepEqual(vm, [['count-attempts', 'running'], ['check-first', 'running'], ['find-where', 'running'], ['troubleshoot', 'running'], ['classify', 'stopped'], ['check-on-master', 'stopped'], ['own-branch-or-obstacle', 'running'], ['own-branch-or-human', 'running'], ['plan-obstacle-fix', 'running'],
+  assert.deepEqual(vm, [['count-attempts', 'running'], ['check-first', 'running'], ['find-where', 'running'], ['troubleshoot', 'running'], ['classify', 'stopped'], ['check-on-master', 'stopped'], ['own-branch-or-obstacle', 'running'], ['own-branch-or-human', 'running'], ['catch-up-base', 'running'] /* ASS-509: its branches in the VM */, ['plan-obstacle-fix', 'running'],
     ['find-where-to-repair-project', 'running'], ['repair-project', 'running'], ['add-repository', 'running'], ['repair-environment', 'running'],
     ['repair-vm', 'running'], ['rebuild-source', 'running'],   // ASS-427: the VM fixed in place from the Mac (vm:run), kept running on to Verify
     ['verify-image', 'running']]);   // ASS-392: the failing check re-run on the ticket's VM from the repaired image
@@ -980,7 +980,7 @@ test('ASS-427 AC5: Classify says vm for a problem fixable in the VM whose source
   assert.match(t, /- "vm": a problem in the ticket's VM that can be fixed in place there and that every VM made the same way would have — a tool or package missing from the golden image \(claude, bats\), a cache or pulled container image it should carry, a file the harness writes into each VM as it starts \(\/run\/harness\/npmrc, gitconfig, env\) missing an entry because its declaration lacks it, the credential itself valid/);
   assert.match(t, /A credential that is valid but the VM is not set up to use it — an undeclared registry mapping [^\n]*, a missing gitconfig entry — is no credentials issue: "vm"\./);
   assert.match(t, /Only what cannot be fixed in the ticket's VM is "image" \(the ticket waits for the rebuild\): the Lima template \(cpus, memory, disk\), kernel settings/);
-  assert.match(t, /"issue": "harness\|project\|environment\|dependency\|rate-limit\|credentials\|image\|vm"/);
+  assert.match(t, /"issue": "harness\|project\|environment\|dependency\|rate-limit\|credentials\|image\|vm\|behind-base\|numbered-file-taken"/);
   const env = promptText('repair-environment-grouped');
   assert.match(env, /Fix nothing and finish with vm-source true: the harness sends it to Repair the VM/);
   assert.equal(promptJson('repair-environment-grouped').output.properties['vm-source'].type, 'boolean');
@@ -1015,4 +1015,72 @@ test('ASS-427 AC6: Verify the Repaired Image verifies the ticket on its fixed VM
   const sh = readFileSync(join(ROOT, 'src', 'agent-cli', 'vm', 'image-recheck.sh'), 'utf8');
   assert.doesNotMatch(sh, /unverified "Repair Image: [^"]*(not a clone|still being built|not built from its current definition)/, 'no image or clone condition');
   assert.match(readFileSync(join(ROOT, 'src', 'agent-cli', 'vm', 'golden-followup.sh'), 'utf8'), /the tools check \(project\.json golden-image\.tools\) among them/);
+});
+
+// ASS-509 — a ticket branch behind its base, or a numbered file whose number is taken: Bring the Base In
+// (ticket:catch-up-base) fixes either itself, never the operator.
+const CAUGHT = { exitCode: 0, scriptOutput: { 'own-branch-fix': true, 'own-branch-source': 'behind-base', 'own-branch-why': 'W',
+  'caught-up': [{ repository: 'example-api', branch: 'change/ABC-1-1', base: 'master', status: 'rebased', behind: 44, detail: 'D' }], renumbered: [],
+  recheck: { at: 'build/automated-testing', command: 'c', exit: 0 }, 'ai-feedback-short': null, 'ai-feedback-long': null } };
+const behind = (value = 'behind-base') => ({ classify: { structuredOutput: { issue: value, reasoning: 'R', 'ticket-branch-repository': 'https://gitlab.com/g/example-api', 'ticket-branch': 'change/ABC-1-1' } } });
+
+test('ASS-509 AC1/AC2/AC3: Classify\'s behind-base and numbered-file-taken go to Bring the Base In (ticket:catch-up-base, on the host, its VM running); brought in and the check passing, the run is done and the ticket resumes where it was blocked, its visit counts restarted — nothing raised, no operator', () => {
+  const grouped = engines['grouped-blocked'], step = stepOf(grouped, 'catch-up-base');
+  assert.deepEqual([step.action.command, step['record-script-output'], step.vm, step['run-location']], ['./agent.sh ticket:catch-up-base {project} {work-item} {variation} {run}', true, 'running', undefined]);
+  for (const value of ['behind-base', 'numbered-file-taken']) {
+    const run = walk('grouped-blocked', { ...behind(value), 'catch-up-base': CAUGHT });
+    assert.deepEqual(steps(run), ['count-attempts', 'troubleshoot', 'classify', 'catch-up-base', 'done'], value);
+    resumes('grouped-blocked', run);
+    const facts = { subEngineDone: true, subEngineState: run.end, structuredOutput: run.output };
+    assert.equal(clearCause(facts)?.cause, 'own-branch-fix', 'the visit counts restart');
+    for (const top of TOPS['grouped-blocked']) {
+      const often = [...Array.from({ length: 5 }, () => ({ 'from-state': 'plan', 'to-state': 'build' })), { 'from-state': 'build', 'to-state': 'blocked' }];
+      assert.equal(nextState(stepOf(engines[top], 'blocked'), engines[top], facts, often).to, 'build', `${top}: not redirected by Build's count`);
+    }
+    assert.ok(!run.trail.includes('create-fix-ticket') && !run.trail.includes('check-on-master'), 'no project bug, no master check');
+  }
+  assert.match(blockHistory({ blocks: [{ ...CAUGHT.scriptOutput, 'ended-at': 'done' }] }), /its branch brought up to date with its base \(example-api change\/ABC-1-1: rebased\), the blocked check re-run/);
+  assert.equal(problemOf({ id: 'r', project: 'example', parent: {}, 'structured-output': { summary: 'S', issue: 'behind-base', reasoning: 'R' } }, [], { harness: { 'harness-project': 'harness' } }).includes('Raise the fix ticket in'), false, 'never ticketed');
+});
+
+test('ASS-509 AC2: a conflict goes back to Generate Solution\'s group (resume-at), not the operator; brought in but still failing, Troubleshoot again (once more at most); nothing to bring in, a push that failed or the command failing, Blocked for Human', () => {
+  const conflict = { exitCode: 0, scriptOutput: { 'own-branch-fix': true, 'own-branch-source': 'behind-base-conflict', 'resume-at': 'build', 'plan-revised': 'execution-plan-A.md', 'caught-up': [{ repository: 'example-api', branch: 'change/ABC-1-1', status: 'conflict', detail: 'conflicts in a.sql' }], 'ai-feedback-short': null, 'ai-feedback-long': null } };
+  const run = walk('grouped-blocked', { ...behind(), 'catch-up-base': conflict });
+  assert.deepEqual(run.trail.slice(-2), ['catch-up-base', 'done']);
+  for (const top of TOPS['grouped-blocked']) {
+    const facts = { subEngineDone: true, subEngineState: run.end, structuredOutput: run.output };
+    assert.equal(nextState(stepOf(engines[top], 'blocked'), engines[top], facts, [{ 'from-state': 'build', 'to-state': 'test' }, { 'from-state': 'test', 'to-state': 'blocked' }]).to, 'build', `${top}: back to Build`);
+  }
+  assert.match(blockHistory({ blocks: [{ ...conflict.scriptOutput, 'ended-at': 'done' }] }), /its base could not be brought in mechanically \(example-api change\/ABC-1-1\): sent back to do it, at build/);
+  const still = { exitCode: 4, scriptOutput: { 'own-branch-fix': false, 'base-caught-up': true } };
+  const again = walk('grouped-blocked', { classify: [behind().classify, { structuredOutput: { issue: 'harness', reasoning: 'R' } }], 'catch-up-base': still });
+  assert.deepEqual(steps(again).slice(0, 6), ['count-attempts', 'troubleshoot', 'classify', 'catch-up-base', 'troubleshoot', 'classify'], 'troubleshot again on the branch as it is now');
+  const loop = walk('grouped-blocked', { ...behind(), 'catch-up-base': still });
+  assert.equal(loop.end, 'blocked-for-human', 'find-where\'s max-visits bounds it');
+  for (const code of [3, 5, 1]) {
+    const human = walk('grouped-blocked', { ...behind(), 'catch-up-base': { exitCode: code, scriptOutput: { 'own-branch-fix': false, 'ai-feedback-short': 'Not borne out: nothing to bring in, no numbered file taken' } } });
+    assert.deepEqual(human.trail.slice(-2), ['catch-up-base', 'blocked-for-human'], `exit ${code}`);
+  }
+});
+
+test('ASS-509 AC6: each catch-up is a fix attempt — ticket:fix-attempts counts them (base-catch-ups), so the third reaches the operator saying what was tried', () => {
+  const sh = readFileSync(join(ROOT, 'src', 'agent-cli', 'ticket', 'fix-attempts.sh'), 'utf8');
+  assert.match(sh, /\$b\["own-branch-source"\] \| IN\("behind-base", "numbered-file", "behind-base-conflict"\)\) then \.caught \+= 1/);
+  assert.match(sh, /"base-catch-ups": \$caught/);
+  const three = walk('grouped-blocked', { 'count-attempts': { exitCode: 3, scriptOutput: { 'fix-attempts': 3, 'base-catch-ups': 3, 'ai-feedback-short': '3 fix attempts failed', 'ai-feedback-long': 'Blocked brought the branch up to date with its base … 3 times' } } });
+  assert.deepEqual(three.trail, ['count-attempts', 'blocked-for-human']);
+});
+
+test('ASS-509 AC1: Classify names behind-base and numbered-file-taken, each with its repository and branch; Troubleshoot looks for both before calling a failure master\'s or the operator\'s; the flat engines\' prompts unchanged', () => {
+  const classify = promptJson('classify-issue-grouped').output;
+  for (const value of ['behind-base', 'numbered-file-taken']) assert.ok(classify.properties.issue.enum.includes(value), value);
+  for (const field of ['ticket-branch-repository', 'ticket-branch']) assert.equal(classify.properties[field]?.type, 'string', field);
+  assert.match(promptText('classify-issue-grouped'), /look for both before calling a failure master's or the operator's/);
+  for (const p of ['troubleshoot-block-grouped', 'troubleshoot-block-on-host-grouped']) {
+    const out = promptJson(p).output;
+    for (const field of ['branch-behind-base', 'numbered-file-taken']) assert.equal(out.properties[field]?.type, 'string', `${p} ${field}`);
+    assert.match(promptText(p), /Before calling a failure the product's, master's or the operator's, look for two routine causes the harness fixes itself/, p);
+    assert.match(promptText(p), /merge-request:check-numbered-files/, p);
+  }
+  for (const p of ['classify-issue', 'troubleshoot-block']) assert.doesNotMatch(promptText(p), /behind-base|numbered-file-taken/, p);
 });

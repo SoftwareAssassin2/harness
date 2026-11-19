@@ -10,7 +10,7 @@ import { createHash } from 'node:crypto';
 import { mkdirSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { fixture } from '../agent-cli/harness-fixture.js';
-import { authorize, startForwarder } from '../../src/control/forwarder.js';
+import { authorize, startForwarder, forwardedEnv } from '../../src/control/forwarder.js';
 
 const run = promisify(execFile);
 const ROOT = join(import.meta.dirname, '..', '..');
@@ -425,4 +425,18 @@ test('ASS-504 AC2: through the forwarder, the VM\'s agent.sh machine:restart-imm
     assert.ok(lines.includes('forwarder RUN abc-3-a ["machine:restart-imminent"]'), lines.join('\n'));
     assert.ok(lines.includes('forwarder abc-3-a: restart imminent on abc-3-a: told Daredevil Spock'), lines.join('\n'));
   } finally { server.close(); }
+});
+
+// ASS-509 (review): Automated Testing and CI Checks bring a branch's base in (rebase or merge, then push) only on
+// control's own run of the step — a vm step, so it comes through here too — never on an agent's call mid-step.
+test('ASS-509: CATCH_UP_BASE only for verify-success and ci-checks:verify called while no agent of the variation is at work; never passed through otherwise', () => {
+  const f = fixture(), { tokens, assignments } = bindings(f.dir);
+  const b = tokens['ass-74-a'], env = { PATH: '/bin', CATCH_UP_BASE: '1' };
+  for (const command of ['automated-tests:verify-success', 'ci-checks:verify']) {
+    assert.equal(forwardedEnv(env, [command, 'harness', 'ASS-74', 'A'], b, []).CATCH_UP_BASE, '1', `${command}: control's own run`);
+    assert.equal(forwardedEnv(env, [command, 'harness', 'ASS-74', 'A'], b, assignments).CATCH_UP_BASE, undefined, `${command}: an agent at work`);
+  }
+  assert.equal(forwardedEnv(env, ['work:append', 'harness', 'ASS-74', 'A'], b, []).CATCH_UP_BASE, undefined, 'no other command');
+  assert.equal(forwardedEnv({ PATH: '/bin' }, ['ci-checks:verify'], tokens['ex-9-b'], assignments.filter(a => a.project === 'harness')).CATCH_UP_BASE, '1', 'another variation\'s agent is no agent of this one');
+  assert.equal(forwardedEnv(env, ['ci-checks:verify'], b, []).PATH, '/bin');
 });

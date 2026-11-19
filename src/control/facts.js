@@ -70,6 +70,7 @@ const blocks = value => (Array.isArray(value) ? value.join(', ') : (value ? 'spr
 // where }; undefined with no issue, or no harness project named.
 export function fixTicketIn(issue, project, harness) {
   if (!issue || issue === 'dependency') return undefined;   // ASS-390: a dependency is waited on at Build's Await Sequential Merge, never ticketed
+  if (issue === 'behind-base' || issue === 'numbered-file-taken') return undefined;   // ASS-509: Bring the Base In fixes the ticket's own branch itself; never ticketed
   if (issue === 'rate-limit' || issue === 'credentials' || issue === 'image' || issue === 'vm') return undefined;   // ASS-391, ASS-395: a rate limit is waited out, a credential held or the operator's; ASS-392: an image issue is repaired by Repair Image on the Mac; ASS-427: a VM issue by Repair the VM, in place and in its source; never ticketed
   if (issue === 'project' && !isHarnessProject(harness, project)) return { project, where: 'its own ticket system' };
   const home = harnessProject(harness);
@@ -82,6 +83,9 @@ const ISSUE = { harness: 'a harness issue', project: 'a project issue', environm
 ISSUE.image = 'an image issue (the project\'s golden image, or the ticket\'s VM built from it)';
 // ASS-427: a VM issue — fixable in the ticket's VM, its source the golden image or the harness's VM setup.
 ISSUE.vm = 'a VM issue (fixable in place in the ticket\'s VM; its source the golden image or the harness\'s VM setup)';
+// ASS-509: the ticket's branch behind its base, or a numbered file whose number is taken — Bring the Base In fixes either.
+ISSUE['behind-base'] = 'the ticket\'s branch behind its base (ASS-509)';
+ISSUE['numbered-file-taken'] = 'a numbered file whose number is taken (ASS-509)';
 
 // What grouped-blocked's Check on the Latest Master answered (ASS-163,
 // project:check-on-master's on-master), for the prompts after it: present
@@ -122,6 +126,9 @@ function analysisOf(run, transient, harness, project) {
       ...(a['missing-repository'] ? [`Missing repository: ${a['missing-repository']} — the project does not list it: an environment issue, which Repair Environment adds when the harness can access it`] : []),
       // ASS-492: nothing failed, but the ticket's own work lacks a change there (Troubleshoot's or Classify's missing-change).
       ...(a['missing-change'] ? [`Missing change: ${a['missing-change']}${a['missing-change-repository'] ? ` in ${a['missing-change-repository']}` : ''}`] : []),
+      // ASS-509: Troubleshoot's two routine causes, which Bring the Base In fixes.
+      ...(a['branch-behind-base'] ? [`Branch behind its base: ${a['branch-behind-base']}`] : []),
+      ...(a['numbered-file-taken'] ? [`Numbered file taken: ${a['numbered-file-taken']}`] : []),
       ...(a['failing-job'] ? [`Failing check: ${a['failing-repository'] ?? '?'} job ${a['failing-job']}${a['failing-assertion'] ? ` — ${a['failing-assertion']}` : ''}`] : []),
       ...(evidence.length ? ['Evidence:', ...evidence.map(e => `- ${e}`)] : ['Evidence: none recorded']),
       `Blocks: ${blocks(a['blocks-tickets']) || 'no ticket shown to be blocked'}`,
@@ -229,6 +236,10 @@ const ENDED = {
     : b.held === true && Array.isArray(b.problems) ? `its project held by its credentials (${b.problems.map(p => p?.credential).filter(Boolean).join(', ') || '?'})`
     : b['fix-merge-request'] && b.landed === true ? `its fix merge request ${b['fix-merge-request']} merged`
     // ASS-492: one whose own work lacked a change, planned on its merge request there and sent back to make it.
+    // ASS-509: one whose branch Bring the Base In brought up to date with its base, or whose taken numbered file it renamed.
+    : b['own-branch-fix'] === true && b['own-branch-source'] === 'behind-base' ? `its branch brought up to date with its base (${(b['caught-up'] ?? []).map(c => `${c.repository} ${c.branch}: ${c.status}`).join(', ') || '?'}), the blocked check re-run`
+    : b['own-branch-fix'] === true && b['own-branch-source'] === 'numbered-file' ? `its numbered file renamed, its number taken (${(b.renumbered ?? []).map(r => `${r.file} → ${r['rename-to']}`).join(', ') || '?'}), the blocked check re-run`
+    : b['own-branch-fix'] === true && b['own-branch-source'] === 'behind-base-conflict' ? `its base could not be brought in mechanically (${(b['caught-up'] ?? []).filter(c => c.status === 'conflict' || c.status === 'not-mechanical').map(c => `${c.repository} ${c.branch}`).join(', ') || 'a rename'}): sent back to do it, at ${b['resume-at'] ?? 'the step it blocked at'}`
     : b['own-branch-fix'] === true && b['own-branch-source'] === 'missing-change' ? `its own work lacked a change (${b['missing-change'] ?? '?'}): sent back to make it, at ${b['resume-at'] ?? 'the step it blocked at'}`
     : b['own-branch-fix'] === true ? `the failure was in its own branch (${b['failing-file'] ?? '?'}): sent back to fix it there, at ${b['resume-at'] ?? 'the step it blocked at'}` : b.remediated ? `repaired in place (${b['ai-feedback-short'] ?? 'no note'})` : b.key ? `fix ticket ${b.key} landed` : 'left Blocked'}, resumed — blocked again`,
   retry: b => `fix ticket ${b.key ?? '?'} closed unmerged`,

@@ -297,3 +297,14 @@ test('ASS-487: the command line takes a leading --reproduces, judging as judge(�
   assert.deepEqual(verdict('1', tap, '1', tap), { verdict: 'passed', new: [], 'pre-existing': ['x.sql: b'] });
   assert.deepEqual(verdict('--reproduces', '1', '-', '1', tap).new, ['x.sql: b']);
 });
+
+// ASS-509 AC4: a run naming no test is compared by the make targets that failed — a check the branch fails
+// while master is red only for another target (a tool missing there) is the branch's, never "red on master too".
+test('ASS-509 AC4: no test named — the failed make targets compared: one master does not fail is new; the same targets, or master naming none, blocked as before', () => {
+  const branch = { status: 2, output: '..ERROR: db/R__report.sql exists at origin/master and is deleted here\nmake: *** [Makefile:133: check-repeatable-not-deleted] Error 1\nmake: *** Waiting for unfinished jobs....\n' };
+  const master = { status: 2, output: 'PASS no repeatable migration deleted\nmake: shfmt: No such file or directory\nmake[1]: *** [Makefile:276: check-database-scripts] Error 127\n' };
+  assert.deepEqual(judge(master, [branch]), { verdict: 'failed', new: ['make: check-repeatable-not-deleted'], 'pre-existing': [] });
+  assert.deepEqual(judge(branch, [branch]).verdict, 'blocked', 'the same target red on master too');
+  assert.deepEqual(judge({ status: 2, output: 'boom\n' }, [branch]).verdict, 'blocked', 'master naming no target: nothing to compare');
+  assert.deepEqual(judge(master, [{ status: 2, output: 'make: *** [check-old-style] Error 2\n' }]).new, ['make: check-old-style']);
+});

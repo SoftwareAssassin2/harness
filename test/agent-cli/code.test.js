@@ -494,7 +494,9 @@ test('ASS-99: a test that fails once and passes on its re-run passes', async () 
 test('ASS-99: a command red on master and on the branch, its output naming no test, exits 3 for a human, the results holding both outputs', async () => {
   const f = await againstMaster('boom on master\n', 'boom on the branch\n', 'cat tap.txt; exit 1');
   await exitsWith(f.agent('automated-tests:verify-success', 'p', 'ABC-3', 'A'), 3, /1 of 1 red on master too, with no test results to compare: for a human/);
-  assert.match(f.results(), /## ⚠ .* \(exit 1: red on master too, with no test results to compare\)\n\n```\nboom on the branch\n```\n\n### On master \(exit 1\)\n\n```\nboom on master\n```/);
+  // ASS-509 AC4: the block names the base commit compared — origin's, fetched for this check.
+  const sha = '[0-9a-f]{12}';
+  assert.match(f.results(), new RegExp(`## ⚠ .* \\(exit 1: red on master too \\(origin's default branch at ${sha}[^)]*\\), with no test results to compare\\)\\n\\n\`\`\`\\nboom on the branch\\n\`\`\`\\n\\n### On master \\(exit 1; origin's default branch at ${sha}[^)]*\\)\\n\\n\`\`\`\\nboom on master\\n\`\`\``));
 });
 
 test('ASS-99: a worktree with changes not committed is not switched to master: exit 3, everything left as it was', async () => {
@@ -664,7 +666,7 @@ test('ASS-329 AC3: a command timed out on master too exits 3 for a human, with b
   const f = await againstMaster('master\n', 'branch\n', 'cat tap.txt; sleep 30');
   minutes(f, 0.02);
   await exitsWith(f.agent('automated-tests:verify-success', 'p', 'ABC-3', 'A'), 3, /1 of 1 red on master too/);
-  assert.match(f.results(), /## ⚠ .* \(exit 124: timed out after 0\.02 minutes: timed out on master too, nothing to compare\)\n\n```\nbranch\nautomated-tests:verify-success: timed out after 0\.02 minutes\n```\n\n### On master \(exit 124: timed out after 0\.02 minutes\)\n\n```\nmaster\nautomated-tests:verify-success: timed out after 0\.02 minutes\n```/);
+  assert.match(f.results(), /## ⚠ .* \(exit 124: timed out after 0\.02 minutes: timed out on master too \(origin's default branch at [0-9a-f]{12}[^)]*\), nothing to compare\)\n\n```\nbranch\nautomated-tests:verify-success: timed out after 0\.02 minutes\n```\n\n### On master \(exit 124: timed out after 0\.02 minutes; origin's default branch at [0-9a-f]{12}[^)]*\)\n\n```\nmaster\nautomated-tests:verify-success: timed out after 0\.02 minutes\n```/);
   assert.deepEqual(f.runs(), ['change/ABC-3', 'HEAD']);
   assert.equal(f.on(), 'change/ABC-3');
   await exitsWith(f.agent('automated-tests:verify-success', 'p', 'ABC-3', 'A'), 3);

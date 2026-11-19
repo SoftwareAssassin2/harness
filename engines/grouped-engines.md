@@ -466,6 +466,46 @@ whose repositories declare none, passes with nothing run.
 `ci-checks.json` is not an input of the golden image (it is of a workstation's setup, ASS-471): changing it rebuilds
 nothing.
 
+"Red on master" is red on the current `origin/<base>` (ASS-509 AC4). Seen on
+a client ticket: the branch failed a repository check that reads files
+present at origin/master and missing on the branch as deleted, master's run
+failed for another target (a tool missing in the VM), and verify-success,
+whose output named no test, called it "red on master too, with no test
+results to compare" — for the operator. Now Automated Testing fetches origin
+in each repository before it reads master's commit (twice; one it cannot
+reach is compared as last fetched, and the results say "not fetched"), CI
+Checks fetches it before `origin/<base>` is read (the same: compared as last
+fetched, "not fetched" in the results — a forge outage blocks no ticket),
+and each result compared with master names
+the commit (`### On master (exit N; origin/<branch> at <sha>…)`, and the
+⚠ line's "red on master too (origin's default branch, fetched for this check:
+<repository> at <sha>)"). A run naming no test is compared by the make
+targets that failed (`test-results.js`: `make: *** [Makefile:133: <target>]
+Error 1`, `make[n]` and the older `[<target>]` too) when both runs name any:
+a target master does not fail is the branch's own failure (re-run once, then
+exit 1), never master's; the same targets, or master naming none, are
+blocked as before.
+
+Before any test or check runs, a branch behind its base has the base brought
+in (ASS-509 AC5): in the VM (or the workstation its step holds), each of the
+variation's branches checked out there that is behind its `origin/<base>` has
+it brought in (`catch-up-base.bash`, shared with Blocked's Bring the Base In,
+below: rebased when its merge request is not opened yet, merged in when it
+is); a conflict, or changes not committed, leaves it exactly as it was. Only
+on the harness's own run of the step: these are vm steps, so control's run
+comes through the forwarder like an agent's call, and the forwarder tells
+it `CATCH_UP_BASE=1` only for a call made while no agent of the variation is
+at work (`forwarder.js forwardedEnv`); `ticket:recheck-block`'s re-run sets
+it too. An agent calling either mid-step (Generate Solution, Address Merge
+Request Feedback) gets the read-only check: nothing pushed beneath it. The top of `automated-test-results-<variation>.md` and
+`ci-checks-results-<variation>.md` says what was done. So a re-run of a
+failing check after master moved is not doomed to repeat — Check First's
+re-run of Automated Testing included. Only Automated Testing and CI Checks
+do this, not every step's start (`vm:step-start` still only fast-forwards):
+a push to an open merge request resets its approvals and restarts its
+pipeline, which the reviews and Release after the checks must not have done
+under them, and Generate Solution rebases by its own prompt.
+
 Check Numbered Files (ASS-385; grouped Build only — v2-build and the flat
 engines have none — `merge-request:check-numbered-files`, on the host, max-visits
 3) runs between Refresh the Reference Repositories Before Testing and Automated
@@ -731,6 +771,77 @@ reasoning, the evidence, and which merge request takes it; the run ends at
 operator gate. No VM is read. A repository the project does not list, or no
 repository named, is not shown (exit 3): Blocked for Human as before, its
 feedback the run's own finding.
+
+A branch behind its base, or a numbered file whose number is taken, is
+fixed by Blocked itself, never the operator (ASS-509). Seen in one night: a
+ticket's branch cut before master added seven repeatable migrations, which
+the repository's check read as deleted on the branch — Troubleshoot and
+Classify said "rebase onto master", yet the run reached Blocked for Human
+(no failing file was the branch's, so the own-branch fix did not apply), and
+the operator wrote "rebase first" into the plan by hand; another renumbered
+its pgTAP file twice as master moved. Troubleshoot looks for both before
+calling a failure the product's, master's or the operator's
+(`branch-behind-base`, `numbered-file-taken`), and Classify names them:
+`behind-base` (the failure explained by files or changes `origin/<base>` has
+and the branch lacks) and `numbered-file-taken` (a numbered file the ticket
+adds whose number `origin/<base>` or an older open merge request uses), each
+with `ticket-branch-repository` and `ticket-branch`. Both go to Bring the
+Base In (`catch-up-base`, `ticket:catch-up-base`, on the host, its VM
+running; never ticketed, no master check):
+- each of the variation's merge requests neither Merged nor Closed (only the
+  repository Classify named, when it is one of them), in its checkout in the
+  VM (in vm+workstation mode put on the ticket's branches first by
+  `vm:step-start`), is fetched (`--prune`, with a time limit) and
+  fast-forwarded to its origin copy. Not opened on the forge yet (no key):
+  rebased onto the latest `origin/<base>` and pushed `--force-with-lease`
+  (the lease its origin copy as just fetched; `-u` when not on origin yet),
+  the base merged in instead when the forced push is refused. Opened (it has
+  a key): `origin/<base>` merged in and pushed plainly — a branch a merge
+  request on the forge shows, reviewed and maybe approved, is never
+  rewritten. A merge request with a key whose branch is gone from origin
+  (merged, its branch deleted), or a branch with no commit of its own beyond
+  the base, is skipped: never pushed again (ASS-423). The rebase or merge is
+  made on a detached HEAD and pushed from there, the local branch moved only
+  once the push went through; a rebase or merge a killed run left in
+  progress is aborted first. The repository's own hooks are not run
+  (`--no-verify`): only the base's commits come in;
+- then (unless a branch's base could not be brought in, left whole to
+  Generate Solution) `merge-request:check-numbered-files`: each file that
+  collides, highest number first (so a chain, 10 → 11 and 11 → 12, frees
+  each name first), is `git mv`'d to the name it gives, every reference to
+  it in a file the branch adds or changes rewritten — its path, or its name
+  standing alone, never inside a longer name nor the same name under another
+  folder — only those files staged (never an untracked file in the
+  checkout), committed (`<KEY>: renumber <old> to <new>, its number taken
+  (<reason>)`) and pushed (never forced), and an entry of
+  `automated-tests-<variation>.json` naming it recorded again with the new
+  name by the same rule (`automated-tests:record`); the check is run again,
+  and what still collides is not mechanical;
+- each thing done, or not, goes in the change log (`Blocked, Bring the Base
+  In`), and the blocked step's check is re-run (`ticket:recheck-block`, as
+  Check First). Passing, or no check of the harness's own to re-run, the run
+  is done with `own-branch-fix: true`, `own-branch-source` `behind-base` or
+  `numbered-file`, no `resume-at`: the ticket resumes at the step it was
+  blocked at (its group's start, as after a passing Check First), its visit
+  counts restarted (engine.js `ownBranchFix`). Brought in but still failing
+  (exit 4): Find Where to Troubleshoot again, on the branch as it is now —
+  at most twice in a run (its `max-visits` 2, then Blocked for Human);
+- a rebase or merge that does not apply cleanly, changes not committed, a
+  branch parted from its origin copy, or a rename that cannot be made is
+  never forced: the branch is left exactly as it was, an `## Own-branch fix`
+  section in `execution-plan-<variation>.md` says what to bring in or rename
+  and each conflict's files, and the run is done with Generate Solution's
+  group as its `resume-at` (`own-branch-source: behind-base-conflict`), as an
+  own-branch fix's — Generate Solution's agent resolves real conflicts;
+- nothing to bring in and nothing colliding (Classify not borne out, exit
+  3), no VM, origin not fetched or a push refused (exit 5, each branch put
+  back), or the command failing: Blocked for Human, its feedback saying why.
+Each run that ends done is a fix attempt: `ticket:fix-attempts` counts them
+in a row as `base-catch-ups`, so the third sends the ticket to Blocked for
+Human, its feedback saying the base was brought in (or a file renamed) that
+often. The kept block reads "its branch brought up to date with its base
+(…)", "its numbered file renamed, its number taken (…)" or "its base could
+not be brought in mechanically (…)" (facts.js blockHistory).
 
 Blocked checks first (ASS-390 AC4). After counting its attempts and before
 any agent is dispatched, Check First (`check-first`, `ticket:recheck-block`,

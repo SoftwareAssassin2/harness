@@ -372,7 +372,7 @@ async function runVariation(ctx, state, project, key, name) {
         // ASS-390: one sent to wait for its dependency merge request, dependency-wait (engine.js clearCause).
         // Where a landed fix resumes it (ASS-343): the step its run's resume-at names, when engine.js whyNotResume allows it —
         // and, taken, the step its group starts at when the run names one of that group's sub-engine (ASS-390: resume-sub-at, Await Sequential Merge).
-        const resume = resumeAt(facts), cleared = ownBranchFix(facts) ? 'the failure is in its own branch (own-branch fix)' : awaitsDependency(facts) ? 'it only waits for its dependency merge request' : 'the fix landed';
+        const resume = resumeAt(facts), cleared = ownBranchFix(facts) ? (['behind-base', 'numbered-file'].includes(facts.structuredOutput['own-branch-source']) ? 'its branch was brought up to date with its base (ASS-509)' : 'the failure is in its own branch (own-branch fix)') : awaitsDependency(facts) ? 'it only waits for its dependency merge request' : 'the fix landed';
         const sub = resume !== undefined && resume === next.to ? resumeSubAt(facts) : undefined;
         const startAt = sub !== undefined && stepOf(enginesFor(state, project.id)[stepOf(engine, next.to)?.action?.engine], sub) ? sub : undefined;
         if (!await move(next, clearCause(facts) ?? next.exit?.cause, startAt)) return;   // gated: the run stays until the human opens the gate, then goes as orphaned (runTransient)

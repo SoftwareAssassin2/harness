@@ -28,6 +28,9 @@ set -euo pipefail
 #      ({ rechecked: false, recheck-why }): Troubleshoot goes on as before;
 #   1  bad arguments, an unknown ticket or variation.
 # Every outcome is logged in the variation's change log (work.bash blocked_log, AC3).
+# ASS-509: the re-run is the harness's own run of the step, so it is told
+# CATCH_UP_BASE=1: Automated Testing's and CI Checks' commands bring a branch
+# behind its base up to date first, as control's run of them does.
 # ASS-392: vm:image-recheck runs it to verify Repair Image's repair, logged
 # under its own step: RECHECK_STEP names it, RECHECK_NEXT_PASS,
 # RECHECK_NEXT_FAIL and RECHECK_NEXT_NONE what follows a pass, a failure and
@@ -92,7 +95,7 @@ if jq -e '.loop != null' <<< "$choice" > /dev/null; then
   argv=()
   while IFS= read -r word; do argv+=("$word"); done < <(jq -r '.check.argv[1:][]' <<< "$choice")
   code=0
-  output="$({ on_branches && "$here_vm/../../agent.sh" "${argv[@]}"; } 2>&1 < /dev/null)" || code=$?
+  output="$({ on_branches && CATCH_UP_BASE=1 "$here_vm/../../agent.sh" "${argv[@]}"; } 2>&1 < /dev/null)" || code=$?
   tail_lines="$(tail -n 20 <<< "$output" | cut -c 1-300)"
   if [[ "$code" -eq 0 && -n "${RECHECK_LOOP_PASS:-}" ]]; then
     blocked_log "$project" "$key" "$variation" "$step" "$intro Passed on re-check: re-ran \`$line\` (the step that kept failing, $failing): exit 0. $next_pass"
@@ -120,7 +123,7 @@ at="$(jq -r .at <<< "$choice")" line="$(jq -r .command <<< "$choice")"
 argv=()
 while IFS= read -r word; do argv+=("$word"); done < <(jq -r '.argv[1:][]' <<< "$choice")
 code=0
-output="$({ on_branches && "$here_vm/../../agent.sh" "${argv[@]}"; } 2>&1 < /dev/null)" || code=$?
+output="$({ on_branches && CATCH_UP_BASE=1 "$here_vm/../../agent.sh" "${argv[@]}"; } 2>&1 < /dev/null)" || code=$?
 if [[ "$code" -eq 0 ]]; then
   blocked_log "$project" "$key" "$variation" "$step" "Passed on re-check; nothing to fix. Re-ran \`$line\` (the step $at, where it was blocked): exit 0. $next_pass"
   jq -nc --arg at "$at" --arg line "$line" '{ "needs-fix": false, rechecked: true, "recheck-passed": true, summary: "Passed on re-check; nothing to fix", recheck: { at: $at, command: $line, exit: 0 } }'

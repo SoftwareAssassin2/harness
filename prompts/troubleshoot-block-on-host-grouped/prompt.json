@@ -81,6 +81,14 @@
             "missing-change-repository": {
                 "type": "string",
                 "description": "With missing-change only (ASS-492): the forge url of the repository it goes in; left out otherwise"
+            },
+            "branch-behind-base": {
+                "type": "string",
+                "description": "Only when the cause is the ticket's branch behind its base (ASS-509): the repository's forge url, the branch, how far behind origin/<base> it is, and what of the base explains the failure; Classify's behind-base, which Bring the Base In fixes; left out otherwise"
+            },
+            "numbered-file-taken": {
+                "type": "string",
+                "description": "Only when the cause is a numbered file the ticket adds whose number origin/<base> or an older open merge request took (ASS-509): the repository's forge url, the branch, the file and who took its number; Classify's numbered-file-taken, which Bring the Base In fixes; left out otherwise"
             }
         },
         "required": [

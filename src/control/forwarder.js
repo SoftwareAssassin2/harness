@@ -120,6 +120,20 @@ function isFastTracked(projects, binding) {
 // ticket's folder, its stdin the call's stdin decoded (refused over
 // STDIN_CAP), else none (ignored, as before ASS-181); a call whose client goes away is
 // SIGTERMed. Rejects when the port cannot be bound.
+// ASS-509: the commands that bring a ticket branch's base in before they run (automated-tests:verify-success,
+// ci-checks:verify: rebase or merge, then push) do so only when told CATCH_UP_BASE=1. Through the forwarder that
+// is control's own run of the step — the grouped Build's Automated Testing and CI Checks are vm steps, so their
+// command comes here too — told apart from an agent's call by there being no agent of the variation at work: while
+// Generate Solution or Address Merge Request Feedback runs, the call stays read-only (no push of the agent's
+// unpushed commits, no pipeline started, no approval reset beneath it). Every other call never has it.
+const CATCH_UP = new Set(['automated-tests:verify-success', 'ci-checks:verify']);
+// forwardedEnv(env, argv, binding, assignments) — the env a forwarded call runs with.
+export function forwardedEnv(env, argv, binding, assignments = []) {
+  const { CATCH_UP_BASE: _, ...rest } = env;
+  const busy = assignments.some(x => x?.project === binding?.project && String(x?.['work-item'] ?? '').toLowerCase() === String(binding?.ticket ?? '').toLowerCase() && x?.variation === binding?.variation);
+  return CATCH_UP.has(argv?.[0]) && !busy ? { ...rest, CATCH_UP_BASE: '1' } : rest;
+}
+
 export function startForwarder({ root, env = process.env, port, log = () => {} }) {
   const tokensFile = join(env.HARNESS_HOME ?? join(homedir(), '.harness'), 'vm-tokens.json');
   const assignmentsFile = env.ASSIGNMENTS_FILE ?? join(dataDir(root), 'assignments.json');
@@ -133,7 +147,8 @@ export function startForwarder({ root, env = process.env, port, log = () => {} }
       try { call = JSON.parse(body); } catch { res.writeHead(400).end('{"refused":"bad json"}\n'); return; }
       const argv = Array.isArray(call.argv) ? call.argv.map(String) : [];
       const stdin = call.stdin === undefined ? null : typeof call.stdin === 'string' ? Buffer.from(call.stdin, 'base64') : undefined;
-      const a = stdin === undefined ? { refuse: 'stdin is not base64 text' } : stdin?.length > STDIN_CAP ? { refuse: 'stdin is over 1 MB' } : authorize(readJson(tokensFile, {}), readJson(assignmentsFile, {}).assignments ?? [], call.token, argv, binding => isFastTracked(projects, binding));
+      const assigned = readJson(assignmentsFile, {}).assignments ?? [];
+      const a = stdin === undefined ? { refuse: 'stdin is not base64 text' } : stdin?.length > STDIN_CAP ? { refuse: 'stdin is over 1 MB' } : authorize(readJson(tokensFile, {}), assigned, call.token, argv, binding => isFastTracked(projects, binding));
       if (a.refuse) {
         log('forwarder', `REFUSE ${a.vm ?? 'unknown'} ${JSON.stringify(argv)}: ${a.refuse}`);
         res.writeHead(403, { 'content-type': 'application/x-ndjson' }).end(`${JSON.stringify({ refused: a.refuse })}\n`);
@@ -141,7 +156,7 @@ export function startForwarder({ root, env = process.env, port, log = () => {} }
       }
       log('forwarder', `RUN ${a.vm} ${JSON.stringify(argv)}`);
       res.writeHead(200, { 'content-type': 'application/x-ndjson' });
-      const child = spawn(join(root, 'agent.sh'), a.argv, { cwd: a.binding['ticket-folder'], env, stdio: [stdin ? 'pipe' : 'ignore', 'pipe', 'pipe'] });
+      const child = spawn(join(root, 'agent.sh'), a.argv, { cwd: a.binding['ticket-folder'], env: forwardedEnv(env, a.argv, a.binding, Array.isArray(assigned) ? assigned : []), stdio: [stdin ? 'pipe' : 'ignore', 'pipe', 'pipe'] });
       if (stdin) { child.stdin.on('error', () => {}); child.stdin.end(stdin); }
       const send = key => data => res.write(`${JSON.stringify({ [key]: data.toString('base64') })}\n`);
       child.stdout.on('data', send('o'));

@@ -301,6 +301,27 @@ test('ASS-384 AC2: ticket:fix-attempts counts the own-branch fixes in a row acro
   assert.deepEqual(await attempts(), [0, { 'fix-attempts': 0 }], 'none: the output as before');
 });
 
+// ASS-509 AC6: each run Bring the Base In ended done (own-branch-source behind-base, numbered-file or
+// behind-base-conflict) is a fix attempt of its own kind, so the third reaches the operator saying what was tried.
+test('ASS-509 AC6: ticket:fix-attempts counts Bring the Base In\'s runs as base catch-ups, with the own-branch fixes, toward the budget of 3', async () => {
+  const f = waiting();
+  const sprint = join(f.dir, 'projects', 'p', 'sprints', 'sprint-10', 'sprint.json');
+  const set = blocks => {
+    const s = JSON.parse(readFileSync(sprint, 'utf8'));
+    Object.assign(s.features[0].variations.find(v => v.name === 'A'), { 'state-changes': [{ 'state-engine': 'example-development', 'from-state': 'build', 'to-state': 'blocked' }], blocks });
+    writeFileSync(sprint, JSON.stringify(s));
+  };
+  const attempts = async () => { const r = await f.agent('ticket:fix-attempts', 'p', 'ABC-3', 'A').catch(e => e); return [r.code ?? 0, JSON.parse(r.stdout)]; };
+  const caught = source => ({ summary: 'behind main', 'own-branch-fix': true, 'own-branch-source': source, 'ended-at': 'done' });
+  set([caught('behind-base'), caught('numbered-file')]);
+  assert.deepEqual(await attempts(), [0, { 'fix-attempts': 2, 'base-catch-ups': 2 }]);
+  set([caught('behind-base'), { summary: 'V27 taken', 'own-branch-fix': true, 'ended-at': 'done' }, caught('behind-base-conflict')]);
+  const [code, out] = await attempts();
+  assert.equal(code, 3);
+  assert.deepEqual([out['fix-attempts'], out['own-branch-fixes'], out['base-catch-ups'], out['ai-feedback-short']], [3, 1, 2, '3 fix attempts failed']);
+  assert.match(out['ai-feedback-long'], /Blocked brought the branch up to date with its base, or renamed a numbered file whose number was taken, 2 times \(Bring the Base In, ASS-509/);
+});
+
 // ASS-107 AC7: a fix that cannot be raised or waited on never lets the ticket resume as if fixed —
 // Blocked goes to Blocked for Human, these outputs (recorded by its run) saying why.
 test('ticket:wait-on: no fix ticket raised (Blocked hands it the blocked ticket itself) or a key no project claims — refused, writing nothing, why printed as ai-feedback', async () => {

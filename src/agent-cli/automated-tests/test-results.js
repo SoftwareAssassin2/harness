@@ -36,6 +36,14 @@
 // out is never master's, so never blocked: master timed out, green or red
 // naming no test sets aside nothing.
 //
+// ASS-509: where the branch's run names no failed test, the make targets
+// that failed (GNU make's "make: *** [Makefile:133: <target>] Error 1",
+// make[n] and the older "[<target>]" too) stand in for its failures: master
+// red with none of them — red for another target, say a tool missing there —
+// means the branch's own failure (failed, re-run once), not master's; master
+// red for the same targets, or naming no target, is blocked as before. A failure
+// absent on master is never called master's.
+//
 // ASS-329: a run stopped at verify-success's time limit (timedOut) never
 // finished, so its output is not compared by test: timed out where master
 // finished inside the limit, it failed (the timeout its one new failure);
@@ -60,7 +68,7 @@ const DIRECTIVE = /\s+#\s*(TODO|SKIP)\b.*$/i;
 // --test's spec reporter, vitest's and jest's default reporters, and their
 // JSON reports. Exported for the merge gate too (merge-gate-tests.js, ASS-394).
 export function failures(output) {
-  const failed = new Map(), seen = new Map(), suites = [];
+  const failed = new Map(), seen = new Map(), suites = [], targets = new Map();
   let found = false, file = null, jestFile = '', specFile = null, yaml = false;
   const fail = (where, test, n = 1) => failed.set(JSON.stringify([where, test, n]), `${where ? `${where}: ` : ''}${test}${n > 1 ? ` (#${n})` : ''}`);
   const abort = where => failed.set(JSON.stringify([where]), `${where}: aborted, short of its plan`);
@@ -78,6 +86,7 @@ export function failures(output) {
     if (yaml) { yaml = !/^\s*\.\.\.$/.test(line); continue; }
     if (/^\s+---$/.test(line)) { yaml = true; continue; }
     let m;
+    if ((m = line.match(/^make(?:\[\d+\])?: \*\*\* \[(?:[^\]]*?:\d+: )?([^\]]+)\] Error \d+/))) { targets.set(JSON.stringify(['make', m[1]]), `make: ${m[1]}`); continue; }   // ASS-509
     if ((m = line.match(/^(\s*)# Subtest: (.*)$/))) { suites.splice(m[1].length / 4, Infinity, m[2]); continue; }
     if ((m = line.match(/^(\S+) \.{2,} ?$/))) { close(); file = { name: m[1], plan: null, ran: 0, bailed: false }; continue; }
     if ((m = line.match(/^1\.\.(\d+)/))) { if (file) file.plan = Number(m[1]); found = true; continue; }
@@ -101,7 +110,7 @@ export function failures(output) {
     fail(where, test, n);
   }
   close();
-  return { found: found || failed.size > 0, failed };
+  return { found: found || failed.size > 0, failed, targets };
 }
 
 // jest --json's and vitest --reporter=json's reports: an object with testResults, on a line of its own or pretty-printed from a "{" line to a "}" line.
@@ -164,6 +173,11 @@ function judgeRun(master, run, reproduces) {
   if (out) return { verdict: 'failed', new: new Map([['timed out', `the command ${described(out)}${master ? `; on master it finished (exit ${master.status})` : ''}`]]), pre: new Map(), timedOut: true };
   const here = failures(run.output);
   const there = master ? failures(master.output) : { found: true, failed: new Map() };
+  // ASS-509: no test named on the branch, master red: compared by the make targets that failed, when both runs name any.
+  if (here.failed.size === 0 && here.targets.size > 0 && master && master.status !== 0 && there.targets.size > 0) {
+    const fresh = new Map([...here.targets].filter(([key]) => !there.targets.has(key)));
+    if (fresh.size) return { verdict: 'failed', new: fresh, pre: new Map() };
+  }
   if (here.failed.size === 0 || (master?.status !== 0 && !there.found)) {
     if (!master) return { verdict: 'failed', new: new Map([['command', `the command exits ${run.status}: the ticket's bug still reproduces`]]), pre: new Map() };
     if (master.status !== 0) return { verdict: 'blocked', new: new Map(), pre: new Map() };

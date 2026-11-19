@@ -112,7 +112,8 @@ test('ASS-249 AC3: a check red on master as on the branch passes (exit 0), noted
   const s = setup(checksFor('harness', [{ name: 'red-everywhere', command: 'echo "3 violations"; exit 1' }]));
   assert.deepEqual(JSON.parse((await s.verify()).stdout), { passed: 1, failed: 0, skipped: 0 });
   assert.match(s.results(), /## ✓ harness: red-everywhere \(exit 1: fails as it does on master\)/);
-  assert.match(s.results(), /### On master \(exit 1\)\n\n```\n3 violations\n```/);
+  // ASS-509 AC4: master's run names the commit it ran on, origin/<base> fetched for the check.
+  assert.match(s.results(), new RegExp(`### On master \\(exit 1; origin/main at ${MASTER_SHA(s)}, fetched for this check\\)\\n\\n\`\`\`\\n3 violations\\n\`\`\``));
   writeFileSync(join(s.golden, 'ci-checks.json'), JSON.stringify(checksFor('harness', [{ name: 'secret-scan-mr', command: `git rev-parse --abbrev-ref HEAD >> ${s.log}; echo "leak found"; exit 1`, baseline: false }])));
   const e = await s.failure();
   assert.equal(e.code, 1, e.stderr);
@@ -263,4 +264,21 @@ test('ASS-474 AC1: with every planned merge request in the repository Merged, a 
   assert.equal(e.code, 1, e.stderr);
   assert.deepEqual(s.runs(), ['scanned']);
   assert.match(s.results(), /## ✗ harness: secret-scan-mr \(exit 1\)/);
+});
+
+// ASS-509 (review): origin not reachable is no block — compared with origin/<base> as last fetched, the results saying so;
+// and the base is brought in only on control's own run (CATCH_UP_BASE), never on an agent's call.
+test('ASS-509: a forge outage does not block CI Checks — master compared as last fetched, named "not fetched"; only CATCH_UP_BASE brings the base in', async () => {
+  const s = setup(checksFor('harness', [{ name: 'red-everywhere', command: 'echo "3 violations"; exit 1' }]));
+  const pushedBefore = git(s.origins.harness.work, 'branch', '--list', 'change/ABC-3-1');
+  git(s.own, 'remote', 'set-url', 'origin', '/nonexistent/origin');
+  const { stdout } = await s.verify();
+  assert.deepEqual(JSON.parse(stdout), { passed: 1, failed: 0, skipped: 0 });
+  assert.match(s.results(), /### On master \(exit 1; origin\/main at [0-9a-f]{40}, not fetched: origin not reachable, as last fetched\)/);
+  assert.doesNotMatch(s.results(), /Brought up to date/, 'an agent\'s call: nothing brought in');
+  git(s.own, 'remote', 'set-url', 'origin', s.origins.harness.work);
+  await s.verify();
+  assert.equal(git(s.origins.harness.work, 'branch', '--list', 'change/ABC-3-1'), pushedBefore, 'nothing pushed without CATCH_UP_BASE');
+  await run(AGENT, ['ci-checks:verify', 'p', 'ABC-3', 'A'], { env: { ...s.env, CATCH_UP_BASE: '1' } });
+  assert.match(s.results(), /Brought up to date with the base first \(ASS-509\):\n- harness change\/ABC-3-1: rebased/);
 });
