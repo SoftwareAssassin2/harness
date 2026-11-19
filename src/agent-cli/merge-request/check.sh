@@ -95,8 +95,9 @@ set -euo pipefail
 #   "ai-feedback-short": "Every merge request is Closed unmerged: MR 1 (!7)",
 #   "ai-feedback-long": "…each with its url; reopen them, or re-plan; then choose Resolved"
 #
-# for the check's all-closed exit, ahead of needs-attention, to go to Blocked
-# for Human, the feedback becoming the variation's.
+# for the check's all-closed exit (ahead of needs-attention, or with
+# needs-attention guarded not all-closed, as engines/grouped-merge has it) to
+# go to Blocked for Human, the feedback becoming the variation's.
 #
 # --only <ids> (ASS-365: engines/grouped-merge, the merge loop; ids
 # comma-separated, or - for every one; merge_request_options,
