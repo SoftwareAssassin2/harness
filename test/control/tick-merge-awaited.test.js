@@ -236,3 +236,44 @@ test('ASS-424 AC5/AC6: a merge request planned mid-build sends Build back to Gen
     f.ctx.stopAgents();
   }
 });
+
+// ASS-518: GitLab cancels a merge train's auto-merge on every push to the source branch; the check then says
+// auto-merge false with rearm:true (armed, then the head moved), and the re-arm it sends to Ensure Auto-Merge is
+// recorded on the run with cause rearm-after-push and spends no visit: past four such rounds (its max-visits 3)
+// the loop goes on and merges. Without rearm (head unchanged) the fourth entry is Blocked, as before.
+const rearmLoop = (rearm, rounds) => {
+  let checks = 0;
+  return [
+    [/merge-request:await-dependencies/, () => (checks <= rounds ? { exitCode: 5, stdout: { ...WAITING, 'merge-request-ids': [1] } } : { exitCode: 0, stdout: { waiting: [] } })],
+    [/merge-request:reviewed-at-head/, { exitCode: 0 }],
+    [/merge-request:ensure-auto-merge/, { exitCode: 0, stdout: {} }],
+    [/merge-request:check/, () => (++checks === 1 ? { exitCode: 0, stdout: { 'needs-attention': false, reasons: [], 'auto-merge': false } }
+      : checks <= rounds + 1 ? { exitCode: 0, stdout: { 'needs-attention': false, reasons: [], 'auto-merge': false, ...(rearm ? { rearm: true } : {}) } }
+        : { exitCode: 0, stdout: { 'needs-attention': false, reasons: [], 'auto-merge': true, merged: true } })],
+  ];
+};
+const intoEnsure = changes => changes.filter(c => c['from-state'] === 'check' && c['to-state'] === 'ensure-auto-merge');
+
+for (const gate of [false, true]) {
+  test(`ASS-518 AC1: four push/re-arm rounds past Ensure Auto-Merge's max-visits leave the merge loop going, never Blocked; each re-arm recorded with cause rearm-after-push on the run, and the run ends done${gate ? ' — a gate on the check does not hold the re-arm move' : ''}`, async () => {
+    const f = fixture(true, rearmLoop(true, 4));
+    if (gate) edit(sprint(f), s => { s.features[0].variations[0]['gate-when-leaving-state'] = ['grouped-merge/check']; });
+    let seen = [];
+    await until(f, () => { const run = runOf(f, 'grouped-merge'); if (run) seen = run['state-changes'] ?? []; return f.variation()['harness-status'].state === 'done'; }, 80);
+    const entries = intoEnsure(seen);
+    assert.equal(entries.length, 5, `the arm and four re-arms\n${JSON.stringify(seen, null, 1)}`);
+    assert.equal(entries[0].cause, undefined, 'the first arm is a visit');
+    assert.deepEqual(entries.slice(1).map(c => c.cause), Array(4).fill('rearm-after-push'));
+    assert.ok(!f.lines.some(l => /max-visits|→ blocked/.test(l)), f.lines.join('\n'));
+    assert.ok(f.lines.some(l => /grouped-merge .* check → done/.test(l)), f.lines.join('\n'));
+  });
+}
+
+test('ASS-518 AC2: auto-merge false with no rearm (the head unchanged) still spends Ensure Auto-Merge\'s visits — the fourth entry is Blocked on max-visits, and no change carries rearm-after-push', async () => {
+  const f = fixture(true, rearmLoop(false, 6));
+  let seen = [];
+  await until(f, () => { const run = runOf(f, 'grouped-merge'); if (run) seen = run['state-changes'] ?? []; return f.lines.some(l => /grouped-merge .* check → blocked/.test(l)); }, 80);
+  assert.equal(intoEnsure(seen).length, 3, JSON.stringify(seen, null, 1));
+  assert.ok(!seen.some(c => c.cause === 'rearm-after-push'));
+  assert.deepEqual([seen.at(-1)?.['from-state'], seen.at(-1)?.['to-state']], ['check', 'blocked'], 'Blocked from the check, on its fourth try into Ensure Auto-Merge');
+});

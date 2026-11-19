@@ -2138,3 +2138,68 @@ test('ASS-516 AC1: every created MR Closed unmerged makes the check say needs-at
   empty.record({ 1: { status: 'Closed' } });
   assert.deepEqual(await check(empty), { 'needs-attention': false, reasons: [], 'auto-merge': false, merged: false });
 });
+
+// ASS-518: a merge train's auto-merge is cancelled by every push to the source branch. Ensure Auto-Merge records
+// the head it armed at (armed-head); the check, auto-merge false with nothing needing attention, says rearm: true
+// when every Open MR making it false was armed at another head — cancelled by a push — so control spends no
+// Ensure Auto-Merge visit on the re-arm. Never armed, or the head unchanged, no rearm: counted as before.
+const arming = f => f.forge.route('glab', /^api projects\/g%2Fapp\/merge_requests\/7\/merge --hostname gitlab.com -X PUT -f merge_when_pipeline_succeeds=true$/, { out: {} });
+
+test('ASS-518 AC1: merge-request:ensure-auto-merge records armed-head, the forge head, when it arms an MR and when it finds one armed; unchanged when the same', async () => {
+  const f = await single({ sha: HEAD, draft: false });
+  arming(f);
+  assert.equal((await ran(f, 'merge-request:ensure-auto-merge', 'p', 'ABC-5', 'A')).code, 0);
+  assert.deepEqual(autoMerged(f), [7]);
+  assert.equal(f.mrs()[0]['armed-head'], HEAD);
+  // Armed already, the head moved: recorded, not armed again.
+  view(f, 'app', 7, { sha: NEW, draft: false, merge_when_pipeline_succeeds: true });
+  assert.equal((await ran(f, 'merge-request:ensure-auto-merge', 'p', 'ABC-5', 'A')).code, 0);
+  assert.deepEqual(autoMerged(f), [7]);
+  assert.equal(f.mrs()[0]['armed-head'], NEW);
+  // Again at the same head: kept.
+  assert.equal((await ran(f, 'merge-request:ensure-auto-merge', 'p', 'ABC-5', 'A')).code, 0);
+  assert.equal(f.mrs()[0]['armed-head'], NEW);
+});
+
+test('ASS-518 AC1: the check says rearm: true when auto-merge was cancelled and the head moved past armed-head on every Open MR making auto-merge false; an MR waiting on a dependency is not one of them', async () => {
+  const f = await single({ sha: HEAD, draft: false });
+  f.record({ 1: { 'armed-head': OLD } });
+  assert.deepEqual(await checked(f), { 'needs-attention': false, reasons: [], 'auto-merge': false, merged: false, rearm: true });
+  // Two MRs, both pushed past their arms.
+  const two = await planned([{ id: 1, repository: APP }, { id: 2, repository: APP }]);
+  two.record({ 1: { status: 'Open', key: '!7', base: 'master', 'armed-head': OLD }, 2: { status: 'Open', key: '!8', base: 'master', 'armed-head': OLD } });
+  view(two, 'app', 7, { sha: HEAD });
+  view(two, 'app', 8, { sha: NEW });
+  assert.equal((await checked(two)).rearm, true);
+  // lib !7 pushed past its arm; app !9 waits on it, never armed: ignored, so still a re-arm.
+  const d = await dependent({ sha: HEAD }, { sha: NEW });
+  d.record({ 1: { 'armed-head': OLD } });
+  const out = await checked(d);
+  assert.deepEqual([out['needs-attention'], out['auto-merge'], out.rearm], [false, false, true], JSON.stringify(out));
+});
+
+test('ASS-518 AC1/AC2: no rearm when the head is unchanged since the arm, never armed (an old row), another MR making auto-merge false was never armed, something needs attention, or auto-merge is true', async () => {
+  // AC2: armed-head === head — a cancel the push did not cause: counted as before.
+  const same = await single({ sha: HEAD, draft: false });
+  same.record({ 1: { 'armed-head': HEAD } });
+  assert.deepEqual(await checked(same), { 'needs-attention': false, reasons: [], 'auto-merge': false, merged: false });
+  // An old row, no armed-head.
+  const old = await single({ sha: HEAD, draft: false });
+  assert.deepEqual(await checked(old), { 'needs-attention': false, reasons: [], 'auto-merge': false, merged: false });
+  // One pushed, one never armed: the never-armed one still counts.
+  const two = await planned([{ id: 1, repository: APP }, { id: 2, repository: APP }]);
+  two.record({ 1: { status: 'Open', key: '!7', base: 'master', 'armed-head': OLD }, 2: { status: 'Open', key: '!8', base: 'master' } });
+  view(two, 'app', 7, { sha: HEAD });
+  view(two, 'app', 8, { sha: HEAD });
+  assert.equal('rearm' in (await checked(two)), false);
+  // Needs attention, though pushed.
+  const threads = await single({ sha: HEAD, blocking_discussions_resolved: false });
+  threads.record({ 1: { 'armed-head': OLD } });
+  const t = await checked(threads);
+  assert.deepEqual([t['needs-attention'], 'rearm' in t], [true, false], JSON.stringify(t));
+  // Auto-merge set: no rearm key.
+  const set = await single({ sha: HEAD, merge_when_pipeline_succeeds: true });
+  set.record({ 1: { 'armed-head': OLD } });
+  const s = await checked(set);
+  assert.deepEqual([s['auto-merge'], 'rearm' in s], [true, false], JSON.stringify(s));
+});
