@@ -43,7 +43,7 @@ export function fakeWorkstation(base = process.env) {
   for (const d of [bin, workstations]) mkdirSync(d);
   symlinkSync(join(import.meta.dirname, 'fake-gcloud.js'), join(bin, 'gcloud'));
   symlinkSync(join(import.meta.dirname, 'fake-ssh.js'), join(bin, 'ssh'));
-  const home = mkdtempSync('/tmp/wsh-');
+  const home = mkdtempSync(join(tmpdir(), 'wsh-'));
   made.push(workstations);
   const env = { HARNESS_WS_METADATA_URL: 'http://127.0.0.1:9/computeMetadata/v1/instance/preempted', HARNESS_WS_WATCHER_SECONDS: '1', ...base, PATH: `${bin}:${base.PATH}`, FAKE_WS_DIR: workstations, FAKE_GCLOUD_LOG: join(dir, 'gcloud.log'), FAKE_SSH_LOG: join(dir, 'ssh.log'), HARNESS_HOME: home, WORKSTATION_POLL_SECONDS: '0.1' };
   const lines = file => (existsSync(file) ? readFileSync(file, 'utf8').trim().split('\n').filter(Boolean).map(l => JSON.parse(l)) : []);
