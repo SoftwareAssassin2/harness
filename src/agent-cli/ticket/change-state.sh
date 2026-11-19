@@ -32,6 +32,12 @@ set -euo pipefail
 # --by control, ASS-84), and a ticket entering the engine's done step is
 # announced on its ticket (ticket:announce-ready). Fails, writing nothing, on
 # a step the engine lacks (the same refusal and hint) or a start step.
+#
+# A move out of blocked to another step by hand (CLAUDE.md's "resume it
+# yourself" recipe) records cause "fix-landed", so engine.js sinceResolution
+# restarts the step-visit window as control's own fix-landed resume does
+# (ASS-514), unless the caller gives MOVE_CAUSE (even '{}'): control always
+# gives one. blocked→blocked (the retry exit) records none.
 here="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
 backlog_too=1
 source "$here/../sprint.bash"
@@ -69,6 +75,7 @@ if [[ "$start" != - ]]; then
   engine_steps_of ticket:change-state "$sub" "$1" | jq -e --arg start "$start" 'any(.[]; .id == $start)' > /dev/null || { echo "ticket:change-state: $sub has no step $start" >&2; exit 1; }
 fi
 
+[[ "$4" != blocked || "$5" == blocked || -n "${MOVE_CAUSE+x}" ]] || export MOVE_CAUSE='{"cause":"fix-landed"}'   # ASS-514
 update_variation ticket:change-state "$1" "$2" "$3" "$4" --arg to "$5" --arg start "$start" --arg sub "$sub" --argjson output "$output" '
   move_to($to)
   | if $start == "-" then . else

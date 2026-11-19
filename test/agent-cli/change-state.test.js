@@ -7,7 +7,8 @@ import { promisify } from 'node:util';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { withExampleEngines } from '../support/engine-walk.js';
+import { withExampleEngines, engineDir } from '../support/engine-walk.js';
+import { stepOf, nextState } from '../../src/control/engine.js';
 // A harness-status at `state` of the example-development engine.
 const hs = state => ({ state, 'state-engine': 'example-development' });
 
@@ -33,6 +34,19 @@ function projects() {
 const sprintFile = dir => join(dir, 'p', 'sprints', 'sprint-10', 'sprint.json');
 const move = (dir, ...args) => run(AGENT, ['ticket:change-state', ...args], { env: { ...process.env, PROJECTS_DIR: dir } });
 const variations = dir => JSON.parse(readFileSync(sprintFile(dir), 'utf8')).features[0].variations;
+
+// ASS-514: p on example-github-development (test max-visits 3, on-max-visits blocked), ABC-3 A at blocked
+// after `history`; testVisits is 3 build→test visits, each back to build, then test→blocked.
+const gh = (from, to, extra = {}) => ({ 'state-engine': 'example-github-development', 'from-state': from, 'to-state': to, timestamp: '2026-11-17T18:02:00Z', 'agent-dispatch-log': [], 'work-is-done': true, ...extra });
+const testVisits = () => [gh('plan', 'build'), ...[1, 2, 3].flatMap(() => [gh('build', 'test'), gh('test', 'build')]).slice(0, -1), gh('test', 'blocked')];
+function blockedProjects(history = testVisits()) {
+  const dir = projects();
+  writeFileSync(join(dir, 'p', 'project.json'), JSON.stringify({ 'execution-state-engine': 'example-github-development' }));
+  const sprint = JSON.parse(readFileSync(sprintFile(dir), 'utf8'));
+  sprint.features[0].variations[0] = { name: 'A', 'harness-status': { state: 'blocked', 'state-engine': 'example-github-development' }, 'ai-feedback-short': null, 'ai-feedback-long': null, 'state-changes': history };
+  writeFileSync(sprintFile(dir), JSON.stringify(sprint, null, 4));
+  return dir;
+}
 
 test('ticket:change-state moves the variation and records the change, its work not yet done; the state left is done, with any sub-status, and the health cleared', async () => {
   const dir = projects();
@@ -130,4 +144,76 @@ test('ticket:change-state refuses a display name or mis-cased id with a did-you-
   await assert.rejects(move(dir, 'p', 'ABC-3', 'A', 'generate-solution', 'zzz-nope'), e => /has no step zzz-nope/.test(e.stderr) && !/did you mean/.test(e.stderr));
   await assert.rejects(move(dir, 'p', 'ABC-3', 'B', 'backlog', 'Committed'), /has no step Committed did you mean committed \(Committed\)\?/);
   assert.equal(readFileSync(sprintFile(dir), 'utf8'), before);
+});
+
+// ASS-514 AC1: a manual move out of blocked (CLAUDE.md's "resume it yourself") records fix-landed, the cause
+// engine.js sinceResolution restarts the step-visit window on, as control's landed-fix clear does (ASS-309).
+const last = dir => variations(dir)[0]['state-changes'].at(-1);
+test('ticket:change-state blocked → build by hand records the change with cause fix-landed (AC1, ASS-514)', async () => {
+  const dir = blockedProjects();
+  await move(dir, 'p', 'ABC-3', 'A', 'blocked', 'build');
+  assert.deepEqual(variations(dir)[0]['harness-status'], { state: 'build', 'state-engine': 'example-github-development' });
+  assert.deepEqual([last(dir)['from-state'], last(dir)['to-state'], last(dir).cause], ['blocked', 'build', 'fix-landed']);
+});
+
+test('ticket:change-state blocked → build with a lower-case key records cause fix-landed (AC1, ASS-514)', async () => {
+  const dir = blockedProjects();
+  await move(dir, 'p', 'abc-3', 'A', 'blocked', 'build');
+  assert.deepEqual([last(dir)['from-state'], last(dir)['to-state'], last(dir).cause], ['blocked', 'build', 'fix-landed']);
+});
+
+test('ticket:change-state blocked → build with a start step records fix-landed on the move, not on its sub-state change (AC1, ASS-514)', async () => {
+  const dir = blockedProjects();
+  await move(dir, 'p', 'ABC-3', 'A', 'blocked', 'build', 'generate-solution');
+  const [out, sub] = variations(dir)[0]['state-changes'].slice(-2);
+  assert.deepEqual([out['from-state'], out['to-state'], out['sub-state-change'], out.cause], ['blocked', 'build', undefined, 'fix-landed']);
+  assert.equal(sub['sub-state-change']?.['to-state'], 'generate-solution');
+  assert.ok(!('cause' in sub), JSON.stringify(sub));
+});
+
+// ASS-514 AC2: after that move, build's done exit goes on to test though test had its 3 visits before the block.
+const ghEngine = JSON.parse(readFileSync(join(engineDir('example-github-development'), 'state-engine.json'), 'utf8'));
+const buildDone = changes => nextState(stepOf(ghEngine, 'build'), ghEngine, { subEngineDone: true, subEngineState: 'done' }, changes);
+test('nextState from build\'s done exit after a manual blocked → build counts no visits to test from before the block (AC2, ASS-514)', async () => {
+  const dir = blockedProjects();
+  await move(dir, 'p', 'ABC-3', 'A', 'blocked', 'build');
+  const next = buildDone(variations(dir)[0]['state-changes']);
+  assert.deepEqual([next?.to, next?.reason], ['test', 'exit']);
+});
+
+test('nextState control: the same history with the blocked → build cause stripped still sends test, at 3/3, to blocked (AC2, ASS-514)', () => {
+  const next = buildDone([...testVisits(), gh('blocked', 'build')]);
+  assert.deepEqual([next?.to, next?.reason], ['blocked', 'max-visits']);
+});
+
+// ASS-514 AC3: an explicit MOVE_CAUSE wins, even {}; blocked → blocked (the retry exit) and moves into blocked record none.
+const moveWith = (env, dir, ...args) => run(AGENT, ['ticket:change-state', ...args], { env: { ...process.env, PROJECTS_DIR: dir, ...env } });
+test('ticket:change-state blocked → build with MOVE_CAUSE operator records operator, not fix-landed (AC3, ASS-514)', async () => {
+  const dir = blockedProjects();
+  await moveWith({ MOVE_CAUSE: '{"cause":"operator"}' }, dir, 'p', 'ABC-3', 'A', 'blocked', 'build');
+  assert.equal(last(dir).cause, 'operator');
+});
+
+test('ticket:change-state blocked → build with MOVE_CAUSE {} records no cause (AC3, ASS-514)', async () => {
+  const dir = blockedProjects();
+  await moveWith({ MOVE_CAUSE: '{}' }, dir, 'p', 'ABC-3', 'A', 'blocked', 'build');
+  assert.deepEqual([last(dir)['from-state'], last(dir)['to-state']], ['blocked', 'build']);
+  assert.ok(!('cause' in last(dir)), JSON.stringify(last(dir)));
+});
+
+test('ticket:change-state blocked → blocked (the retry exit) records no cause (AC3, ASS-514)', async () => {
+  const dir = blockedProjects();
+  await move(dir, 'p', 'ABC-3', 'A', 'blocked', 'blocked');
+  assert.deepEqual([last(dir)['from-state'], last(dir)['to-state']], ['blocked', 'blocked']);
+  assert.ok(!('cause' in last(dir)), JSON.stringify(last(dir)));
+});
+
+test('ticket:change-state build → blocked records no cause (AC3, ASS-514)', async () => {
+  const dir = blockedProjects([gh('plan', 'build')]);
+  const sprint = JSON.parse(readFileSync(sprintFile(dir), 'utf8'));
+  sprint.features[0].variations[0]['harness-status'].state = 'build';
+  writeFileSync(sprintFile(dir), JSON.stringify(sprint, null, 4));
+  await move(dir, 'p', 'ABC-3', 'A', 'build', 'blocked');
+  assert.deepEqual([last(dir)['from-state'], last(dir)['to-state']], ['build', 'blocked']);
+  assert.ok(!('cause' in last(dir)), JSON.stringify(last(dir)));
 });

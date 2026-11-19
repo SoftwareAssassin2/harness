@@ -107,6 +107,23 @@ test('ASS-309: a landed fix whose merge is only in a nested sub-state-change cle
   assert.equal(cleared?.cause, 'fix-landed', f.lines.join('\n'));
 });
 
+// ASS-514 AC3: control's clear of Blocked that is no landed fix (its run's output without landed: true) stays cause-less —
+// moveTicket gives ticket:change-state an explicit MOVE_CAUSE ({}), so its manual-move default (fix-landed) is not applied.
+test('ASS-514 AC3: control clearing Blocked back to Build with no landed fix records no cause on the change', async () => {
+  const f = fixture();
+  edit(join(f.dir, 'engines', 'example-development', 'state-engine.json'), e => Object.assign(e.steps.find(s => s.id === 'blocked'), {
+    'follow-return-to-state': true, 'exit-events': [{ condition: { 'is-done': true }, 'follow-return-to-state': true }],
+  }));
+  const was = (from, to) => ({ 'state-engine': 'example-development', 'from-state': from, 'to-state': to, timestamp: '2026-10-29T20:00:00Z', 'agent-dispatch-log': [], 'work-is-done': true });
+  edit(sprint(f), s => { s.features[0].variations[0]['state-changes'] = [was('plan', 'build'), was('build', 'blocked')]; });
+  const script = f.ctx.script;
+  f.ctx.script = (argv, vm) => (argv.includes('ticket:fix-landed') ? Promise.resolve({ exitCode: 0, stdout: '{"waits-on":"ABC-9"}' }) : script(argv, vm));
+  for (let i = 0; i < 4 && state(f) === 'blocked'; i++) { await tick(f.ctx); f.now += 5 * 60e3 + 1e3; }
+  const cleared = f.variation()['state-changes'].find(c => c['from-state'] === 'blocked' && !c['sub-state-change']);
+  assert.equal(cleared?.['to-state'], 'build', f.lines.join('\n'));
+  assert.ok(!('cause' in cleared), JSON.stringify(cleared));
+});
+
 // ASS-343 AC1/AC2: a fix that changed an earlier step than the one the ticket blocked at — its
 // resume-step (ticket:fix-resume-step) names plan, upstream of local-testing — resumes the ticket
 // there, through control's own tick: Blocked → plan, its prompt dispatched afresh, then the steps
