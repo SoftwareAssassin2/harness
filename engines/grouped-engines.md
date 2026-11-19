@@ -2581,7 +2581,8 @@ merge (its time recorded on the row as `pipeline-rerun`): a pipeline that
 started after the merge, or one re-run for it already, that fails is
 `build-failed`, as is one that cannot be started again. Each one held back is
 listed in the check's output as `"build-pending": [{ id, key, why:
-"dependency-unmerged" | "re-run" }]`, present only when there is one. Once
+"dependency-unmerged" | "re-run" | "sent-unchanged" }]` (the last below),
+present only when there is one. Once
 every one not Closed is Merged, Team Code Review ends Release (ASS-224) and
 QA sets the ticket system to In Testing.
 
