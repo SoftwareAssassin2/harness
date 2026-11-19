@@ -16,7 +16,7 @@ const ROOT = join(import.meta.dirname, '..');
 const RUN_DIR = /^\/tmp\/harness-test\.[A-Za-z0-9]{6}$/;
 
 // A fixture test file: makes a mkdtemp folder, a read-only folder with a file
-// in it, and a bash `mktemp -d` folder; writes its report; then `end`.
+// in it, and (not on macOS) a bash `mktemp -d` folder; writes its report; then `end`.
 function fixture(t, end = '') {
   const dir = mkdtempSync(join(tmpdir(), 'runsh-'));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
@@ -30,8 +30,9 @@ test('fixture', async () => {
   const a = fs.mkdtempSync(path.join(os.tmpdir(), 'x-'));
   const ro = path.join(a, 'ro');
   fs.mkdirSync(ro); fs.writeFileSync(path.join(ro, 'f'), 'x'); fs.chmodSync(ro, 0o555);
-  const b = execFileSync('mktemp', ['-d']).toString().trim();
-  fs.writeFileSync(process.env.RUNSH_REPORT, JSON.stringify({ TMPDIR: process.env.TMPDIR, tmpdir: os.tmpdir(), made: [a, ro, b] }));
+  // macOS's mktemp with no template ignores TMPDIR (the per-user /var/folders/…/T, never /tmp); elsewhere it follows TMPDIR.
+  const b = process.platform === 'darwin' ? [] : [execFileSync('mktemp', ['-d']).toString().trim()];
+  fs.writeFileSync(process.env.RUNSH_REPORT, JSON.stringify({ TMPDIR: process.env.TMPDIR, tmpdir: os.tmpdir(), made: [a, ro, ...b] }));
   ${end}
 });
 `);
