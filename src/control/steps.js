@@ -4,7 +4,7 @@
 // its dependencies hold (dependencies.js awaitsDependencies, ASS-355), and
 // every run under it, is left where it is: no move, script, sub-engine run or
 // VM wait, at any step but a done or a person's one.
-import { stepOf, engineSteps, nextState, pairedStatus, isManual, isDoneStep, isActive, answersGap, pairedByAnother, ownBranchFix, awaitsDependency, clearCause, resumeAt, resumeSubAt, whyNotResume, statusIn, mergesAwaited } from './engine.js';
+import { stepOf, engineSteps, nextState, pairedStatus, isManual, isDoneStep, isActive, answersGap, pairedByAnother, ownBranchFix, awaitsDependency, clearCause, rearmAfterPush, REARM_AFTER_PUSH, resumeAt, resumeSubAt, whyNotResume, statusIn, mergesAwaited } from './engine.js';
 import { enginesFor } from './state.js';
 import { rankSprint, rankBacklog } from './rank.js';
 import { planFor, slotKind } from './plan.js';
@@ -327,8 +327,9 @@ async function runVariation(ctx, state, project, key, name) {
         if (heldByChecks(ctx, facts)) return;   // ASS-493: its exit read again, as it is, once the check has answered
         scriptRead(ctx, running);
         await scriptExited(ctx, who, held, facts.exitCode, next?.to == null || next.to === stateId, values, step);
-        // ASS-388: a script exit's own cause (no-op-round: a feedback round that changed nothing) is recorded on its move.
-        if (!await move(next, timer ? TIMER : next?.exit?.cause)) return;
+        // ASS-388: a script exit's own cause (no-op-round: a feedback round that changed nothing) is recorded on its move;
+        // ASS-518: a re-arm after a source-branch push (the check's rearm) records rearm-after-push, held by no gate as TIMER.
+        if (!await move(next, rearmAfterPush(facts) ? REARM_AFTER_PUSH : timer ? TIMER : next?.exit?.cause)) return;
         break;
       }
       case 'state-engine': {
@@ -485,8 +486,8 @@ async function runTransient(ctx, state, id) {
         if (heldByChecks(ctx, facts)) return;   // ASS-493: its exit read again, as it is, once the check has answered
         scriptRead(ctx, running);
         await scriptExited(ctx, who, held, facts.exitCode, !next || next.to === run.state, variation && values, step);   // to null: the run ends
-        // ASS-388: a script exit's own cause (no-op-round) is recorded on the run's move, as on a ticket's.
-        if (!await settle(next, recorded, timer ? TIMER : next?.exit?.cause)) return;
+        // ASS-388: a script exit's own cause (no-op-round) is recorded on the run's move, as on a ticket's; ASS-518: rearm-after-push likewise.
+        if (!await settle(next, recorded, rearmAfterPush(facts) ? REARM_AFTER_PUSH : timer ? TIMER : next?.exit?.cause)) return;
         break;
       }
       case 'state-engine': {

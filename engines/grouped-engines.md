@@ -260,10 +260,10 @@ it names none, so a project's Release could run it over the whole variation).
 | Code Review, Security Review (max 3 each, in the VM) | `code-review-grouped`, `security-review-grouped` | approved on; rejected to `rebuild` |
 | Mark Reviewed (max 5) | `merge-request:reviewed-at-head … --only … --mark` | 0 back to the gate |
 | Take out of Draft Mode (max 5) | `code:take-out-of-draft-mode … --only` | 0 to the check; else tried again |
-| Check the Merge Requests (`check`, timer 5 min, max 10, record-script-output) | `merge-request:check … --only` | needs-attention (not all-closed) to Address Merge Request Feedback; all-closed (every created merge request of the variation Closed unmerged, ASS-516) to `blocked-for-human`; merged to `done`; approval-wait-expired to `blocked-for-human`; auto-merge false to Ensure Auto-Merge; only waiting polls, no visit spent |
+| Check the Merge Requests (`check`, timer 5 min, max 10, record-script-output) | `merge-request:check … --only` | needs-attention (not all-closed) to Address Merge Request Feedback; all-closed (every created merge request of the variation Closed unmerged, ASS-516) to `blocked-for-human`; merged to `done`; approval-wait-expired to `blocked-for-human`; auto-merge false to Ensure Auto-Merge (with rearm, ASS-518: armed, then cancelled by a push, cause `rearm-after-push`, no visit counted); only waiting polls, no visit spent |
 | Address Merge Request Feedback (max 3, in the VM) | `check-on-merge-request-build-grouped` | to Check the Feedback Round |
 | Check the Feedback Round (`check-feedback-round`, max 5; ASS-388) | `merge-request:feedback-round … --only` | changed false back to the check, cause `no-op-round`, no visit counted; else back to the gate |
-| Ensure Auto-Merge (max 3) | `merge-request:ensure-auto-merge … --only` | 0 to the check; else `blocked` |
+| Ensure Auto-Merge (max 3) | `merge-request:ensure-auto-merge … --only`; records each one's `armed-head` (ASS-518) | 0 to the check; else `blocked`. A re-arm after a push to the source branch spends no visit (ASS-518) |
 
 Each looping step's max-visits ends the run at `blocked`. Its prompt steps
 say `"vm": "running"`, as a project Release's Address Merge Request Feedback
@@ -2657,6 +2657,19 @@ reported `build-failed` at (`build-failed-head`). Seen again at that head, its
 polled, not sent again: `build-pending` with `why` `sent-unchanged`, counted
 as waiting (`auto-merge`), so a red one needing the operator doesn't loop
 through no-op rounds. A new head, or a reply, resolve or retry, sends it again.
+
+A re-arm after a push spends no Ensure Auto-Merge visit (ASS-518). A merge
+train aborts auto-merge on every push to the source branch, so a reviewer's
+pushes would otherwise reach Ensure Auto-Merge's max-visits though each re-arm
+works. `merge-request:ensure-auto-merge` records on each row the head it armed
+at (`armed-head`); `merge-request:check` adds `"rearm": true` when nothing needs
+attention, auto-merge is false, and every Open one keeping it false has an
+`armed-head` other than its head now. Control records the check's move with
+cause `rearm-after-push` (held by no gate, like a timer's), never redirects it
+by max-visits, and drops it from later counts (`withoutNoOpRounds`). No engine
+JSON flag: any engine whose check exits to Ensure Auto-Merge gets it, a
+project's own Release included. Unchanged head, or never armed: no flag, the
+visit counts and still ends at `blocked`.
 
 The current engines' commands are the same ones: a merge request recorded
 from a worktree (no `repository`) is on the workspace's origin, read with

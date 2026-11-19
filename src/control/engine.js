@@ -246,16 +246,29 @@ export const MERGE_GATE_RED = { cause: 'merge-gate-red' };
 // counted over, and the move itself is never redirected by max-visits.
 export const NO_OP_ROUND = { cause: 'no-op-round' };
 
+// REARM_AFTER_PUSH — the cause of the move into Ensure Auto-Merge that re-arms
+// an auto-merge a push to the source branch cancelled (ASS-518: a merge train
+// aborts on every push). merge-request:check says so (rearm: true: every merge
+// request keeping auto-merge false was armed at another head); steps.js records
+// it on the timer check's move. Such a re-arm is no visit: the move is never
+// redirected by max-visits and withoutNoOpRounds drops it from later counts. With
+// the head unchanged there is no flag, so a re-arm that keeps failing still blocks.
+export const REARM_AFTER_PUSH = { cause: 'rearm-after-push' };
+// rearmAfterPush(facts) — the check's output flags a re-arm after a push.
+export const rearmAfterPush = facts => facts?.scriptOutput?.rearm === true;
+
 // withoutNoOpRounds(stateChanges) — the changes with each no-op round taken
 // out (ASS-388): a change with cause no-op-round returns to the step the round
 // started from, so it and every change back to and including the last one out
 // of that step (the check's move into Address Merge Request Feedback) are
 // dropped, as if the round had not been. A sub-state-change (a ticket's record
 // of a move inside a group's run) is no visit anyway and is left; with no move
-// out of that step before it, the no-op change alone is dropped.
+// out of that step before it, the no-op change alone is dropped. A change with
+// cause rearm-after-push (ASS-518) is dropped alone: the re-arm, not the round before it.
 export function withoutNoOpRounds(stateChanges = []) {
   const kept = [];
   for (const c of stateChanges) {
+    if (c.cause === REARM_AFTER_PUSH.cause && !c['sub-state-change']) continue;
     if (c.cause !== NO_OP_ROUND.cause || c['sub-state-change']) { kept.push(c); continue; }
     const start = kept.findLastIndex(k => k['from-state'] === c['to-state'] && !k['sub-state-change']);
     if (start >= 0) kept.length = start;
@@ -294,6 +307,7 @@ export function sinceResolution(engine, stateChanges = [], targetStep) {
 // red's return (ASS-315: else the first red is redirected by the counts it is
 // meant to restart), or itself a no-op round's return (ASS-388: NO_OP_ROUND;
 // and a no-op round anywhere in the history is no visit, withoutNoOpRounds),
+// or itself a re-arm after a source-branch push (ASS-518: rearmAfterPush; likewise dropped later),
 // or itself a move out of a step with restarts-visit-count
 // (ASS-399: grouped-plan's Awaiting the Plan Answer, whose return to Write
 // Execution Plan the old counts would send to Blocked); the return walk reads it all.
@@ -302,8 +316,8 @@ export function nextState(step, engine, facts, stateChanges = []) {
   if (!exit) return null;
   let to = resolveTarget(exit, step, engine, stateChanges, facts);
   if (to == null) return { to: null, exit, reason: 'unresolved' };
-  // ASS-388: a no-op round's return is no visit, so never redirected; every other count skips the no-op rounds.
-  const counted = isResolution(engine, step.id, to) || restartsVisits(engine, step.id) || clearCause(facts) || exit.cause === MERGE_GATE_RED.cause || exit.cause === NO_OP_ROUND.cause
+  // ASS-388/ASS-518: a no-op round's return or a re-arm after a push is no visit, so never redirected; every other count skips them.
+  const counted = isResolution(engine, step.id, to) || restartsVisits(engine, step.id) || clearCause(facts) || exit.cause === MERGE_GATE_RED.cause || exit.cause === NO_OP_ROUND.cause || rearmAfterPush(facts)
     ? [] : withoutNoOpRounds(sinceResolution(engine, stateChanges, to));
   let reason = 'exit';
   for (const seen = new Set(); !seen.has(to); reason = 'max-visits') {

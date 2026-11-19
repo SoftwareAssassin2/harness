@@ -851,3 +851,73 @@ test('blocksTicket and isOpenQuestion (ASS-248): open is anything but Answered, 
   assert.deepEqual(['Asked', 'Answer Rejected', 'Answered', 'Answer Accepted', 'Assumed', 'Unanswered'].map(status => isOpenQuestion({ status })), [true, true, false, false, false, true]);
   assert.deepEqual([{ status: 'Asked' }, { status: 'Asked', blocking: true }, { status: 'Asked', blocking: false }, { status: 'Answered', blocking: true }].map(blocksTicket), [true, true, false, false]);
 });
+
+// ASS-518: a re-arm after a source-branch push (the check's rearm:true — auto-merge was armed, then cancelled
+// by a push that moved the head) enters Ensure Auto-Merge with cause rearm-after-push and is no visit.
+const rearmOf = (engineName, from) => {
+  const engine = realEngine(engineName);
+  const check = stepOf(engine, from), ensure = stepOf(engine, 'ensure-auto-merge');
+  const toEnsure = check['exit-events'].find(e => e['move-to-state'] === 'ensure-auto-merge');
+  const back = ensure['exit-events'][0];
+  const out = rearm => ({ exitCode: 0, scriptOutput: { 'needs-attention': false, reasons: [], 'auto-merge': false, ...(rearm == null ? {} : { rearm }) } });
+  const arm = () => [change(from, 'ensure-auto-merge'), change('ensure-auto-merge', from)];
+  const rearmRound = () => [change(from, 'ensure-auto-merge', { cause: 'rearm-after-push' }), change('ensure-auto-merge', from)];
+  return { engine, check, ensure, toEnsure, back, out, arm, rearmRound };
+};
+
+test('ASS-518 AC1: REARM_AFTER_PUSH is the rearm-after-push cause; rearmAfterPush is true only for scriptOutput.rearm === true', () => {
+  assert.equal(control.REARM_AFTER_PUSH?.cause, 'rearm-after-push');
+  assert.equal(typeof control.rearmAfterPush, 'function');
+  assert.equal(control.rearmAfterPush({ scriptOutput: { rearm: true } }), true);
+  for (const facts of [undefined, {}, { exitCode: 0 }, { scriptOutput: {} }, { scriptOutput: { rearm: false } }, { scriptOutput: { rearm: 'true' } }]) {
+    assert.equal(control.rearmAfterPush(facts), false, JSON.stringify(facts));
+  }
+});
+
+for (const [name, from] of [['example-development', 'team-code-review'], ['grouped-merge', 'check']]) {
+  test(`ASS-518 AC1: on ${name}, the arm plus 4 and 6 rearm-after-push rounds each enter Ensure Auto-Merge and return to ${from} — never Blocked on max-visits`, () => {
+    const { engine, check, ensure, out, arm, rearmRound } = rearmOf(name, from);
+    assert.equal(ensure['max-visits'], 3);
+    assert.equal(ensure['on-max-visits'], 'blocked');
+    for (const rounds of [4, 6]) {
+      let history = arm();
+      for (let i = 0; i < rounds; i++) {
+        const next = nextState(check, engine, out(true), history);
+        assert.equal(next.to, 'ensure-auto-merge', `round ${i + 1} of ${rounds}`);
+        assert.notEqual(next.reason, 'max-visits');
+        assert.equal(nextState(ensure, engine, { exitCode: 0 }, [...history, rearmRound()[0]]).to, from);
+        history = [...history, ...rearmRound()];
+      }
+      assert.equal(visitsInto(control.withoutNoOpRounds(history), 'ensure-auto-merge'), 1, 'only the first arm counts');
+    }
+  });
+
+  test(`ASS-518 AC2: on ${name}, auto-merge false with the head unchanged (no rearm) still counts — the 4th entry is Blocked on max-visits`, () => {
+    const { engine, check, toEnsure, out, arm } = rearmOf(name, from);
+    const three = [...arm(), ...arm(), ...arm()];
+    assert.equal(nextState(check, engine, out(), [...arm(), ...arm()]).to, 'ensure-auto-merge');
+    assert.deepEqual(nextState(check, engine, out(), three), { to: 'blocked', exit: toEnsure, reason: 'max-visits' });
+    assert.deepEqual(nextState(check, engine, out(false), three), { to: 'blocked', exit: toEnsure, reason: 'max-visits' });
+  });
+
+  test(`ASS-518 AC1/AC2: on ${name}, rearm rounds interleaved with unchanged-head rounds — only the unchanged ones count, Blocked on the 4th counted; a rearm move is never redirected even after 3 counted visits`, () => {
+    const { engine, check, toEnsure, out, arm, rearmRound } = rearmOf(name, from);
+    const mixed = [...arm(), ...rearmRound(), ...arm(), ...rearmRound(), ...rearmRound(), ...arm()];
+    assert.equal(visitsInto(control.withoutNoOpRounds(mixed), 'ensure-auto-merge'), 3);
+    assert.deepEqual(nextState(check, engine, out(), mixed), { to: 'blocked', exit: toEnsure, reason: 'max-visits' });
+    assert.deepEqual(nextState(check, engine, out(true), mixed), { to: 'ensure-auto-merge', exit: toEnsure, reason: 'exit' });
+  });
+}
+
+test('ASS-518 AC1: withoutNoOpRounds drops each rearm-after-push change alone — not the round before it — and keeps other changes and sub-state-changes', () => {
+  const enter = [change('take-out-of-draft-mode', 'check'), change('check', 'ensure-auto-merge'), change('ensure-auto-merge', 'check')];
+  const rearm = change('check', 'ensure-auto-merge', { cause: 'rearm-after-push' });
+  const back = change('ensure-auto-merge', 'check');
+  assert.deepEqual(control.withoutNoOpRounds([...enter, rearm, back, rearm, back]), [...enter, back, back]);
+  const sub = change('release', 'release', { cause: 'rearm-after-push', 'sub-state-change': { 'from-state': 'check', 'to-state': 'ensure-auto-merge' } });
+  assert.deepEqual(control.withoutNoOpRounds([change('build', 'release'), sub]), [change('build', 'release'), sub]);
+  // Mixed with ASS-388 no-op rounds: both kinds go, the counted arms stay.
+  const noOp = [change('check', 'address-merge-request-feedback'), change('address-merge-request-feedback', 'check-feedback-round'), change('check-feedback-round', 'check', { cause: 'no-op-round' })];
+  const mixed = [...enter, rearm, back, ...noOp, change('check', 'ensure-auto-merge'), back, rearm, back];
+  assert.equal(visitsInto(control.withoutNoOpRounds(mixed), 'ensure-auto-merge'), 2);
+});

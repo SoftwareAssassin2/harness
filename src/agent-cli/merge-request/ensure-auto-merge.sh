@@ -24,6 +24,11 @@ set -euo pipefail
 # dependency — and tells the operator "Auto-merge set on acme/api !12;
 # waiting for it to merge" (loop_feedback). Fails, setting nothing, on an id
 # the variation has not planned. Without it, every Open one as before.
+#
+# ASS-518: each one set, or found set, gets the forge head it was armed at
+# recorded on its row (armed-head), written only when it changes: a push to
+# its source branch cancels a merge train's auto-merge, and merge-request:check
+# tells that cancel (rearm) by the head having moved past it.
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../merge-requests.bash"
 
 USAGE="merge-request:ensure-auto-merge <project> <ticket-key> <variation> [--only <ids>]"
@@ -39,6 +44,10 @@ for i in $(jq -r --argjson only "$ONLY" "$MR_ONLY$(in_order)"' | .[] as $i | $al
   name="$(mr_name "$i")" iid="$(mr_iid_at "$i")"
   if [[ "$(jq -r ".[$i][\"auto-merge\"]" <<< "$VIEWS")" != true ]]; then
     mr_auto_merge "$command" "$i" || { echo "$command: could not set $name to auto-merge" >&2; exit 1; }
+  fi
+  head="$(jq -c ".[$i].head // null" <<< "$VIEWS")"
+  if [[ "$head" != null && "$(jq -c ".[$i][\"armed-head\"] // null" <<< "$MRS")" != "$head" ]]; then
+    set_merge_request "$command" "$project" "$key" "$variation" "$i" "{\"armed-head\": $head}"
   fi
   armed+=("$i")
   jq -nc --argjson iid "$iid" '{ iid: $iid, "auto-merge": true }'
