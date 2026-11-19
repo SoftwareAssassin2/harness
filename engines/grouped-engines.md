@@ -2658,6 +2658,19 @@ polled, not sent again: `build-pending` with `why` `sent-unchanged`, counted
 as waiting (`auto-merge`), so a red one needing the operator doesn't loop
 through no-op rounds. A new head, or a reply, resolve or retry, sends it again.
 
+A re-arm after a push spends no Ensure Auto-Merge visit (ASS-518). A merge
+train aborts auto-merge on every push to the source branch, so a reviewer's
+pushes would otherwise reach Ensure Auto-Merge's max-visits though each re-arm
+works. `merge-request:ensure-auto-merge` records on each row the head it armed
+at (`armed-head`); `merge-request:check` adds `"rearm": true` when nothing needs
+attention, auto-merge is false, and every Open one keeping it false has an
+`armed-head` other than its head now. Control records the check's move with
+cause `rearm-after-push` (held by no gate, like a timer's), never redirects it
+by max-visits, and drops it from later counts (`withoutNoOpRounds`). No engine
+JSON flag: any engine whose check exits to Ensure Auto-Merge gets it, a
+project's own Release included. Unchanged head, or never armed: no flag, the
+visit counts and still ends at `blocked`.
+
 The current engines' commands are the same ones: a merge request recorded
 from a worktree (no `repository`) is on the workspace's origin, read with
 `glab mr` as before.
