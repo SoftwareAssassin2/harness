@@ -2048,3 +2048,50 @@ test('ASS-508 AC3: a single open thread whose last note is the reviewer\'s, the 
   held(f, 'app', 7, [{ id: 'd1', notes: [blocking(7, 'host-me', 11), blocking(2, 'sam', 12)] }], { jobs: ['review-gate'] });
   assert.deepEqual(await checkOf(f), NOT_HELD);
 });
+
+// ASS-516: a variation whose every created merge request is Closed unmerged (none Merged, Open or planned and not
+// yet built) had nothing live: the check said needs-attention false, auto-merge false, merged false, so a Release
+// went to Ensure Auto-Merge, which arms only Open ones, and back, until Blocked. The check says all-closed instead,
+// naming each closed one, for Blocked for Human (the engine side: test/workflow/grouped-merge.test.js).
+test('ASS-516 AC1: every created MR Closed unmerged makes the check say needs-attention, all-closed, naming each closed MR (id, key, url) in the output and its feedback; one planned and not yet built, or a Closed one never created, is not all-closed', async () => {
+  const APP_7 = `${APP}/-/merge_requests/7`, APP_9 = `${APP}/-/merge_requests/9`;
+  const check = async (f, ...only) => { const r = await ran(f, 'merge-request:check', 'p', 'ABC-5', 'A', ...only); assert.equal(r.code, 0, r.err); return JSON.parse(r.out); };
+  const without = ({ 'ai-feedback-short': _s, 'ai-feedback-long': _l, ...rest }) => rest;
+  const f = await planned([{ id: 1, repository: APP }]);
+  f.record({ 1: { status: 'Open', key: '!7', url: APP_7, base: 'master' } });
+  view(f, 'app', 7, { state: 'closed', web_url: APP_7 });
+  for (const only of [[], ['--only', '1']]) {
+    const sprint = JSON.parse(readFileSync(f.file, 'utf8'));
+    sprint.features[0].variations[0]['ai-feedback-short'] = 'kept';
+    writeFileSync(f.file, JSON.stringify(sprint, null, 4));
+    const out = await check(f, ...only);
+    assert.deepEqual(without(out), { 'needs-attention': true, reasons: ['all-closed'], 'auto-merge': false, merged: false, 'all-closed': true, closed: [{ id: 1, key: '!7', url: APP_7 }] }, only.join(' '));
+    assert.match(out['ai-feedback-short'], /MR 1 \(!7\)/);
+    assert.match(out['ai-feedback-long'], /MR 1 \(!7\)/);
+    assert.ok(out['ai-feedback-long'].includes(APP_7));
+    assert.match(out['ai-feedback-long'], /reopen/i);
+    assert.match(out['ai-feedback-long'], /re-plan/i);
+    assert.match(out['ai-feedback-long'], /Resolved/);
+    assert.equal(variationOf(f)['ai-feedback-short'], 'kept', `${only.join(' ')}: the merge loop's word does not overwrite the output's`);
+  }
+  // Two, both Closed: both named, in depends-on order.
+  const two = await planned([{ id: 1, repository: APP }, { id: 2, repository: APP, 'depends-on': [1] }]);
+  two.record({ 1: { status: 'Open', key: '!7', url: APP_7, base: 'master' }, 2: { status: 'Open', key: '!9', url: APP_9, base: 'change/ABC-5-1' } });
+  view(two, 'app', 7, { state: 'closed', web_url: APP_7 });
+  view(two, 'app', 9, { state: 'closed', web_url: APP_9, target_branch: 'change/ABC-5-1' });
+  const both = await check(two);
+  assert.equal(both['all-closed'], true);
+  assert.deepEqual(both.closed, [{ id: 1, key: '!7', url: APP_7 }, { id: 2, key: '!9', url: APP_9 }]);
+  for (const name of [/MR 1 \(!7\)/, /MR 2 \(!9\)/]) { assert.match(both['ai-feedback-short'], name); assert.match(both['ai-feedback-long'], name); }
+  // One Closed beside one planned mid-build and not yet built (ASS-424): not all-closed, the ticket still needs it.
+  const unbuilt = await planned([{ id: 1, repository: APP }, { id: 2, repository: LIB }]);
+  unbuilt.record({ 1: { status: 'Open', key: '!7', url: APP_7, base: 'master' }, 2: { 'planned-by': { step: 'Generate Solution', why: 'x', at: '2026-11-19T00:00:00Z' } } });
+  view(unbuilt, 'app', 7, { state: 'closed', web_url: APP_7 });
+  const needs = await check(unbuilt);
+  assert.equal(needs['all-closed'], undefined);
+  assert.ok(!needs.reasons.includes('all-closed'), JSON.stringify(needs.reasons));
+  // The only row Closed with no key (its branch had no changes, never opened): not all-closed, as before.
+  const empty = await planned([{ id: 1, repository: APP }]);
+  empty.record({ 1: { status: 'Closed' } });
+  assert.deepEqual(await check(empty), { 'needs-attention': false, reasons: [], 'auto-merge': false, merged: false });
+});
