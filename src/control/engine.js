@@ -189,7 +189,8 @@ function isResolution(engine, from, to) {
 // says landed). Recorded on the clearing change (MOVE_CAUSE, moves.js causeEnv),
 // so sinceResolution restarts the step-visit window at it, and the moves after it
 // count afresh too — else the counts the ticket was blocked with send it straight
-// back to Blocked (ASS-303: build 5/5, test 3/3).
+// back to Blocked (ASS-303: build 5/5, test 3/3). ticket:change-state records it
+// too on a manual move out of blocked given no MOVE_CAUSE (ASS-514).
 export const FIX_LANDED = { cause: 'fix-landed' };
 // clearedByFix(facts) — the current move clears a block because the fix landed:
 // the sub-engine run (grouped-blocked) is done and its recorded output says
