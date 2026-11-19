@@ -214,12 +214,19 @@
                             },
                             {
                                 "script-output": {
-                                    "all-closed": true
+                                    "needs-attention": true
+                                }
+                            },
+                            {
+                                "not": {
+                                    "script-output": {
+                                        "all-closed": true
+                                    }
                                 }
                             }
                         ]
                     },
-                    "move-to-state": "blocked-for-human"
+                    "move-to-state": "address-merge-request-feedback"
                 },
                 {
                     "condition": {
@@ -229,12 +236,12 @@
                             },
                             {
                                 "script-output": {
-                                    "needs-attention": true
+                                    "all-closed": true
                                 }
                             }
                         ]
                     },
-                    "move-to-state": "address-merge-request-feedback"
+                    "move-to-state": "blocked-for-human"
                 },
                 {
                     "condition": {
