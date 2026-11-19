@@ -195,7 +195,7 @@
             "id": "check",
             "sequence": 6,
             "name": "Check the Merge Requests",
-            "description": "The set's merge requests read from their forges; polled until every one is merged. ASS-418: a forge poll, so its VM is stopped here (started again, by the lifecycle, at the next step that needs it)",
+            "description": "The set's merge requests read from their forges; polled until every one is merged. ASS-418: a forge poll, so its VM is stopped here (started again, by the lifecycle, at the next step that needs it); ASS-516: every created merge request of the variation Closed unmerged (all-closed) goes to Blocked for Human, naming them",
             "vm": "stopped",
             "max-visits": 10,
             "on-max-visits": "blocked",
@@ -216,10 +216,32 @@
                                 "script-output": {
                                     "needs-attention": true
                                 }
+                            },
+                            {
+                                "not": {
+                                    "script-output": {
+                                        "all-closed": true
+                                    }
+                                }
                             }
                         ]
                     },
                     "move-to-state": "address-merge-request-feedback"
+                },
+                {
+                    "condition": {
+                        "all": [
+                            {
+                                "exit-code": 0
+                            },
+                            {
+                                "script-output": {
+                                    "all-closed": true
+                                }
+                            }
+                        ]
+                    },
+                    "move-to-state": "blocked-for-human"
                 },
                 {
                     "condition": {

@@ -63,6 +63,21 @@
                             },
                             {
                                 "script-output": {
+                                    "all-closed": true
+                                }
+                            }
+                        ]
+                    },
+                    "move-to-state": "blocked-for-human"
+                },
+                {
+                    "condition": {
+                        "all": [
+                            {
+                                "exit-code": 0
+                            },
+                            {
+                                "script-output": {
                                     "needs-attention": true
                                 }
                             }

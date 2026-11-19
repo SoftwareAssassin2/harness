@@ -184,3 +184,22 @@ test('ASS-365: the validator keeps merges-awaited true or false, and on a step r
   const plain = { steps: [{ id: 'a', sequence: 1, name: 'a', action: { type: 'none' }, 'pass-output': ['x'], 'exit-events': [{ condition: { always: true }, 'move-to-state': 'b' }] }, { id: 'b', sequence: 2, name: 'b', 'is-done': true, action: { type: 'none' } }] };
   assert.ok(errorsFor(plain).some(e => /has pass-output but is no state-engine step/.test(e)));
 });
+
+// ASS-516: a variation whose every created merge request is Closed unmerged has the check say all-closed (needs-attention
+// true too). Ensure Auto-Merge arms only Open ones, so sent there, or to Address Merge Request Feedback, it looped back to
+// the check until Blocked; it goes to Blocked for Human instead, ahead of the needs-attention and auto-merge exits.
+test('ASS-516 AC2: the check\'s all-closed output moves to blocked-for-human — in grouped-merge\'s check and a project Release\'s team-code-review — never to ensure-auto-merge nor address-merge-request-feedback; both engines validate', () => {
+  const release = engines['grouped-release-example'];
+  const ALL_CLOSED = { ...WAITS, 'needs-attention': true, reasons: ['all-closed'], 'auto-merge': false, 'all-closed': true };
+  for (const [engine, id] of [[merge, 'check'], [release, 'team-code-review']]) {
+    assert.deepEqual(errorsFor(engine), [], id);
+    const step = stepOf(engine, id);
+    const at = (output, exitCode = 0) => nextState(step, engine, { exitCode, ticketSystemStatus: 'In Review', scriptOutput: output }, [])?.to ?? null;
+    assert.equal(at(ALL_CLOSED), 'blocked-for-human', id);
+    // Needs-attention alone still goes to Address Merge Request Feedback, auto-merge false alone to Ensure Auto-Merge.
+    assert.equal(at({ ...WAITS, 'needs-attention': true }), 'address-merge-request-feedback', id);
+    assert.equal(at({ ...WAITS, 'auto-merge': false }), 'ensure-auto-merge', id);
+    // A failed check is not all-closed, whatever it printed.
+    assert.notEqual(at(ALL_CLOSED, 1), 'blocked-for-human', id);
+  }
+});
