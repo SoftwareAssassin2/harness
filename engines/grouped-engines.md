@@ -175,7 +175,12 @@ the operator acts polls rather than going to Blocked. A control line in
 `execution-plan-<variation>.md` names the merge request and what it needs,
 and the feedback adds "sent to Address Merge Request Feedback". A dependency
 that is only a draft or only needs approval is no agent's to act on: it keeps
-polling, exit 2, as before.
+polling, exit 2, as before. So is a GitLab one a reviewer holds (ASS-517,
+`mr_reviewer_held` as `merge-request:check` since ASS-508, below): every open
+thread's last note the harness's, its failed jobs, if any, only its review
+gate — it loses `open-threads` and that `build-failed`, and polls, exit 2,
+rather than being sent to Address Merge Request Feedback each poll. A
+reviewer's new last note sends it again.
 
 ### Build merges the awaited merge request (ASS-365)
 
