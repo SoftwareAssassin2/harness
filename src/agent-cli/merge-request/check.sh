@@ -54,6 +54,13 @@ set -euo pipefail
 # held back as "sent-unchanged" and counted as waiting (auto-merge), so a red one needing the operator cannot loop
 # through no-op feedback rounds. A new head, or a reply, resolve or retry (feedback-acted), sends it again.
 #
+# ASS-518: a merge train's auto-merge is cancelled by every push to the source
+# branch. With nothing needing attention and auto-merge false, when every Open
+# one making it false was armed (Ensure Auto-Merge's armed-head) at a head other
+# than its head now, the check adds "rearm": true — a re-arm after a push, which
+# control spends no Ensure Auto-Merge visit on (engine.js REARM_AFTER_PUSH). One
+# never armed, or at the same head, gives none: its visits count, as before.
+#
 # A GitLab one held by a reviewer (ASS-508: mr_reviewer_held) — every open
 # blocking thread's last note ours, the reviewer holding the resolve, and its
 # failed jobs, if any, only project.json's review-gate-jobs (["review-gate"]
@@ -248,6 +255,9 @@ result="$(jq -nc --argjson mrs "$MRS" --argjson views "$VIEWS" --argjson pending
   | ["open-threads", "review-comments", "build-failed", "needs-rebase", "not-created", "all-closed"]
     | map(select(IN($all[], (if $unbuilt != [] then "not-created" else empty end), (if $allclosed then "all-closed" else empty end)))) as $reasons
   | ($live != [] and all($live[]; .m.status == "Merged" or (.m.status == "Open" and (.v["auto-merge"] == true or .v["waiting-on-reviewer"] != null or (.m | waits) or .why == "sent-unchanged")))) as $auto
+  # ASS-518: the Open ones keeping auto-merge false, each armed at another head (cancelled by a push).
+  | [$live[] | select(.m.status == "Open" and (.v["auto-merge"] == true or .v["waiting-on-reviewer"] != null or (.m | waits) or .why == "sent-unchanged" | not))] as $unarmed
+  | ($reasons == [] and ($auto | not) and $unarmed != [] and all($unarmed[]; .m["armed-head"] != null and .v != null and .m["armed-head"] != .v.head)) as $rearm
   | (($live != [] or $loop) and all($live[]; .m.status == "Merged") and $unbuilt == [] and ($allclosed | not)) as $merged
   # Each Open one set to auto-merge that has waited past the bound, when the whole group is only waiting.
   | ($now | epoch) as $at
@@ -261,6 +271,7 @@ result="$(jq -nc --argjson mrs "$MRS" --argjson views "$VIEWS" --argjson pending
   | ($expired | map(name) | join(", ")) as $names
   | (if $days == 1 then "1 day" else "\($days) days" end) as $bound
   | { "needs-attention": ($reasons | length > 0), reasons: $reasons, "auto-merge": $auto, merged: $merged }
+  + (if $rearm then { rearm: true } else {} end)
   + (if $pending == [] then {} else { "build-pending": [$pending[] | { id, key, why }] } end)
   + (if $reviewer == [] then {} else { "waiting-on-reviewer": $reviewer } end)
   + (if $unbuilt == [] then {} else { "not-created": $unbuilt, "needs-build": true } end)

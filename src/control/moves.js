@@ -6,7 +6,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { cleared, ticketKey, runKey } from './backoff.js';
-import { changePath, stepOf, isHeld } from './engine.js';
+import { changePath, stepOf, isHeld, REARM_AFTER_PUSH } from './engine.js';
 import { mayEnter, slotKind, topRun } from './plan.js';
 import { memoryShortForSeat, seatWords } from './seat-memory.js';   // ASS-420; ASS-422: the refusal in words
 
@@ -259,8 +259,8 @@ export const NO_CHOICE = { cause: 'no-human-choice' };
 // gate-when-leaving-state on a timer step is ignored — and its move is recorded as any exit's, with no cause.
 export const TIMER = { cause: 'timer' };
 
-// passesGate(project, cause) — the move is held by no gate: a switched-off step's pass, a timer step's move (TIMER), or a pass with no human choice (NO_CHOICE) where the project does not hold those.
-const passesGate = (project, cause) => cause === SKIPPED || cause === TIMER || (cause === NO_CHOICE && project?.json?.['hold-gates-with-no-human-choice'] !== true);
+// passesGate(project, cause) — the move is held by no gate: a switched-off step's pass, a timer step's move (TIMER, or its re-arm after a push: REARM_AFTER_PUSH, ASS-518), or a pass with no human choice (NO_CHOICE) where the project does not hold those.
+const passesGate = (project, cause) => cause === SKIPPED || cause === TIMER || cause === REARM_AFTER_PUSH || (cause === NO_CHOICE && project?.json?.['hold-gates-with-no-human-choice'] !== true);
 
 // causeEnv(cause) — the env that records a move's cause (sprint.bash MOVE_CAUSE): a name, or { cause, reason }; none without one, nor for NO_CHOICE or TIMER.
 const causeEnv = cause => (cause && cause !== NO_CHOICE && cause !== TIMER ? { MOVE_CAUSE: JSON.stringify(typeof cause === 'string' ? { cause } : cause) } : undefined);
