@@ -2052,7 +2052,7 @@ test('ASS-508 AC3: a single open thread whose last note is the reviewer\'s, the 
 // ASS-517: merge-request:await-dependencies applies ASS-508's mr_reviewer_held to each waiting GitLab dependency
 // with open-threads, as merge-request:check does: one whose every open thread ends in the harness's reply (and whose
 // only failed job, if any, is the review gate) loses open-threads and that build-failed, so it waits (exit 2), not
-// sent to Address Merge Request Feedback each poll (exit 4). MR 2 (app) depending on MR 1 (lib !7), the CLW-2471 shape.
+// sent to Address Merge Request Feedback each poll (exit 4). MR 2 (app) depending on MR 1 (lib !7), the shape the ticket reports.
 const reviewerHeldDep = (v = { head_pipeline: { id: 55, status: 'failed' } }) => dependedOn({ draft: false, sha: HEAD, blocking_discussions_resolved: false, ...v }, 1);
 
 test('ASS-517 AC1: a waiting GitLab dependency whose open threads the harness answered last, only the review gate failed, waits (exit 2) needing only approval — no open-threads, no build-failed, no round started — poll after poll; with no failed pipeline the same', async () => {
