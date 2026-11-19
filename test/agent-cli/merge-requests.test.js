@@ -2049,6 +2049,49 @@ test('ASS-508 AC3: a single open thread whose last note is the reviewer\'s, the 
   assert.deepEqual(await checkOf(f), NOT_HELD);
 });
 
+// ASS-517: merge-request:await-dependencies applies ASS-508's mr_reviewer_held to each waiting GitLab dependency
+// with open-threads, as merge-request:check does: one whose every open thread ends in the harness's reply (and whose
+// only failed job, if any, is the review gate) loses open-threads and that build-failed, so it waits (exit 2), not
+// sent to Address Merge Request Feedback each poll (exit 4). MR 2 (app) depending on MR 1 (lib !7), the CLW-2471 shape.
+const reviewerHeldDep = (v = { head_pipeline: { id: 55, status: 'failed' } }) => dependedOn({ draft: false, sha: HEAD, blocking_discussions_resolved: false, ...v }, 1);
+
+test('ASS-517 AC1: a waiting GitLab dependency whose open threads the harness answered last, only the review gate failed, waits (exit 2) needing only approval — no open-threads, no build-failed, no round started — poll after poll; with no failed pipeline the same', async () => {
+  const f = await reviewerHeldDep();
+  held(f, 'lib', 7, HELD, { jobs: ['review-gate'] });
+  for (let i = 0; i < 2; i++) {
+    const r = await awaiting(f);
+    assert.equal(r.code, 2, `poll ${i + 1}: ${r.err}`);
+    assert.equal(r.out.waiting.length, 1);
+    assert.equal(r.out.waiting[0]['depends-on'].id, 1);
+    assert.deepEqual(r.out.waiting[0].needs, ['needs-approval'], `poll ${i + 1}`);
+    assert.deepEqual(f.mrs().map(m => [m.id, m['checked-head'] ?? null, m['feedback-acted'] ?? null]), [[1, null, null], [2, null, null]], `poll ${i + 1}: no Address Merge Request Feedback round started`);
+  }
+  for (const pipeline of [{ head_pipeline: { id: 55, status: 'success' } }, {}]) {
+    const g = await reviewerHeldDep(pipeline);
+    held(g, 'lib', 7);
+    const r = await awaiting(g);
+    assert.equal(r.code, 2, `${JSON.stringify(pipeline)}: ${r.err}`);
+    assert.deepEqual(r.out.waiting[0].needs, ['needs-approval'], JSON.stringify(pipeline));
+  }
+});
+
+test('ASS-517 AC2: a reviewer\'s note last on any open thread, or a failed job beyond the review gate, keeps open-threads and build-failed — exit 4 as before, the round started', async () => {
+  const f = await reviewerHeldDep();
+  held(f, 'lib', 7, [HELD[0], { id: 'd2', notes: [blocking(3, 'host-me', 11), blocking(4, 'sam', 12)] }], { jobs: ['review-gate'] });
+  const r = await awaiting(f);
+  assert.equal(r.code, 4, r.err);
+  assert.ok(r.out.waiting[0].needs.includes('open-threads'), JSON.stringify(r.out));
+  assert.ok(r.out.waiting[0].needs.includes('build-failed'), JSON.stringify(r.out));
+  assert.equal(f.mrs()[0]['checked-head'], HEAD, 'the round\'s start recorded');
+  // Ours last on the thread, but a real failure beyond the gate: not held.
+  const g = await reviewerHeldDep();
+  held(g, 'lib', 7, HELD, { jobs: ['review-gate', 'unit'] });
+  const s = await awaiting(g);
+  assert.equal(s.code, 4, s.err);
+  assert.ok(s.out.waiting[0].needs.includes('open-threads'), JSON.stringify(s.out));
+  assert.ok(s.out.waiting[0].needs.includes('build-failed'), JSON.stringify(s.out));
+});
+
 // ASS-516: a variation whose every created merge request is Closed unmerged (none Merged, Open or planned and not
 // yet built) had nothing live: the check said needs-attention false, auto-merge false, merged false, so a Release
 // went to Ensure Auto-Merge, which arms only Open ones, and back, until Blocked. The check says all-closed instead,
