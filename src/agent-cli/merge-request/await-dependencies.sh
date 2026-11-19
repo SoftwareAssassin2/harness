@@ -37,6 +37,10 @@ set -euo pipefail
 # merged (set to auto-merge, say). The reasons are mr_view's, as
 # merge-request:check reads them; the approvals, the failed jobs' names and
 # the review comments are asked of the forge only for a dependency that waits.
+# ASS-517: a GitLab dependency whose open threads a reviewer holds, each
+# answered by the harness last, with at most its review gate failed
+# (mr_reviewer_held, as merge-request:check) has neither open-threads nor that
+# build-failed, so it waits (exit 2), not sent to Address MR Feedback.
 #
 # Exits:
 #   0  none waits;
@@ -162,6 +166,17 @@ waiting="$(jq -c "$WAITING" <<< "$MRS")"
 refresh_merge_requests "$command" "$project" "$key" "$variation"
 waiting="$(jq -c "$WAITING" <<< "$MRS")"
 [[ "$waiting" != '[]' ]] || none_waiting
+
+# ASS-517: an Open GitLab dependency whose open threads a reviewer holds, each answered by us last, and whose failed
+# jobs, if any, are only its review gate (mr_reviewer_held, as merge-request:check, ASS-508) loses open-threads (and
+# that build-failed) from its view, so it waits (exit 2), not sent to Address Merge Request Feedback each poll.
+gates=""
+for at in $(jq -r --argjson views "$VIEWS" --argjson mrs "$MRS" '[.[].at] | unique[]
+    | select($mrs[.].status == "Open" and $mrs[.].key != null and any($views[.].reasons[]?; . == "open-threads"))' <<< "$waiting"); do
+  [[ -n "$gates" ]] || gates="$(review_gate_jobs "$command" "$projects/$project/project.json")" || exit 1
+  hold="$(mr_reviewer_held "$command" "$at" "$(jq -c ".[$at]" <<< "$VIEWS")" "$project" "$gates")"
+  [[ "$hold" == null ]] || VIEWS="$(jq -c --argjson i "$at" --argjson h "$hold" '.[$i].reasons -= ["open-threads"] + (if $h["build-failed"] then ["build-failed"] else [] end)' <<< "$VIEWS")"
+done
 
 # This step's needs as last kept: a build-failed already sent at an unchanged head is polled, not sent again (ASS-505).
 kept="$(variation_field '.["awaited-dependency-needs"].needs // []' "$command" "$project" "$key" "$variation")"
