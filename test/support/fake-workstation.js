@@ -1,8 +1,9 @@
 // A GCP workstation for the tests (ASS-433): fakeWorkstation(env) —
 // fake-gcloud.js as `gcloud` and fake-ssh.js as `ssh`, first on the PATH of
 // the env it returns (`env`, process.env by default, extended), their calls
-// logged; HARNESS_HOME a short folder of its own under /tmp (a unix socket's
-// path is at most 104 bytes, and the master's lives there).
+// logged; HARNESS_HOME a short folder of its own under tmpdir() — npm test's
+// /tmp/harness-test.XXXXXX (test/run.sh, ASS-515) — (a unix socket's path is at
+// most 104 bytes, and the master's lives there).
 // workstation(id, state) makes one (STATE_STOPPED by default), state(id)
 // reads it and setState(id, s) sets it; mark(id, name) and unmark(id, name)
 // put and take a marker file in its folder (drop, hang, refuse-forward,
@@ -43,7 +44,7 @@ export function fakeWorkstation(base = process.env) {
   for (const d of [bin, workstations]) mkdirSync(d);
   symlinkSync(join(import.meta.dirname, 'fake-gcloud.js'), join(bin, 'gcloud'));
   symlinkSync(join(import.meta.dirname, 'fake-ssh.js'), join(bin, 'ssh'));
-  const home = mkdtempSync('/tmp/wsh-');
+  const home = mkdtempSync(join(tmpdir(), 'wsh-'));
   made.push(workstations);
   const env = { HARNESS_WS_METADATA_URL: 'http://127.0.0.1:9/computeMetadata/v1/instance/preempted', HARNESS_WS_WATCHER_SECONDS: '1', ...base, PATH: `${bin}:${base.PATH}`, FAKE_WS_DIR: workstations, FAKE_GCLOUD_LOG: join(dir, 'gcloud.log'), FAKE_SSH_LOG: join(dir, 'ssh.log'), HARNESS_HOME: home, WORKSTATION_POLL_SECONDS: '0.1' };
   const lines = file => (existsSync(file) ? readFileSync(file, 'utf8').trim().split('\n').filter(Boolean).map(l => JSON.parse(l)) : []);

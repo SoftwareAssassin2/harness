@@ -63,7 +63,7 @@ test('a real workstation: a ticket variation\'s step claims it, the shared root 
   writeFileSync(join(dir, 'harness.json'), JSON.stringify({ 'forwarder-port': port }));
   writeFileSync(join(dir, 'assignments.json'), JSON.stringify({ assignments: [] }));
   writeFileSync(join(dir, 'vm-credentials.json'), JSON.stringify({ p: { git: { 'user-name': 'Harness Test', 'user-email': 'harness-test@example.com' } } }));
-  env = { ...process.env, PROJECTS_DIR: join(dir, 'projects'), HARNESS_FILE: join(dir, 'harness.json'), ASSIGNMENTS_FILE: join(dir, 'assignments.json'), HARNESS_HOME: mkdtempSync('/tmp/wsvr-'), VM_CREDENTIALS_FILE: join(dir, 'vm-credentials.json') };
+  env = { ...process.env, PROJECTS_DIR: join(dir, 'projects'), HARNESS_FILE: join(dir, 'harness.json'), ASSIGNMENTS_FILE: join(dir, 'assignments.json'), HARNESS_HOME: mkdtempSync(join(tmpdir(), 'wsvr-')), VM_CREDENTIALS_FILE: join(dir, 'vm-credentials.json') };
   forwarder = await startForwarder({ root: ROOT, env, port });
 
   const created = JSON.parse((await run(AGENT, ['vm:create', 'p', 'X-1', 'A'], { env })).stdout);

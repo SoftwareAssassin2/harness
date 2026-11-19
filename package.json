@@ -4,6 +4,6 @@
   "license": "MIT",
   "type": "module",
   "scripts": {
-    "test": "node --test --test-timeout=600000 --test-force-exit 'test/**/*.test.js'"
+    "test": "bash test/run.sh"
   }
 }

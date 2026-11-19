@@ -52,7 +52,7 @@ test('a real workstation pulls one small image straight from Artifact Registry a
   // A free port, not 7787: a running harness's own connection holds that one's forward (ASS-477).
   writeFileSync(join(dir, 'harness.json'), JSON.stringify({ 'forwarder-port': await freePort() }));
   writeFileSync(join(dir, 'assignments.json'), JSON.stringify({ assignments: [] }));
-  env = { ...process.env, PROJECTS_DIR: join(dir, 'projects'), HARNESS_FILE: join(dir, 'harness.json'), ASSIGNMENTS_FILE: join(dir, 'assignments.json'), HARNESS_HOME: mkdtempSync('/tmp/wsir-') };
+  env = { ...process.env, PROJECTS_DIR: join(dir, 'projects'), HARNESS_FILE: join(dir, 'harness.json'), ASSIGNMENTS_FILE: join(dir, 'assignments.json'), HARNESS_HOME: mkdtempSync(join(tmpdir(), 'wsir-')) };
   assert.equal(JSON.parse((await run(AGENT, ['workstation:connect', 'p', ws.id], { env })).stdout).connected, true);
 
   // The script on stdin, as wsv_pull_images sends it: no zot port, so only Artifact Registry can give the image.

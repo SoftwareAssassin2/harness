@@ -72,7 +72,7 @@ test('a real cloud VM: its status read, started if it stopped itself, connected 
   writeFileSync(join(dir, 'projects', 'p', 'project.json'), JSON.stringify({ name: 'P', 'dev-environments': { mode: 'workstation', 'cloud-vms': [vm] } }));
   writeFileSync(join(dir, 'harness.json'), JSON.stringify({ 'forwarder-port': port }));
   writeFileSync(join(dir, 'assignments.json'), JSON.stringify({ assignments: [] }));
-  env = { ...process.env, PROJECTS_DIR: join(dir, 'projects'), HARNESS_FILE: join(dir, 'harness.json'), ASSIGNMENTS_FILE: join(dir, 'assignments.json'), HARNESS_HOME: mkdtempSync('/tmp/cvmr-') };
+  env = { ...process.env, PROJECTS_DIR: join(dir, 'projects'), HARNESS_FILE: join(dir, 'harness.json'), ASSIGNMENTS_FILE: join(dir, 'assignments.json'), HARNESS_HOME: mkdtempSync(join(tmpdir(), 'cvmr-')) };
   forwarder = await startForwarder({ root: ROOT, env, port });
 
   const status = JSON.parse((await cli('workstation:status', 'p', vm.id)).stdout);

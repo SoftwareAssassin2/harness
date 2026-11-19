@@ -15,7 +15,7 @@ This repo is a customizable AI agent harness. It orchestrates agentic work, from
   - `data/projects/<project>/`: one folder per project (see below).
 - `src/off-board/<project>/`: off-board ticket bodies (gitignored).
 - `~/.harness/`: run pids, logs, backups, `restart-requested.json`.
-- `test/`: `npm test` (node:test). Run one file with `node --test test/<file>.test.js`.
+- `test/`: `npm test` (node:test). Run one file with `npm test -- test/<file>.test.js`.
 
 ## The CLIs: use them, don't hand-edit JSON
 
