@@ -2581,7 +2581,8 @@ merge (its time recorded on the row as `pipeline-rerun`): a pipeline that
 started after the merge, or one re-run for it already, that fails is
 `build-failed`, as is one that cannot be started again. Each one held back is
 listed in the check's output as `"build-pending": [{ id, key, why:
-"dependency-unmerged" | "re-run" }]`, present only when there is one. Once
+"dependency-unmerged" | "re-run" | "sent-unchanged" }]` (the last below),
+present only when there is one. Once
 every one not Closed is Merged, Team Code Review ends Release (ASS-224) and
 QA sets the ticket system to In Testing.
 
@@ -2635,6 +2636,14 @@ check sends it once per poll at most. A project's own Release adds the same
 step after its Address Merge Request Feedback (without `--only`, both exits
 back to Team Code Review, the first with the cause), as
 `test/fixtures/engines/grouped-release-example` does.
+
+The check sends a failed pipeline once per head (ASS-513, as
+`merge-request:await-dependencies` since ASS-505): it records the head it
+reported `build-failed` at (`build-failed-head`). Seen again at that head, its
+`checked-head` unchanged and `feedback-acted` not true, the merge request is
+polled, not sent again: `build-pending` with `why` `sent-unchanged`, counted
+as waiting (`auto-merge`), so a red one needing the operator doesn't loop
+through no-op rounds. A new head, or a reply, resolve or retry, sends it again.
 
 The current engines' commands are the same ones: a merge request recorded
 from a worktree (no `repository`) is on the workspace's origin, read with

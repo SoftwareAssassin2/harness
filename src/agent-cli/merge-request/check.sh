@@ -46,7 +46,13 @@ set -euo pipefail
 #     again is build-failed.
 # Each one held back is listed, only when there is one:
 #
-#   "build-pending": [{ "id", "key", "why": "dependency-unmerged" | "re-run" }]
+#   "build-pending": [{ "id", "key", "why": "dependency-unmerged" | "re-run" | "sent-unchanged" }]
+#
+# ASS-513, as merge-request:await-dependencies since ASS-505: a build-failed one is sent to Address Merge Request
+# Feedback once per head — the head it was reported at recorded on its row (build-failed-head). Seen again at that
+# head, its checked-head unchanged and nothing acted on (feedback-acted not true), it is polled, not sent again:
+# held back as "sent-unchanged" and counted as waiting (auto-merge), so a red one needing the operator cannot loop
+# through no-op feedback rounds. A new head, or a reply, resolve or retry (feedback-acted), sends it again.
 #
 # A GitLab one held by a reviewer (ASS-508: mr_reviewer_held) — every open
 # blocking thread's last note ours, the reviewer holding the resolve, and its
@@ -130,6 +136,8 @@ for i in $(jq -r --argjson views "$VIEWS" --argjson only "$ONLY" "$MR_ONLY"'
     | .["waiting-on-reviewer"] = $h.threads)' <<< "$VIEWS")"
 done
 
+# The rows as they were before this check wrote them (ASS-513's poll reads the last check's checked-head and feedback-acted).
+prior="$MRS"
 # ASS-388: each Open one of the set gets the head commit this check saw as its checked-head, and its
 # feedback-acted (merge-request:reply, :resolve and :retry set it) cleared — written only when either changes. The
 # check is what sends a merge request to Address Merge Request Feedback, so these are the round's start:
@@ -170,6 +178,20 @@ while IFS=$'\t' read -r i why merged; do
   fi
   pending="$(jq -c --argjson i "$i" --arg why "$why" --argjson mrs "$MRS" '. + [{ i: $i, id: $mrs[$i].id, key: $mrs[$i].key, why: $why }]' <<< "$pending")"
 done < <(jq -r '.[] | [.i, .why, (.merged // "")] | @tsv' <<< "$held")
+# ASS-513: one sent already at this head (build-failed-head), its checked-head unchanged and nothing acted on, is polled.
+pending="$(jq -c --argjson views "$VIEWS" --argjson only "$ONLY" --argjson pending "$pending" "$MR_ONLY"'
+  $pending + [range(length) as $i | .[$i] as $m | $views[$i] as $v
+    | select($m.status == "Open" and ($m | in_set($only)) and $v != null and $v.head != null and any($v.reasons[]; . == "build-failed")
+        and $m["checked-head"] == $v.head and $m["feedback-acted"] != true and $m["build-failed-head"] == $v.head and (any($pending[]; .i == $i) | not))
+    | { i: $i, id: $m.id, key: $m.key, why: "sent-unchanged" }]' <<< "$prior")"
+# Each one reported build-failed records the head it was sent at.
+while IFS=$'\t' read -r i fields; do
+  set_merge_request "$command" "$project" "$key" "$variation" "$i" "$fields"
+done < <(jq -r --argjson views "$VIEWS" --argjson only "$ONLY" --argjson pending "$pending" "$MR_ONLY"'
+  range(length) as $i | .[$i] as $m | $views[$i] as $v
+  | select($m.status == "Open" and ($m | in_set($only)) and $v != null and $v.head != null and any($v.reasons[]; . == "build-failed")
+      and (any($pending[]; .i == $i) | not) and $m["build-failed-head"] != $v.head)
+  | [$i, ({ "build-failed-head": $v.head } | tojson)] | @tsv' <<< "$MRS")
 
 # The approval wait (ASS-351): each Open one set to auto-merge with nothing of its own to act on has
 # waited since its approval-wait-since, recorded the first time it is seen so and cleared once it is not.
@@ -200,12 +222,12 @@ result="$(jq -nc --argjson mrs "$MRS" --argjson views "$VIEWS" --argjson pending
   # until Blocked. waits: an Open one waits on a depends-on that is created and neither Merged nor Closed; one never
   # created is no wait, so a dependent of only such keeps auto-merge false rather than polling quietly for good.
   def waits: (unmerged_deps($mrs) | map(select(.key != null))) != [];
-  [range($mrs | length) as $i | { i: $i, m: $mrs[$i], v: $views[$i], held: any($pending[]; .i == $i) } | select(.m.status != "Closed" and .m.status != "Not Created" and .m.key != null and (.m | in_set($only)))] as $live
+  [range($mrs | length) as $i | { i: $i, m: $mrs[$i], v: $views[$i], held: any($pending[]; .i == $i), why: ([$pending[] | select(.i == $i) | .why] | first) } | select(.m.status != "Closed" and .m.status != "Not Created" and .m.key != null and (.m | in_set($only)))] as $live
   | [$live[] | select(.m.status == "Open") | .held as $held | (.v.reasons[] | select(($held and . == "build-failed") | not)), (if $comments[.i | tostring] then "review-comments" else empty end)] as $all
   # One a build step planned mid-build (planned-by, ASS-424) and not yet created is no ASS-354 leftover: the ticket needs it, so it is not-created and the set not merged.
   | [$mrs[] | select(.["planned-by"] != null and .status == "Not Created" and in_set($only)) | .id] as $unbuilt
   | ["open-threads", "review-comments", "build-failed", "needs-rebase", "not-created"] | map(select(IN($all[], (if $unbuilt != [] then "not-created" else empty end)))) as $reasons
-  | ($live != [] and all($live[]; .m.status == "Merged" or (.m.status == "Open" and (.v["auto-merge"] == true or .v["waiting-on-reviewer"] != null or (.m | waits))))) as $auto
+  | ($live != [] and all($live[]; .m.status == "Merged" or (.m.status == "Open" and (.v["auto-merge"] == true or .v["waiting-on-reviewer"] != null or (.m | waits) or .why == "sent-unchanged")))) as $auto
   | (($live != [] or $loop) and all($live[]; .m.status == "Merged") and $unbuilt == []) as $merged
   # Each Open one set to auto-merge that has waited past the bound, when the whole group is only waiting.
   | ($now | epoch) as $at
@@ -256,6 +278,8 @@ said="$(jq -c --argjson views "$VIEWS" --argjson only "$ONLY" --argjson comments
      | if $own != [] then { act: true, text: ($l + ": " + ($own | map(words) | join(", "))), url: $m.url }
        elif $v["waiting-on-reviewer"] != null then
          { text: ($l + " waits on a reviewer to resolve thread" + (if ($v["waiting-on-reviewer"] | length) > 1 then "s " else " " end) + ($v["waiting-on-reviewer"] | join(", ")) + " we answered"), url: $m.url }
+       elif any($pending[]; .i == $i and .why == "sent-unchanged") then
+         { text: ($l + ": its pipeline failed at this head and was already sent to Address Merge Request Feedback; waits for a new commit or the operator"), url: $m.url }
        elif $v["auto-merge"] == true and (($approvals[$i | tostring] // "0") != "0") then
          { text: ($l + " waits for " + approvals($approvals[$i | tostring]) + (if $m["approval-wait-since"] then " since " + $m["approval-wait-since"] else "" end)), url: $m.url }
        elif $v["auto-merge"] == true then { text: ("Auto-merge set on " + $l + "; waiting for it to merge"), url: $m.url }
