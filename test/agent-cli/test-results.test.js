@@ -347,11 +347,13 @@ test('ASS-520 AC2: re-run logic unchanged — a new failure gone on the re-run p
   assert.equal(judge(A_MASTER_ABORT, [BRANCH_NEW_520, BRANCH_520], { others: [B_MASTER.output] }).verdict, 'passed');
 });
 
-test('ASS-520: others ignored for a reproducing check, a green master, or a timed-out master', () => {
+test('ASS-520/521: others ignored for no master, a green master, or a timed-out master', () => {
   assert.deepEqual(judge(null, [BRANCH_520], { reproduces: true, others: [B_MASTER.output] }).new, [T_520]);
-  assert.deepEqual(judge(A_MASTER_PARTIAL, [BRANCH_520], { reproduces: true, others: [B_MASTER.output] }).new, [T_520]);
   assert.deepEqual(judge({ status: 0, output: 'ok\n' }, [BRANCH_520], { others: [B_MASTER.output] }), { verdict: 'failed', new: [T_520], 'pre-existing': [] });
   assert.equal(judge(stopped(SPEC_STOPPED), [BRANCH_520], { others: [B_MASTER.output] }).verdict, 'blocked');
+  // ASS-521: a reproducing check too — no master, a green one or a timed-out one: T new, never blocked.
+  for (const master of [null, { status: 0, output: 'ok\n' }, stopped(SPEC_STOPPED)])
+    assert.deepEqual(judge(master, [BRANCH_520], { reproduces: true, others: [B_MASTER.output] }), { verdict: 'failed', new: [T_520], 'pre-existing': [] });
 });
 
 test('ASS-520: the command line takes repeated --also <master output file>, before or after --reproduces; without it, as before', () => {
@@ -366,4 +368,34 @@ test('ASS-520: the command line takes repeated --also <master output file>, befo
   assert.deepEqual(verdict('--also', g, '--also', b, '2', a, '1', branch), { verdict: 'passed', new: [], 'pre-existing': [T_520] });
   assert.deepEqual(verdict('--reproduces', '--also', b, '-', '-', '1', branch).new, [T_520]);
   assert.deepEqual(verdict('--also', b, '--reproduces', '-', '-', '1', branch).new, [T_520]);
+});
+
+// ASS-521: --also reaches a reproducing check too — its master run aborted on its file new to the branch (naming no
+// test), another command's red master naming T sets T aside; a failure no master run names is still new.
+test('ASS-521 AC1: a reproducing check whose master names no test, another command\'s master failing T, the branch failing only T: passed, T pre-existing', () => {
+  for (const aMaster of [A_MASTER_ABORT, A_MASTER_PARTIAL])
+    assert.deepEqual(judge(aMaster, [BRANCH_520], { reproduces: true, others: [B_MASTER.output] }), { verdict: 'passed', new: [], 'pre-existing': [T_520] });
+  assert.deepEqual(judge(A_MASTER_ABORT, [BRANCH_520], { reproduces: true, others: ['/tests/y.sql ....\n1..1\nok 1 - y\n', B_MASTER.output] }),
+    { verdict: 'passed', new: [], 'pre-existing': [T_520] }, 'every other master consulted');
+  const dir = mkdtempSync(join(tmpdir(), 'ass521-'));
+  const cli = fileURLToPath(new URL('../../src/agent-cli/automated-tests/test-results.js', import.meta.url));
+  const file = (name, text) => { writeFileSync(join(dir, name), text); return join(dir, name); };
+  const a = file('abort.txt', A_MASTER_ABORT.output), b = file('b.txt', B_MASTER.output), branch = file('branch.txt', BRANCH_520.output);
+  const verdict = (...args) => JSON.parse(execFileSync('node', [cli, ...args], { encoding: 'utf8' }));
+  assert.deepEqual(verdict('--reproduces', '--also', b, '2', a, '1', branch), { verdict: 'passed', new: [], 'pre-existing': [T_520] });
+  assert.deepEqual(verdict('--also', b, '--reproduces', '2', a, '1', branch), { verdict: 'passed', new: [], 'pre-existing': [T_520] });
+});
+
+test('ASS-521 AC2: a reproducing check failing a test no master run names still fails — only it new, T pre-existing', () => {
+  for (const aMaster of [A_MASTER_ABORT, A_MASTER_PARTIAL])
+    assert.deepEqual(judge(aMaster, [BRANCH_NEW_520, BRANCH_NEW_520], { reproduces: true, others: [B_MASTER.output] }),
+      { verdict: 'failed', new: ['/concurrency-tests/billing.sql: brand_new'], 'pre-existing': [T_520] });
+  assert.equal(judge(A_MASTER_ABORT, [BRANCH_NEW_520, BRANCH_520], { reproduces: true, others: [B_MASTER.output] }).verdict, 'passed', 're-run logic unchanged');
+});
+
+test('ASS-521 AC2: --also never sets aside a reproducing run naming no test (ASS-227); a green reproducing run passes, nothing set aside', () => {
+  const v = judge(A_MASTER_ABORT, [red(ABORT_520)], { reproduces: true, others: [B_MASTER.output] });
+  assert.equal(v.verdict, 'failed');
+  assert.match(v.new.join('\n'), /the ticket's bug still reproduces/);
+  assert.deepEqual(judge(A_MASTER_ABORT, [{ status: 0, output: 'ok\n' }], { reproduces: true, others: [B_MASTER.output] }), { verdict: 'passed', new: [], 'pre-existing': [] });
 });
