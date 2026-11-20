@@ -52,7 +52,19 @@ set -euo pipefail
 # Feedback once per head — the head it was reported at recorded on its row (build-failed-head). Seen again at that
 # head, its checked-head unchanged and nothing acted on (feedback-acted not true), it is polled, not sent again:
 # held back as "sent-unchanged" and counted as waiting (auto-merge), so a red one needing the operator cannot loop
-# through no-op feedback rounds. A new head, or a reply, resolve or retry (feedback-acted), sends it again.
+# through no-op feedback rounds. A new head, or a resolve or retry (feedback-acted), sends it again; a reply alone
+# does not (ASS-523).
+#
+# ASS-523: one so held whose open threads are each answered by us last, with a failed job beyond the review gate
+# (mr_reviewer_held's beyond-gate; its first send keeps open-threads and build-failed, as ASS-508), is not sent
+# again for its threads either: open-threads dropped, it needs the operator. With no other reason the check adds
+#
+#   "operator-needed": true, "needs-operator": [{ "id", "key", "url", "jobs", "threads" }],
+#   "ai-feedback-short": "Operator needed: MR 1 (!7) failed unit at this head after a feedback round",
+#   "ai-feedback-long": "…each with its url, failed jobs and threads, the ticket's open blocking questions, what to do"
+#
+# for grouped-merge's check exit to Blocked for Human (Operator Needed), the feedback becoming the variation's; no
+# approval-wait-expired beside it. With --only the same, its feedback the output's.
 #
 # ASS-518: a merge train's auto-merge is cancelled by every push to the source
 # branch. With nothing needing attention and auto-merge false, when every Open
@@ -154,8 +166,8 @@ for i in $(jq -r --argjson views "$VIEWS" --argjson only "$ONLY" "$MR_ONLY"'
   to_entries[] | select(.value.status == "Open" and .value.key != null and (.value | in_set($only)) and any($views[.key].reasons[]?; . == "open-threads")) | .key' <<< "$MRS"); do
   [[ -n "$gates" ]] || gates="$(review_gate_jobs "$command" "$projects/$project/project.json")" || exit 1
   hold="$(mr_reviewer_held "$command" "$i" "$(jq -c ".[$i]" <<< "$VIEWS")" "$project" "$gates")"
-  [[ "$hold" == null ]] || VIEWS="$(jq -c --argjson i "$i" --argjson h "$hold" '.[$i] |= (.reasons -= ["open-threads"] + (if $h["build-failed"] then ["build-failed"] else [] end)
-    | .["waiting-on-reviewer"] = $h.threads)' <<< "$VIEWS")"
+  [[ "$hold" == null ]] || VIEWS="$(jq -c --argjson i "$i" --argjson h "$hold" '.[$i] |= if $h["beyond-gate"] then .["held-threads"] = $h.threads | .["failed-jobs"] = $h["beyond-gate"]
+    else (.reasons -= ["open-threads"] + (if $h["build-failed"] then ["build-failed"] else [] end) | .["waiting-on-reviewer"] = $h.threads) end' <<< "$VIEWS")"
 done
 
 # The rows as they were before this check wrote them (ASS-513's poll reads the last check's checked-head and feedback-acted).
@@ -163,7 +175,7 @@ prior="$MRS"
 # ASS-388: each Open one of the set gets the head commit this check saw as its checked-head, and its
 # feedback-acted (merge-request:reply, :resolve and :retry set it) cleared — written only when either changes. The
 # check is what sends a merge request to Address Merge Request Feedback, so these are the round's start:
-# merge-request:feedback-round tells a round that pushed, replied to, resolved and retried nothing by them.
+# merge-request:feedback-round tells a round that pushed, resolved and retried nothing by them (a reply alone is no change, ASS-523).
 while IFS=$'\t' read -r i fields; do
   set_merge_request "$command" "$project" "$key" "$variation" "$i" "$fields"
 done < <(jq -r --argjson views "$VIEWS" --argjson only "$ONLY" "$MR_ONLY"'
@@ -206,6 +218,10 @@ pending="$(jq -c --argjson views "$VIEWS" --argjson only "$ONLY" --argjson pendi
     | select($m.status == "Open" and ($m | in_set($only)) and $v != null and $v.head != null and any($v.reasons[]; . == "build-failed")
         and $m["checked-head"] == $v.head and $m["feedback-acted"] != true and $m["build-failed-head"] == $v.head and (any($pending[]; .i == $i) | not))
     | { i: $i, id: $m.id, key: $m.key, why: "sent-unchanged" }]' <<< "$prior")"
+# ASS-523: one so polled whose threads we answered last (held-threads: a job beyond the review gate failed) has nothing
+# left for an agent: open-threads dropped, it needs the operator (operator-needed below), not another round.
+VIEWS="$(jq -c --argjson pending "$pending" 'reduce ($pending[] | select(.why == "sent-unchanged") | .i) as $i (.;
+  if .[$i]["held-threads"] != null then .[$i] |= (.reasons -= ["open-threads"] | .["needs-operator"] = true) else . end)' <<< "$VIEWS")"
 # Each one reported build-failed records the head it was sent at.
 while IFS=$'\t' read -r i fields; do
   set_merge_request "$command" "$project" "$key" "$variation" "$i" "$fields"
@@ -235,8 +251,9 @@ days="$(jq -r '.["approval-wait-days"] // 3 | if type == "number" and . > 0 then
 [[ "$days" != bad ]] || { echo "$command: harness.json's approval-wait-days must be a positive number of days; 3 used" >&2; days=3; }
 entered="$(variation_field '[.["state-changes"] // [] | .[] | select(.["sub-state-change"] == null) | .timestamp // empty] | last' "$command" "$project" "$key" "$variation")"
 
+questions="$(open_questions "$project" "$key")"
 result="$(jq -nc --argjson mrs "$MRS" --argjson views "$VIEWS" --argjson pending "$pending" --arg now "$now" --argjson days "$days" --argjson entered "$entered" \
-  --argjson only "$ONLY" --argjson comments "$comments" --argjson loop "$LOOP" "$MR_DEPS$MR_TIME$MR_ONLY"'
+  --argjson only "$ONLY" --argjson comments "$comments" --argjson loop "$LOOP" --argjson questions "$questions" "$MR_DEPS$MR_TIME$MR_ONLY"'
   def name: if .id then "MR \(.id) (\(.key))" else .key end;
   # A planned one never created (Not Created, no key; one Generate Solution left out, say as a duplicate of one merged
   # already) has no forge row to merge or set, and nothing ever moves it on, so it is not live (ASS-354): counted, it
@@ -260,8 +277,10 @@ result="$(jq -nc --argjson mrs "$MRS" --argjson views "$VIEWS" --argjson pending
   | ($reasons == [] and ($auto | not) and $unarmed != [] and all($unarmed[]; .m["armed-head"] != null and .v != null and .m["armed-head"] != .v.head)) as $rearm
   | (($live != [] or $loop) and all($live[]; .m.status == "Merged") and $unbuilt == [] and ($allclosed | not)) as $merged
   # Each Open one set to auto-merge that has waited past the bound, when the whole group is only waiting.
+  # ASS-523: the Open ones needing the operator (sent once at this head, our note last, a job beyond the gate failed).
+  | [$live[] | select(.m.status == "Open" and .v["needs-operator"] == true) | { id: .m.id, key: .m.key, url: .m.url, jobs: .v["failed-jobs"], threads: .v["held-threads"] }] as $operator
   | ($now | epoch) as $at
-  | [if $reasons == [] and $auto and ($merged | not) then
+  | [if $reasons == [] and $auto and ($merged | not) and $operator == [] then
        $live[] | select(.m.status == "Open" and (.v["auto-merge"] == true or .v["waiting-on-reviewer"] != null) and .m["approval-wait-since"] != null)
        | ([.m["approval-wait-since"], $entered] | map(select(. != null) | epoch) | max) as $since
        | select($at - $since >= $days * 86400)
@@ -283,6 +302,13 @@ result="$(jq -nc --argjson mrs "$MRS" --argjson views "$VIEWS" --argjson pending
         + ([$live[] | select(.m.status == "Open" and (.m | waits)) | .m | name] | if . == [] then "" else "Waiting for those before them to merge: \(join(", ")). " end)
         + ($reviewer | if . == [] then "" else "Waiting on a reviewer to resolve threads we answered: \(map("\(name) threads \(.threads | join(", "))") | join("; ")). " end)
         + "They need a reviewer'"'"'s approval, or their pipeline to pass, on the forge. Once they have it, choose Resolved: the wait starts again.") } end)
+  + (if $operator == [] or $reasons != [] then {} else {
+      "operator-needed": true, "needs-operator": $operator,
+      "ai-feedback-short": "Operator needed: \($operator | map("\(name) failed \(.jobs | join(", "))") | join("; ")) at this head after a feedback round",
+      "ai-feedback-long": ("Already sent to Address Merge Request Feedback at this head, these merge requests have nothing left for an agent: "
+        + ([$operator[] | "\(name)\(if .url then " \(.url)" else "" end): its pipeline failed (\(.jobs | join(", "))), beyond the review gate; review thread\(if (.threads | length) > 1 then "s" else "" end) \(.threads | join(", ")) answered, awaiting the reviewer"] | join("; ")) + ". "
+        + ($questions | if . == [] then "" else "Open question\(if length > 1 then "s" else "" end): \(join(" "))" + " " end)
+        + "Act on it on the forge (a new commit, or what its failed jobs need), or answer the question; then choose Resolved.") } end)
   + (if $allclosed | not then {} else [$created[] | { id, key, url }] as $closed | {
       "all-closed": true, closed: $closed,
       "ai-feedback-short": "Every merge request is Closed unmerged: \($closed | map(name) | join(", "))",
@@ -294,7 +320,7 @@ echo "$result"
 
 # The merge loop's word to the operator (ASS-365): what the set waits for, from this check alone; cleared once it has merged.
 if jq -e '.merged' <<< "$result" >/dev/null; then loop_feedback "$command" "$project" "$key" "$variation" "" ""; exit 0; fi
-jq -e '.["approval-wait-expired"] != true and .["all-closed"] != true' <<< "$result" >/dev/null || exit 0
+jq -e '.["approval-wait-expired"] != true and .["all-closed"] != true and .["operator-needed"] != true' <<< "$result" >/dev/null || exit 0
 # Approvals left, asked only of the set's ones set to auto-merge with nothing of their own to act on: { "<i>": <left> }.
 approvals='{}'
 while read -r i; do

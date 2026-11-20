@@ -33,7 +33,10 @@ set -euo pipefail
 # resolvable, a GitHub issue comment or review body, by anyone but the
 # project's push account or the host's own login), "needs-rebase" (conflicts,
 # or behind its target), "needs-approval" (approvals still required: GitLab's
-# approvals_left, GitHub's review decision); [] when it only waits to be
+# approvals_left, GitHub's review decision), and "pipeline-running" (ASS-523,
+# after draft: a GitLab head pipeline created, waiting_for_resource, preparing,
+# pending, running or scheduled — not merged early, exit 5, until it is done;
+# no agent's to act on); [] when it only waits to be
 # merged (set to auto-merge, say). The reasons are mr_view's, as
 # merge-request:check reads them; the approvals, the failed jobs' names and
 # the review comments are asked of the forge only for a dependency that waits.
@@ -67,7 +70,8 @@ set -euo pipefail
 #      (merge-request:feedback-round) tells a no-op round, not counted. A
 #      build-failed this step already sent at that head (its kept needs had
 #      it), nothing acted on since (feedback-acted), is not sent again: polled
-#      (2), the operator told a new commit or a reply sends it back. A draft or an approval alone is no agent's to act
+#      (2), the operator told a new commit sends it back (ASS-523: a reply alone
+#      is no change). A draft or an approval alone is no agent's to act
 #      on: still 2, polled — unless merged early (5). Nor (ASS-482) is a
 #      build-failed whose pipeline has no failed job or bridge to show
 #      (mr_failed_jobs: [] — a canceled one, say): polled (2), the operator
@@ -89,6 +93,15 @@ set -euo pipefail
 #      its row has planned-by) is Not Created, whether or not another depends
 #      on it: prints { waiting: [], "not-created": [{ id, repository,
 #      planned-by }] }, the operator told which;
+#   6  (ASS-523) one waits on a dependency this step already sent at its
+#      unchanged head (left, as above), whose open threads are each answered
+#      by the harness last and whose pipeline failed beyond the review gate
+#      (mr_reviewer_held's beyond-gate), with nothing never created (3) or of
+#      its own (4): nothing is left for an agent. Prints "operator-needed":
+#      true with ai-feedback-short/-long naming it, its failed jobs and
+#      threads, and the ticket's open blocking questions; never 5. grouped-build
+#      sends exit 6 to Blocked for Human (Operator Needed). A note in
+#      execution-plan-<variation>.md names it;
 #   1  any other failure — the ticket or variation missing, a forge call
 #      failing — matching no exit, so the step tries again.
 #
@@ -175,7 +188,9 @@ for at in $(jq -r --argjson views "$VIEWS" --argjson mrs "$MRS" '[.[].at] | uniq
     | select($mrs[.].status == "Open" and $mrs[.].key != null and any($views[.].reasons[]?; . == "open-threads"))' <<< "$waiting"); do
   [[ -n "$gates" ]] || gates="$(review_gate_jobs "$command" "$projects/$project/project.json")" || exit 1
   hold="$(mr_reviewer_held "$command" "$at" "$(jq -c ".[$at]" <<< "$VIEWS")" "$project" "$gates")"
-  [[ "$hold" == null ]] || VIEWS="$(jq -c --argjson i "$at" --argjson h "$hold" '.[$i].reasons -= ["open-threads"] + (if $h["build-failed"] then ["build-failed"] else [] end)' <<< "$VIEWS")"
+  # ASS-523: its threads so held but a job beyond the gate failed: reasons kept (sent once), its threads noted for the operator wait.
+  [[ "$hold" == null ]] || VIEWS="$(jq -c --argjson i "$at" --argjson h "$hold" 'if $h["beyond-gate"] then .[$i]["held-threads"] = $h.threads
+    else .[$i].reasons -= ["open-threads"] + (if $h["build-failed"] then ["build-failed"] else [] end) end' <<< "$VIEWS")"
 done
 
 # This step's needs as last kept: a build-failed already sent at an unchanged head is polled, not sent again (ASS-505).
@@ -184,7 +199,8 @@ kept="$(variation_field '.["awaited-dependency-needs"].needs // []' "$command" "
 OWN='["open-threads", "review-comments", "build-failed", "needs-rebase"]'
 # What each dependency waited on needs, by its index: { "<at>": { needs, own, jobs, pipeline, approvals, from } } — from: its review comments'
 # authors (ASS-361); own: its needs of OWN, a build-failed with no failed job or bridge to show aside (ASS-482), or one this step
-# already sent at this head with nothing acted on since (left, ASS-505); pipeline: its URL.
+# already sent at this head with nothing acted on since (left, ASS-505); pipeline: its URL; operator (ASS-523): left, and its open
+# threads each answered by us last (held-threads) — open-threads not its own either, it waits on the operator (exit 6).
 found='{}'
 for at in $(jq -r '[.[].at] | unique | .[]' <<< "$waiting"); do
   view="$(jq -c --argjson i "$at" '.[$i]' <<< "$VIEWS")"
@@ -198,16 +214,19 @@ for at in $(jq -r '[.[].at] | unique | .[]' <<< "$waiting"); do
     ($mrs[$at | tonumber]) as $d
     | ($jobs != [] and $view != null and $view.head != null and $d["checked-head"] == $view.head and $d["feedback-acted"] != true
        and any($kept[]; .id == $d.id and (.needs | index("build-failed")))) as $left
+    | ($left and $view["held-threads"] != null) as $operator
     | .[$at] = { jobs: $jobs, pipeline: ($view.pipeline.url // null), approvals: $approvals, from: [$comments[].author] | unique, count: ($comments | length),
+        threads: ($view["held-threads"] // []), operator: $operator,
         needs: (if $d.key == null then ["not-created"]
                 elif $view == null then []
                 else [ (if $view.draft then "draft" else empty end),
+                       (if IN($view.pipeline.status // ""; "created", "waiting_for_resource", "preparing", "pending", "running", "scheduled") then "pipeline-running" else empty end),
                        ("build-failed", "open-threads" | select(IN($view.reasons[]))),
                        (if $comments != [] then "review-comments" else empty end),
                        ("needs-rebase" | select(IN($view.reasons[]))),
                        (if $approvals != "0" then "needs-approval" else empty end) ] end) }
     | .[$at].left = $left
-    | .[$at].own = [.[$at].needs[] | select(IN($own[])) | select(. != "build-failed" or ($jobs != [] and ($left | not)))]' <<< "$found")"
+    | .[$at].own = [.[$at].needs[] | select(IN($own[])) | select(. != "build-failed" or ($jobs != [] and ($left | not))) | select(. != "open-threads" or ($operator | not))]' <<< "$found")"
 done
 
 # Build merges the awaited ones itself (ASS-365) where the project's workflow
@@ -231,8 +250,9 @@ FEEDBACK='
   def said: . as $f | if .needs == [] then ["is not merged yet"] else [ .needs[] | {
       "not-created": "was never created",
       draft: "is a draft",
+      "pipeline-running": "its pipeline is still running",
       "build-failed": (if $f.jobs != [] then "its pipeline failed (" + ($f.jobs | join(", ")) + ")"
-          + (if $f.left then "; Address Merge Request Feedback already had a round at this head: a new commit or a reply sends it back" else "" end)
+          + (if $f.left then "; Address Merge Request Feedback already had a round at this head: a new commit sends it back" else "" end)
         else "its pipeline failed with no failed job or bridge to show" + (if $f.pipeline then " (" + $f.pipeline + ")" else "" end) end),
       "open-threads": "it has unresolved review threads",
       "review-comments": ((if $f.count == 1 then "it has a review comment from " else "it has \($f.count) review comments from " end) + ($f.from | join(", "))),
@@ -266,14 +286,35 @@ unmade="$(jq -r --argjson found "$found" '[.[] | select($found[.at | tostring].n
 ours="$(jq -r --argjson found "$found" '[.[] | .at as $at | $found[$at | tostring].own as $n
     | select($n != []) | "MR \(.["depends-on"].id) (\(.["depends-on"].key)) has \($n | join(", "))"] | unique
   | if . == [] then empty else join("; ") end' <<< "$waiting")"
+# ASS-523: with nothing never created nor its own, a dependency already sent at this head whose threads we answered last
+# and whose pipeline failed beyond the review gate waits on the operator (exit 6): its feedback, the ticket's open questions.
+operator='null'
+if [[ -z "$unmade" && -z "$ours" ]]; then
+  operator="$(jq -c --argjson found "$found" --argjson questions "$(open_questions "$project" "$key")" '
+    def repo: .repository // "" | rtrimstr(".git") | sub("^[a-z]+://[^/]+/"; "");
+    def name: if .key then repo + " " + .key else "MR \(.id) (" + repo + ")" end;
+    [group_by(.at)[] | .[0] as $w | $found[$w.at | tostring] as $f | select($f.operator) | $w["depends-on"] + { jobs: $f.jobs, threads: $f.threads }]
+    | if . == [] then null else {
+        short: ("Operator needed: " + (map(name + " failed " + (.jobs | join(", "))) | join("; ")) + " at this head after a feedback round"),
+        long: ("Already sent to Address Merge Request Feedback at this head, another repository'"'"'s merge request of this ticket waits on "
+          + (map(name + (if .url then " " + .url else "" end) + ": its pipeline failed (" + (.jobs | join(", ")) + "), beyond the review gate; review thread"
+              + (if (.threads | length) > 1 then "s " else " " end) + (.threads | join(", ")) + " answered, awaiting the reviewer") | join("; ")) + ". "
+          + ($questions | if . == [] then "" else "Open question" + (if length > 1 then "s" else "" end) + ": " + join(" ") + " " end)
+          + "Nothing is left for an agent: act on it on the forge (a new commit, or what its failed jobs need), or answer the question; then choose Resolved."),
+        names: (map(name) | join(", ")) } end' <<< "$waiting")"
+fi
 merging=false
-[[ "$early" != merge || -n "$unmade" || -n "$ours" ]] || merging=true
+[[ "$early" != merge || -n "$unmade" || -n "$ours" || "$operator" != null ]] || merging=true
+# A dependency whose pipeline is still running is not merged early (ASS-523): its result may yet be a failure to act on.
+if jq -e 'any(.[]; .needs | index("pipeline-running"))' <<< "$found" >/dev/null; then merging=false; fi
 
 needs="$(jq -c '.needs' <<< "$feedback")"
-record_feedback "$needs" "$(jq -r '.short' <<< "$feedback")" "$(jq -r '.long' <<< "$feedback")"
+if [[ "$operator" != null ]]; then record_feedback "$needs" "$(jq -r '.short' <<< "$operator")" "$(jq -r '.long' <<< "$operator")"
+else record_feedback "$needs" "$(jq -r '.short' <<< "$feedback")" "$(jq -r '.long' <<< "$feedback")"; fi
 # The merge loop's set (ASS-365): every merge request waited on, its planned id, for {merge-request-ids}.
-jq -c --argjson found "$found" --argjson merging "$merging" '{ waiting: map(del(.at) + { needs: $found[.at | tostring].needs }) }
-  + (if $merging then { "merge-request-ids": ([.[]["depends-on"].id] | unique) } else {} end)' <<< "$waiting"
+jq -c --argjson found "$found" --argjson merging "$merging" --argjson operator "$operator" '{ waiting: map(del(.at) + { needs: $found[.at | tostring].needs }) }
+  + (if $merging then { "merge-request-ids": ([.[]["depends-on"].id] | unique) } else {} end)
+  + (if $operator == null then {} else { "operator-needed": true, "ai-feedback-short": $operator.short, "ai-feedback-long": $operator.long } end)' <<< "$waiting"
 
 # A dependency never created: back to Generate Solution, told which in its execution plan.
 if [[ -n "$unmade" ]]; then
@@ -292,6 +333,12 @@ if [[ -n "$ours" ]]; then
     | [$i, ({ "checked-head": $v.head, "feedback-acted": null } | tojson)] | @tsv' <<< "$MRS")
   plan_note "$project" "$key" "$variation" "$ours, and another repository's merge request of this ticket waits on it: to Address Merge Request Feedback to act on it (merge-request:view lists its threads, comments and failed jobs)."
   exit 4
+fi
+
+# Waits on the operator (ASS-523): to Blocked for Human (Operator Needed), told which in its execution plan.
+if [[ "$operator" != null ]]; then
+  plan_note "$project" "$key" "$variation" "$(jq -r '.names' <<< "$operator") failed beyond the review gate at a head Address Merge Request Feedback already had, its threads answered by us: waits on the operator (Operator Needed), not another round."
+  exit 6
 fi
 
 # Merged early (ASS-365): to the merge loop, told which in its execution plan.

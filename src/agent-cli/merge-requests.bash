@@ -527,6 +527,10 @@ review_gate_jobs() {
 # aside, is the harness's (mr_harness_accounts); and its view's build-failed,
 # if any, is only <gates>' jobs failing (mr_failed_jobs, none unknown). Then
 # { threads: [<discussion ids>], "build-failed": <bool, dropped> }, else null.
+# ASS-523: its threads so held but jobs beyond <gates> failing (known, not [])
+# give { threads, "build-failed": false, "beyond-gate": [<failed jobs>] }: the
+# caller keeps its reasons (the first send to Address MR Feedback, as before),
+# and once sent at an unchanged head waits on the operator.
 # GitHub (changes requested is a review, not threads): null. Best effort: a
 # forge call that fails is null, the view as it was.
 mr_reviewer_held() {
@@ -541,9 +545,18 @@ mr_reviewer_held() {
   [[ -n "$held" && "$held" != null ]] || { echo null; return 0; }
   if jq -e 'any(.reasons[]; . == "build-failed")' <<< "$view" >/dev/null; then
     jobs="$(mr_failed_jobs "$command" "$2" "$view")"
-    jq -e --argjson g "$gates" 'length > 0 and all(.[]; IN($g[]))' <<< "$jobs" >/dev/null || { echo null; return 0; }
-    jq -nc --argjson t "$held" '{ threads: $t, "build-failed": true }'
+    jq -e 'length > 0' <<< "$jobs" >/dev/null || { echo null; return 0; }
+    if jq -e --argjson g "$gates" 'all(.[]; IN($g[]))' <<< "$jobs" >/dev/null; then jq -nc --argjson t "$held" '{ threads: $t, "build-failed": true }'
+    else jq -nc --argjson t "$held" --argjson j "$jobs" '{ threads: $t, "build-failed": false, "beyond-gate": $j }'; fi
   else jq -nc --argjson t "$held" '{ threads: $t, "build-failed": false }'; fi
+}
+
+# open_questions <project> <key> — ASS-523: the text of the ticket's open
+# blocking questions, a JSON array (as ticket:questions-answered counts them: not blocking
+# false, not "Answer Accepted"); [] with no questions file or an unreadable one.
+open_questions() {
+  local file="$projects/$1/work/$2/questions-and-answers.json"
+  [[ -s "$file" ]] && jq -c '[.list // [] | .[] | select(.status != "Answer Accepted" and .blocking != false) | .question // empty]' "$file" 2>/dev/null || echo '[]'
 }
 
 # REVIEW_COMMENTS — jq over { notes: [{ id, author, body, created, resolvable,

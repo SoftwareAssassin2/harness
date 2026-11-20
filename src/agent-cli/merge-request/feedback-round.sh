@@ -6,8 +6,9 @@ set -euo pipefail
 # Check the Feedback Round; a project Release's own), so a round that did
 # nothing spends none of that step's max-visits. merge-request:check, which
 # sends a merge request to the round, records the head commit it saw on its
-# row (checked-head) and clears feedback-acted; merge-request:reply,
-# :resolve and :retry set feedback-acted. So, for each Open one of the set (--only
+# row (checked-head) and clears feedback-acted; merge-request:resolve and
+# :retry set feedback-acted (ASS-523: merge-request:reply does not — a round
+# that only replied is a no-op round). So, for each Open one of the set (--only
 # <ids>, comma-separated, or - for every one; every Open one without it), its
 # head is read from its forge (mr_head) and the round changed it when that
 # head is not its checked-head, it has none recorded, or it has
@@ -16,7 +17,7 @@ set -euo pipefail
 #   { "changed": <bool>, "merge-requests": [{ id, key, head, "checked-head", acted }] }
 #
 # changed is false only when there is at least one Open one and none was
-# changed: every head as the check saw it, nothing replied to or resolved.
+# changed: every head as the check saw it, nothing resolved or retried.
 # The engine's exit on changed false goes back to the check with cause
 # no-op-round (engine.js NO_OP_ROUND), and control counts no visit for the
 # round. Exits 0 when it ran; 1 on a failure (a forge call, the ticket or
