@@ -489,7 +489,12 @@ targets that failed (`test-results.js`: `make: *** [Makefile:133: <target>]
 Error 1`, `make[n]` and the older `[<target>]` too) when both runs name any:
 a target master does not fail is the branch's own failure (re-run once, then
 exit 1), never master's; the same targets, or master naming none, are
-blocked as before.
+blocked as before. A command red on master (finished, not `reproduces`) is
+also compared with the baseline's other red, finished master runs (ASS-520,
+`test-results.js --also <file>`): its own may have aborted on a file new to
+the branch before reaching a suite another command's master run shows
+failing, so a failure any of them names is pre-existing; one none names is
+still new.
 
 Before any test or check runs, a branch behind its base has the base brought
 in (ASS-509 AC5): in the VM (or the workstation its step holds), each of the
