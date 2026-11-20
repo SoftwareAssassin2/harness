@@ -195,7 +195,7 @@
             "id": "check",
             "sequence": 6,
             "name": "Check the Merge Requests",
-            "description": "The set's merge requests read from their forges; polled until every one is merged. ASS-418: a forge poll, so its VM is stopped here (started again, by the lifecycle, at the next step that needs it); ASS-516: every created merge request of the variation Closed unmerged (all-closed) goes to Blocked for Human, naming them",
+            "description": "The set's merge requests read from their forges; polled until every one is merged. ASS-418: a forge poll, so its VM is stopped here (started again, by the lifecycle, at the next step that needs it); ASS-516: every created merge request of the variation Closed unmerged (all-closed) goes to Blocked for Human, naming them; ASS-523: one already sent to Address Merge Request Feedback at an unchanged head, its threads answered by us and its pipeline failed beyond the review gate (operator-needed), goes to Blocked for Human, naming it, its failed jobs and any open blocking question",
             "vm": "stopped",
             "max-visits": 10,
             "on-max-visits": "blocked",
@@ -266,6 +266,21 @@
                             },
                             {
                                 "script-output": {
+                                    "operator-needed": true
+                                }
+                            }
+                        ]
+                    },
+                    "move-to-state": "blocked-for-human"
+                },
+                {
+                    "condition": {
+                        "all": [
+                            {
+                                "exit-code": 0
+                            },
+                            {
+                                "script-output": {
                                     "approval-wait-expired": true
                                 }
                             }
@@ -325,7 +340,7 @@
             "id": "check-feedback-round",
             "sequence": 8,
             "name": "Check the Feedback Round",
-            "description": "Whether Address Merge Request Feedback changed anything: a commit pushed to a merge request it was sent for (its head is not the one the check saw), or a thread or comment replied to or resolved. A round that changed nothing goes back to the check with cause no-op-round, and control counts no visit for it, so a merge request that only waits on its pipeline or approvals is not sent to Blocked by do-nothing rounds; one that changed something, or a failure here, goes on as before (ASS-388). ASS-418: a forge read, so its VM is stopped here (started again, by the lifecycle, at the next step that needs it)",
+            "description": "Whether Address Merge Request Feedback changed anything: a commit pushed to a merge request it was sent for (its head is not the one the check saw), or a thread resolved or a pipeline retried (a reply alone is no change, ASS-523). A round that changed nothing goes back to the check with cause no-op-round, and control counts no visit for it, so a merge request that only waits on its pipeline or approvals is not sent to Blocked by do-nothing rounds; one that changed something, or a failure here, goes on as before (ASS-388). ASS-418: a forge read, so its VM is stopped here (started again, by the lifecycle, at the next step that needs it)",
             "vm": "stopped",
             "max-visits": 5,
             "on-max-visits": "blocked",

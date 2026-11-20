@@ -167,11 +167,23 @@ then Blocked — but a round that changed nothing is not counted (cause
 step records the round's start, as `merge-request:check` does: each Open
 merge request's head as its `checked-head`, `feedback-acted` cleared. A
 `build-failed` it already sent at that head (its kept
-`awaited-dependency-needs` had it) with nothing replied to, resolved or
-retried since is not sent again: it polls, exit 2, the feedback adding
-"Address Merge Request Feedback already had a round at this head: a new
-commit or a reply sends it back". So a merge request that fails by plan until
-the operator acts polls rather than going to Blocked. A control line in
+`awaited-dependency-needs` had it) with nothing resolved or retried since (a
+reply alone is no change, ASS-523) is not sent again: it polls, exit 2, the
+feedback adding "Address Merge Request Feedback already had a round at this
+head: a new commit sends it back". So a merge request that fails by plan until
+the operator acts polls rather than going to Blocked. When that dependency's
+open threads are each answered by the harness last and its pipeline failed
+beyond the review gate (ASS-523: `mr_reviewer_held`'s `beyond-gate`), nothing
+is left for an agent: its threads are not sent again either, and the step
+exits 6, `operator-needed` with `ai-feedback-short`/`-long` naming it, its
+failed jobs and threads and the ticket's open blocking questions, to
+grouped-build's `blocked-for-human`; the top-level Build's
+`sub-engine-ended-at: blocked-for-human` exit takes the ticket to Blocked for
+Human (Operator Needed). A project's own top-level engine running grouped-build
+needs that Build exit too, else it falls through to its bare `is-done` exit. A
+dependency whose GitLab head pipeline is still in progress (created, pending,
+running…) needs `pipeline-running` (ASS-523): no agent's to act on, and never
+merged early (exit 5) until it is done. A control line in
 `execution-plan-<variation>.md` names the merge request and what it needs,
 and the feedback adds "sent to Address Merge Request Feedback". A dependency
 that is only a draft or only needs approval is no agent's to act on: it keeps
@@ -221,7 +233,8 @@ after ASS-361.
   merges the next awaited one in a chain; `rebuild` (a review rejected the
   work) to Generate Solution; `blocked` to grouped-build's Blocked;
   `blocked-for-human` to grouped-build's own `blocked-for-human` done step,
-  reached from nowhere else, which the parent step sends to Blocked for Human.
+  reached otherwise only from Await Sequential Merge's exit 6 (ASS-523), which
+  the parent step sends to Blocked for Human.
 - **One variation only.** A variation set aside at Variation Selection is
   soft-deleted (`is-deleted`, `ticket:select-variation`). With more than one
   variation not set aside, nothing is merged early, since the work merged
@@ -260,7 +273,7 @@ it names none, so a project's Release could run it over the whole variation).
 | Code Review, Security Review (max 3 each, in the VM) | `code-review-grouped`, `security-review-grouped` | approved on; rejected to `rebuild` |
 | Mark Reviewed (max 5) | `merge-request:reviewed-at-head … --only … --mark` | 0 back to the gate |
 | Take out of Draft Mode (max 5) | `code:take-out-of-draft-mode … --only` | 0 to the check; else tried again |
-| Check the Merge Requests (`check`, timer 5 min, max 10, record-script-output) | `merge-request:check … --only` | needs-attention (not all-closed) to Address Merge Request Feedback; all-closed (every created merge request of the variation Closed unmerged, ASS-516) to `blocked-for-human`; merged to `done`; approval-wait-expired to `blocked-for-human`; auto-merge false to Ensure Auto-Merge (with rearm, ASS-518: armed, then cancelled by a push, cause `rearm-after-push`, no visit counted); only waiting polls, no visit spent |
+| Check the Merge Requests (`check`, timer 5 min, max 10, record-script-output) | `merge-request:check … --only` | needs-attention (not all-closed) to Address Merge Request Feedback; all-closed (every created merge request of the variation Closed unmerged, ASS-516) to `blocked-for-human`; merged to `done`; operator-needed (ASS-523) to `blocked-for-human`; approval-wait-expired to `blocked-for-human`; auto-merge false to Ensure Auto-Merge (with rearm, ASS-518: armed, then cancelled by a push, cause `rearm-after-push`, no visit counted); only waiting polls, no visit spent |
 | Address Merge Request Feedback (max 3, in the VM) | `check-on-merge-request-build-grouped` | to Check the Feedback Round |
 | Check the Feedback Round (`check-feedback-round`, max 5; ASS-388) | `merge-request:feedback-round … --only` | changed false back to the check, cause `no-op-round`, no visit counted; else back to the gate |
 | Ensure Auto-Merge (max 3) | `merge-request:ensure-auto-merge … --only`; records each one's `armed-head` (ASS-518) | 0 to the check; else `blocked`. A re-arm after a push to the source branch spends no visit (ASS-518) |
@@ -1181,8 +1194,10 @@ a run of the check an earlier harness left is ended as control starts.
     Blocked, which returns it to the start of the group (each group's
     `return-to-state` is itself).
   - `blocked-for-human`: Setup's Create VM found no room, or (ASS-365)
-    grouped-build's merge loop waited past `approval-wait-days`; read only by
-    a Build step that sets `merges-awaited`.
+    grouped-build's merge loop waited past `approval-wait-days`, or (ASS-523)
+    its Await Sequential Merge exited 6 (a dependency needs the operator);
+    read by a Build step that sets `merges-awaited`, and (ASS-523) by
+    harness-development-grouped's and -v2's Build.
   - `rebuild`: Local Testing rejected, or a project Release's Team Code Review sent the
     ticket back In Progress. The ticket goes into Build at Generate Solution
     (`start-sub-engine-at`, ASS-66).
@@ -2633,13 +2648,13 @@ commit's sha) and the pipeline's `status` and `sha`.
 
 A feedback round that changed nothing spends no visit (ASS-388). The check
 records on each Open merge request's row the head commit it saw
-(`checked-head`) and clears `feedback-acted`, which `merge-request:reply`,
-`merge-request:resolve` and `merge-request:retry` set. After Address Merge Request Feedback, Check the
+(`checked-head`) and clears `feedback-acted`, which `merge-request:resolve`
+and `merge-request:retry` set (`merge-request:reply` too until ASS-523). After Address Merge Request Feedback, Check the
 Feedback Round runs `merge-request:feedback-round` (`--only` as the loop's
 other commands): each Open one's head is read from its forge, and it prints
 `{ "changed": <bool>, "merge-requests": [{ id, key, head, "checked-head",
 acted }] }`, changed false only when there is an Open one and every head is
-its `checked-head` with nothing replied to, resolved or retried. Its exit on changed
+its `checked-head` with nothing resolved or retried. Its exit on changed
 false goes back to the check with `"cause": "no-op-round"` in the engine JSON;
 control records an exit's cause on a script step's move, and on a run's own
 `state-changes` too (`transient-state-engine:change-state` takes
@@ -2663,7 +2678,20 @@ reported `build-failed` at (`build-failed-head`). Seen again at that head, its
 `checked-head` unchanged and `feedback-acted` not true, the merge request is
 polled, not sent again: `build-pending` with `why` `sent-unchanged`, counted
 as waiting (`auto-merge`), so a red one needing the operator doesn't loop
-through no-op rounds. A new head, or a reply, resolve or retry, sends it again.
+through no-op rounds. A new head, or a resolve or retry, sends it again; a
+reply alone does not (ASS-523: `merge-request:reply` no longer sets
+`feedback-acted`, so a round that only replied is also a no-op round).
+
+ASS-523: one so polled whose open threads are each answered by the harness
+last, with a failed job beyond the review gate (`mr_reviewer_held` gives
+`beyond-gate`; on first sight it keeps `open-threads` and `build-failed` and is
+sent once, as ASS-508), loses `open-threads` too: with no other reason the
+check adds `"operator-needed": true`, `needs-operator` (`id`, `key`, `url`,
+`jobs`, `threads`) and `ai-feedback-short`/`-long` naming it and the ticket's
+open blocking questions, and no `approval-wait-expired`. grouped-merge's check
+sends it to `blocked-for-human`, ahead of `approval-wait-expired`; a project's
+own Release adds the same exit to its Team Code Review, as
+`test/fixtures/engines/grouped-release-example` does.
 
 A re-arm after a push spends no Ensure Auto-Merge visit (ASS-518). A merge
 train aborts auto-merge on every push to the source branch, so a reviewer's
@@ -2902,7 +2930,11 @@ stay the reference to copy from.
   Plan, Write Test Plan, Enrich Automated Test Data, Review Plan.
   Build is filled (ASS-113, a pair per test run): Generate Automated Tests,
   Generate Solution, Automated Testing, Code Review, Security Review; ASS-218
-  added the two Refresh steps to both.
+  added the two Refresh steps to both. ASS-523 gave v2-build grouped-build's
+  `blocked-for-human` done step (unreachable there: v2-build has no Await
+  Sequential Merge) and harness-development-v2's Build its
+  `sub-engine-ended-at: blocked-for-human` exit, so v2's Build exits stay
+  harness-development-grouped's.
   Test is filled (ASS-114, a sub-flow per test run): Local Testing, Steps
   to Test. A sub-engine step's sub-engine is copied too, as `v2-<name>`
   (`v2-local-testing`, grouped-local-testing's but for Test's prompt,

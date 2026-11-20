@@ -108,6 +108,21 @@
                             },
                             {
                                 "script-output": {
+                                    "operator-needed": true
+                                }
+                            }
+                        ]
+                    },
+                    "move-to-state": "blocked-for-human"
+                },
+                {
+                    "condition": {
+                        "all": [
+                            {
+                                "exit-code": 0
+                            },
+                            {
+                                "script-output": {
                                     "approval-wait-expired": true
                                 }
                             }

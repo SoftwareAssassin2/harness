@@ -23,5 +23,5 @@ fi
 view="$(mr_view "$command" "$i")"
 mr_rerun "$command" "$i" "$view" || { echo "$command: could not start $(mr_name "$i")'s failed pipeline again" >&2; exit 1; }
 # Recorded only once started. feedback-acted (ASS-388, cleared by merge-request:check): merge-request:feedback-round
-# counts the round as one that did something, as for a reply or resolve. Not written, a later retry may run once more.
+# counts the round as one that did something, as for a resolve. Not written, a later retry may run once more.
 set_merge_request "$command" "$1" "$key" "$3" "$i" "$(jq -nc --arg h "$head" '{ "retried-head": $h, "feedback-acted": true }')" || echo "$command: could not record the retry on $(mr_name "$i")" >&2

@@ -294,6 +294,16 @@
                 "type": "none"
             },
             "sequence": 9
+        },
+        {
+            "id": "blocked-for-human",
+            "name": "Blocked for Human",
+            "description": "From Merge the Awaited (ASS-365): an awaited merge request's approvals have not come within approval-wait-days; and from Await Sequential Merge's exit 6 (ASS-523): a dependency needing the operator. The parent step sends the ticket to Blocked for Human",
+            "is-done": true,
+            "action": {
+                "type": "none"
+            },
+            "sequence": 10
         }
     ]
 }

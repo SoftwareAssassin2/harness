@@ -132,7 +132,7 @@
             "id": "check-feedback-round",
             "sequence": 5,
             "name": "Check the Feedback Round",
-            "description": "Whether Address Merge Request Feedback changed anything: a commit pushed to a merge request of the ticket (its head is not the one Await Sequential Merge saw when it sent it), or a thread or comment replied to or resolved. A round that changed nothing goes back to Await Sequential Merge with cause no-op-round, and control counts no visit for it, so a merge request that fails by plan until the operator acts is polled, not sent to Blocked by do-nothing rounds; one that changed something, or a failure here, goes back as before (ASS-505, as grouped-merge's ASS-388). A forge read, so its VM is stopped here (ASS-418)",
+            "description": "Whether Address Merge Request Feedback changed anything: a commit pushed to a merge request of the ticket (its head is not the one Await Sequential Merge saw when it sent it), or a thread resolved or a pipeline retried (a reply alone is no change, ASS-523). A round that changed nothing goes back to Await Sequential Merge with cause no-op-round, and control counts no visit for it, so a merge request that fails by plan until the operator acts is polled, not sent to Blocked by do-nothing rounds; one that changed something, or a failure here, goes back as before (ASS-505, as grouped-merge's ASS-388). A forge read, so its VM is stopped here (ASS-418)",
             "vm": "stopped",
             "max-visits": 5,
             "on-max-visits": "blocked",
@@ -241,7 +241,7 @@
             "sequence": 7,
             "name": "Await Sequential Merge",
             "shows-merge-train": true,
-            "description": "Wait until every merge request a merge request of the ticket depends on in another repository is merged, so its tests do not run against what that repository has not yet published; polling while one is not (exit 2, its waiting-exit-code: no failure, ASS-335); nothing to wait for passes at once. What each dependency needs (draft, failed pipeline, open threads, rebase, approval) is the operator's feedback, written when it changes; one of the ticket's own planned merge requests never created is not waited on but sent back to Generate Solution (exit 3, under its max-visits) (ASS-359). One with review threads, review comments, a failed pipeline with a failed job or bridge to show (one without: polled, the operator told its URL, ASS-482) or a needed rebase of its own goes to Address Merge Request Feedback (exit 4, under its max-visits) (ASS-361); a draft or an approval alone keeps polling. Where the project's workflow opts in (merges-awaited: true on a step of the variation's status chain, read by control) and the ticket has one variation in play, one awaited with nothing of its own to act on — a draft, an approval, or the merge itself — goes to Merge the Awaited (exit 5) (ASS-365). ASS-418: a forge poll, so its VM is stopped here (started again, by the lifecycle, at the next step that needs it)",
+            "description": "Wait until every merge request a merge request of the ticket depends on in another repository is merged, so its tests do not run against what that repository has not yet published; polling while one is not (exit 2, its waiting-exit-code: no failure, ASS-335); nothing to wait for passes at once. What each dependency needs (draft, failed pipeline, open threads, rebase, approval) is the operator's feedback, written when it changes; one of the ticket's own planned merge requests never created is not waited on but sent back to Generate Solution (exit 3, under its max-visits) (ASS-359). One with review threads, review comments, a failed pipeline with a failed job or bridge to show (one without: polled, the operator told its URL, ASS-482) or a needed rebase of its own goes to Address Merge Request Feedback (exit 4, under its max-visits) (ASS-361); a draft or an approval alone keeps polling. Where the project's workflow opts in (merges-awaited: true on a step of the variation's status chain, read by control) and the ticket has one variation in play, one awaited with nothing of its own to act on — a draft, an approval, or the merge itself — goes to Merge the Awaited (exit 5) (ASS-365). ASS-418: a forge poll, so its VM is stopped here (started again, by the lifecycle, at the next step that needs it). ASS-523: a dependency already sent at an unchanged head, its threads answered by us and its pipeline failed beyond the review gate, waits on the operator (exit 6, Blocked for Human, naming it and any open blocking question); one whose pipeline is still running is not merged early (pipeline-running, polled)",
             "vm": "stopped",
             "record-script-output": true,
             "action": {
@@ -275,6 +275,12 @@
                         "exit-code": 5
                     },
                     "move-to-state": "merge-awaited"
+                },
+                {
+                    "condition": {
+                        "exit-code": 6
+                    },
+                    "move-to-state": "blocked-for-human"
                 }
             ]
         },
@@ -543,7 +549,7 @@
         {
             "id": "blocked-for-human",
             "name": "Blocked for Human",
-            "description": "Only from Merge the Awaited (ASS-365): an awaited merge request's approvals have not come within approval-wait-days; the parent step, which sets merges-awaited, sends the ticket to Blocked for Human",
+            "description": "From Merge the Awaited (ASS-365): an awaited merge request's approvals have not come within approval-wait-days; and from Await Sequential Merge's exit 6 (ASS-523): a dependency needing the operator. The parent step sends the ticket to Blocked for Human",
             "is-done": true,
             "action": {
                 "type": "none"
