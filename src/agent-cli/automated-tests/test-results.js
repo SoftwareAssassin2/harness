@@ -34,11 +34,12 @@
 // aside only the failures it names too, as pre-existing; any other failure is
 // new. A run naming no test ("the ticket's bug still reproduces") or timed
 // out is never master's, so never blocked: master timed out, green or red
-// naming no test sets aside nothing.
+// naming no test sets aside nothing. Master red and finished, the failures
+// the other commands' master runs name are set aside too (ASS-521).
 //
 // ASS-520: judge(master, runs, { others: [<output>] }) — the master runs of
 // the baseline's other commands (same master commit; --also <file>, one each).
-// For a non-reproducing command red on master (not timed out), a failure any
+// For a command red on master (not timed out), a failure any
 // of them names is pre-existing too, as is one its own master names: its own
 // run may have aborted before reaching a suite another command's run shows
 // failing. A failure no master run names is still new.
@@ -171,6 +172,7 @@ function judgeRun(master, run, reproduces, others = []) {
     const alone = judgeRun(null, run);
     if (alone.verdict !== 'failed' || !master || master.status === 0 || timedOut(master)) return alone;
     const there = failures(master.output).failed, fresh = new Map(), pre = new Map();
+    for (const o of others.map(failures)) for (const [key, name] of o.failed) there.set(key, name);
     for (const [key, name] of alone.new) (there.has(key) ? pre : fresh).set(key, name);
     return { verdict: fresh.size ? 'failed' : 'passed', new: fresh, pre, timedOut: alone.timedOut };
   }
