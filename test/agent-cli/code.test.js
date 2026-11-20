@@ -524,12 +524,15 @@ test('ASS-227 AC4: an untracked file does not stop the switch to master — a de
 const ABORT_520 = "Cannot detect source of '/tests/branch_only_markup.sql'!\n";
 const CONCURRENCY_520 = '/concurrency-tests/billing.sql ....\n1..1\nnot ok 1 - billing_stripe_draft_retirement\n';
 const T_520 = '/concurrency-tests/billing.sql: billing_stripe_draft_retirement';
-async function abortedOnMaster(bOnMaster = { text: CONCURRENCY_520, run: 'cat b.txt; exit 1' }) {
+// ASS-521: aOnMaster.run replaces A's run command; aOnMaster.only names files on master only (removed on the branch).
+async function abortedOnMaster(bOnMaster = { text: CONCURRENCY_520, run: 'cat b.txt; exit 1' }, aOnMaster = { run: 'cat a.txt; exit 1', only: [] }) {
   const f = workspace();
   writeFileSync(join(f.ws, 'a.txt'), ABORT_520); writeFileSync(join(f.ws, 'b.txt'), bOnMaster.text);
+  for (const name of aOnMaster.only) writeFileSync(join(f.ws, name), '');
   git(f.ws, 'add', '.'); git(f.ws, 'commit', '-q', '-m', 'masters'); git(f.ws, 'push', '-q', 'origin', 'master');
-  const t = await withTests([{ list: 'echo a', run: 'cat a.txt; exit 1' }, { list: 'echo b', run: bOnMaster.run }], f);
+  const t = await withTests([{ list: 'echo a', run: aOnMaster.run }, { list: 'echo b', run: bOnMaster.run }], f);
   writeFileSync(join(t.worktree, 'a.txt'), `/tests/branch_only_markup.sql ....\n1..1\nok 1 - markup\n${CONCURRENCY_520}`);
+  for (const name of aOnMaster.only) git(t.worktree, 'rm', '-q', name);
   git(t.worktree, 'commit', '-q', '-am', 'branch');
   return { ...t, baseline: () => JSON.parse(readFileSync(join(t.folder, 'automated-test-baseline-A.json'), 'utf8')) };
 }
