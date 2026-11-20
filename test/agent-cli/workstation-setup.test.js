@@ -199,6 +199,8 @@ test('AC2: after the workstation restarts, setup empties the runtime folder and 
   // A restart: stopped, started again by connect (a new boot id, the container's /dev/shm empty).
   s.w.setState(ID, 'STATE_STOPPED');
   for (let i = 0; i < 50 && existsSync(join(s.w.harnessHome, 'workstations', `p-${ID}.sock`)); i++) await new Promise(r => setTimeout(r, 100));
+  // checked-at and connected-at are to the second (ws_now): a connect in setup's second would read as set up since it.
+  while (new Date().toISOString().slice(0, 19) + 'Z' <= s.entry().setup['checked-at']) await new Promise(r => setTimeout(r, 50));
   await s.cli('workstation:connect', 'p', ID);
   assert.ok(!workstationUsable(s.entry()), 'not usable until setup runs after the connect');
   const after = JSON.parse((await s.cli('workstation:setup', 'p', ID)).stdout).setup;
