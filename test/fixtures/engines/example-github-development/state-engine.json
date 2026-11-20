@@ -409,6 +409,19 @@
                 },
                 {
                     "condition": {
+                        "all": [
+                            {
+                                "is-done": true
+                            },
+                            {
+                                "sub-engine-ended-at": "blocked-for-human"
+                            }
+                        ]
+                    },
+                    "move-to-state": "blocked-for-human"
+                },
+                {
+                    "condition": {
                         "is-done": true
                     },
                     "move-to-state": "test"
