@@ -524,12 +524,15 @@ test('ASS-227 AC4: an untracked file does not stop the switch to master — a de
 const ABORT_520 = "Cannot detect source of '/tests/branch_only_markup.sql'!\n";
 const CONCURRENCY_520 = '/concurrency-tests/billing.sql ....\n1..1\nnot ok 1 - billing_stripe_draft_retirement\n';
 const T_520 = '/concurrency-tests/billing.sql: billing_stripe_draft_retirement';
-async function abortedOnMaster(bOnMaster = { text: CONCURRENCY_520, run: 'cat b.txt; exit 1' }) {
+// ASS-521: aOnMaster.run replaces A's run command; aOnMaster.only names files on master only (removed on the branch).
+async function abortedOnMaster(bOnMaster = { text: CONCURRENCY_520, run: 'cat b.txt; exit 1' }, aOnMaster = { run: 'cat a.txt; exit 1', only: [] }) {
   const f = workspace();
   writeFileSync(join(f.ws, 'a.txt'), ABORT_520); writeFileSync(join(f.ws, 'b.txt'), bOnMaster.text);
+  for (const name of aOnMaster.only) writeFileSync(join(f.ws, name), '');
   git(f.ws, 'add', '.'); git(f.ws, 'commit', '-q', '-m', 'masters'); git(f.ws, 'push', '-q', 'origin', 'master');
-  const t = await withTests([{ list: 'echo a', run: 'cat a.txt; exit 1' }, { list: 'echo b', run: bOnMaster.run }], f);
+  const t = await withTests([{ list: 'echo a', run: aOnMaster.run }, { list: 'echo b', run: bOnMaster.run }], f);
   writeFileSync(join(t.worktree, 'a.txt'), `/tests/branch_only_markup.sql ....\n1..1\nok 1 - markup\n${CONCURRENCY_520}`);
+  for (const name of aOnMaster.only) git(t.worktree, 'rm', '-q', name);
   git(t.worktree, 'commit', '-q', '-am', 'branch');
   return { ...t, baseline: () => JSON.parse(readFileSync(join(t.folder, 'automated-test-baseline-A.json'), 'utf8')) };
 }
@@ -556,6 +559,27 @@ function reproducing(f) {
   writeFileSync(file, JSON.stringify(JSON.parse(readFileSync(file, 'utf8')).map(t => ({ ...t, reproduces: true }))));
   return f;
 }
+
+// ASS-521: --also for reproducing commands too — A's master run red, naming no test (aborted on its file new to the
+// branch): B's red master run sets T aside; not when A's master run timed out.
+test('ASS-521 AC3: a reproducing check whose master run aborted on a branch-only file passes when another command\'s master run fails the same test — listed pre-existing — and fails on a failure no master run shows', async () => {
+  const f = reproducing(await abortedOnMaster());
+  assert.deepEqual(JSON.parse((await f.agent('automated-tests:verify-success', 'p', 'ABC-3', 'A')).stdout), { passed: 2, failed: 0, 'pre-existing': [T_520, T_520] });
+  assert.match(f.results(), new RegExp(`## ✓ cat a\\.txt; exit 1 \\(exit 1: every failure is one master has too\\)\\n\\nPre-existing failures, failing on master too:\\n- ${T_520.replace(/[./]/g, '\\$&')}\\n`));
+  assert.deepEqual(Object.keys(f.baseline().tests), ['cat a.txt; exit 1', 'cat b.txt; exit 1']);   // one master run each
+  writeFileSync(join(f.worktree, 'a.txt'), `/tests/branch_only_markup.sql ....\n1..1\nok 1 - markup\n${CONCURRENCY_520.replace('1..1', '1..2')}not ok 2 - brand_new\n`);
+  git(f.worktree, 'commit', '-q', '-am', 'a new failure');
+  await exitsWith(f.agent('automated-tests:verify-success', 'p', 'ABC-3', 'A'), 1, /1 of 2 failed/);
+  assert.match(f.results(), /## ✗ cat a\.txt; exit 1 \(exit 1\)\n\nNew failures[^\n]*\n- \/concurrency-tests\/billing\.sql: brand_new\n\n/);
+});
+
+test('ASS-521 AC3: master timed out, no --also — a reproducing check failing T fails, T new', async () => {
+  const run = 'cat a.txt; [ -f slow ] && sleep 30; exit 1';
+  const f = reproducing(await abortedOnMaster(undefined, { run, only: ['slow'] }));
+  minutes(f, 0.02);
+  await exitsWith(f.agent('automated-tests:verify-success', 'p', 'ABC-3', 'A'), 1, /1 of 2 failed/);
+  assert.match(f.results(), new RegExp(`## ✗ ${run.replace(/[.[\]]/g, '\\$&')} \\(exit 1\\)\\n\\nNew failures[^\\n]*\\n- ${T_520.replace(/[./]/g, '\\$&')}\\n`));
+});
 
 test('ASS-227 AC2: a reproducing check red on master and still red on the branch, naming no test, failed — exit 1, for Generate Solution, not 3 — though run on master (ASS-487)', async () => {
   const f = reproducing(await againstMaster('boom on master\n', 'boom on the branch\n', 'cat tap.txt; exit 1'));

@@ -27,7 +27,7 @@ set -euo pipefail
 # every failed test (or aborted file) is one master has too, the command
 # passes — the pre-existing failures named in the results, and printed as
 # pre-existing — else it is re-run once, and fails only on a new failure that
-# fails again. A command red on master (not timed out, not "reproduces") is
+# fails again. A command red on master (not timed out; reproducing too, ASS-521) is
 # also compared with the other commands' red master runs in the baseline
 # (ASS-520): its own may have aborted, say on a file new to the branch, before
 # reaching a suite another shows failing there. A command whose output names no test, red on master too, exits
@@ -241,8 +241,8 @@ for i in "${!commands[@]}"; do
   elif [[ -f "$baseline" ]] && jq -e --arg run "$command" '.tests[$run] != null' "$baseline" > /dev/null; then
     master_status="$(jq --arg run "$command" '.tests[$run].status' "$baseline")" master="$tmp/master-$i" new="New failures, not failing on master, and failing again on a re-run:"
     jq -j --arg run "$command" '.tests[$run].output' "$baseline" > "$tmp/master-$i"
-    # ASS-520: red on master, and finished: the other commands' red master runs (same commit) are evidence too
-    if [[ ${reproduces[i]} != true && $master_status != 0 ]] && jq -e --arg run "$command" '.tests[$run]["timed-out"] | not' "$baseline" > /dev/null; then
+    # ASS-520/521: red on master, and finished (reproducing too): the other commands' red master runs (same commit) are evidence too
+    if [[ $master_status != 0 ]] && jq -e --arg run "$command" '.tests[$run]["timed-out"] | not' "$baseline" > /dev/null; then
       while IFS= read -r n; do
         jq -j --argjson n "$n" '.tests | to_entries[$n].value.output' "$baseline" > "$tmp/also-$i-$n"
         also+=(--also "$tmp/also-$i-$n")
