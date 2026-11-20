@@ -676,8 +676,10 @@ step, as before. The log says which: `the fix landed; resumes at <step>:
 memory is per state change, and each group's run starts afresh at its
 first step, so a resume at Plan writes the execution plan again (Write
 Execution Plan leaves only once the file was written in its turn), and Build
-generates the solution again. A resume at a planning step waits for a
-planning slot as any move into one does. The current engines' `blocked`
+generates the solution again. The done run's move to its return-to step is
+made at once, with or without a free seat of that step's kind (ASS-522): one
+without a seat waits there (plan.js `waiting`), nothing run and no agent
+dispatched, and takes the next free seat in rank order. The current engines' `blocked`
 has no resume step: it resumes where it blocked, as before.
 
 A project issue raises a bug only for a failure on the latest master

@@ -434,7 +434,7 @@ This section is about **Blocked**, the AI's own troubleshooting state, not Block
 
 The fix has **landed** when its ticket is Done and either went through a merge step, or has a commit starting `<FIX-KEY>:` on its project's default branch. A merge request fix has landed when the merge request has merged. A **harness** fix also needs the running controls restarted on code that contains it. Until then the ticket's Health says "Fix `<KEY>` landed; waiting for a harness restart to load it", and the header shows **Restart to load N landed fixes**.
 
-Once it has landed, **Find Where to Resume** (`ticket:fix-resume-step`) picks the step to go back to: the fix ticket's declared `resume-at`, else the earliest step the fix's commits or changed work files touch, else the step it blocked at. The ticket then **resumes automatically**, with no operator needed. A fix ticket that closed without landing sends the ticket round Blocked again.
+Once it has landed, **Find Where to Resume** (`ticket:fix-resume-step`) picks the step to go back to: the fix ticket's declared `resume-at`, else the earliest step the fix's commits or changed work files touch, else the step it blocked at. The ticket then **resumes automatically**, with no operator needed. It moves to that step at once, even with no free seat, and waits there for one (ASS-522). A fix ticket that closed without landing sends the ticket round Blocked again.
 
 ### When a ticket doesn't resume although its fix is deployed
 
