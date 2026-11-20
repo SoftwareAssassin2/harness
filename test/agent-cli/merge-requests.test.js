@@ -1552,7 +1552,7 @@ test('ASS-388 AC1: on GitHub a CANCELLED check is not build-failed when the same
   assert.deepEqual((await checked(f)).reasons, ['build-failed']);
 });
 
-test('ASS-388 AC2/AC3: the check records each Open MR\'s head as checked-head; merge-request:feedback-round says changed false only when every head is unchanged and nothing was replied to or resolved, and true after a push, a reply or a resolve', async () => {
+test('ASS-388 AC2/AC3, ASS-523 AC2: the check records each Open MR\'s head as checked-head; merge-request:feedback-round says changed false only when every head is unchanged and nothing was resolved or retried — a reply alone is no change — and true after a push or a resolve', async () => {
   const f = await planned([{ id: 1, repository: APP }, { id: 2, repository: APP }]);
   f.record({ 1: { status: 'Open', key: '!7', base: 'master' }, 2: { status: 'Open', key: '!8', base: 'master' } });
   view(f, 'app', 7, { sha: HEAD, head_pipeline: { id: 60, status: 'canceled', sha: OLD } });
@@ -1573,14 +1573,12 @@ test('ASS-388 AC2/AC3: the check records each Open MR\'s head as checked-head; m
   // The next check records the new head: unchanged again.
   await checked(f);
   assert.equal((await round()).changed, false);
-  // A reply, then a resolve, each count as a change until the next check.
+  // ASS-523: a reply alone is no change (a reply-only round is a no-op); a resolve counts as one until the next check.
   f.forge.route('glab', /^api projects\/g%2Fapp\/merge_requests\/7\/discussions\/d1\/notes --hostname gitlab.com -X POST /, { out: { id: 3 } });
   f.forge.route('glab', /^api projects\/g%2Fapp\/merge_requests\/7\/discussions\/d1 --hostname gitlab.com -X PUT -f resolved=true$/, { out: { id: 'd1' } });
   await piped(f, 'Not ours to change\n', 'merge-request:reply', 'p', 'ABC-5', 'A', '1', 'd1', '-');
-  assert.equal((await round()).changed, true);
-  await checked(f);
-  assert.equal(f.mrs()[0]['feedback-acted'], null, 'cleared by the check');
   assert.equal((await round()).changed, false);
+  assert.equal(f.mrs()[0]['feedback-acted'] ?? null, null, 'a reply records nothing');
   await f.agent('merge-request:resolve', 'p', 'ABC-5', 'A', '1', 'd1');
   assert.equal((await round()).changed, true);
   // A forge failure is exit 1 (the engine reads it as a change), an id not planned too.
@@ -2202,4 +2200,202 @@ test('ASS-518 AC1/AC2: no rearm when the head is unchanged since the arm, never 
   set.record({ 1: { 'armed-head': OLD } });
   const s = await checked(set);
   assert.deepEqual([s['auto-merge'], 'rearm' in s], [true, false], JSON.stringify(s));
+});
+
+// ASS-523: an MR already sent to Address Merge Request Feedback at an unchanged head, whose every open thread the
+// harness answered last and whose pipeline failed beyond the review gate, needs the operator, not another round:
+// merge-request:check says operator-needed (needs-operator naming it), await-dependencies exits 6 — both with
+// feedback naming the MR, its failed jobs and any open blocking question — for Blocked for Human. A reply alone is
+// no change (merge-request:feedback-round), and a dependency whose pipeline is still running is not merged early.
+const OPEN_Q = 'Run arm v4-35lite and commit its records, or skip the guard test?';
+const asked = (f, list) => writeFileSync(join(f.dir, 'p', 'work', 'ABC-5', 'questions-and-answers.json'), typeof list === 'string' ? list : JSON.stringify({ list }));
+const BEYOND = { ...FAILED_55, sha: HEAD };
+// App's !7 (MR 1): HELD (our note last on d1), pipeline 55 failed on unit (beyond the gate); a reply to d1 routed.
+async function beyondGate(v = BEYOND, discussions = HELD, jobs = ['unit']) {
+  const f = await heldOne(v);
+  held(f, 'app', 7, discussions, { jobs });
+  f.forge.route('glab', /^api projects\/g%2Fapp\/merge_requests\/7\/discussions\/d1\/notes --hostname gitlab.com -X POST /, { out: { id: 8 } });
+  return f;
+}
+const replied = (f, iid = 1) => piped(f, 'Waiting on the operator\n', 'merge-request:reply', 'p', 'ABC-5', 'A', String(iid), 'd1', '-');
+
+test('ASS-523 AC1: check — sent once at an unchanged head, our note last on its threads, a failed job beyond the review gate: no second Address Merge Request Feedback but operator-needed, naming the MR, its url, failed jobs and threads', async () => {
+  const f = await beyondGate();
+  assert.deepEqual(await checkOf(f), NOT_HELD, 'the first send, as ASS-508');
+  await replied(f);
+  for (let i = 0; i < 2; i++) {
+    const out = await checkOf(f);
+    assert.equal(out['needs-attention'], false, JSON.stringify(out));
+    assert.ok(!out.reasons.includes('open-threads') && !out.reasons.includes('build-failed'), JSON.stringify(out));
+    assert.equal(out['operator-needed'], true, JSON.stringify(out));
+    assert.deepEqual(out['needs-operator'], [{ id: 1, key: '!7', url: HELD_URL, jobs: ['unit'], threads: ['d1'] }]);
+    assert.match(out['ai-feedback-short'], /!7/);
+    assert.match(out['ai-feedback-short'], /unit/);
+    assert.ok(out['ai-feedback-long'].includes(HELD_URL), out['ai-feedback-long']);
+    assert.match(out['ai-feedback-long'], /unit/);
+    assert.match(out['ai-feedback-long'], /d1/);
+  }
+});
+
+test('ASS-523 AC1: check — the operator-needed feedback names an open blocking question; one not blocking, or answer accepted, is not named; no questions file, or a bad one, names none and the check still runs', async () => {
+  const f = await beyondGate();
+  await checkOf(f);
+  asked(f, [{ question: OPEN_Q, blocking: true, status: 'Asked' }]);
+  const out = await checkOf(f);
+  assert.equal(out['operator-needed'], true, JSON.stringify(out));
+  assert.ok(out['ai-feedback-long'].includes(OPEN_Q), out['ai-feedback-long']);
+  for (const list of [[{ question: OPEN_Q, blocking: false, status: 'Asked' }], [{ question: OPEN_Q, blocking: true, status: 'Answer Accepted' }], '{']) {
+    asked(f, list);
+    const o = await checkOf(f);
+    assert.equal(o['operator-needed'], true, JSON.stringify(list));
+    assert.ok(!o['ai-feedback-long'].includes(OPEN_Q), JSON.stringify(list));
+  }
+});
+
+test('ASS-523 AC1: check --only — the grouped-merge loop gets operator-needed in the same shape, with its feedback', async () => {
+  const f = await beyondGate();
+  noted(f, 'app', 7, []);
+  assert.deepEqual(await checkOf(f, '--only', '1'), NOT_HELD);
+  const out = await checkOf(f, '--only', '1');
+  assert.deepEqual([out['needs-attention'], out['operator-needed']], [false, true], JSON.stringify(out));
+  assert.deepEqual(out['needs-operator'], [{ id: 1, key: '!7', url: HELD_URL, jobs: ['unit'], threads: ['d1'] }]);
+  assert.match(out['ai-feedback-short'] ?? '', /!7/);
+});
+
+test('ASS-523 AC1: check — not operator-needed: a new head is sent again; a reviewer\'s note last; only the gate failed; failed jobs unknown; a resolve at the same head sends it again', async () => {
+  // A new head: sent again.
+  const f = await beyondGate();
+  await checkOf(f);
+  assert.equal((await checkOf(f))['operator-needed'], true);
+  view(f, 'app', 7, { ...BEYOND, sha: NEW });
+  assert.deepEqual(await checkOf(f), NOT_HELD);
+  // A reviewer's note last on its thread: open-threads kept.
+  const rev = await beyondGate(BEYOND, [{ id: 'd1', notes: [blocking(7, 'host-me', 11), blocking(2, 'sam', 12)] }]);
+  await checkOf(rev);
+  const r = await checkOf(rev);
+  assert.deepEqual([r['needs-attention'], r.reasons.includes('open-threads'), r['operator-needed']], [true, true, undefined], JSON.stringify(r));
+  // Only the review gate failed: waiting-on-reviewer, as ASS-508.
+  const gate = await beyondGate(BEYOND, HELD, ['review-gate']);
+  for (let i = 0; i < 2; i++) {
+    const g = await checkOf(gate);
+    assert.deepEqual([g['needs-attention'], g['operator-needed'], g['waiting-on-reviewer']?.[0]?.threads], [false, undefined, ['d1']], JSON.stringify(g));
+  }
+  // Failed jobs unknown: never operator-needed.
+  const unknown = await beyondGate(BEYOND, HELD, []);
+  assert.deepEqual(await checkOf(unknown), NOT_HELD);
+  const u = await checkOf(unknown);
+  assert.deepEqual([u['needs-attention'], u.reasons.includes('open-threads'), u['operator-needed']], [true, true, undefined], JSON.stringify(u));
+  // Feedback acted on (a resolve or retry) at the same head: sent again.
+  const acted = await beyondGate();
+  await checkOf(acted);
+  assert.equal((await checkOf(acted))['operator-needed'], true);
+  acted.record({ 1: { 'feedback-acted': true } });
+  assert.deepEqual(await checkOf(acted), NOT_HELD);
+});
+
+test('ASS-523 AC1: check — another MR with its own reasons needs attention for them, no operator-needed; an MR past its approval wait beside the operator-needed one gives no approval-wait-expired', async () => {
+  const two = async v8 => {
+    const f = await planned([{ id: 1, repository: APP }, { id: 2, repository: APP }]);
+    f.record({ 1: { status: 'Open', key: '!7', url: HELD_URL, base: 'master' }, 2: { status: 'Open', key: '!8', url: `${APP}/-/merge_requests/8`, base: 'master' } });
+    view(f, 'app', 7, BEYOND);
+    view(f, 'app', 8, { draft: false, sha: OLD, ...v8 });
+    held(f, 'app', 7, HELD, { jobs: ['unit'] });
+    return f;
+  };
+  const f = await two({});
+  await checkOf(f);
+  view(f, 'app', 8, { draft: false, sha: OLD, has_conflicts: true });
+  const out = await checkOf(f);
+  assert.equal(out['needs-attention'], true, JSON.stringify(out));
+  assert.ok(out.reasons.includes('needs-rebase'), JSON.stringify(out));
+  assert.equal(out['operator-needed'], undefined, JSON.stringify(out));
+  const g = await two({ merge_when_pipeline_succeeds: true });
+  g.record({ 2: { 'approval-wait-since': daysAgo(4) } });
+  await checkOf(g);
+  const o = await checkOf(g);
+  assert.equal(o['operator-needed'], true, JSON.stringify(o));
+  assert.equal(o['approval-wait-expired'], undefined, JSON.stringify(o));
+  assert.match(o['ai-feedback-short'], /!7/);
+});
+
+test('ASS-523 AC1: await-dependencies — a dependency sent once at an unchanged head, our note last, a failed job beyond the gate, exits 6 (operator-needed), naming the MR and the open question — with MERGES_AWAITED too, never 5 — the plan noted', async () => {
+  const f = await reviewerHeldDep();
+  held(f, 'lib', 7, HELD, { jobs: ['review-gate', 'unit'] });
+  f.forge.route('glab', /^api projects\/g%2Flib\/merge_requests\/7\/discussions\/d1\/notes --hostname gitlab.com -X POST /, { out: { id: 8 } });
+  const first = await awaiting(f);
+  assert.equal(first.code, 4, first.err);
+  await replied(f);
+  asked(f, [{ question: OPEN_Q, blocking: true, status: 'Asked' }]);
+  const r = await awaiting(f);
+  assert.equal(r.code, 6, r.err);
+  assert.equal(r.out['operator-needed'], true, JSON.stringify(r.out));
+  assert.match(r.out['ai-feedback-short'], /!7/);
+  assert.ok(r.out['ai-feedback-long'].includes(LIB_7), r.out['ai-feedback-long']);
+  assert.match(r.out['ai-feedback-long'], /unit/);
+  assert.ok(r.out['ai-feedback-long'].includes(OPEN_Q), r.out['ai-feedback-long']);
+  assert.ok(f.notes().some(l => /!7/.test(l) && /operator/i.test(l)), f.notes().join('\n'));
+  const flagged = await flaggedAwait(f);
+  assert.equal(flagged.code, 6, flagged.err);
+  assert.equal(flagged.out['merge-request-ids'], undefined);
+});
+
+test('ASS-523 AC1: await-dependencies — not operator-needed: a new head exits 4 again; a reviewer\'s note last on the thread exits 4, not 6', async () => {
+  const f = await reviewerHeldDep();
+  held(f, 'lib', 7, HELD, { jobs: ['review-gate', 'unit'] });
+  assert.equal((await awaiting(f)).code, 4);
+  assert.equal((await awaiting(f)).code, 6);
+  view(f, 'lib', 7, { web_url: LIB_7, draft: false, sha: NEW, blocking_discussions_resolved: false, head_pipeline: { id: 55, status: 'failed' } });
+  const moved = await awaiting(f);
+  assert.equal(moved.code, 4, moved.err);
+  const rev = await reviewerHeldDep();
+  held(rev, 'lib', 7, [{ id: 'd1', notes: [blocking(7, 'host-me', 11), blocking(2, 'sam', 12)] }], { jobs: ['review-gate', 'unit'] });
+  assert.equal((await awaiting(rev)).code, 4);
+  const again = await awaiting(rev);
+  assert.equal(again.code, 4, again.err);
+  assert.equal(again.out?.['operator-needed'], undefined);
+});
+
+test('ASS-523 AC2: a feedback round that only replied — to a thread or to a plain comment — is a no-op (changed false); a resolve, a retry or a push is a change', async () => {
+  const f = await beyondGate();
+  f.forge.route('glab', /^api projects\/g%2Fapp\/merge_requests\/7\/notes\/42 --hostname gitlab.com$/, { out: { id: 42, author: { username: 'sam' }, body: 'Renumber V12' } });
+  f.forge.route('glab', /^api projects\/g%2Fapp\/merge_requests\/7\/notes --hostname gitlab.com -X POST /, { out: { id: 43 } });
+  f.forge.route('glab', /^api projects\/g%2Fapp\/merge_requests\/7\/discussions\/d1 --hostname gitlab.com -X PUT -f resolved=true$/, { out: { id: 'd1' } });
+  const round = async () => { const r = await ran(f, 'merge-request:feedback-round', 'p', 'ABC-5', 'A'); assert.equal(r.code, 0, r.err); return JSON.parse(r.out).changed; };
+  await checkOf(f);
+  await replied(f);
+  assert.equal(await round(), false, 'a thread reply alone');
+  await piped(f, 'Not ours\n', 'merge-request:reply', 'p', 'ABC-5', 'A', '1', '42', '-');
+  assert.equal(await round(), false, 'a comment reply alone');
+  assert.equal(f.mrs()[0]['feedback-acted'] ?? null, null);
+  await f.agent('merge-request:resolve', 'p', 'ABC-5', 'A', '1', 'd1');
+  assert.equal(await round(), true, 'a resolve');
+  await checkOf(f);
+  f.record({ 1: { 'feedback-acted': true } });   // as merge-request:retry records it
+  assert.equal(await round(), true, 'a retry');
+  await checkOf(f);
+  view(f, 'app', 7, { ...BEYOND, sha: NEW });
+  assert.equal(await round(), true, 'a push');
+});
+
+test('ASS-523 AC3: await-dependencies with MERGES_AWAITED — a dependency at a new head whose pipeline is still in progress, needing only approval, keeps waiting (exit 2, pipeline-running), never merged early nor out of draft; green it merges early (5); failed it is its own (4); without the flag 2', async () => {
+  for (const status of ['created', 'waiting_for_resource', 'preparing', 'pending', 'running', 'scheduled']) {
+    const f = await dependedOn({ draft: true, sha: NEW, head_pipeline: { id: 55, status } }, 1);
+    f.record({ 1: { 'checked-head': OLD } });
+    const r = await flaggedAwait(f);
+    assert.equal(r.code, 2, `${status}: ${r.err}`);
+    assert.ok(r.out.waiting[0].needs.includes('pipeline-running'), `${status}: ${JSON.stringify(r.out)}`);
+    assert.equal(r.out['merge-request-ids'], undefined, status);
+    assert.ok(!f.forge.log('glab').some(l => / -X PUT/.test(l)), `${status}: nothing taken out of draft`);
+    if (status === 'running') assert.match(variationOf(f)['ai-feedback-long'], /its pipeline is still running/);
+  }
+  const green = await dependedOn({ draft: true, sha: NEW, head_pipeline: { id: 55, status: 'success' } }, 1);
+  const g = await flaggedAwait(green);
+  assert.deepEqual([g.code, g.out['merge-request-ids']], [5, [1]], g.err);
+  const red = await dependedOn({ draft: true, sha: NEW, head_pipeline: { id: 55, status: 'failed' } }, 1);
+  pipelineOf(red, 'lib', 55, { jobs: [{ name: 'unit', status: 'failed', allow_failure: false }], bridges: [] });
+  assert.equal((await flaggedAwait(red)).code, 4);
+  const plain = await dependedOn({ draft: true, sha: NEW, head_pipeline: { id: 55, status: 'running' } }, 1);
+  const p = await awaiting(plain);
+  assert.equal(p.code, 2, p.err);
+  assert.ok(p.out.waiting[0].needs.includes('pipeline-running'), JSON.stringify(p.out));
 });

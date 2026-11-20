@@ -73,7 +73,8 @@ test('ASS-365 AC2/AC6: grouped-build enters Merge the Awaited only from Await Se
   assert.equal(nextState(wait, build, { exitCode: 5 }, []).to, 'merge-awaited');
   const ended = at => nextState(step, build, { subEngineDone: true, subEngineState: at }, []).to;
   assert.deepEqual(['done', 'rebuild', 'blocked', 'blocked-for-human'].map(ended), ['await-dependencies', 'generate-solution', 'blocked', 'blocked-for-human']);
-  assert.deepEqual(into(build, 'blocked-for-human'), ['merge-awaited'], 'grouped-build ends at Blocked for Human only from the merge loop');
+  // ASS-523: and from Await Sequential Merge's exit 6, a dependency needing the operator.
+  assert.deepEqual(into(build, 'blocked-for-human').toSorted(), ['await-dependencies', 'merge-awaited'], 'grouped-build ends at Blocked for Human only from the merge loop and the operator-needed wait');
   // Grouped-build's order is as it was: Merge the Awaited sits between Address Merge Request Feedback and the wait it returns to.
   const order = build.steps.toSorted((a, b) => a.sequence - b.sequence).map(s => s.id);
   assert.ok(inOrder(order, ['refresh-repositories', 'generate-automated-tests', 'generate-solution', 'address-merge-request-feedback', 'merge-awaited', 'await-dependencies', 'refresh-before-testing', 'automated-testing', 'ci-checks', 'code-review', 'security-review']), order.join(' '));
@@ -202,4 +203,32 @@ test('ASS-516 AC2: the check\'s all-closed output moves to blocked-for-human —
     // A failed check is not all-closed, whatever it printed.
     assert.notEqual(at(ALL_CLOSED, 1), 'blocked-for-human', id);
   }
+});
+
+// ASS-523: an MR already sent to Address Merge Request Feedback at an unchanged head, its threads answered by the
+// harness and its pipeline failed beyond the review gate, needs the operator: the check's operator-needed output
+// moves to Blocked for Human, ahead of approval-wait-expired and Ensure Auto-Merge — never to Address Merge Request Feedback.
+test('ASS-523 AC1: the check\'s operator-needed output moves to blocked-for-human — in grouped-merge\'s check and a project Release\'s team-code-review — ahead of approval-wait-expired, never to address-merge-request-feedback; both engines validate', () => {
+  const release = engines['grouped-release-example'];
+  const OPERATOR = { ...WAITS, 'auto-merge': false, 'operator-needed': true, 'needs-operator': [{ id: 1, key: '!7' }] };
+  for (const [engine, id] of [[merge, 'check'], [release, 'team-code-review']]) {
+    assert.deepEqual(errorsFor(engine), [], id);
+    const step = stepOf(engine, id);
+    const at = (output, exitCode = 0) => nextState(step, engine, { exitCode, ticketSystemStatus: 'In Review', scriptOutput: output }, [])?.to ?? null;
+    assert.equal(at(OPERATOR), 'blocked-for-human', id);
+    assert.equal(at({ ...OPERATOR, 'auto-merge': true }), 'blocked-for-human', id);
+    const exits = step['exit-events'];
+    const operatorAt = exits.findIndex(e => JSON.stringify(e.condition).includes('"operator-needed":true'));
+    const expiredAt = exits.findIndex(e => JSON.stringify(e.condition).includes('"approval-wait-expired":true'));
+    assert.ok(operatorAt >= 0 && operatorAt < expiredAt, `${id}: operator-needed before approval-wait-expired`);
+    assert.equal(exits[operatorAt]['move-to-state'], 'blocked-for-human', id);
+    assert.notEqual(at(OPERATOR, 1), 'blocked-for-human', `${id}: a failed check is not operator-needed`);
+  }
+  // Walked: the first send, then operator-needed — Blocked for Human, no second round.
+  const { trail, end } = walk(engines, 'grouped-merge', { from: 'check', answers: {
+    'grouped-merge/check': [{ scriptOutput: { ...WAITS, 'needs-attention': true } }, { scriptOutput: OPERATOR }],
+    'grouped-merge/check-feedback-round': [{ exitCode: 0, scriptOutput: { changed: false } }],
+  } });
+  assert.equal(end, 'blocked-for-human', trail.join(' '));
+  assert.equal(trail.filter(p => p === 'grouped-merge/address-merge-request-feedback').length, 1, trail.join(' '));
 });

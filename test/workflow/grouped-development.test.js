@@ -75,8 +75,8 @@ test('AC1: every step of the current engines is mirrored in its group — action
       assert.equal(s['max-visits'], ['write-test-plan', 'enrich-automated-test-data', 'review-plan'].includes(old.id) ? old['max-visits'] + 1 : old['max-visits'], old.id);
       // ASS-118 AC4: Risk Assessment always goes on, its shortcut past the gate gone; ASS-314: on to the Token Expense Check, grouped-review's Human Review removed.
       if (old.id === 'risk-assessment') assert.deepEqual(s['exit-events'].map(e => [e.condition, e['move-to-state']]), [[{ 'turn-complete': true }, 'token-expense-check']]);
-      // ASS-151: a human step's fast-tracked exit is the grouped engines' own; ASS-162: so is Automated Testing's exit 4 (the tests list missing) back to Generate Automated Tests; ASS-224: so is Team Code Review's merged one, ASS-351: and its approval-wait-expired one, ASS-516: and its all-closed one; ASS-282: so is QA Testing's to blocked on a status QA parks the ticket at.
-      else assert.deepEqual(s['exit-events'].filter(e => !Object.hasOwn(e.condition, 'fast-tracked') && !(old.id === 'automated-testing' && e.condition['exit-code'] === 4) && !(old.id === 'team-code-review' && /"(merged|approval-wait-expired|all-closed)"/.test(JSON.stringify(e.condition))) && !(old.id === 'qa-testing' && e['move-to-state'] === 'blocked')).map(e => e.condition), old['exit-events'].map(e => e.condition), old.id);
+      // ASS-151: a human step's fast-tracked exit is the grouped engines' own; ASS-162: so is Automated Testing's exit 4 (the tests list missing) back to Generate Automated Tests; ASS-224: so is Team Code Review's merged one, ASS-351: and its approval-wait-expired one, ASS-516: and its all-closed one, ASS-523: and its operator-needed one; ASS-282: so is QA Testing's to blocked on a status QA parks the ticket at.
+      else assert.deepEqual(s['exit-events'].filter(e => !Object.hasOwn(e.condition, 'fast-tracked') && !(old.id === 'automated-testing' && e.condition['exit-code'] === 4) && !(old.id === 'team-code-review' && /"(merged|approval-wait-expired|all-closed|operator-needed)"/.test(JSON.stringify(e.condition))) && !(old.id === 'qa-testing' && e['move-to-state'] === 'blocked')).map(e => e.condition), old['exit-events'].map(e => e.condition), old.id);
       assert.equal(s['paired-ticket-system-status'], undefined, `${old.id}: only the top level pairs (ASS-67)`);
     }
     for (const id of REMOVED) assert.ok(stepOf(engines[current], id), `${current} still has ${id}`);
@@ -632,7 +632,7 @@ test('ASS-359 AC3: Await Sequential Merge\'s exit 3 (a planned merge request nev
 test('ASS-361 AC3: Await Sequential Merge\'s exit 4 goes to Build\'s own Address Merge Request Feedback, which returns to Await Sequential Merge on turn complete, under its max-visits (3), then Blocked; 2 still waits, 3 still goes to Generate Solution', () => {
   const build = engines['grouped-build'], step = stepOf(build, 'await-dependencies'), address = stepOf(build, 'address-merge-request-feedback');
   // ASS-365: exit 5, after them, to Merge the Awaited — given only where merges-awaited is set (below).
-  assert.deepEqual(step['exit-events'].map(e => [e.condition, e['move-to-state']]), [[{ 'exit-code': 0 }, 'refresh-before-testing'], [{ 'exit-code': 3 }, 'generate-solution'], [{ 'exit-code': 4 }, 'address-merge-request-feedback'], [{ 'exit-code': 5 }, 'merge-awaited']]);
+  assert.deepEqual(step['exit-events'].map(e => [e.condition, e['move-to-state']]), [[{ 'exit-code': 0 }, 'refresh-before-testing'], [{ 'exit-code': 3 }, 'generate-solution'], [{ 'exit-code': 4 }, 'address-merge-request-feedback'], [{ 'exit-code': 5 }, 'merge-awaited'], [{ 'exit-code': 6 }, 'blocked-for-human']]);   // ASS-523: 6, operator-needed
   assert.deepEqual([address.name, address.action, address['run-location'], address['max-visits'], address['on-max-visits']],
     ['Address Merge Request Feedback', { type: 'prompt', prompt: 'check-on-merge-request-build-grouped', 'agent-count': 1, 'run-in-dev-container': true, model: 'claude-opus-5-5' }, 'vm', 3, 'blocked']);
   // ASS-505: by Check the Feedback Round, which goes back to the gate.
@@ -690,4 +690,24 @@ test('ASS-385 AC3: grouped-build checks numbered files on the host before every 
   assert.deepEqual([2, 4].map(exitCode => nextState(step, build, { exitCode })), [null, null]);
   assert.deepEqual(build.steps.filter(s => (s['exit-events'] ?? []).some(e => e['move-to-state'] === 'automated-testing')).map(s => s.id), ['check-numbered-files']);
   assert.deepEqual(validateStateEngine(build, ROOT, 'grouped-build', EXAMPLE_ENGINES), []);
+});
+
+// ASS-523: a dependency already sent to Address Merge Request Feedback at an unchanged head, its threads answered by
+// the harness and its pipeline failed beyond the review gate, needs the operator: merge-request:await-dependencies
+// exits 6, grouped-build ends at Blocked for Human, and the top-level Build moves there too — never on to Test.
+test('ASS-523 AC1: Await Sequential Merge\'s exit 6 (operator-needed) goes to grouped-build\'s blocked-for-human, whatever the visits; harness-development-grouped\'s and example-development-grouped\'s Build then end at blocked-for-human, never reaching Test', () => {
+  const build = engines['grouped-build'], step = stepOf(build, 'await-dependencies');
+  assert.equal(nextState(step, build, { exitCode: 6 }, [])?.to, 'blocked-for-human');
+  assert.equal(stepOf(build, 'blocked-for-human')['is-done'], true);
+  assert.deepEqual(validateStateEngine(build, ROOT, 'grouped-build', EXAMPLE_ENGINES), []);
+  for (const top of Object.keys(CURRENT)) {
+    const parent = stepOf(engines[top], 'build');
+    assert.equal(nextState(parent, engines[top], { subEngineDone: true, subEngineState: 'blocked-for-human' }, [])?.to, 'blocked-for-human', top);
+    assert.equal(nextState(parent, engines[top], { subEngineDone: true, subEngineState: 'done' }, [])?.to, 'test', `${top}: done still goes on to Test`);
+    const trail = walk(top, { ...NOT_SET_UP, 'grouped-build/await-dependencies': { exitCode: 6 } });
+    assert.ok(trail.includes('grouped-build/blocked-for-human'), `${top}: ${trail.join(' ')}`);
+    assert.equal(tops(trail).at(-1), 'blocked-for-human', `${top}: ${tops(trail).join(' ')}`);
+    assert.ok(!tops(trail).includes('test'), `${top}: never reaches Test`);
+    assert.deepEqual(validateStateEngine(engines[top], ROOT, top, EXAMPLE_ENGINES), [], top);
+  }
 });
