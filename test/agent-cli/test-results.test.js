@@ -308,3 +308,13 @@ test('ASS-509 AC4: no test named — the failed make targets compared: one maste
   assert.deepEqual(judge({ status: 2, output: 'boom\n' }, [branch]).verdict, 'blocked', 'master naming no target: nothing to compare');
   assert.deepEqual(judge(master, [{ status: 2, output: 'make: *** [check-old-style] Error 2\n' }]).new, ['make: check-old-style']);
 });
+
+// ASS-520: CLW-3237's shape — command A runs a file new on the branch, so its master run aborts at pg_prove
+// (no TAP, or another file's TAP first), while command B's master run fails T in the shared suite both run.
+const ABORT_520 = "Cannot detect source of '/tests/clw_3617_expert_review_markup.sql'!\n";
+const CONCURRENCY_520 = '/concurrency-tests/billing.sql ....\n1..1\nnot ok 1 - billing_stripe_draft_retirement\n';
+const A_MASTER_ABORT = { status: 2, output: ABORT_520 };
+const A_MASTER_PARTIAL = { status: 2, output: `/tests/other.sql ....\n1..1\nok 1 - x\n${ABORT_520}` };
+const B_MASTER = red(CONCURRENCY_520);
+const BRANCH_520 = red(`/tests/clw_3617_expert_review_markup.sql ....\n1..1\nok 1 - markup\n${CONCURRENCY_520}`);
+const BRANCH_NEW_520 = red(BRANCH_520.output.replace('1..1\nnot ok 1', '1..2\nnot ok 1') + 'not ok 2 - brand_new\n');
