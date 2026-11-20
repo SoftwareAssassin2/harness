@@ -519,9 +519,9 @@ test('ASS-227 AC4: an untracked file does not stop the switch to master — a de
   assert.ok(existsSync(join(f.worktree, '__pycache__', 'x.pyc')));
 });
 
-// ASS-520: CLW-3237's shape end to end — two commands, A's master run aborting on a file new to the branch
+// ASS-520: a client ticket's shape end to end — two commands, A's master run aborting on a file new to the branch
 // (no TAP), B's master run failing T in the suite both run; the branch's A fails T (and, given, brand_new).
-const ABORT_520 = "Cannot detect source of '/tests/clw_3617_expert_review_markup.sql'!\n";
+const ABORT_520 = "Cannot detect source of '/tests/branch_only_markup.sql'!\n";
 const CONCURRENCY_520 = '/concurrency-tests/billing.sql ....\n1..1\nnot ok 1 - billing_stripe_draft_retirement\n';
 const T_520 = '/concurrency-tests/billing.sql: billing_stripe_draft_retirement';
 async function abortedOnMaster(bOnMaster = { text: CONCURRENCY_520, run: 'cat b.txt; exit 1' }) {
@@ -529,7 +529,7 @@ async function abortedOnMaster(bOnMaster = { text: CONCURRENCY_520, run: 'cat b.
   writeFileSync(join(f.ws, 'a.txt'), ABORT_520); writeFileSync(join(f.ws, 'b.txt'), bOnMaster.text);
   git(f.ws, 'add', '.'); git(f.ws, 'commit', '-q', '-m', 'masters'); git(f.ws, 'push', '-q', 'origin', 'master');
   const t = await withTests([{ list: 'echo a', run: 'cat a.txt; exit 1' }, { list: 'echo b', run: bOnMaster.run }], f);
-  writeFileSync(join(t.worktree, 'a.txt'), `/tests/clw_3617_expert_review_markup.sql ....\n1..1\nok 1 - markup\n${CONCURRENCY_520}`);
+  writeFileSync(join(t.worktree, 'a.txt'), `/tests/branch_only_markup.sql ....\n1..1\nok 1 - markup\n${CONCURRENCY_520}`);
   git(t.worktree, 'commit', '-q', '-am', 'branch');
   return { ...t, baseline: () => JSON.parse(readFileSync(join(t.folder, 'automated-test-baseline-A.json'), 'utf8')) };
 }
@@ -539,7 +539,7 @@ test('ASS-520 AC1, AC2: a command whose master run aborted on a branch-only file
   assert.deepEqual(JSON.parse((await f.agent('automated-tests:verify-success', 'p', 'ABC-3', 'A')).stdout), { passed: 2, failed: 0, 'pre-existing': [T_520, T_520] });
   assert.match(f.results(), new RegExp(`## ✓ cat a\\.txt; exit 1 \\(exit 1: every failure is one master has too\\)\\n\\nPre-existing failures, failing on master too:\\n- ${T_520.replace(/[./]/g, '\\$&')}\\n`));
   assert.deepEqual(Object.keys(f.baseline().tests), ['cat a.txt; exit 1', 'cat b.txt; exit 1']);   // one master run each
-  writeFileSync(join(f.worktree, 'a.txt'), `/tests/clw_3617_expert_review_markup.sql ....\n1..1\nok 1 - markup\n${CONCURRENCY_520.replace('1..1', '1..2')}not ok 2 - brand_new\n`);
+  writeFileSync(join(f.worktree, 'a.txt'), `/tests/branch_only_markup.sql ....\n1..1\nok 1 - markup\n${CONCURRENCY_520.replace('1..1', '1..2')}not ok 2 - brand_new\n`);
   git(f.worktree, 'commit', '-q', '-am', 'a new failure');
   await exitsWith(f.agent('automated-tests:verify-success', 'p', 'ABC-3', 'A'), 1, /1 of 2 failed/);
   assert.match(f.results(), /## ✗ cat a\.txt; exit 1 \(exit 1\)\n\nNew failures, not failing on master, and failing again on a re-run:\n- \/concurrency-tests\/billing\.sql: brand_new\n\n/);
