@@ -120,7 +120,7 @@ const ALLOWED = {
   'src/agent-cli/code.bash': { '"$f"': 'a mktemp file in a shim run in the project' },
   'src/agent-cli/code/create-worktree.sh': { '"$(git -C "': 'the workspace\'s .git/info/exclude, not the harness\'s data' },
   'src/agent-cli/automated-tests.bash': { '"$f"': 'a mktemp flag file in the time limit\'s script, run where the tests run (ASS-329)' },
-  'src/agent-cli/automated-tests/verify-success.sh': { '"$3"': 'a test run\'s output, to its own temp file', '"$tmp/master-$i"': 'a temp folder of its own' },
+  'src/agent-cli/automated-tests/verify-success.sh': { '"$3"': 'a test run\'s output, to its own temp file', '"$tmp/master-$i"': 'a temp folder of its own', '"$tmp/also-$i-$n"': 'a temp folder of its own: another command\'s master output (ASS-520)' },
   'src/agent-cli/ci-checks/verify.sh': Object.fromEntries(['"$4"', '"$tmp/head"', '"$tmp/base"', '"$tmp/changed"', '"$tmp/master-tail"', '"$tmp/master-$i"'].map(t => [t, 'a temp folder of its own (mktemp -d)'])),
   'src/agent-cli/merge-request/check-numbered-files.sh': {   // ASS-385; ASS-386: its retried calls' stdout, each into a file of $tmp
     '"$tmp/next"': 'a temp folder of its own (mktemp -d)',

@@ -27,7 +27,10 @@ set -euo pipefail
 # every failed test (or aborted file) is one master has too, the command
 # passes — the pre-existing failures named in the results, and printed as
 # pre-existing — else it is re-run once, and fails only on a new failure that
-# fails again. A command whose output names no test, red on master too, exits
+# fails again. A command red on master (not timed out, not "reproduces") is
+# also compared with the other commands' red master runs in the baseline
+# (ASS-520): its own may have aborted, say on a file new to the branch, before
+# reaching a suite another shows failing there. A command whose output names no test, red on master too, exits
 # 3 for a human, the results holding both outputs: like the environment
 # problem, it routes to Blocked, so it shares that exit (ASS-227 AC3). A
 # checkout with changes not committed to a tracked file is never switched: exit
@@ -231,19 +234,26 @@ for i in "${!commands[@]}"; do
   if [[ -n "${stale[i]:-}" ]]; then gone=$((gone + 1))
     report+=$'\n'"## ↻ $command ($(exit_of "$status" "$out"): its recorded test is gone, record it again)"$'\n\n'"Its list command fails too (exit ${stale[i]}), so the file it names was moved or renamed after it was recorded: \`${lists[i]}\`"$'\n'"$(block "$tmp/list-$i")"$'\n'"$(block "$out")"$'\n'; continue; fi
   if ! ran "$status" "$out"; then unrunnable=$((unrunnable + 1)); report+=$'\n'"## ⚠ $command (exit $status: could not run)"$'\n'"$(block "$out")"$'\n'; continue; fi
-  master_status=- master=- new="New failures, failing again on a re-run:" as=()
+  master_status=- master=- new="New failures, failing again on a re-run:" as=() also=()
   [[ ${reproduces[i]} != true ]] || as=(--reproduces)
   if [[ -n "$baseline_error" ]]; then
     [[ ${reproduces[i]} == true ]] || { unrunnable=$((unrunnable + 1)); report+=$'\n'"## ⚠ $command (exit $status: could not run master's tests: $baseline_error)"$'\n'"$(block "$out")"$'\n'; continue; }
   elif [[ -f "$baseline" ]] && jq -e --arg run "$command" '.tests[$run] != null' "$baseline" > /dev/null; then
     master_status="$(jq --arg run "$command" '.tests[$run].status' "$baseline")" master="$tmp/master-$i" new="New failures, not failing on master, and failing again on a re-run:"
     jq -j --arg run "$command" '.tests[$run].output' "$baseline" > "$tmp/master-$i"
+    # ASS-520: red on master, and finished: the other commands' red master runs (same commit) are evidence too
+    if [[ ${reproduces[i]} != true && $master_status != 0 ]] && jq -e --arg run "$command" '.tests[$run]["timed-out"] | not' "$baseline" > /dev/null; then
+      while IFS= read -r n; do
+        jq -j --argjson n "$n" '.tests | to_entries[$n].value.output' "$baseline" > "$tmp/also-$i-$n"
+        also+=(--also "$tmp/also-$i-$n")
+      done < <(jq --arg run "$command" '.tests | to_entries | to_entries[] | select(.value.key != $run and .value.value.status != 0 and (.value.value["timed-out"] | not)) | .key' "$baseline")
+    fi
   fi
-  verdict="$(node "$judge_js" ${as[@]+"${as[@]}"} "$master_status" "$master" "$status" "$out")" why="every failure is one master has too"
+  verdict="$(node "$judge_js" ${as[@]+"${as[@]}"} ${also[@]+"${also[@]}"} "$master_status" "$master" "$status" "$out")" why="every failure is one master has too"
   if [[ "$(jq -r .verdict <<< "$verdict")" == failed ]]; then
     why="no new failure failed again on a re-run"
     rerun="$(run_test "$1" "$command" "$tmp/rerun-$i")"
-    verdict="$(node "$judge_js" ${as[@]+"${as[@]}"} "$master_status" "$master" "$status" "$out" "$rerun" "$tmp/rerun-$i")"
+    verdict="$(node "$judge_js" ${as[@]+"${as[@]}"} ${also[@]+"${also[@]}"} "$master_status" "$master" "$status" "$out" "$rerun" "$tmp/rerun-$i")"
     extra=$'\n'"### Re-run ($(exit_of "$rerun" "$tmp/rerun-$i"))"$'\n'"$(block "$tmp/rerun-$i")"$'\n'
   fi
   case "$(jq -r .verdict <<< "$verdict")" in
