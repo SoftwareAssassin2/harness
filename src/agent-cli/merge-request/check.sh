@@ -173,7 +173,7 @@ done
 # The rows as they were before this check wrote them (ASS-513's poll reads the last check's checked-head and feedback-acted).
 prior="$MRS"
 # ASS-388: each Open one of the set gets the head commit this check saw as its checked-head, and its
-# feedback-acted (merge-request:reply, :resolve and :retry set it) cleared — written only when either changes. The
+# feedback-acted (merge-request:resolve and :retry set it) cleared — written only when either changes. The
 # check is what sends a merge request to Address Merge Request Feedback, so these are the round's start:
 # merge-request:feedback-round tells a round that pushed, resolved and retried nothing by them (a reply alone is no change, ASS-523).
 while IFS=$'\t' read -r i fields; do

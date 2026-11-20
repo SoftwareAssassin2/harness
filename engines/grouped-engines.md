@@ -233,7 +233,8 @@ after ASS-361.
   merges the next awaited one in a chain; `rebuild` (a review rejected the
   work) to Generate Solution; `blocked` to grouped-build's Blocked;
   `blocked-for-human` to grouped-build's own `blocked-for-human` done step,
-  reached from nowhere else, which the parent step sends to Blocked for Human.
+  reached otherwise only from Await Sequential Merge's exit 6 (ASS-523), which
+  the parent step sends to Blocked for Human.
 - **One variation only.** A variation set aside at Variation Selection is
   soft-deleted (`is-deleted`, `ticket:select-variation`). With more than one
   variation not set aside, nothing is merged early, since the work merged
@@ -1193,8 +1194,10 @@ a run of the check an earlier harness left is ended as control starts.
     Blocked, which returns it to the start of the group (each group's
     `return-to-state` is itself).
   - `blocked-for-human`: Setup's Create VM found no room, or (ASS-365)
-    grouped-build's merge loop waited past `approval-wait-days`; read only by
-    a Build step that sets `merges-awaited`.
+    grouped-build's merge loop waited past `approval-wait-days`, or (ASS-523)
+    its Await Sequential Merge exited 6 (a dependency needs the operator);
+    read by a Build step that sets `merges-awaited`, and (ASS-523) by
+    harness-development-grouped's and -v2's Build.
   - `rebuild`: Local Testing rejected, or a project Release's Team Code Review sent the
     ticket back In Progress. The ticket goes into Build at Generate Solution
     (`start-sub-engine-at`, ASS-66).
@@ -2645,13 +2648,13 @@ commit's sha) and the pipeline's `status` and `sha`.
 
 A feedback round that changed nothing spends no visit (ASS-388). The check
 records on each Open merge request's row the head commit it saw
-(`checked-head`) and clears `feedback-acted`, which `merge-request:reply`,
-`merge-request:resolve` and `merge-request:retry` set. After Address Merge Request Feedback, Check the
+(`checked-head`) and clears `feedback-acted`, which `merge-request:resolve`
+and `merge-request:retry` set (`merge-request:reply` too until ASS-523). After Address Merge Request Feedback, Check the
 Feedback Round runs `merge-request:feedback-round` (`--only` as the loop's
 other commands): each Open one's head is read from its forge, and it prints
 `{ "changed": <bool>, "merge-requests": [{ id, key, head, "checked-head",
 acted }] }`, changed false only when there is an Open one and every head is
-its `checked-head` with nothing replied to, resolved or retried. Its exit on changed
+its `checked-head` with nothing resolved or retried. Its exit on changed
 false goes back to the check with `"cause": "no-op-round"` in the engine JSON;
 control records an exit's cause on a script step's move, and on a run's own
 `state-changes` too (`transient-state-engine:change-state` takes
@@ -2927,7 +2930,11 @@ stay the reference to copy from.
   Plan, Write Test Plan, Enrich Automated Test Data, Review Plan.
   Build is filled (ASS-113, a pair per test run): Generate Automated Tests,
   Generate Solution, Automated Testing, Code Review, Security Review; ASS-218
-  added the two Refresh steps to both.
+  added the two Refresh steps to both. ASS-523 gave v2-build grouped-build's
+  `blocked-for-human` done step (unreachable there: v2-build has no Await
+  Sequential Merge) and harness-development-v2's Build its
+  `sub-engine-ended-at: blocked-for-human` exit, so v2's Build exits stay
+  harness-development-grouped's.
   Test is filled (ASS-114, a sub-flow per test run): Local Testing, Steps
   to Test. A sub-engine step's sub-engine is copied too, as `v2-<name>`
   (`v2-local-testing`, grouped-local-testing's but for Test's prompt,
