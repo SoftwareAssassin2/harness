@@ -250,6 +250,11 @@ export function agentNeedsWork(planned, step, ticket, variation) {
   return planned.reserved.some(r => r.key === ticket.key && r.variation === variation.name);
 }
 
+// waitsForSeatAt(state, project, ticket, variation) — the variation is at a step that takes a seat
+// and holds none (plan.js planFor `waiting`; ASS-522: as one Blocked moved back without a seat):
+// it starts no sub-engine run, script or run step until it is seated, in rank order.
+const waitsForSeatAt = (state, project, ticket, variation) => planFor(state, project).waiting.some(w => w.key === ticket.key && w.variation === variation.name);
+
 // One variation's step, moved on while an exit holds (see the module comment)
 // — a sprint ticket's in its project's engine, or a backlog ticket's in its
 // refinement engine (moves.js found, ASS-144), which takes no slot and
@@ -267,9 +272,10 @@ async function runVariation(ctx, state, project, key, name) {
     // A move into a step whose slot the variation neither holds nor can take waits (ASS-126; plan.js mayEnter).
     // A fast-tracked ticket's move that waits so is remembered, for its pre-emption (fast-track.js, ASS-83).
     // ASS-390: `startAt`, when given, the step the target's sub-engine starts at instead (a cleared block's resume-sub-at).
-    const move = async (next, cause, startAt) => {
+    // ASS-522: `seatless` (Blocked's done run following its return-to step) moves without the seat check; it waits for its seat at the target.
+    const move = async (next, cause, startAt, seatless) => {
       if (next?.to == null) return false;
-      if (!backlog && !mayMove(ctx, PHASE, state, project, variation, who, next.to)) { waitsForSeat(ctx.memory, project, ticket, variation, slotKind(stepOf(engine, next.to))); return false; }
+      if (!backlog && !seatless && !mayMove(ctx, PHASE, state, project, variation, who, next.to)) { waitsForSeat(ctx.memory, project, ticket, variation, slotKind(stepOf(engine, next.to))); return false; }
       return moveTicket(ctx, PHASE, project, ticket, variation, next.to, next.reason === 'max-visits' ? 'max-visits' : undefined, startAt ?? (next.reason === 'exit' ? next.exit['start-sub-engine-at'] : undefined), cause);
     };
     // Held by what it depends on (ASS-195, ASS-355): held at this step, whatever it is but a done or a person's one —
@@ -312,6 +318,7 @@ async function runVariation(ctx, state, project, key, name) {
         const values = ticketValues(project, ticket, variation);
         let wait = 0;
         if (!scriptRunning(ctx, running, visit)) {
+          if (!backlog && waitsForSeatAt(state, project, ticket, variation)) return;   // ASS-522: no seat yet, no script
           if (waiting(ctx.memory, held, ctx.now().getTime()) || (!timer && heldAtGate(variation))) return;
           if (diskWaits(ctx, state, step, who) || setupWaits(ctx, project, step, who)) return;
           if (await memoryWaits(ctx, state, project, step, who, backlog ? null : { key: ticket.key, variation: variation.name, state: stateId })) return;   // ASS-398, ASS-404
@@ -336,6 +343,7 @@ async function runVariation(ctx, state, project, key, name) {
         if (backlog) return;
         const run = state.transient.find(r => r.parent?.trigger == null && r.parent?.['work-item'] === key && r.parent.variation === name && r.parent.state === stateId);
         if (!run) {
+          if (waitsForSeatAt(state, project, ticket, variation)) return;   // ASS-522: no seat yet, no sub-engine run
           // The run, then the ticket entered into the sub-engine (sub-status
           // at its first step), which the run's later moves build on — or,
           // entered already at a named step (sub-status of this engine, set
@@ -376,7 +384,8 @@ async function runVariation(ctx, state, project, key, name) {
         const resume = resumeAt(facts), cleared = ownBranchFix(facts) ? (['behind-base', 'numbered-file'].includes(facts.structuredOutput['own-branch-source']) ? 'its branch was brought up to date with its base (ASS-509)' : 'the failure is in its own branch (own-branch fix)') : awaitsDependency(facts) ? 'it only waits for its dependency merge request' : 'the fix landed';
         const sub = resume !== undefined && resume === next.to ? resumeSubAt(facts) : undefined;
         const startAt = sub !== undefined && stepOf(enginesFor(state, project.id)[stepOf(engine, next.to)?.action?.engine], sub) ? sub : undefined;
-        if (!await move(next, clearCause(facts) ?? next.exit?.cause, startAt)) return;   // gated: the run stays until the human opens the gate, then goes as orphaned (runTransient)
+        const seatless = stateId === 'blocked' && next.reason === 'exit' && next.exit?.['follow-return-to-state'] === true;   // ASS-522
+        if (!await move(next, clearCause(facts) ?? next.exit?.cause, startAt, seatless)) return;   // gated: the run stays until the human opens the gate, then goes as orphaned (runTransient)
         if (resume !== undefined) ctx.log(PHASE, resume === next.to
           ? `${who}: ${cleared}; resumes at ${resume}${startAt ? ` at ${startAt}` : sub ? ` (its ${sub} not a step there)` : ''}: ${facts.structuredOutput['resume-why'] ?? 'no reason given'}`
           : `${who}: ${cleared}; resume-at ${resume} not taken (${whyNotResume(engine, next.to, resume) ?? 'its return could not be told'}), resumes at ${next.to}`);
@@ -436,6 +445,7 @@ async function runTransient(ctx, state, id) {
     const { project, ticket, variation, backlog } = place;
     // Its ticket held by what it depends on (ASS-195, ASS-355): the run stays at its step, nothing started, as the ticket's own step does.
     if (ticket && variation && !backlog && awaitsDependencies(ctx, state, project, ticket, variation, who)) return;
+    if (ticket && variation && !backlog && waitsForSeatAt(state, project, ticket, variation)) return;   // ASS-522: its ticket has no seat yet: no step runs
     // Switched off (ASS-192): passed at once, as a ticket's step is (runVariation).
     if (!isActive(step)) {
       const next = switchedOff(step);
