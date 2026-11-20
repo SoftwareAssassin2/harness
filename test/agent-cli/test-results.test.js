@@ -318,3 +318,52 @@ const A_MASTER_PARTIAL = { status: 2, output: `/tests/other.sql ....\n1..1\nok 1
 const B_MASTER = red(CONCURRENCY_520);
 const BRANCH_520 = red(`/tests/clw_3617_expert_review_markup.sql ....\n1..1\nok 1 - markup\n${CONCURRENCY_520}`);
 const BRANCH_NEW_520 = red(BRANCH_520.output.replace('1..1\nnot ok 1', '1..2\nnot ok 1') + 'not ok 2 - brand_new\n');
+const T_520 = '/concurrency-tests/billing.sql: billing_stripe_draft_retirement';
+
+test('ASS-520 AC1: A\'s master aborted on a branch-only file, B\'s master fails T, A\'s branch run fails only T: passed, T pre-existing', () => {
+  for (const aMaster of [A_MASTER_ABORT, A_MASTER_PARTIAL])
+    assert.deepEqual(judge(aMaster, [BRANCH_520], { others: [B_MASTER.output] }), { verdict: 'passed', new: [], 'pre-existing': [T_520] });
+});
+
+test('ASS-520 AC1: without other masters, as before — aborted master blocked, partial master T new', () => {
+  assert.equal(judge(A_MASTER_ABORT, [BRANCH_520]).verdict, 'blocked');
+  assert.deepEqual(judge(A_MASTER_PARTIAL, [BRANCH_520]), { verdict: 'failed', new: [T_520], 'pre-existing': [] });
+  assert.deepEqual(judge(A_MASTER_ABORT, [BRANCH_520], { others: [] }), judge(A_MASTER_ABORT, [BRANCH_520]));
+  assert.deepEqual(judge(A_MASTER_PARTIAL, [BRANCH_520], { others: [] }), judge(A_MASTER_PARTIAL, [BRANCH_520]));
+});
+
+test('ASS-520 AC1: every other master is consulted, not only the first', () => {
+  assert.deepEqual(judge(A_MASTER_ABORT, [BRANCH_520], { others: ['/tests/y.sql ....\n1..1\nok 1 - y\n', B_MASTER.output] }),
+    { verdict: 'passed', new: [], 'pre-existing': [T_520] });
+});
+
+test('ASS-520 AC2: a failure no master names is still new: failed, only it new, T pre-existing', () => {
+  for (const aMaster of [A_MASTER_ABORT, A_MASTER_PARTIAL])
+    assert.deepEqual(judge(aMaster, [BRANCH_NEW_520, BRANCH_NEW_520], { others: [B_MASTER.output] }),
+      { verdict: 'failed', new: ['/concurrency-tests/billing.sql: brand_new'], 'pre-existing': [T_520] });
+});
+
+test('ASS-520 AC2: re-run logic unchanged — a new failure gone on the re-run passes', () => {
+  assert.equal(judge(A_MASTER_ABORT, [BRANCH_NEW_520, BRANCH_520], { others: [B_MASTER.output] }).verdict, 'passed');
+});
+
+test('ASS-520: others ignored for a reproducing check, a green master, or a timed-out master', () => {
+  assert.deepEqual(judge(null, [BRANCH_520], { reproduces: true, others: [B_MASTER.output] }).new, [T_520]);
+  assert.deepEqual(judge(A_MASTER_PARTIAL, [BRANCH_520], { reproduces: true, others: [B_MASTER.output] }).new, [T_520]);
+  assert.deepEqual(judge({ status: 0, output: 'ok\n' }, [BRANCH_520], { others: [B_MASTER.output] }), { verdict: 'failed', new: [T_520], 'pre-existing': [] });
+  assert.equal(judge(stopped(SPEC_STOPPED), [BRANCH_520], { others: [B_MASTER.output] }).verdict, 'blocked');
+});
+
+test('ASS-520: the command line takes repeated --also <master output file>, before or after --reproduces; without it, as before', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'ass520-'));
+  const cli = fileURLToPath(new URL('../../src/agent-cli/automated-tests/test-results.js', import.meta.url));
+  const file = (name, text) => { writeFileSync(join(dir, name), text); return join(dir, name); };
+  const a = file('a.txt', A_MASTER_PARTIAL.output), b = file('b.txt', B_MASTER.output), g = file('g.txt', '/tests/y.sql ....\n1..1\nok 1 - y\n');
+  const branch = file('branch.txt', BRANCH_520.output);
+  const verdict = (...args) => JSON.parse(execFileSync('node', [cli, ...args], { encoding: 'utf8' }));
+  assert.deepEqual(verdict('2', a, '1', branch), { verdict: 'failed', new: [T_520], 'pre-existing': [] });
+  assert.deepEqual(verdict('--also', b, '2', a, '1', branch), { verdict: 'passed', new: [], 'pre-existing': [T_520] });
+  assert.deepEqual(verdict('--also', g, '--also', b, '2', a, '1', branch), { verdict: 'passed', new: [], 'pre-existing': [T_520] });
+  assert.deepEqual(verdict('--reproduces', '--also', b, '-', '-', '1', branch).new, [T_520]);
+  assert.deepEqual(verdict('--also', b, '--reproduces', '-', '-', '1', branch).new, [T_520]);
+});
