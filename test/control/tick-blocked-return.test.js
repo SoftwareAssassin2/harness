@@ -51,3 +51,89 @@ function blockedReturn({ from = 'build', holders = [at('ABC-2', 'build')], limit
     ticks: async (n = 1) => { for (let i = 0; i < n; i++) await tick(f.ctx); },
   };
 }
+
+const script = (f, key) => f.calls(new RegExp(`^script \\./agent\\.sh ticket:set-paused p ${key} A false$`));
+const runsOf = (f, key) => f.assignments()['transient-state-engines'].filter(r => r.parent?.['work-item'] === key);
+const agentsOn = (f, key) => f.assignments().assignments.filter(a => a['work-item'] === key);
+const moved = (f, key, to) => f.inSprint(key).variations[0]['state-changes'].find(c => c['from-state'] === 'blocked' && c['to-state'] === to && !c['sub-state-change']);
+const freeSeat = f => f.editSprint(s => { const t = s.features.find(x => x.key === 'ABC-2'); t['ticket-system-status'] = 'Done'; t.variations[0]['harness-status'] = hs('done'); });
+
+test('ASS-522 T1: Blocked run done, build target, no in-progress seat — at build the same tick, paired status set, waiting, no script, no "waits for" line; seat freed → its script runs', async () => {
+  const f = blockedReturn();
+  await f.ticks();
+  const log = f.lines.join('\n');
+  assert.equal(f.stateOf('ABC-1'), 'build', log);                                         // AC1
+  assert.equal(f.inSprint('ABC-1')['ticket-system-status'], 'In Progress', log);           // build's paired status
+  assert.ok(moved(f, 'ABC-1', 'build'), log);
+  assert.equal(runsOf(f, 'ABC-1').filter(r => r['state-engine'] === 'unblock').length, 0, log);   // Blocked's run ended
+  assert.deepEqual(f.plan().waiting, ['ABC-1'], log);                                      // AC2
+  assert.ok(!f.plan().reserved.includes('ABC-1'), log);
+  assert.equal(script(f, 'ABC-1').length, 0, log);
+  assert.equal(agentsOn(f, 'ABC-1').length, 0, log);
+  assert.equal(f.calls(/ABC-1 A .*waits for an in-progress slot to move to/).length, 0, log);   // AC4
+  freeSeat(f);
+  await f.ticks();
+  assert.deepEqual(f.plan().reserved, ['ABC-1'], f.lines.join('\n'));                      // AC2 / AC3: seated, carries on
+  assert.equal(script(f, 'ABC-1').length, 1, f.lines.join('\n'));
+});
+
+test('ASS-522 T1: two Blocked runs done for build, one seat freed — the higher-ranked takes it, the other stays waiting, its script not run', async () => {
+  const f = blockedReturn({ holders: [at('ABC-2', 'build'), at('ABC-3', 'blocked', [was('plan', 'build'), was('build', 'blocked')])] });
+  edit(join(f.dir, 'assignments.json'), a => { a['transient-state-engines'].push(doneRun('ABC-3')); });
+  await f.ticks();
+  const log = f.lines.join('\n');
+  assert.equal(f.stateOf('ABC-1'), 'build', log);
+  assert.equal(f.stateOf('ABC-3'), 'build', log);
+  const queue = f.plan().waiting;
+  assert.deepEqual(queue.toSorted(), ['ABC-1', 'ABC-3'], log);
+  assert.equal(script(f, 'ABC-1').length + script(f, 'ABC-3').length, 0, log);
+  freeSeat(f);
+  await f.ticks();
+  const after = f.lines.join('\n');
+  assert.deepEqual(f.plan().reserved, [queue[0]], after);
+  assert.deepEqual(f.plan().waiting, [queue[1]], after);
+  assert.equal(script(f, queue[0]).length, 1, after);
+  assert.equal(script(f, queue[1]).length, 0, after);
+});
+
+test('ASS-522 T2: Blocked run done, local-testing target, seats full — at local-testing, waiting, no sub-engine run or sub-state; seat freed → its run is made', async () => {
+  const f = blockedReturn({ from: 'local-testing' });
+  await f.ticks();
+  const log = f.lines.join('\n');
+  assert.equal(f.stateOf('ABC-1'), 'local-testing', log);                                  // AC1
+  assert.equal(f.inSprint('ABC-1')['ticket-system-status'], 'In Progress', log);
+  assert.deepEqual(f.plan().waiting, ['ABC-1'], log);                                      // AC2
+  assert.equal(runsOf(f, 'ABC-1').length, 0, log);
+  assert.equal(f.inSprint('ABC-1').variations[0]['harness-status']['sub-status'] ?? null, null, log);
+  assert.equal(agentsOn(f, 'ABC-1').length, 0, log);
+  assert.equal(f.calls(/ABC-1 A .*waits for an in-progress slot to move to/).length, 0, log);   // AC4
+  freeSeat(f);
+  await f.ticks();
+  const after = f.lines.join('\n');
+  assert.deepEqual(f.plan().reserved, ['ABC-1'], after);                                   // AC3
+  assert.equal(runsOf(f, 'ABC-1').filter(r => r['state-engine'] === 'test').length, 1, after);
+});
+
+test('ASS-522 T3: Blocked run done with a free seat — moves to build and its script runs as today', async () => {
+  const f = blockedReturn({ holders: [] });
+  await f.ticks(2);
+  const log = f.lines.join('\n');
+  assert.notEqual(f.stateOf('ABC-1'), 'blocked', log);
+  assert.ok(moved(f, 'ABC-1', 'build'), log);
+  assert.equal(script(f, 'ABC-1').length, 1, log);
+  assert.equal(f.calls(/waits for an in-progress slot/).length, 0, log);
+});
+
+test('ASS-522 T4: Blocked run done, plan target with 0 planning seats — at plan the same tick, waiting, no agent, no "waits for a planning slot" line', async () => {
+  const f = blockedReturn({ from: 'plan', holders: [], limits: { 'max-tickets-in-planning': 0 } });
+  try {
+    await f.ticks();
+    const log = f.lines.join('\n');
+    assert.equal(f.stateOf('ABC-1'), 'plan', log);                                         // AC1
+    assert.equal(f.inSprint('ABC-1')['ticket-system-status'], 'In Progress', log);
+    assert.ok(moved(f, 'ABC-1', 'plan'), log);
+    assert.deepEqual(f.plan().waiting, ['ABC-1'], log);                                    // AC2
+    assert.equal(agentsOn(f, 'ABC-1').length, 0, log);
+    assert.equal(f.calls(/waits for a planning slot to move to plan/).length, 0, log);     // AC4
+  } finally { f.ctx.stopAgents(); }
+});
