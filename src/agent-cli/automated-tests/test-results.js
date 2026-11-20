@@ -33,9 +33,10 @@
 // ASS-487): each run is judged as with no master, then master's red run sets
 // aside only the failures it names too, as pre-existing; any other failure is
 // new. A run naming no test ("the ticket's bug still reproduces") or timed
-// out is never master's, so never blocked: master timed out, green or red
-// naming no test sets aside nothing. Master red and finished, the failures
-// the other commands' master runs name are set aside too (ASS-521).
+// out is never master's, so never blocked: master timed out or green sets
+// aside nothing, red naming no test nothing of its own. Master red and
+// finished, the failures the other commands' master runs name are set aside
+// too (ASS-521).
 //
 // ASS-520: judge(master, runs, { others: [<output>] }) — the master runs of
 // the baseline's other commands (same master commit; --also <file>, one each).
