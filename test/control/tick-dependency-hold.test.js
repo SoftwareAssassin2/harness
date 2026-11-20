@@ -170,10 +170,11 @@ test('ASS-355 AC6: a held variation frees its planning slot — the next ticket 
 test('ASS-355 AC6: a held variation frees its in-progress slot — the next ticket\'s run gets the agent; a held run already there gets none until released', async () => {
   const f = holding({ sprint: [at('ABC-1', 'local-testing', { dependencies: ['EX-1'] }), at('ABC-2', 'local-testing')], outside: [outsider('EX-1', 'Done')], limits: { 'max-tickets-in-progress': 1 } });
   try {
-    // Both runs made, no agent yet (max-agents 0): ABC-1 ranks first and holds the one in-progress slot.
+    // No agent yet (max-agents 0): ABC-1 ranks first and holds the one in-progress slot; ABC-2, seatless, waits —
+    // its run not made until it gets the seat (ASS-522 AC2), so only ABC-1's run is.
     edit(join(f.dir, 'projects', 'p', 'project.json'), p => { p['max-agents'] = 0; });
     await f.ticks();
-    assert.equal(f.assignments()['transient-state-engines'].length, 2, f.lines.join('\n'));
+    assert.equal(f.assignments()['transient-state-engines'].length, 1, f.lines.join('\n'));
     assert.equal(planFor(f.ctx.load(), f.ctx.load().projects[0]).reserved.map(r => r.key).join(), 'ABC-1');
     // The hold begins (EX-1 back in progress) and agents are allowed: ABC-2 takes the slot and its run's agent; ABC-1's run none.
     f.setOutside([outsider('EX-1', 'In Progress')]);

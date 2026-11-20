@@ -222,7 +222,8 @@ export async function moveTicket(ctx, phase, project, ticket, variation, to, why
 // mayEnter, ASS-126); when not, said once per visit. Every move control makes
 // on its own asks first (steps.js, dispatch.js's pass-over) — all but an
 // agent's finished turn (finish.js), whose work is done and would only be
-// redone at the step it left. ASS-420: a move that takes a seat its
+// redone at the step it left, and Blocked's done run following its return-to
+// step (steps.js, ASS-522), which waits for its seat at the target. ASS-420: a move that takes a seat its
 // variation does not hold, into steps that need a VM not running, is made only
 // when the VM fits in the Mac's memory (seat-memory.js memoryShortForSeat);
 // else it waits, said once per visit — replacing ASS-404's rule that, while
