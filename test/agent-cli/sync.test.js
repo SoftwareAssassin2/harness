@@ -891,3 +891,38 @@ test('ASS-345: nothing is held without a recorded account id, for a ticket fetch
   await toAbc1(theirs, NOBODY);
   assert.deepEqual(['reassigned' in abc1(theirs), pausedOf(abc1(theirs))], [false, { A: false }]);
 });
+
+// ASS-576: a transition acli failed to make is pending-ticket-system-status { status, from, at, error } on the sprint
+// ticket. A sync that still reads `from` upstream keeps it (the retry's to make); one that reads anything else —
+// the transition applied, or a human moved the ticket — drops it: upstream wins, so a retry never undoes QA's Done.
+const withPending = dir => {
+  const s = sprint(dir);
+  s.features[0] = { ...s.features[0], 'ticket-system-status': 'In Review', 'pending-ticket-system-status': { status: 'In Testing', from: 'In Review', at: '2026-11-24T09:40:00Z', error: 'unauthorized' } };
+  writeFileSync(join(dir, 'p', 'sprints', 'sprint-10', 'sprint.json'), JSON.stringify(s, null, 4));
+};
+
+test('ASS-576 AC4: ticket:sync keeps a pending transition while the fetched status is still the one it moves from', async () => {
+  const dir = projects();
+  withPending(dir);
+  await sync(dir, 'p', 'sprint', file(dir, { tickets: [fetched('ABC-1', { 'ticket-system-status': 'In Review' })] }));
+  const [t] = sprint(dir).features;
+  assert.deepEqual(t['pending-ticket-system-status'], { status: 'In Testing', from: 'In Review', at: '2026-11-24T09:40:00Z', error: 'unauthorized' });
+  assert.equal(t['ticket-system-status'], 'In Review');
+});
+
+test('ASS-576 AC4: ticket:sync drops a pending transition once the fetched status moved off `from` — applied (In Testing) or moved by a human (Done)', async () => {
+  for (const upstream of ['In Testing', 'Done']) {
+    const dir = projects();
+    withPending(dir);
+    await sync(dir, 'p', 'sprint', file(dir, { tickets: [fetched('ABC-1', { 'ticket-system-status': upstream })] }));
+    const [t] = sprint(dir).features;
+    assert.equal(t['pending-ticket-system-status'], undefined, upstream);
+    assert.equal(t['ticket-system-status'], upstream);
+  }
+});
+
+test('ASS-576: ticket:sync leaves a ticket without a pending transition without one', async () => {
+  const dir = projects();
+  await sync(dir, 'p', 'sprint', file(dir, { tickets: [fetched('ABC-1', { 'ticket-system-status': 'Done' })] }));
+  assert.equal('pending-ticket-system-status' in sprint(dir).features[0], false);
+});

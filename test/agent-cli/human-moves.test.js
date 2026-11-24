@@ -6,7 +6,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { writeFileSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { fixture } from './harness-fixture.js';
+import { fixture, run, AGENT } from './harness-fixture.js';
+import { fakeAcli } from '../support/fake-acli.js';
 
 const fails = (promise, message) => assert.rejects(promise, e => message.test(e.stderr));
 
@@ -72,4 +73,45 @@ test('ticket:mark-work-done keeps a pending move given on the latest change (ASS
   await f.agent('ticket:mark-work-done', 'p', 'ABC-3', 'A', 'generate-solution', '{"from":"generate-solution","to":"blocked","reason":"max-visits"}');
   const a = f.variation('A');
   assert.deepEqual([a['state-changes'].at(-1)['pending-move'].to, a['state-changes'].at(-1)['work-is-done'], a['harness-status'].state], ['blocked', true, 'generate-solution']);
+});
+
+// ASS-576 AC2: a move whose paired status acli fails to set (a stub acli on PATH printing `✗ Failure …` and exiting 0,
+// ACLI_DISABLED off for these tests only) still moves; it says the status was not set, never `→`, records the
+// transition pending and adds a ticket-system notice to the variation. The fake acli: test/support/fake-acli.js.
+function stubAcli(f, reply) {
+  const acli = fakeAcli(f.env);
+  reply(acli);
+  return (...args) => run(AGENT, args, { env: acli.env });
+}
+
+test('ASS-576 AC2: ticket:change-state into a paired step whose transition fails moves anyway, says "not set to … (retrying)", records it pending and adds a ticket-system notice', async () => {
+  const f = paired();
+  const agent = stubAcli(f, a => a.failure());
+  const { stdout } = await agent('ticket:change-state', 'p', 'ABC-3', 'A', 'generate-solution', 'local-testing');
+  assert.equal(f.variation('A')['harness-status'].state, 'local-testing');
+  assert.doesNotMatch(stdout, /ticket system status →/);
+  assert.match(stdout, /^ticket:change-state: ABC-3 ticket system status not set to In Testing \(retrying\): .*unauthorized/m);
+  const t = f.sprint().features[0];
+  assert.equal(t['ticket-system-status'], 'In Progress');
+  assert.equal(t['pending-ticket-system-status']?.status, 'In Testing', JSON.stringify(t));
+  assert.ok((f.variation('A')['ai-notices'] ?? []).some(n => n.source === 'ticket-system'), JSON.stringify(f.variation('A')['ai-notices']));
+});
+
+test('ASS-576 AC2: ticket:change-state whose transition succeeds says `→` as before, records nothing pending and adds no notice', async () => {
+  const f = paired();
+  const agent = stubAcli(f, a => a.success());
+  const { stdout } = await agent('ticket:change-state', 'p', 'ABC-3', 'A', 'generate-solution', 'local-testing');
+  assert.match(stdout, /^ticket:change-state: ABC-3 ticket system status → In Testing$/m);
+  const t = f.sprint().features[0];
+  assert.equal(t['ticket-system-status'], 'In Testing');
+  assert.equal(t['pending-ticket-system-status'], undefined);
+  assert.ok(!(f.variation('A')['ai-notices'] ?? []).some(n => n.source === 'ticket-system'));
+});
+
+test('ASS-576: a later move into a step pairing no status supersedes a pending transition: it is dropped', async () => {
+  const f = paired();
+  await stubAcli(f, a => a.failure())('ticket:change-state', 'p', 'ABC-3', 'A', 'generate-solution', 'local-testing');
+  assert.equal(f.sprint().features[0]['pending-ticket-system-status']?.status, 'In Testing');
+  await f.agent('ticket:change-state', 'p', 'ABC-3', 'A', 'local-testing', 'done');
+  assert.equal(f.sprint().features[0]['pending-ticket-system-status'], undefined);
 });

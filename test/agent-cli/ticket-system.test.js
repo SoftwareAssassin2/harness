@@ -8,6 +8,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFile } from 'node:child_process';
 import { fixture, run, AGENT, STAMP } from './harness-fixture.js';
+import { fakeAcli, ACLI_SUCCESS, ACLI_SUCCESS_MID_ERROR, ACLI_FAILURE, ACLI_ERROR } from '../support/fake-acli.js';
 
 const OFF_BOARD = join(import.meta.dirname, '..', '..', 'off-board.sh');
 
@@ -116,4 +117,54 @@ test('ticket:set-ticket-system-status on an off-board ticket (the project\'s off
   assert.doesNotMatch(stdout, /acli/);
   // A Jira key in the same project still goes to Jira.
   assert.match((await run(AGENT, ['ticket:set-ticket-system-status', 'p', 'ABC-3', 'Done'], { env })).stderr, /acli jira workitem transition --key ABC-3/);
+});
+
+// ASS-576: acli `transition` can exit 0 on a failure it prints (`✗ Failure: … unauthorized`): a fake acli on PATH
+// (test/support/fake-acli.js, ACLI_DISABLED off for these tests only).
+const setStatus = (env, status) => run(AGENT, ['ticket:set-ticket-system-status', 'p', 'ABC-3', status], { env });
+
+for (const [what, out, exit] of [['✗ Failure, exit 0', ACLI_FAILURE, 0], ['✗ Failure, exit 1', ACLI_FAILURE, 1], ['✗ Error: (the ticket\'s wording), exit 0', ACLI_ERROR, 0]]) {
+  test(`ASS-576 AC1: a failed transition (${what}) exits non-zero, says acli's message, leaves ticket-system-status and its -at alone and records it pending`, async () => {
+    const f = fixture();
+    const before = f.sprint().features[0];
+    const acli = fakeAcli(f.env);
+    acli.reply(out, exit);
+    await assert.rejects(setStatus(acli.env, 'In Testing'), e => e.code !== 0 && /unauthorized/.test(e.stderr));
+    assert.deepEqual(acli.calls(), ['jira workitem transition --key ABC-3 --status In Testing']);
+    const t = f.sprint().features[0];
+    assert.equal(t['ticket-system-status'], before['ticket-system-status']);
+    assert.equal(t['ticket-system-status-at'], before['ticket-system-status-at']);
+    const pending = t['pending-ticket-system-status'];
+    assert.equal(pending?.status, 'In Testing', JSON.stringify(t));
+    assert.equal(pending.from, before['ticket-system-status']);
+    assert.match(pending.at, STAMP);
+    assert.match(pending.error, /unauthorized/);
+  });
+}
+
+test('ASS-576 AC1: a transition acli says succeeded — even with "Error:" mid-line — sets the status and -at, records nothing pending, exits 0', async () => {
+  for (const out of [ACLI_SUCCESS, ACLI_SUCCESS_MID_ERROR]) {
+    const f = fixture();
+    const acli = fakeAcli(f.env);
+    acli.reply(out);
+    await setStatus(acli.env, 'In Testing');
+    const t = f.sprint().features[0];
+    assert.equal(t['ticket-system-status'], 'In Testing', out);
+    assert.match(t['ticket-system-status-at'], STAMP);
+    assert.equal(t['pending-ticket-system-status'], undefined, out);
+  }
+});
+
+test('ASS-576 AC3: a pending transition run again once acli succeeds sets the status and its -at and clears the pending', async () => {
+  const f = fixture();
+  const acli = fakeAcli(f.env);
+  acli.failure();
+  await assert.rejects(setStatus(acli.env, 'In Testing'));
+  assert.equal(f.sprint().features[0]['pending-ticket-system-status']?.status, 'In Testing');
+  acli.success();
+  await setStatus(acli.env, 'In Testing');
+  const t = f.sprint().features[0];
+  assert.equal(t['ticket-system-status'], 'In Testing');
+  assert.match(t['ticket-system-status-at'], STAMP);
+  assert.equal(t['pending-ticket-system-status'], undefined);
 });

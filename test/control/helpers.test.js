@@ -9,7 +9,7 @@ import { scriptDue, agentNeedsWork } from '../../src/control/steps.js';
 import { timerDue } from '../../src/control/triggers.js';
 import { statusSeconds, nagDue } from '../../src/control/supervise.js';
 import { outputSchema, agentFolder, containerPath } from '../../src/control/dispatch.js';
-import { firstStepId, levelChanges, contextOf, isPaused, found } from '../../src/control/moves.js';
+import { firstStepId, levelChanges, contextOf, isPaused, found, moveTicket } from '../../src/control/moves.js';
 import { runValues, parseOutput, ticketFacts, problemOf, ticketOf, blockHistory, cameFrom } from '../../src/control/facts.js';
 import { isHarnessProject } from '../../src/control/harness-project.js';
 
@@ -380,4 +380,28 @@ test('problemOf: a Blocked run\'s prompts get the ticket\'s block history after 
 test('problemOf: a project issue found by a harness run about another project\'s ticket (context.project) goes to that ticket\'s project', () => {
   const run = { id: 'h', project: 'harness', parent: { 'work-item': 'EX-1' }, 'structured-output': { summary: 'S', issue: 'project', reasoning: 'R' } };
   assert.match(problemOf(run, [], { harness: { 'harness-project': 'harness' }, project: 'example' }), /^Raise the fix ticket in: project example — its own ticket system$/m);
+});
+
+// ASS-576 AC2: control logs what ticket:change-state says of the paired status — the `→` line when it was set, the
+// "not set to … (retrying)" line when acli failed; never a `→` for a transition that failed.
+test('ASS-576 AC2: moveTicket logs ticket:change-state\'s "ticket system status not set to" line, and no → line for it', async () => {
+  const lines = [];
+  const said = { ok: 'ticket:change-state: ABC-3 ticket system status → In Testing\n', failed: 'ticket:change-state: ABC-3 ticket system status not set to In Testing (retrying): ✗ Failure: unauthorized\n' };
+  const ctx = out => ({ memory: { backoff: new Map() }, log: (p, t) => lines.push(`${p} ${t}`), cli: async () => out });
+  const ticket = () => ({ key: 'ABC-3' }), variation = () => ({ name: 'A', 'harness-status': { state: 'release', 'state-engine': 'e' } });
+  await moveTicket(ctx(said.failed), 'steps', { id: 'p' }, ticket(), variation(), 'qa');
+  assert.ok(lines.some(l => /^steps ABC-3 ticket system status not set to In Testing \(retrying\): ✗ Failure: unauthorized$/.test(l)), lines.join('\n'));
+  assert.ok(!lines.some(l => /ticket system status →/.test(l)), lines.join('\n'));
+  lines.length = 0;
+  await moveTicket(ctx(said.ok), 'steps', { id: 'p' }, ticket(), variation(), 'qa');
+  assert.ok(lines.some(l => /^steps ABC-3 ticket system status → In Testing$/.test(l)), lines.join('\n'));
+});
+
+// ASS-576 AC4: while a transition is pending, the ticket system's status is read as the one being set, not the stale one.
+test('ASS-576 AC4: ticketFacts reads a pending transition\'s status as ticketSystemStatus; without one, the ticket\'s own', () => {
+  const ctx = { paths: { projects: '/nowhere' }, log: () => {} };
+  const ticket = { key: 'T-1', 'ticket-system-status': 'In Review', variations: [{ name: 'A' }] };
+  assert.equal(ticketFacts(ctx, { id: 'p' }, ticket, { name: 'A' }, 0).ticketSystemStatus, 'In Review');
+  const pending = { ...ticket, 'pending-ticket-system-status': { status: 'In Testing', from: 'In Review', at: '2026-11-24T09:44:00Z', error: 'unauthorized' } };
+  assert.equal(ticketFacts(ctx, { id: 'p' }, pending, { name: 'A' }, 0).ticketSystemStatus, 'In Testing');
 });

@@ -9,6 +9,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { stepOf, answersGap } from '../../src/control/engine.js';
+import { ticketFacts } from '../../src/control/facts.js';
 import { validateStateEngine } from '../../src/workflow/validate.js';
 import { ROOT, loadEngines, walk } from '../support/engine-walk.js';
 import { readEngine } from '../../src/workflow/engine-file.js';
@@ -58,4 +59,23 @@ test('ASS-282 AC3: at qa/qa-testing with the ticket system Done, it still goes t
 test('ASS-282: a non-Done status at qa-testing is its own run\'s to answer — no gap for gap resolution; In Testing is no gap at all', () => {
   const at = { 'harness-status': { 'state-engine': 'example-development-grouped', state: 'qa', 'sub-status': { 'state-engine': 'grouped-qa', state: 'qa-testing' } } };
   for (const status of ['On Hold', 'In Progress', 'Done']) assert.equal(answersGap(engines['example-development-grouped'], at, status, engines), true, status);
+});
+
+// ASS-576 AC4: the move to qa set In Testing in Jira but acli failed, so it is pending; a sync then read Jira's stale
+// In Review. qa-testing reads the facts control builds (ticketFacts): it parks, not blocked. Without the pending, In
+// Review still blocks (ASS-282); Done upstream (QA, or a human) still ends at done.
+const factsOf = ticket => ticketFacts({ paths: { projects: '/nowhere' }, log: () => {} }, { id: 'p' }, ticket, { name: 'A' }, 0).ticketSystemStatus;
+const pendingTesting = { status: 'In Testing', from: 'In Review', at: '2026-11-24T09:44:00Z', error: 'unauthorized' };
+
+test('ASS-576 AC4: at qa/qa-testing with a transition to In Testing pending and the synced status a stale In Review, it waits — not blocked', () => {
+  const { trail, end, rests } = fromQa(factsOf({ key: 'CLW-1', 'ticket-system-status': 'In Review', 'pending-ticket-system-status': pendingTesting }));
+  assert.deepEqual(trail, ['example-development-grouped/qa', 'grouped-qa/qa-testing']);
+  assert.equal(end, 'qa-testing');
+  assert.equal(rests, true);
+});
+
+test('ASS-576 AC4: with no transition pending, In Review at qa-testing still blocks (ASS-282); Done still ends at done', () => {
+  assert.equal(fromQa(factsOf({ key: 'CLW-1', 'ticket-system-status': 'In Review' })).end, 'blocked');
+  const { end } = walk(engines, 'example-development-grouped', { from: 'qa', answers: { 'grouped-qa/qa-testing': { ticketSystemStatus: factsOf({ key: 'CLW-1', 'ticket-system-status': 'Done' }) } } });
+  assert.equal(end, 'done');
 });
