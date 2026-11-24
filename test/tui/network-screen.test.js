@@ -11,7 +11,7 @@ import { view, machines, placed, cardWidth, macArch, LEGEND } from '../../src/tu
 import { nextPlace } from '../../src/tui/screens/shared.js';
 import { nextPlacement } from '../../src/control/plan.js';
 import { visible } from '../../src/tui/text.js';
-import { G, NOW, iso, reading, measured, seatBudget, diskSpace, orbit, atlas, onN, strip, cardOf, onIt, team } from '../support/network-fixture.js';
+import { G, NOW, iso, reading, measured, seatBudget, diskSpace, orbit, atlas, onN, strip, cardOf, onIt, team, crowd, workflows } from '../support/network-fixture.js';
 
 const RED = '\x1b[31m', GRAY = '\x1b[90m', GREEN = '\x1b[32m', AMBER = '\x1b[38;2;255;176;0m';
 const out = (state, columns = 120, height = null) => view(state, { columns, now: NOW, height });
@@ -181,7 +181,12 @@ test('AC3: what\'s on a machine — kind icon, key, variation and state: a step,
   p.seats = [...p.seats, { key: 'ORB-109', variation: 'A', kind: 'vm', target: 'local-vm' }, { key: 'ORB-110', variation: 'A', kind: 'vm', target: 'local-vm' }];
   p.vms = { 'orb-109-a': { ticket: 'ORB-109', variation: 'A', state: 'Running' } };
   const q = out(onN([p]));
-  assert.deepEqual(onIt(cardOf(q, 'ws-east')).slice(0, 4), ['🌿 ORB-102 worktree · 🤖x2 Write Plan', '📁 ORB-106 B slot · idle', '🌿 ORB-107 worktree · idle', '+2 more'], 'at most four lines, then +N more');
+  // ASS-590 AC1: every ticket listed, no "+N more".
+  const east = onIt(cardOf(q, 'ws-east'));
+  assert.deepEqual(east.slice(0, 3), ['🌿 ORB-102 worktree · 🤖x2 Write Plan', '📁 ORB-106 B slot · idle', '🌿 ORB-107 worktree · idle']);
+  assert.equal(east.length, 5, east.join('\n'));
+  assert.ok(east.some(l => l.includes('ORB-103')) && east.some(l => l.includes('ORB-104')), east.join('\n'));
+  assert.ok(!east.some(l => /\+\d+ more/.test(l)), 'no +N more');
   assert.deepEqual(onIt(cardOf(q, 'mac')), ['💺 ORB-109 Lima VM · running', '💺 ORB-110 Lima VM · creating', '🌿 ORB-105 worktree · idle', '📂 ORB-108 workspace · idle']);
 });
 
@@ -338,7 +343,8 @@ test('AC7: CLAUDE.md and README describe the redesigned n screen — the headlin
   for (const name of ['CLAUDE.md', 'README.md']) {
     const doc = readFileSync(`${root}${name}`, 'utf8');
     for (const words of ['next ticket →', 'nextPlacement', 'nothing can take work', 'shared by N projects', 'can take 2 more', 'starts on demand', '+N machines below', 'never per core', 'within 10 points']) assert.ok(doc.includes(words), `${name}: ${words}`);
-    for (const gone of ['Mac total', 'pool summary, its Mac share line']) assert.ok(!doc.includes(gone), `${name} still says ${gone}`);
+    for (const gone of ['Mac total', 'pool summary, its Mac share line', 'at most four', 'At most four lines a card']) assert.ok(!doc.includes(gone), `${name} still says ${gone}`);
+    assert.ok(doc.includes('one a line'), `${name}: On it lists every ticket, one a line (ASS-590 AC4)`);
   }
 });
 
@@ -459,4 +465,102 @@ test('ASS-580 AC4: with the extra card and image lines, two a row and the short-
   assert.deepEqual(titles(short), ['ws-east', 'vm-west']);
   assert.ok(short.includes('+1 machine below — a taller terminal shows it'), short.join('\n'));
   assert.equal(short.at(-1), strip(LEGEND));
+});
+
+// ===== ASS-590: every ticket on a card, cut not wrapped; rows stay aligned; the short-terminal cut holds =====
+
+// rowOf(lines, id) — the indexes of the top (┌) and bottom (└) border lines of machine `id`'s card's row.
+const rowOf = (lines, id) => {
+  const plain = lines.map(strip);
+  const top = plain.findIndex(l => l.includes(`┌─ ${id} `));
+  const at = plain[top].indexOf(`┌─ ${id} `);
+  const bottom = plain.findIndex((l, n) => n > top && l.slice(at).startsWith('└'));
+  return { top, bottom, at };
+};
+
+test('ASS-590 AC1: a card with more than four tickets lists them all, one a line — no "+N more"', () => {
+  const p = orbit();
+  const extra = crowd(p, 4);   // ORB-102, -103, -104 and four more: 7 on ws-east
+  const lines = out(onN([p, atlas()]));
+  const east = onIt(cardOf(lines, 'ws-east'));
+  assert.equal(east.length, 7, east.join('\n'));
+  for (const key of ['ORB-102', 'ORB-103', 'ORB-104', ...extra]) assert.equal(east.filter(l => l.includes(`${key} `)).length, 1, `${key} once: ${east.join(' | ')}`);
+  // The order is unchanged (ticketsOn's): the first three as before.
+  assert.deepEqual(east.slice(0, 3), ['🌿 ORB-102 worktree · 🤖x2 Write Plan', '🌿 ORB-201 worktree · idle', '🌿 ORB-202 worktree · idle']);
+  assert.ok(!lines.map(strip).some(l => /\+\d+ more/.test(l)), 'no "+N more" on any card');
+  // The old boundary: exactly 4 and 5 tickets.
+  for (const [n, want] of [[1, 4], [2, 5]]) {
+    const q = orbit();
+    crowd(q, n);
+    const on = onIt(cardOf(out(onN([q])), 'ws-east'));
+    assert.equal(on.length, want, on.join('\n'));
+    assert.ok(!on.some(l => /more/.test(l)));
+  }
+  // None: still "nothing of its project".
+  assert.deepEqual(onIt(cardOf(out(onN([orbit(), atlas()], { project: 1 })), 'mac')), ['nothing of its project']);
+});
+
+test('ASS-590 AC1: an On it line longer than the card is cut with …, never wrapped; its color kept', () => {
+  const p = orbit();
+  const long = [{ ...workflows[0], steps: workflows[0].steps.map(s => s.id === 'build' ? { ...s, name: 'Build the Whole Thing' } : s) }];
+  const assignments = [...team, { project: 'orbit', 'agent-name': 'W', 'work-item': 'ORB-104', variation: 'A', model: 'opus-5' }];
+  for (const columns of [120, 200]) {
+    const lines = out(onN([p, atlas()], { workflows: long, assignments }), columns);
+    for (const l of lines) assert.ok(visible(l) <= columns, `${visible(l)} > ${columns}: ${strip(l)}`);
+    for (const id of ['ws-east', 'vm-west']) {
+      const c = cardOf(lines, id);
+      const i = c.lines.findIndex(l => l.startsWith('On it'));
+      const rest = c.lines.slice(i + 1);
+      // No continuation line (an entry wrapped under its key, 11 spaces in).
+      assert.ok(!rest.some(l => l.startsWith(' '.repeat(11))), `${id} at ${columns}: wrapped\n${c.lines.join('\n')}`);
+    }
+    if (columns === 120) {
+      const east = cardOf(lines, 'ws-east'), crashed = east.lines.find(l => l.includes('ORB-104'));
+      assert.ok(crashed.endsWith('…'), crashed);
+      assert.ok(onIt(cardOf(lines, 'vm-west'))[0].endsWith('…'), 'vm-west\'s sandbox line cut');
+      const raw = lines.find(l => strip(l).includes('ORB-104'));
+      assert.ok(raw.includes(RED), 'the crashed state keeps its red on the cut line');
+    }
+  }
+});
+
+test('ASS-590 AC2: side by side, cards of different heights start on one line and the row is the taller card\'s height', () => {
+  const p = orbit();
+  crowd(p, 4);
+  const s = onN([p, atlas()]);
+  for (const columns of [120, 200]) {
+    const lines = out(s, columns), plain = lines.map(strip);
+    const east = rowOf(lines, 'ws-east'), mac = rowOf(lines, 'mac');
+    assert.equal(east.top, mac.top, `${columns}: tops on one line`);
+    assert.equal(east.bottom, mac.bottom, `${columns}: bottoms on one line\n${plain.join('\n')}`);
+    const tall = cardOf(lines, 'ws-east').lines.length, short = cardOf(lines, 'mac').lines.length;
+    assert.ok(tall > short, `ws-east (${tall}) taller than mac (${short}) inside`);
+    assert.equal(east.bottom - east.top - 1, tall, 'the row as tall as the taller card');
+    for (let n = east.top; n <= east.bottom; n++) assert.equal(visible(lines[n]), 2 * cardWidth(columns) + 2, `${columns} line ${n}: ${plain[n]}`);
+    for (const l of lines) assert.ok(visible(l) <= columns);
+  }
+  // Narrow (one a row): each card its own height, all 7 still listed.
+  const narrow = out(s, 100);
+  for (const l of narrow) assert.ok(visible(l) <= 100);
+  assert.equal(onIt(cardOf(narrow, 'ws-east')).length, 7);
+});
+
+test('ASS-590 AC3: a short terminal still keeps the headline and the legend, says what is hidden, cuts no card in half', () => {
+  const p = orbit();
+  crowd(p, 4);
+  const s = onN([p, atlas()]);
+  for (const height of [20, 30, 6]) {
+    const short = out(s, 120, height).map(strip);
+    assert.ok(short.length <= height, `${height}: ${short.length}`);
+    assert.match(short[0], /^Orbit · \d machines/);
+    assert.equal(short.at(-1), strip(LEGEND));
+    const shown = titles(short), hidden = 3 - shown.length;
+    if (hidden) assert.ok(short.includes(`+${hidden} machine${hidden > 1 ? 's' : ''} below — a taller terminal shows ${hidden > 1 ? 'them' : 'it'}`), `${height}:\n${short.join('\n')}`);
+    // Every card shown is whole: each ┌ has its └.
+    for (const id of shown) assert.ok(rowOf(short, id).bottom > 0, `${height}: ${id} cut`);
+  }
+  // Too short for the tall first row: no card at all.
+  assert.deepEqual(titles(out(s, 120, 6)), []);
+  // Tall enough: everything.
+  assert.deepEqual(out(s, 120, 200), out(s, 120));
 });
