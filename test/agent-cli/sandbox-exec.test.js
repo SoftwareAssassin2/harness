@@ -10,7 +10,7 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync, spawn } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, readdirSync } from 'node:fs';
 import http from 'node:http';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -166,5 +166,56 @@ test(`ASS-550 AC1: a TERM or INT before its job is asked for (no server reachabl
     const r = await within(exec(refuse.address().port, ['--', 'true'], { env: { HARNESS_SANDBOX_REACH_MS: '600000' }, signal: child => until(() => tries > 0).then(() => child.kill(sig)) }));
     refuse.close();
     assert.deepEqual([r.code, r.signal], [code, null], r.err);
+  }
+});
+
+// ASS-587 AC2: the command server, PID 1 in a sandbox, reaps the orphans a job leaves (a job's backgrounded child,
+// its shell ended by DELETE's TERM to the group): before, they stayed zombies under it, and sandbox-services' pid
+// check took a zombie for a running service. Here the server is not PID 1: it adopts orphans as a child subreaper
+// (PR_SET_CHILD_SUBREAPER), as PID 1 would — so Linux only (/proc, the subreaper), and the Go server only.
+const reapSkip = !hasGo ? 'no Go on this machine' : process.platform !== 'linux' && 'orphans reparent to the server only on Linux (/proc, PR_SET_CHILD_SUBREAPER)';
+// stat(pid) — /proc/<pid>/stat's state and parent ({ state, ppid }), or null once the pid is gone; read after the
+// last ')' (a process's name may hold one).
+const stat = pid => { try { const s = readFileSync(`/proc/${pid}/stat`, 'utf8'); const [state, ppid] = s.slice(s.lastIndexOf(')') + 2).split(' '); return { state, ppid: Number(ppid) }; } catch { return null; } };
+const zombiesUnder = ppid => readdirSync('/proc').filter(d => /^\d+$/.test(d)).map(Number).filter(p => { const s = stat(p); return s?.state === 'Z' && s.ppid === ppid; });
+const startJob = async (port, command) => (await (await fetch(`http://127.0.0.1:${port}/jobs`, { method: 'POST', body: JSON.stringify({ command, cwd: '/' }) })).json()).id;
+const ended = async (port, id) => { let j; await until(() => (job(port, id).then(r => { j = r; }), j && !j.running)); return j; };   // hang guard
+
+test('ASS-587 AC2: the command server reaps a job\'s orphaned child: the job ended (TERM to its group), no Z process is left under the server, and the job\'s own exit code is still 143', { skip: reapSkip }, async () => {
+  const port = await server('go'), serverPid = servers.at(-1).pid;
+  const f = join(mkdtempSync(join(tmpdir(), 'orphan-')), 'pids');
+  const id = await startJob(port, ['bash', '-c', `sleep 600 & echo $$ $! > ${f}; wait`]);
+  await until(() => existsSync(f) && readFileSync(f, 'utf8').includes('\n'));   // hang guard
+  const [shell, child] = readFileSync(f, 'utf8').trim().split(' ').map(Number);
+  jobPids.push(child);
+  await fetch(`http://127.0.0.1:${port}/jobs/${id}`, { method: 'DELETE' });
+  assert.equal((await ended(port, id)).exitCode, 143, 'the reaper did not take the job\'s own status (that would be -1)');
+  await until(() => stat(shell) === null && stat(child) === null);   // hang guard: both gone, not zombies anywhere
+  assert.deepEqual(zombiesUnder(serverPid), []);
+});
+
+test('ASS-587 AC2: an orphan that keeps running is adopted by the command server and left alone; once it exits, it is reaped', { skip: reapSkip }, async () => {
+  const port = await server('go'), serverPid = servers.at(-1).pid;
+  const f = join(mkdtempSync(join(tmpdir(), 'orphan-')), 'pids');
+  const id = await startJob(port, ['bash', '-c', `(trap '' TERM; exec sleep 600) & echo $$ $! > ${f}; wait`]);
+  await until(() => existsSync(f) && readFileSync(f, 'utf8').includes('\n'));   // hang guard
+  const child = Number(readFileSync(f, 'utf8').trim().split(' ')[1]);
+  jobPids.push(child);
+  await fetch(`http://127.0.0.1:${port}/jobs/${id}`, { method: 'DELETE' });
+  assert.equal((await ended(port, id)).exitCode, 143);
+  await until(() => stat(child)?.ppid === serverPid);   // hang guard: orphaned to the server, as to PID 1
+  assert.notEqual(stat(child).state, 'Z', 'a running orphan is not killed');
+  process.kill(child, 'SIGKILL');
+  await until(() => stat(child) === null);   // hang guard: reaped, not left a zombie under the server
+  jobPids.splice(jobPids.indexOf(child), 1);
+  assert.deepEqual(zombiesUnder(serverPid), []);
+});
+
+test('ASS-587 AC2: fast commands through the command server, with its reaper on, all report their own exit code (never -1: a status the reaper took)', { skip: reapSkip }, async () => {
+  const port = await server('go');
+  for (let i = 0; i < 50; i++) {
+    const r = await (await fetch(`http://127.0.0.1:${port}/process`, { method: 'POST', body: JSON.stringify({ command: ['true'], cwd: '/' }) })).json();
+    assert.equal(r.exitCode, 0, `POST /process ${i}: ${JSON.stringify(r)}`);
+    assert.equal((await ended(port, await startJob(port, ['true']))).exitCode, 0, `POST /jobs ${i}`);
   }
 });

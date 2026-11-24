@@ -8,7 +8,7 @@
 // sandbox's / (as fake-command-server.js runs commands), so /etc/hosts and the rest are files of the test's own.
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { execFile, spawn } from 'node:child_process';
+import { execFile, execFileSync, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import { createServer } from 'node:net';
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync, chmodSync, readdirSync } from 'node:fs';
@@ -18,6 +18,7 @@ import { parseServices, validateServices, normalizeServices } from '../../src/su
 import { renderDockerfile } from '../../src/substrate/dockerfile.js';
 import { wsFixture, closeAll, edit, ID } from './workstation-fixture.js';
 import { fakeSubstrateMachine, putKit } from '../support/fake-substrate.js';
+import { until } from '../support/until.js';
 
 after(closeAll);
 const run = promisify(execFile);
@@ -391,4 +392,105 @@ test('AC2: a project with no stack declared — stack-up does nothing', async ()
   const r = await s.result('substrate:stack-up', 'p', 'ABC-3', 'A');
   assert.equal(r.code, 0, r.err);
   assert.deepEqual(last(r.out), { stack: false });
+});
+
+// ASS-587: a pid file left from a stack-up whose services have since ended (a job ended, the sandbox hibernated)
+// names a zombie, or a pid since reused by another process; `kill -0` says both run, so the service was never
+// started again and the stack-up waited out its ready limit. The pid file now records the pid and its start time
+// (`ps -o lstart=`); a service is running only when that pid is not a zombie and started when the file says (an
+// older image's one-line file: the zombie check alone). SANDBOX_READY_SECONDS is a hang guard here: a service judged
+// running wrongly is waited for until it, so it is well above any start, and far below the default 180 s.
+const READY = { SANDBOX_READY_SECONDS: '60' };
+const ps = (field, pid) => { try { return execFileSync('ps', ['-o', `${field}=`, '-p', String(pid)], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim(); } catch { return ''; } };
+const pidPath = (root, svc) => join(root, 'run', 'sandbox', `${svc}.pid`);
+const writePid = (root, svc, ...lines) => { mkdirSync(join(root, 'run', 'sandbox'), { recursive: true }); writeFileSync(pidPath(root, svc), lines.map(l => `${l}\n`).join('')); };
+const recorded = (root, svc) => Number(readFileSync(pidPath(root, svc), 'utf8').split('\n')[0]);
+const statusOf = async (root, svc) => (await services(root, ['status'])).out.trim().split('\n').map(l => JSON.parse(l)).find(s => s.name === svc);
+// zombie() — a child its parent (perl, sleeping 600 s) never waits for: { pid, parent } once ps says it is Z.
+async function zombie() {
+  const parent = spawn('perl', ['-e', '$| = 1; if (my $p = fork) { print "$p\\n"; sleep 600 } else { exit 0 }'], { stdio: ['ignore', 'pipe', 'ignore'] });
+  let out = '';
+  parent.stdout.on('data', d => { out += d; });
+  await until(() => out.includes('\n'));   // hang guard
+  const pid = Number(out);
+  await until(() => ps('stat', pid).startsWith('Z'));   // hang guard
+  return { pid, parent };
+}
+
+test('ASS-587 AC1: a stale pid file naming a zombie — with its real start time, or an older image\'s one line — does not stop the service starting: `starting db`, launched, ready, its new pid recorded', async () => {
+  for (const legacy of [false, true]) {
+    const root = sandboxRoot(declaration(), await freePort());
+    const z = await zombie();
+    try {
+      writePid(root, 'db', z.pid, ...(legacy ? [] : [ps('lstart', z.pid)]));
+      const r = await services(root, ['start', 'db'], READY);
+      assert.equal(r.code, 0, `${legacy ? 'one-line' : 'two-line'} pid file: ${r.err}`);
+      assert.match(r.out, /sandbox-services: starting db/);
+      assert.notEqual(recorded(root, 'db'), z.pid, 'the new process\'s pid is recorded');
+      assert.equal((await statusOf(root, 'db')).running, true);
+    } finally { z.parent.kill('SIGKILL'); await stopAll(root); }
+  }
+});
+
+test('ASS-587 AC1: a stale pid file naming another process (a reused pid: another start time) does not stop the service starting: `starting app`, launched, ready', async () => {
+  const root = sandboxRoot(declaration(), await freePort());
+  const other = spawn('sleep', ['600'], { stdio: 'ignore' });
+  try {
+    await until(() => ps('stat', other.pid));   // hang guard
+    writePid(root, 'app', other.pid, 'Thu Jan  1 00:00:00 1970');
+    const r = await services(root, ['start', 'app'], READY);
+    assert.equal(r.code, 0, r.err);
+    assert.match(r.out, /sandbox-services: starting app/);
+    assert.notEqual(recorded(root, 'app'), other.pid);
+    assert.equal((await statusOf(root, 'app')).running, true);
+  } finally { other.kill('SIGKILL'); await stopAll(root); }
+});
+
+test('ASS-587 AC1: a service whose start exits at once, its (older image\'s one-line) pid file naming a zombie, fails fast — it exited before it was ready — not at the ready limit', async () => {
+  const d = declaration();
+  d.services[4].start = 'echo "db: cannot open its data folder" >&2; exit 2';
+  const root = sandboxRoot(d, await freePort());
+  const z = await zombie();
+  try {
+    writePid(root, 'db', z.pid);   // CLW-89: the pid file an image before ASS-587 wrote
+    const r = await services(root, ['up'], READY);
+    assert.equal(r.code, 3);
+    assert.deepEqual(last(r.out).failed, { name: 'db', kind: 'service', why: 'it exited before it was ready', log: '/var/log/sandbox/db.log' });
+    assert.match(readFileSync(join(root, 'var', 'log', 'sandbox', 'db.log'), 'utf8'), /cannot open its data folder/);
+  } finally { z.parent.kill('SIGKILL'); await stopAll(root); }
+});
+
+test('ASS-587 AC1, AC3: a live service named by an older image\'s one-line pid file is not started again; a pid file naming a pid gone is started', async () => {
+  const root = sandboxRoot(declaration(), await freePort());
+  try {
+    assert.equal((await services(root, ['start', 'db'], READY)).code, 0);
+    const pid = recorded(root, 'db');
+    writePid(root, 'db', pid);
+    const again = await services(root, ['start', 'db'], READY);
+    assert.equal(again.code, 0, again.err);
+    assert.doesNotMatch(again.out, /starting db/, 'a running service is not started twice');
+    assert.equal(recorded(root, 'db'), pid);
+    await stopAll(root);
+    const gone = spawn('true');
+    await new Promise(r => gone.on('exit', r));
+    writePid(root, 'db', gone.pid);
+    const r = await services(root, ['start', 'db'], READY);
+    assert.equal(r.code, 0, r.err);
+    assert.match(r.out, /sandbox-services: starting db/);
+  } finally { await stopAll(root); }
+});
+
+test('ASS-587 AC1: the pid file records the pid and its start time; status gives the pid alone, and stop ends that process', async () => {
+  const root = sandboxRoot(declaration(), await freePort());
+  try {
+    assert.equal((await services(root, ['start', 'db'], READY)).code, 0);
+    const [pid, started] = readFileSync(pidPath(root, 'db'), 'utf8').split('\n');
+    assert.equal(started, ps('lstart', pid), 'line 2: the start time ps gives for that pid');
+    const s = await statusOf(root, 'db');
+    assert.deepEqual([s.running, s.pid], [true, Number(pid)]);
+    const stopped = await services(root, ['stop', 'db']);
+    assert.match(stopped.out, /sandbox-services: stopped db/);
+    await until(() => !ps('stat', pid) || ps('stat', pid).startsWith('Z'));   // hang guard
+    assert.equal((await statusOf(root, 'db')).running, false);
+  } finally { await stopAll(root); }
 });
