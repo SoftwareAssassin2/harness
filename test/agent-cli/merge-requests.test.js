@@ -572,12 +572,13 @@ test('ASS-592 AC1: merge-request:update <id> --from <file> [<title>] sends the f
   writeFileSync(file, '## Summary\nA "quoted" line with $dollars\n- and `ticks`');
   const { stdout } = await f.agent('merge-request:update', 'p', 'ABC-5', 'A', '1', '--from', file, 'ABC-5: Close the account (app)');
   assert.equal(stdout, `${APP}/-/merge_requests/7\n`);
-  const writes = () => f.forge.log('glab').filter(l => / -X (PUT|POST)/.test(l));
-  assert.deepEqual(writes(), [
-    'api projects/g%2Fapp/merge_requests/7 --hostname gitlab.com -X PUT -f description=## Summary\nA "quoted" line with $dollars\n- and `ticks` -f title=Draft: ABC-5: Close the account (app)',
-    'api projects/g%2Fapp/merge_requests/7/pipelines --hostname gitlab.com -X POST']);
+  // The fake forge logs one line per line of its arguments, so a multi-line description is read back joined.
+  const log = () => f.forge.log('glab').filter(l => l !== 'auth status').join('\n');
+  const put = 'api projects/g%2Fapp/merge_requests/7 --hostname gitlab.com -X PUT -f description=## Summary\nA "quoted" line with $dollars\n- and `ticks`';
+  assert.ok(log().endsWith(`\n${put} -f title=Draft: ABC-5: Close the account (app)\napi projects/g%2Fapp/merge_requests/7/pipelines --hostname gitlab.com -X POST`), log());
+  const before = log();
   await f.agent('merge-request:update', 'p', 'ABC-5', 'A', '1', '--from', file);   // no title: the file's path is never taken for one
-  assert.deepEqual(writes().slice(2), ['api projects/g%2Fapp/merge_requests/7 --hostname gitlab.com -X PUT -f description=## Summary\nA "quoted" line with $dollars\n- and `ticks`']);
+  assert.equal(log(), `${before}\n${put}`);
 });
 
 test('ASS-592 AC1: merge-request:update <id> --from <file> [<title>] on GitHub edits the pull request\'s body to the file\'s content with gh --repo, --title only with a title', async () => {
@@ -588,7 +589,8 @@ test('ASS-592 AC1: merge-request:update <id> --from <file> [<title>] on GitHub e
   writeFileSync(file, 'Body "one"\n$two\n');
   assert.equal((await f.agent('merge-request:update', 'p', 'ABC-5', 'A', '1', '--from', file, 'T')).stdout, 'https://github.com/o/h/pull/12\n');
   await f.agent('merge-request:update', 'p', 'ABC-5', 'A', '1', '--from', file);
-  assert.deepEqual(f.forge.log('gh'), ['pr edit 12 --repo o/h --body Body "one"\n$two --title T', 'pr edit 12 --repo o/h --body Body "one"\n$two']);
+  // One log line per line of the arguments: the body's trailing newline is dropped by the description's $(cat).
+  assert.equal(f.forge.log('gh').join('\n'), 'pr edit 12 --repo o/h --body Body "one"\n$two --title T\npr edit 12 --repo o/h --body Body "one"\n$two');
 });
 
 test('ASS-592 AC2: merge-request:update --from a missing or empty file fails naming it, before any forge call; --from without a file, or an extra argument, gets the usage', async () => {

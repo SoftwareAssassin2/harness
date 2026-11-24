@@ -2,7 +2,7 @@ Update the title and description of every one of ticket {ticket}'s merge request
 
 {where}
 
-The merge requests: {agent-sh} ticket:merge-request-plan {project} {ticket} {variation} lists each one's id, repository, branch, base, url, depends-on and status. Update every one that is Open: read it with `{agent-sh} merge-request:view {project} {ticket} {variation} <id>`, and set its title and description with `{agent-sh} merge-request:update {project} {ticket} {variation} <id> - "<title>"`, the whole description on stdin from a heredoc (<<'EOF'). Its changes are git diff origin/<base>...origin/<branch> in its repository's checkout, after git fetch origin.
+The merge requests: {agent-sh} ticket:merge-request-plan {project} {ticket} {variation} lists each one's id, repository, branch, base, url, depends-on and status. Update every one that is Open: read it with `{agent-sh} merge-request:view {project} {ticket} {variation} <id>`, and set its title and description: write the whole description to a temp file of your own first, then run `{agent-sh} merge-request:update {project} {ticket} {variation} <id> --from <file> "<title>"` as a Bash call of its own, the command alone on the line (on the host; in a VM, `-` in place of `--from <file>`, the description piped in). Its changes are git diff origin/<base>...origin/<branch> in its repository's checkout, after git fetch origin.
 
 - Title: {merge-request-title}; with more than one merge request, add what this one holds. merge-request:update keeps a draft a draft and, on GitLab, when the title changes, has GitLab start a new merge request pipeline, so its pre-stage jobs (e.g. mr-title) check the new title.
 - Description:
