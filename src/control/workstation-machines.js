@@ -8,8 +8,10 @@
 //
 // The live data (workstations.json, workstation-connection.js) has each
 // workstation's `holder`, { ticket, variation, folder, since, boot-id,
-// started-at, credential-kind, credential-stamps }: the one ticket variation
-// whose step runs on it (one at a time, operator decision 2026-11-14),
+// started-at, credential-kind, credential-stamps }: the ticket variation
+// whose step runs in its shared root (ASS-529: and `holders` { "<n>": … } those
+// in its other slots, ~/harness/slots/<n> — several tickets' steps at once,
+// workstation-connection.js holdersOf; one at a time before, operator decision 2026-11-14),
 // recorded by workstation:claim under the project's pool lock, vm:start (its
 // boot-id, its credential kind) and vm:credentials (its stamps); removed by
 // workstation:release. The variation records the claim as its `workstation`
@@ -22,7 +24,7 @@
 // variation) — never more than one variation's — and its state the live
 // data's (workstationState).
 import { join } from 'node:path';
-import { loadWorkstations, workstationUsable, loginExpired } from './workstation-connection.js';
+import { loadWorkstations, workstationUsable, loginExpired, holderOf } from './workstation-connection.js';
 import { seatOf, seatCapacity, isRemoteSeat } from './seat-kinds.js';
 
 export const KIND = 'workstation';
@@ -39,7 +41,8 @@ export const onWorkstationVariation = variation => (variation?.vm?.kind === KIND
 export const busy = (state, projectId, key, name) => state.assignments.some(a => a.project === projectId && sameKey(a['work-item'], key) && a.variation === name);
 
 // holds(entry, key, name) — the workstation's live data has the variation as its holder.
-export const holds = (entry, key, name) => sameKey(entry?.holder?.ticket, key) && entry.holder.variation === name;
+// ASS-529: any of its holders (several tickets' steps on one machine, each in a slot of its own).
+export const holds = (entry, key, name) => Boolean(holderOf(entry, key, name));
 
 // workstationState(entry) — ASS-436's word for a workstation's state: 'sign
 // in needed', 'setup failed', 'connecting' (connected but not set up yet),

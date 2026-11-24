@@ -11,6 +11,7 @@ import { join } from 'node:path';
 import { fixture, run, AGENT } from './harness-fixture.js';
 import { fakeVm } from '../support/fake-vm.js';
 import { engineDir } from '../support/engine-walk.js';
+import { readEngine } from '../../src/workflow/engine-file.js';
 
 const fails = (promise, message) => assert.rejects(promise, e => message.test(e.stderr));
 const git = (dir, ...args) => execFileSync('git', ['-C', dir, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
@@ -38,7 +39,8 @@ function workspace() {
   chmodSync(join(bin, 'ssh'), 0o755);
   const project = JSON.parse(readFileSync(join(f.dir, 'projects', 'p', 'project.json'), 'utf8'));
   writeFileSync(join(f.dir, 'projects', 'p', 'project.json'), JSON.stringify({ ...project, 'local-environments': [{ name: 'local-pc', type: 'local-pc', folder: ws }] }));
-  const env = { ...f.env, PATH: `${bin}:${process.env.PATH}`, GIT_AUTHOR_NAME: 'T', GIT_AUTHOR_EMAIL: 't@example.com', GIT_COMMITTER_NAME: 'T', GIT_COMMITTER_EMAIL: 't@example.com' };
+  // ASS-545: a run's time limit strikes when the run says (it makes this file: GATE, below), not after its seconds.
+  const env = { ...f.env, AUTOMATED_TESTS_LIMIT_GATE: join(dir, 'limit-gate'), PATH: `${bin}:${process.env.PATH}`, GIT_AUTHOR_NAME: 'T', GIT_AUTHOR_EMAIL: 't@example.com', GIT_COMMITTER_NAME: 'T', GIT_COMMITTER_EMAIL: 't@example.com' };
   // Pushes land in the bare origin; the fetch from the ssh url goes to the stub.
   const agent = (...args) => run(AGENT, args, { env });
   return { ...f, ws, origin, tmp: dir, env, agent, logOut: () => writeFileSync(join(dir, 'logged-out'), ''), glabLog: () => (existsSync(join(dir, 'glab.log')) ? readFileSync(join(dir, 'glab.log'), 'utf8').trim().split('\n') : []) };
@@ -265,6 +267,9 @@ test('merge-request:check reads each merge request created, past one only planne
 
 // A test command's condition for passing on master — its baseline run (ASS-99), in the worktree switched to master's commit — and failing on the branch (withTests puts the branch a commit ahead).
 const ON_MASTER = '[ "$(git rev-parse --abbrev-ref HEAD)" = HEAD ]';
+
+// ASS-545 dropped bash's job-control line ("child setpgid … Operation not permitted") from the outputs read here;
+// ASS-549 keeps it out of the run's output in automated-tests.bash itself (TIME_LIMIT), so they are read as they are.
 
 // The workspace fixture with ABC-3 A's worktree made, and its automated tests as given in its ticket folder.
 async function withTests(tests, f = workspace()) {
@@ -574,11 +579,11 @@ test('ASS-521 AC3: a reproducing check whose master run aborted on a branch-only
 });
 
 test('ASS-521 AC3: master timed out, no --also — a reproducing check failing T fails, T new', async () => {
-  const run = 'cat a.txt; [ -f slow ] && sleep 30; exit 1';
+  const run = `cat a.txt; [ -f slow ] && { ${GATE}; sleep 30; }; exit 1`;
   const f = reproducing(await abortedOnMaster(undefined, { run, only: ['slow'] }));
   minutes(f, 0.02);
   await exitsWith(f.agent('automated-tests:verify-success', 'p', 'ABC-3', 'A'), 1, /1 of 2 failed/);
-  assert.match(f.results(), new RegExp(`## ✗ ${run.replace(/[.[\]]/g, '\\$&')} \\(exit 1\\)\\n\\nNew failures[^\\n]*\\n- ${T_520.replace(/[./]/g, '\\$&')}\\n`));
+  assert.match(f.results(), new RegExp(`## ✗ ${run.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} \\(exit 1\\)\\n\\nNew failures[^\\n]*\\n- ${T_520.replace(/[./]/g, '\\$&')}\\n`));
 });
 
 test('ASS-227 AC2: a reproducing check red on master and still red on the branch, naming no test, failed — exit 1, for Generate Solution, not 3 — though run on master (ASS-487)', async () => {
@@ -624,7 +629,7 @@ test('ASS-487: master\'s baseline unavailable (changes not committed), a red rep
 });
 
 test('ASS-487: a reproducing check that timed out on the branch is not run on master', async () => {
-  const f = reproducing(await againstMaster('x.sql ....... \n1..1\nnot ok 1 - a\n', 'branch\n', 'cat tap.txt; sleep 30'));
+  const f = reproducing(await againstMaster('x.sql ....... \n1..1\nnot ok 1 - a\n', 'branch\n', `cat tap.txt; ${GATE}; sleep 30`));
   minutes(f, 0.02);
   await exitsWith(f.agent('automated-tests:verify-success', 'p', 'ABC-3', 'A'), 1, /1 of 1 failed/);
   assert.deepEqual(f.runs(), ['change/ABC-3', 'change/ABC-3']);              // the branch and its re-run only
@@ -683,14 +688,19 @@ test('ASS-99: in a VM, master\'s run switches every repository in /repos/ not at
 // minutes() sets it (undefined removes it). A run past it is stopped with
 // everything it started: sleeping() is a run command that starts a child,
 // both logging their PIDs to pids(), and sleeps past the limit; gone(f)
-// whether every one of them has exited.
+// whether every one of them has exited. ASS-545: the limit strikes when the run
+// makes the workspace's limit gate (GATE: automated-tests.bash's
+// AUTOMATED_TESTS_LIMIT_GATE), once it has started everything and written its
+// output — not after the limit's second or so, which a loaded Mac's bash could
+// outlast before getting that far (and a run that should finish could too).
 function minutes(f, value) {
   const file = join(f.dir, 'projects', 'p', 'project.json');
   const json = JSON.parse(readFileSync(file, 'utf8'));
   if (value === undefined) delete json['automated-test-run-minutes']; else json['automated-test-run-minutes'] = value;
   writeFileSync(file, JSON.stringify(json));
 }
-const sleeping = f => `echo started; sleep 30 & echo $! >> ${join(f.tmp, 'pids')}; echo $$ >> ${join(f.tmp, 'pids')}; sleep 30`;
+const GATE = 'touch "$AUTOMATED_TESTS_LIMIT_GATE"';   // on the Mac; sleeping() names the file itself (VMs, containers)
+const sleeping = f => `echo started; sleep 30 & echo $! >> ${join(f.tmp, 'pids')}; echo $$ >> ${join(f.tmp, 'pids')}; touch ${f.env.AUTOMATED_TESTS_LIMIT_GATE}; sleep 30`;
 const pids = f => readFileSync(join(f.tmp, 'pids'), 'utf8').trim().split('\n').map(Number);
 const gone = f => pids(f).every(pid => { try { process.kill(pid, 0); return false; } catch { return true; } });
 
@@ -698,19 +708,21 @@ test('ASS-329 AC1, AC2: a run past automated-test-run-minutes is stopped with ev
   const w = workspace();
   const f = await withTests([{ list: 'echo t', run: `${ON_MASTER} || { ${sleeping(w)}; }` }], w);
   minutes(f, 0.02);
-  const started = Date.now();
+  // ASS-545: no 20 s limit — each sleep is 30 s, and gone() below shows every process stopped, not left to end.
   await exitsWith(f.agent('automated-tests:verify-success', 'p', 'ABC-3', 'A'), 1, /1 of 1 failed/);
-  assert.ok(Date.now() - started < 20000);
   assert.equal(pids(f).length, 4);                                            // the branch's run and its re-run, each with its child
   assert.ok(gone(f));
   assert.match(f.results(), /## ✗ .* \(exit 124: timed out after 0\.02 minutes\)\n\nNew failures, not failing on master, and failing again on a re-run:\n- the command timed out after 0\.02 minutes; on master it finished \(exit 0\)\n\n```\nstarted\nautomated-tests:verify-success: timed out after 0\.02 minutes\n```\n\n### Re-run \(exit 124: timed out after 0\.02 minutes\)\n/);
 });
 
+// ASS-550: the hanging test makes the limit's gate only once node --test has reported 'quick' (a second spec reporter,
+// to a file, shows it): at load ~100 the gate came from the test file before its runner had printed the first
+// result, and the run was stopped without its "✔ quick". The hang (600 s) is far past any guard.
 test('ASS-329 AC2: a node --test run stopped at the limit names the file it was running', async () => {
   const f = workspace();
-  const spec = join(f.tmp, 'hangs.test.js');
-  writeFileSync(spec, "import test from 'node:test';\ntest('quick', () => {});\ntest('hangs', () => new Promise(r => setTimeout(r, 60000)));\n");
-  const t = await withTests([{ list: 'echo t', run: `${ON_MASTER} || env -u NODE_TEST_CONTEXT node --test --test-reporter=spec ${spec}` }], f);
+  const spec = join(f.tmp, 'hangs.test.js'), seen = join(f.tmp, 'reported.txt');
+  writeFileSync(spec, `import test from 'node:test';\nimport { existsSync, readFileSync, writeFileSync } from 'node:fs';\ntest('quick', () => {});\ntest('hangs', async () => {\n  while (!(existsSync(${JSON.stringify(seen)}) && readFileSync(${JSON.stringify(seen)}, 'utf8').includes('✔ quick'))) await new Promise(r => setTimeout(r, 25));\n  writeFileSync(process.env.AUTOMATED_TESTS_LIMIT_GATE, '');\n  await new Promise(r => setTimeout(r, 600000));\n});\n`);
+  const t = await withTests([{ list: 'echo t', run: `${ON_MASTER} || env -u NODE_TEST_CONTEXT node --test --test-reporter=spec --test-reporter-destination=stdout --test-reporter=spec --test-reporter-destination=${seen} ${spec}` }], f);
   minutes(t, 0.03);
   await exitsWith(t.agent('automated-tests:verify-success', 'p', 'ABC-3', 'A'), 1, /1 of 1 failed/);
   assert.match(t.results(), new RegExp(`\\(exit 124: timed out after 0\\.03 minutes, in ${spec}\\)\\n\\nNew failures[^\\n]*\\n- the command timed out after 0\\.03 minutes, in ${spec}; on master`));
@@ -718,7 +730,7 @@ test('ASS-329 AC2: a node --test run stopped at the limit names the file it was 
 });
 
 test('ASS-329 AC3: a command timed out on master too exits 3 for a human, with both outputs; master\'s timed-out run is not kept, run again next time', async () => {
-  const f = await againstMaster('master\n', 'branch\n', 'cat tap.txt; sleep 30');
+  const f = await againstMaster('master\n', 'branch\n', `cat tap.txt; ${GATE}; sleep 30`);
   minutes(f, 0.02);
   await exitsWith(f.agent('automated-tests:verify-success', 'p', 'ABC-3', 'A'), 3, /1 of 1 red on master too/);
   assert.match(f.results(), /## ⚠ .* \(exit 124: timed out after 0\.02 minutes: timed out on master too \(origin's default branch at [0-9a-f]{12}[^)]*\), nothing to compare\)\n\n```\nbranch\nautomated-tests:verify-success: timed out after 0\.02 minutes\n```\n\n### On master \(exit 124: timed out after 0\.02 minutes; origin's default branch at [0-9a-f]{12}[^)]*\)\n\n```\nmaster\nautomated-tests:verify-success: timed out after 0\.02 minutes\n```/);
@@ -729,7 +741,7 @@ test('ASS-329 AC3: a command timed out on master too exits 3 for a human, with b
 });
 
 test('ASS-329 AC1: automated-test-run-minutes absent is 30, null no limit; a value that is no number of minutes above 0 exits 3, running nothing', async () => {
-  const f = await withTests([{ list: 'echo t', run: 'ps -ww -o command= -p $PPID | grep -o "seconds=[0-9.]*"; sleep 1.5; echo done' }]);
+  const f = await withTests([{ list: 'echo t', run: `s="$(ps -ww -o command= -p $PPID | grep -o "seconds=[0-9.]*" | head -n 1)"; [ -z "$s" ] || echo "$s"; [ "$s" = seconds=1800 ] || ${GATE}; sleep 1.5; echo done` }]);   // ASS-545: the gate for the short limit alone
   assert.deepEqual(JSON.parse((await f.agent('automated-tests:verify-success', 'p', 'ABC-3', 'A')).stdout), { passed: 1, failed: 0 });
   assert.match(f.results(), /seconds=1800\n/);
   minutes(f, 0.01);
@@ -762,7 +774,7 @@ test('ASS-329 AC1: in a VM, the limit stops the run and everything it started th
 });
 
 test('the automated-testing step sends a test run that could not start (exit 3) to Blocked, not back to generate-solution', () => {
-  const engine = JSON.parse(readFileSync(join(engineDir('example-development'), 'state-engine.json'), 'utf8'));   // the example project's own (ASS-277)
+  const engine = readEngine(join(engineDir('example-development'), 'workflow.yaml'));   // the example project's own (ASS-277)
   const exits = engine.steps.find(s => s.id === 'automated-testing')['exit-events'];
   assert.deepEqual(exits.map(e => [e.condition, e['move-to-state']]), [[{ 'exit-code': 0 }, 'code-review'], [{ 'exit-code': 3 }, 'blocked'], [{ not: { 'exit-code': 0 } }, 'generate-solution']]);
 });
@@ -899,7 +911,8 @@ test('code:update-workspace never drops a local commit: with commits of its own 
   assert.deepEqual([git(f.ws, 'rev-parse', 'HEAD'), readFileSync(join(f.ws, 'local.js'), 'utf8'), git(f.ws, 'status', '--porcelain')], [mine, 'mine\n', '']);
 });
 
-test('ASS-319 AC1: code:update-workspace survives a concurrent plain `git fetch origin` in the same workspace — 40 rounds, each exits 0 and lands that round\'s pushed SHA, so the shared-ref race no longer sends a merged ticket to Blocked', { timeout: 300_000 }, async () => {
+// ASS-545: no timeout of its own — test/run.sh's 600 s per test is the hang guard; a fixed one a loaded Mac outlasts.
+test('ASS-319 AC1: code:update-workspace survives a concurrent plain `git fetch origin` in the same workspace — 40 rounds, each exits 0 and lands that round\'s pushed SHA, so the shared-ref race no longer sends a merged ticket to Blocked', async () => {
   const f = workspace();
   git(f.ws, 'remote', 'set-url', 'origin', f.origin);                                         // fetchable here (as the two tests above)
   const realGit = execFileSync('bash', ['-c', 'command -v git'], { encoding: 'utf8' }).trim();

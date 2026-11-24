@@ -8,11 +8,16 @@ import { flattenSprint, isLiveBacklogEntry } from './rank.js';
 import { dataDir } from '../data-folder.js';
 import { switchOff, blocksTicket } from './engine.js';
 import { switchedOffStepErrors } from '../workflow/validate.js';
+import { engineFileIn, LEGACY_ENGINE_FILE } from '../workflow/engine-file.js';
 import { obsoleteKeysOf, withoutObsolete } from '../workflow/obsolete.js';
 import { devEnvironments, devEnvironmentsErrors } from './dev-environments.js';
+import { projectRunTargets, projectRunTargetErrors } from './run-targets.js';
+import { loadSubstrate } from './substrate-config.js';
 import { loadWorkstations } from './workstation-connection.js';
 import { loadSeats } from './seat-kinds.js';
-import { readJson, readJsonOnce, readJsonCached, sweepCached, deepFreeze } from './read.js';
+import { SEAT_BUDGET_FILE, REMOTE_SEATS_FILE } from './seat-budget-file.js';
+import { loadPlanningFocus } from './planning-focus-file.js';
+import { readJson, readJsonOnce, readJsonCached, readEngineCached, sweepCached, deepFreeze } from './read.js';
 
 // readJson (read.js, ASS-460): a read that fails because the drive dropped or
 // the file was caught empty or half-written is tried again a couple of times
@@ -116,8 +121,11 @@ export const paths = (root, env = process.env) => ({
 // ignores a deleted one as though it were gone.
 const live = t => t['is-deleted'] !== true;
 
-// readEngines(dir, obsolete, stale) — { [name]: its state-engine.json } for each
-// <dir>/<name>/state-engine.json; {} when there is no such folder. ASS-450:
+// readEngines(dir, obsolete, stale) — { [name]: its engine } for each
+// <dir>/<name>/workflow.yaml (ASS-524: engine-file.js, read by
+// readEngineCached; a state-engine.json until then, and a folder holding only
+// that is pushed onto `obsolete` as { file, keys: [], legacy: true }, for
+// control to say it is not read); {} when there is no such folder. ASS-450:
 // each without the obsolete keys it declares (src/workflow/obsolete.js: the
 // removed ticket health check's), each such engine pushed onto `obsolete` as
 // { file, keys }, for control to say once. ASS-460: an engine that still
@@ -138,13 +146,16 @@ const withoutObsoleteOnce = engine => {
 };
 export function readEngines(dir, obsolete = [], stale = []) {
   if (!existsSync(dir)) return EMPTY;
-  const entries = readdirSync(dir)
-    .filter(name => existsSync(join(dir, name, 'state-engine.json')))
+  const names = readdirSync(dir);
+  // ASS-524: a folder still holding only its state-engine.json (a project's own, not yet migrated) is no engine; said once by control.
+  for (const name of names) if (!existsSync(engineFileIn(dir, name)) && existsSync(join(dir, name, LEGACY_ENGINE_FILE))) obsolete.push({ file: join(dir, name, LEGACY_ENGINE_FILE), keys: [], legacy: true });
+  const entries = names
+    .filter(name => existsSync(engineFileIn(dir, name)))
     .map(name => {
-      const file = join(dir, name, 'state-engine.json');
+      const file = engineFileIn(dir, name);
       let engine;
       try {
-        engine = readJsonCached(file);
+        engine = readEngineCached(file);
         lastGoodEngines.set(file, engine);
       } catch (error) {
         if (!lastGoodEngines.has(file)) throw error;
@@ -182,11 +193,17 @@ function sweepMemos() {
   memoGeneration++;
 }
 
+// loadSeatBudget(dir, read) — ASS-528: the project's seat-budget.json (seat-budget.js), or null — none, or caught
+// half-written (the next load reads it).
+function loadSeatBudget(dir, read, file = SEAT_BUDGET_FILE) {
+  try { return existsSync(join(dir, file)) ? read(join(dir, file)) : null; } catch { return null; }
+}
+
 // loadState(paths) — everything as it is now: { harness, assignments (the
 // records), transient (the state engine runs), pauses, selfHealing, engines
-// (engines/'s, { [name]: its state-engine.json }), projects }. Each project is { id,
+// (engines/'s, { [name]: its engine, from its workflow.yaml }), projects }. Each project is { id,
 // json (its project.json), engineName (its execution-state-engine), engines
-// (`engines` and its own — <project>/engines/<name>/state-engine.json, over
+// (`engines` and its own — <project>/engines/<name>/workflow.yaml, over
 // engines/'s of the same name, ASS-276 — with its switched-off-steps switched
 // off, ASS-209), switchedOffErrors
 // (what is wrong with those entries; a bad one is not applied), engine
@@ -207,7 +224,12 @@ function sweepMemos() {
 // as for a project without one) and devEnvironments (its { mode, workstations }: dev-environments.js; null while
 // it is wrong), workstations (ASS-433: its workstations.json — each workstation's state, connection and last
 // connect error, workstation-connection.js loadWorkstations — or {}), seats (ASS-469: its seats.json's records, who
-// holds which in-progress seat, a VM seat or a workstation's: seats.js, seat-kinds.js loadSeats — or []) }, in folder order, contextWindows (the learned
+// holds which in-progress seat, a VM seat or a workstation's: seats.js, seat-kinds.js loadSeats — or []), planningSeats
+// (ASS-528: its seats.json's planning holders, or []), seatBudget (ASS-528: its seat-budget.json — the Mac seats it
+// may hold now and why, seat-budget.js — or null), planningFocus (ASS-531: its planning-focus.json, { on, by, at }, or
+// null — planning-focus-file.js), remoteBudget (ASS-529: its remote-seats.json — each remote
+// machine's seats now and why, remote-seats.js — or null), substrate (ASS-533: its substrate.json — each Substrate
+// cluster's last check and setup, substrate-config.js loadSubstrate — or {}) }, in folder order, contextWindows (the learned
 // context-windows.json — { <model>: tokens } — or {}, ASS-190) and diskSpace
 // (disk-space.json — { level, free-bytes, … }, ASS-288 — or null; one caught
 // half-written reads as null, the next tick reading it again), and
@@ -267,7 +289,7 @@ export function loadState(paths) {
       const devErrors = devEnvironmentsErrors(json);
       return { id, json, engineName, engines: own, switchedOffErrors, engine: own[engineName], refinementName, refinement: own[refinementName], sprintFile, sprint, tickets, backlog, asking: openBlocking(dir, [...tickets, ...backlog], read), outside: loadOutside(dir, read),
         gcloudRequiresReauthentication: requiresReauthentication(dir, 'gcloud'), glabRequiresReauthentication: requiresReauthentication(dir, 'glab'), rateLimit, claudeUsage, credentialsHold, memoryHold, memoryWait,
-        devEnvironmentsErrors: devErrors, devEnvironments: devErrors.length ? null : devEnvironments(json), workstations: loadWorkstations(dir, read), seats: loadSeats(dir, read) };
+        devEnvironmentsErrors: devErrors, devEnvironments: devErrors.length ? null : devEnvironments(json), workstations: loadWorkstations(dir, read), seats: loadSeats(dir, read), planningSeats: loadSeats(dir, read, 'planning'), localSeats: loadSeats(dir, read, 'local'), runTargets: projectRunTargets(json), runTargetErrors: devErrors.length ? [] : memo(`run-targets ${dir}`, [own, json['dev-environments']], () => projectRunTargetErrors(json, own, engineName)), seatBudget: loadSeatBudget(dir, read), planningFocus: loadPlanningFocus(dir), remoteBudget: loadSeatBudget(dir, read, REMOTE_SEATS_FILE), substrate: loadSubstrate(dir) };
     });
   const state = {
     harness: read(paths.harness),

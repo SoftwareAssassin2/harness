@@ -35,8 +35,8 @@ const at = (key, state = 'groom', extra = {}, engine = EXAMPLE) => ({ key, title
 function refining(tickets, { harness = {}, settings = {}, engine = EXAMPLE } = {}) {
   const f = controlFixture();
   mkdirSync(join(f.dir, 'engines', engine), { recursive: true });
-  writeFileSync(join(f.dir, 'engines', engine, 'state-engine.json'), readFileSync(join(engineDir(engine), 'state-engine.json')));
-  edit(join(f.dir, 'engines', 'example-development', 'state-engine.json'), e => {
+  writeFileSync(join(f.dir, 'engines', engine, 'workflow.yaml'), readFileSync(join(engineDir(engine), 'workflow.yaml')));
+  edit(join(f.dir, 'engines', 'example-development', 'workflow.yaml'), e => {
     e['backlog-refinement-steps'] = [{ id: 'backlog-refinement', sequence: 1, action: { type: 'state-engine', engine }, 'exit-events': [{ condition: { 'is-done': true } }] }];
     Object.assign(e, settings);
   });
@@ -67,18 +67,20 @@ async function holding(f, fn) {
   try { return await fn(); } finally { delete process.env.FAKE_HOLD; f.ctx.stopAgents(); }
 }
 // Ticks until the backlog ticket rests (no agent on it, nothing moving), its turns answered with `output`, for up to LOADED_MS of real time, not a tick count (ASS-211); the states it passed through.
+// ASS-545: LOADED_MS since the ticket last moved — a hang guard per step — not for the whole walk, which on a loaded
+// Mac (several fake agents' turns, each a process to start) outlasted 30 s while still moving.
 async function settle(f, output, key = 'ABC-50') {
   const seen = [f.stateOf(key)];
   process.env.FAKE_OUTPUT = JSON.stringify(output);
-  const began = Date.now();
+  let began = Date.now();
   try {
     for (let i = 0; Date.now() - began < LOADED_MS; i++) {
       await tick(f.ctx);
-      if (seen.at(-1) !== f.stateOf(key)) seen.push(f.stateOf(key));
+      if (seen.at(-1) !== f.stateOf(key)) { seen.push(f.stateOf(key)); began = Date.now(); }
       await until(() => [...f.ctx.agents.values()].every(a => a.result));
       if (i > 1 && ![...f.ctx.agents.values()].some(a => a.record['work-item'] === key) && !f.refiners().length && seen.at(-1) === f.stateOf(key)) return seen;
     }
-    throw new Error(`settle(): ${key} didn't rest within ${LOADED_MS}ms, seen ${JSON.stringify(seen)}`);
+    throw new Error(`settle(): ${key} didn't move or rest within ${LOADED_MS}ms, seen ${JSON.stringify(seen)}`);
   } finally {
     delete process.env.FAKE_OUTPUT;
     f.ctx.stopAgents();
@@ -494,7 +496,7 @@ async function offBoardRefining(tickets, { settings = {}, titles = ['Join the sp
   const f = refining(tickets, { settings, harness: { 'max-tickets-in-grooming': 0 } });
   f.env.OFF_BOARD_DIR = join(f.dir, 'off-board');                                               // ctx holds the same env object
   edit(join(f.dir, 'projects', 'p', 'project.json'), p => p['work-sources'].push({ name: 'Harness', type: 'off-board', folder: 'p', 'key-prefix': 'HD' }));
-  edit(join(f.dir, 'engines', 'example-development', 'state-engine.json'), e => { e.steps.find(s => s.id === 'committed')['paired-ticket-system-status'] = 'Committed'; });
+  edit(join(f.dir, 'engines', 'example-development', 'workflow.yaml'), e => { e.steps.find(s => s.id === 'committed')['paired-ticket-system-status'] = 'Committed'; });
   for (const title of titles) await run(OFF_BOARD, ['ticket:create', 'p', 'Story', title], { env: f.env });
   return {
     ...f,

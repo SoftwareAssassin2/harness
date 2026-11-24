@@ -106,7 +106,7 @@ test('transient-state-engine:create counts the run into the active sprint\'s con
 test('transient-state-engine:change-state of a run inside a ticket step\'s run records the move on the variation at the run\'s own depth (ASS-67); a trigger\'s runs, at any depth, record nothing there', async () => {
   const f = fixture();
   mkdirSync(join(f.dir, 'engines', 'inner'));
-  writeFileSync(join(f.dir, 'engines', 'inner', 'state-engine.json'), JSON.stringify({ steps: [{ id: 'inspect', sequence: 1, action: { type: 'prompt', prompt: 'test' } }, { id: 'done', sequence: 2, 'is-done': true, action: { type: 'none' } }] }));
+  writeFileSync(join(f.dir, 'engines', 'inner', 'workflow.yaml'), JSON.stringify({ steps: [{ id: 'inspect', sequence: 1, action: { type: 'prompt', prompt: 'test' } }, { id: 'done', sequence: 2, 'is-done': true, action: { type: 'none' } }] }));
   const run = (id, parent) => ({ id, project: 'p', 'state-engine': 'inner', state: 'inspect', parent, 'is-done': false, 'structured-output': null });
   const file = join(f.dir, 'assignments.json');
   const data = f.assignments();

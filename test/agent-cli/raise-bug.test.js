@@ -9,6 +9,7 @@ import { promisify } from 'node:util';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, chmodSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { readEngine } from '../../src/workflow/engine-file.js';
 
 const run = promisify(execFile);
 const AGENT = join(import.meta.dirname, '..', '..', 'agent.sh');
@@ -146,7 +147,7 @@ test('ticket:raise-bug fails, raising nothing, on a failed create, a project wit
 test('the grouped engines raise a Jira ticket through ticket:raise-bug; the flat engines keep create-ticket as it was', () => {
   const ROOT = join(import.meta.dirname, '..', '..');
   const read = path => readFileSync(join(ROOT, path), 'utf8');
-  const engine = name => JSON.parse(read(`engines/${name}/state-engine.json`));
+  const engine = name => readEngine(join(ROOT, `engines/${name}/workflow.yaml`));
   const engineOf = (name, step) => engine(name).steps.find(s => s.id === step).action.engine;
   assert.equal(engineOf('grouped-blocked', 'create-fix-ticket'), 'create-ticket-grouped');
   const prompts = engine('create-ticket-grouped').steps.toSorted((a, b) => a.sequence - b.sequence).map(s => s.action.prompt).filter(Boolean);

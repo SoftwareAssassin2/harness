@@ -4,9 +4,8 @@
 // else red: needs the operator — swapped by ASS-430; else dim grey: going on with an assumption) —
 // each a blank when it doesn't apply — then two cells (ASS-456; c6's one-cell ⚉ before it), 🤖 for
 // agents working on that row's ticket and variation, else 💻 for a script step running on it, else two
-// blanks — then c7, two cells, 💺 for a variation holding a planning or
-// in-progress seat by the planner (ASS-357), two blanks without — then a blank
-// and the text, so the text starts on the same
+// blanks — then a blank and the text (ASS-559: no c7 seat column, 💺 ⛅ 🌐 📦, any more — the Machine and Runs in
+// columns say where a variation runs), so the text starts on the same
 // terminal column on every row. A paused variation's text starts "PAUSED " in
 // blue, "UNASSIGNED " in red for a ticket reassigned away from the operator
 // (ASS-345); one its dependencies hold (ASS-355) gets a second line, "↳ WAITING
@@ -15,7 +14,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { initialState, handleKey, render } from '../../src/tui/app.js';
-import { visible } from '../../src/tui/text.js';
+import { visible, clip } from '../../src/tui/text.js';
 import { GLYPHS } from '../../src/tui/screens/shared.js';
 import { seatsOf } from '../../src/control/plan.js';
 import { waitingWho, priorityPrefix } from '../../src/tui/screens/sprint.js';
@@ -62,12 +61,12 @@ const out = raw.map(strip);
 // The grid's row for `key` (A-13.A, A-13.B for its variations), raw or stripped.
 const rowOf = (key, lines = out) => lines.find(l => new RegExp(`(^|\\s)${key.replace('.', '\\.')}: `).test(strip(l)));
 // The Ticket cell after the grid's left border and its padding, and its first TEXT cells: the icon columns.
-// TEXT counts UTF-16 units: the five one-cell glyphs, 🤖/💻 (ASS-456) and the seat (💺) — each two units and two
-// cells, or two blanks — and a blank: as many units as cells.
+// TEXT counts UTF-16 units: the five one-cell glyphs, 🤖/💻 (ASS-456) — two units and two cells, or two blanks — and
+// a blank: as many units as cells (ASS-559: no seat column after 🤖/💻).
 // LEFT: the grid's left border and its padding, then the priority's three cells and a blank (ASS-454).
 const LEFT = 2 + 4;
 const cell = key => rowOf(key).slice(LEFT);
-const TEXT = 10;
+const TEXT = 8;
 const SEAT = '💺';
 const ROBOT = '🤖', COMPUTER = '💻';
 const prefix = key => cell(key).slice(0, TEXT);
@@ -77,7 +76,7 @@ const KEYS = ['A-1', 'A-2', 'A-3', 'A-4', 'A-5', 'A-6', 'A-7', 'A-8', 'A-9', 'A-
 // The key under the grid: the lines right after its bottom border that start with a key entry.
 const keyLines = lines => {
   const after = lines.slice(lines.findLastIndex(l => /^└/.test(strip(l))) + 1);
-  const end = after.findIndex(l => !/^([█✦✘⌕☛↯⦿]|\d+|🤖|💻|💺|PAUSED|UNASSIGNED|AWAITING|AWAITING MERGE) /u.test(strip(l)));
+  const end = after.findIndex(l => !/^([█✦✘⌕☛↯⦿]|\d+|🤖|💻|💺|PAUSED|UNASSIGNED|AWAITING|AWAITING MERGE|q) /u.test(strip(l)));
   return end < 0 ? after : after.slice(0, end);
 };
 
@@ -96,23 +95,22 @@ test('ASS-259 AC1, AC8: the ticket text starts on the same terminal column on ev
 });
 
 test('ASS-259 AC1: c1 █ step, c2 type, c3 ☛, c4 ↯, c5 ⦿ — each one cell, a blank when it does not apply; then 🤖 (ASS-456; ⚉ before), two cells', () => {
-  // Then c7 (ASS-357): 💺 where the planner seats the variation — no limits here, so every one in
-  // motion — two blanks for paused (A-2, A-9), worked by hand (A-3), blocked (A-6) and no step (A-10).
+  // (ASS-559: no c7 seat column after it — where the planner seats a variation is its Machine and Runs in.)
   const expect = {
-    'A-1': `█✦     ${SEAT}`,
-    'A-2': `█✦☛↯⦿${ROBOT}  `,
-    'A-3': '█✦☛      ',
-    'A-4': `█✦ ↯   ${SEAT}`,
-    'A-5': `█✦  ⦿  ${SEAT}`,
-    'A-6': '█✦  ⦿    ',
-    'A-7': `█✦  ⦿  ${SEAT}`,
-    'A-8': `█✦   ${ROBOT}${SEAT}`,
-    'A-9': '█✦       ',
-    'A-10': ' ✦       ',
-    'A-11': `█✘     ${SEAT}`,
-    'A-12': `█⌕     ${SEAT}`,
-    'A-13.A': `█✦     ${SEAT}`,
-    'A-13.B': `█✦   ${ROBOT}${SEAT}`,
+    'A-1': '█✦     ',
+    'A-2': `█✦☛↯⦿${ROBOT}`,
+    'A-3': '█✦☛    ',
+    'A-4': '█✦ ↯   ',
+    'A-5': '█✦  ⦿  ',
+    'A-6': '█✦  ⦿  ',
+    'A-7': '█✦  ⦿  ',
+    'A-8': `█✦   ${ROBOT}`,
+    'A-9': '█✦     ',
+    'A-10': ' ✦     ',
+    'A-11': '█✘     ',
+    'A-12': '█⌕     ',
+    'A-13.A': '█✦     ',
+    'A-13.B': `█✦   ${ROBOT}`,
   };
   for (const key of KEYS) assert.equal(prefix(key), `${expect[key]} `, key);
   assert.ok(rowOf('A-1', raw).includes('m█\x1b[0m'));                // █ in the step's color
@@ -152,10 +150,10 @@ test('ASS-259 AC2: every one-cell prefix glyph is East Asian Width N (bar ASS-45
   }
   assert.ok(!eastAsianN('●') && !eastAsianN('█') && !eastAsianN('✨') && !eastAsianN('⚡'));   // the old glyphs: A, A, W, W
   // Nothing else in any row's five glyph columns: GLYPHS or blanks, no VS16; then 🤖, 💻 or two blanks (ASS-456);
-  // then the seat column, 💺 or two blanks (ASS-357).
+  // then a blank (ASS-559: no seat column, 💺 or two blanks, after it any more).
   for (const key of KEYS) assert.ok([...prefix(key).slice(0, 5)].every(c => c === ' ' || ONE_CELL.includes(c)), key);
   for (const key of KEYS) assert.ok([ROBOT, COMPUTER, '  '].includes(prefix(key).slice(5, 7)), key);
-  for (const key of KEYS) assert.ok([SEAT, '  '].includes(prefix(key).slice(7, 9)), key);
+  for (const key of KEYS) assert.ok(!prefix(key).includes(SEAT), key);
   assert.equal(visible(ROBOT), 2);
   assert.equal(visible(COMPUTER), 2);
 });
@@ -203,7 +201,7 @@ test('ASS-259 AC7: a dim key directly under the grid shows each glyph as drawn i
   const bottom = raw.findLastIndex(l => /^└/.test(strip(l)));
   const key = keyLines(raw);
   assert.equal(raw.indexOf(key[0]), bottom + 1);                     // directly under the grid
-  assert.equal(strip(key.join('  ')), '137 priority (999 = 999 or more)  137 priority set by hand  █ step  ✦ feature  ✘ bug  ⌕ spike  ☛ by hand  ↯ fast-tracked  ⦿ requirements change  ⦿ needs you  ⦿ assumption  🤖 agent working  💻 script running  💺 holds a seat (planning or in progress)  PAUSED paused  UNASSIGNED reassigned away  AWAITING a dependency not done yet  AWAITING MERGE MRs to merge, in order');
+  assert.equal(strip(key.join('  ')), '137 priority (999 = 999 or more)  137 priority set by hand  █ step  ✦ feature  ✘ bug  ⌕ spike  ☛ by hand  ↯ fast-tracked  ⦿ requirements change  ⦿ needs you  ⦿ assumption  🤖 agent working  💻 script running  PAUSED paused  UNASSIGNED reassigned away  AWAITING a dependency not done yet  AWAITING MERGE MRs to merge, in order  q seat queue');   // q: ASS-566
   const all = key.join('');
   for (const kind of ['31', '34', '2;90']) assert.ok(all.includes(`\x1b[${kind}m⦿\x1b[0m`), kind);   // ⦿ in each of its colors
   assert.ok(all.includes('\x1b[34m⦿\x1b[0m\x1b[2m requirements change') && all.includes('\x1b[31m⦿\x1b[0m\x1b[2m needs you'));   // ASS-430: a change blue, needs you red
@@ -212,17 +210,17 @@ test('ASS-259 AC7: a dim key directly under the grid shows each glyph as drawn i
 });
 
 test('ASS-259 AC7: the key wraps between entries at the screen width, never inside one, and is never cut off — the grid gives up rows', () => {
-  const ENTRIES = ['137 priority (999 = 999 or more)', '137 priority set by hand', '█ step', '✦ feature', '✘ bug', '⌕ spike', '☛ by hand', '↯ fast-tracked', '⦿ requirements change', '⦿ needs you', '⦿ assumption', '🤖 agent working', '💻 script running', '💺 holds a seat (planning or in progress)', 'PAUSED paused', 'UNASSIGNED reassigned away', 'AWAITING a dependency not done yet', 'AWAITING MERGE MRs to merge, in order'];
-  assert.equal(Math.max(...ENTRIES.map(visible)), 41);   // the seat's entry (ASS-357), the widest: no narrower screen holds it whole
+  const ENTRIES = ['137 priority (999 = 999 or more)', '137 priority set by hand', '█ step', '✦ feature', '✘ bug', '⌕ spike', '☛ by hand', '↯ fast-tracked', '⦿ requirements change', '⦿ needs you', '⦿ assumption', '🤖 agent working', '💻 script running', 'PAUSED paused', 'UNASSIGNED reassigned away', 'AWAITING a dependency not done yet', 'AWAITING MERGE MRs to merge, in order', 'q seat queue'];   // q: ASS-566
+  assert.equal(Math.max(...ENTRIES.map(visible)), 37);   // AWAITING MERGE's entry, the widest since the seat's (41, ASS-357) went (ASS-559)
   for (const columns of [200, 100, 60, 41]) {
-    const size = { ...wide, columns, rows: 44 };   // 44: at 41 columns the key's 11 lines leave a 40-row screen no room for the grid's bottom border (ASS-454's two priority entries)
+    const size = { ...wide, columns, rows: 46 };   // 46 (ASS-566's q entry: a line more at 41 columns; 44 before): at 41 columns the key's 11 lines leave a 40-row screen no room for the grid's bottom border (ASS-454's two priority entries)
     const lines = render(state, size);
     const key = keyLines(lines).map(strip);
     assert.ok(key.length >= 1, String(columns));
     assert.ok(key.every(l => visible(l) <= columns), String(columns));
     assert.deepEqual(key.flatMap(l => l.split('  ')), ENTRIES, String(columns));   // each entry whole, in order
     if (columns < 200) assert.ok(key.length > 1, String(columns));
-    assert.equal(lines.length, 44);
+    assert.equal(lines.length, 46);
     assert.equal(lines.findLastIndex(l => /^└/.test(strip(l))) + 1, lines.indexOf(keyLines(lines)[0]));
   }
   // Short of room, the grid shows fewer rows; the key stays whole. With no
@@ -231,9 +229,9 @@ test('ASS-259 AC7: the key wraps between entries at the screen width, never insi
   const shown = lines => KEYS.filter(k => lines.some(l => l.includes(`${k}: `))).length;
   assert.ok(shown(at(40)) < shown(at(80)) && shown(at(40)) > 0);
   const whole = lines => keyLines(['└', ...lines.slice(lines.findIndex(l => l.startsWith('137 priority')))]).join('  ');
-  for (const rows of [40, 30]) assert.equal(whole(at(rows)), keyLines(at(80)).join('  '), String(rows));
-  const short = at(30);
-  assert.ok(!short.slice(short.findIndex(l => /^│ +Ticket +│/.test(l))).some(l => l.startsWith('└')));   // at 30 rows the grid's bottom border went instead
+  for (const rows of [40, 24]) assert.equal(whole(at(rows)), keyLines(at(80)).join('  '), String(rows));
+  const short = at(24);   // ASS-566: 24, was 30 (the footer's three lines, boxes before)
+  assert.ok(!short.slice(short.findIndex(l => /^│ +Ticket +│/.test(l))).some(l => l.startsWith('└')));   // at 24 rows the grid's bottom border went instead
 });
 
 // ASS-453: the step mark is █ (U+2588 FULL BLOCK), East Asian Width A, drawn
@@ -401,7 +399,9 @@ test('ASS-360 AC4: the Ticket column is floored at the waiting line when it is w
   assert.deepEqual([...seen].sort(), heldTickets.map(t => t.key).sort());               // each row selected once, in turn, scrolled into view
 });
 
-// ===== ASS-357: 💺 on every row whose variation holds a planning or in-progress seat =====
+// ===== ASS-357: every row whose variation holds a planning or in-progress seat says so =====
+// ASS-559: by its Machine and Runs in (here Mac / Lima VM: no run targets, no records — the planner's local-vm), no
+// longer by a 💺 in a seat column.
 // The planner's seats (control/plan.js seatsOf), not the steps: an engine with
 // a queue (Committed), a planning step and a build step, a project capped at one
 // planning and three in-progress seats. In rank order (manual-priority): S-11.A
@@ -438,104 +438,93 @@ const SEAT_KEYS = ['S-11.A', 'S-11.B', 'S-1', 'S-2', 'S-3', 'S-10', 'S-4', 'S-5'
 const seatQuestions = [{ 'asked-on-ticket': 'S-10', status: 'Asked', blocking: true, source: 'S-10', index: 0 }];
 const seatProject = (limits = {}) => ({
   id: 'p', name: 'P', stateEngine: 'e', questions: seatQuestions,
-  limits: { project: { 'max-tickets-in-planning': 1, 'max-tickets-in-progress': 3 }, harness: {}, ...limits },
+  seatBudget: { seats: 4 }, limits: { project: {}, harness: {}, ...limits },   // ASS-528: four seats in one pool
   sprint: { number: 10, start: '2026-09-18', end: '2026-10-01', features: seatFeatures, bugs: [], spikes: [] },
 });
 const seatState = (projects = [seatProject()]) => initialState({ projects, workflows: [{ name: 'e', steps: seatSteps }], assignments: [] });
 const seatRow = (lines, key) => lines.find(l => new RegExp(`(^|\\s)${key.replace('.', '\\.')}: `).test(strip(l)));
-const seated = lines => SEAT_KEYS.filter(k => strip(seatRow(lines, k)).slice(LEFT, LEFT + TEXT).includes(SEAT));
+// A row's cells by column header (its first line), stripped and trimmed (ASS-559).
+// Body rows have no inner borders: each cell is cut from the row at its header's columns, counted in cells (clip).
+const cellsOf = (lines, key) => {
+  const header = strip(lines.find(l => /│ +Ticket +│/.test(strip(l))));
+  const bars = [...header].reduce((at, c, i, all) => (c === '│' ? [...at, visible(all.slice(0, i).join(''))] : at), []);
+  const names = header.split('│').slice(1, -1).map(h => h.trim());
+  const row = strip(seatRow(lines, key));
+  const cut = (from, to) => clip(row, to).slice(clip(row, from).length).trim();
+  return Object.fromEntries(names.map((name, i) => [name, cut(bars[i] + 1, bars[i + 1])]));
+};
+const seated = lines => SEAT_KEYS.filter(k => cellsOf(lines, k).Machine !== '');
 
-test('ASS-357 AC1: 💺 on exactly the rows whose variation holds a planning or in-progress seat by the planner (seatsOf); over the limits, paused, held by a question, done, blocked or queued: none', () => {
+test('ASS-357 AC1, ASS-559 AC2: a Machine on exactly the rows whose variation holds a planning or in-progress seat by the planner (seatsOf); over the limits, paused, held by a question, done, blocked or queued: blank', () => {
   const lines = render(seatState(), wide);
-  assert.deepEqual(seated(lines), ['S-11.A', 'S-1', 'S-3', 'S-5']);
+  assert.deepEqual(seated(lines), ['S-11.A', 'S-1', 'S-2', 'S-3']);   // ASS-528: one pool of four, in rank order
+  for (const k of seated(lines)) assert.deepEqual([cellsOf(lines, k).Machine, cellsOf(lines, k)['Runs in']], ['Mac', 'Lima VM'], k);
+  for (const k of SEAT_KEYS.filter(k => !seated(lines).includes(k))) assert.equal(cellsOf(lines, k)['Runs in'], '', k);
   // The planner's own answer, asked of control's state shape directly.
   const engine = { steps: seatSteps };
   const tickets = seatFeatures.map(t => ({ ...t, type: 'feature' }));
-  const project = { id: 'p', json: { 'max-tickets-in-planning': 1, 'max-tickets-in-progress': 3 }, engine, engines: { e: engine }, tickets, asking: new Map([['S-10', ['?']]]) };
+  const project = { id: 'p', json: {}, seatBudget: { seats: 4 }, engine, engines: { e: engine }, tickets, asking: new Map([['S-10', ['?']]]) };
   const seats = seatsOf({ projects: [project], allProjects: [project], engines: { e: engine }, assignments: [], harness: {} }, project);
-  assert.deepEqual(seats['in-planning'], ['S-1 A']);
-  assert.deepEqual(seats['in-progress'], ['S-11 A', 'S-3 A', 'S-5 A']);
-  assert.deepEqual(seats['over-the-limits'], ['S-2 A', 'S-6 A']);                  // waiting: no 💺
+  assert.deepEqual(seats['in-planning'], ['S-1 A', 'S-2 A']);
+  assert.deepEqual(seats['in-progress'], ['S-11 A', 'S-3 A']);
+  assert.deepEqual(seats['over-the-limits'], ['S-5 A', 'S-6 A']);                  // waiting: on no machine
   const fromRows = SEAT_KEYS.filter(k => seated(lines).includes(k)).map(k => k.replace('.', ' ').replace(/^(S-\d+)$/, '$1 A'));
   assert.deepEqual(fromRows.toSorted(), [...seats['in-planning'], ...seats['in-progress']].toSorted());
 });
 
-test('ASS-357 AC1: harness.json\'s limits count every project\'s seats, as control plans them: another project\'s seat leaves this one fewer', () => {
-  const other = { id: 'q', name: 'Q', stateEngine: 'e', questions: [], limits: { project: {}, harness: { 'max-tickets-in-progress': 3 } },
+test('ASS-528: machines are never shared — another project\'s seats leave this one\'s as they are, as control plans them', () => {
+  const other = { id: 'q', name: 'Q', stateEngine: 'e', questions: [], limits: { project: {}, harness: {} }, seatBudget: { seats: 1 },
     sprint: { number: 1, start: '2026-09-18', end: '2026-10-01', features: [seatTicket('Q-1', 1, [['A', 'build']])], bugs: [], spikes: [] } };
-  const lines = render(seatState([seatProject({ harness: { 'max-tickets-in-progress': 3 } }), other]), wide);
-  assert.deepEqual(seated(lines), ['S-11.A', 'S-1', 'S-3']);                       // Q-1 holds the third harness seat: S-5 waits
+  assert.deepEqual(seated(render(seatState([seatProject(), other]), wide)), seated(render(seatState(), wide)));
 });
 
-test('ASS-357 AC2: the key under the grid lists 💺 as "holds a seat (planning or in progress)"', () => {
-  const key = keyLines(render(seatState(), wide)).map(strip).join('  ');
-  assert.ok(key.split('  ').includes('💺 holds a seat (planning or in progress)'), key);
+test('ASS-559 AC3: the key under the grid lists no seat marks — 💺, ⛅, 🌐, 📦 — and no ticket row draws one: the Machine and Runs in columns say it', () => {
+  const lines = render(seatState(), wide);
+  const key = keyLines(lines).map(strip).join('  ');
+  for (const mark of ['💺', '⛅', '🌐', '📦']) {
+    assert.ok(!key.includes(mark), `${mark}: ${key}`);
+    assert.ok(!SEAT_KEYS.some(k => strip(seatRow(lines, k)).includes(mark)), mark);
+  }
+  assert.ok(!lines.some(l => strip(l).includes('sandbox on')), 'no "· sandbox on <machine>" after a title (ASS-535)');
 });
 
-test('ASS-357 AC3: a past day\'s snapshot shows no 💺, as it shows no 🤖 (ASS-456; ⚉ before) — seats are live state', () => {
+test('ASS-357 AC3: a past day\'s snapshot shows no machine (ASS-559; 💺 before), as it shows no 🤖 (ASS-456; ⚉ before) — seats are live state', () => {
   const live = seatState();
   const past = { ...live, day: '2026-09-30', projects: [{ ...live.projects[0], days: { '2026-09-30': live.projects[0].sprint } }] };
   const lines = render(past, wide);
   assert.equal(SEAT_KEYS.filter(k => seatRow(lines, k)).length, SEAT_KEYS.length);   // every row is there
   assert.deepEqual(seated(lines), []);
-  assert.ok(keyLines(lines).map(strip).join('  ').includes('💺 holds a seat'));        // the key still explains it
 });
 
-test('ASS-357 AC4: 💺 is two cells wide; seated and unseated rows stay aligned, the text on the same column, every grid line the screen\'s width', () => {
-  assert.equal(visible(SEAT), 2);
+test('ASS-357 AC4, ASS-559: seated and unseated rows stay aligned, the text on the same column, every grid line the screen\'s width', () => {
   for (const columns of [200, 160]) {
     const lines = render(seatState(), { ...wide, columns });
     const top = lines.findIndex(l => /^┌.*┬/.test(strip(l))), bottom = lines.findLastIndex(l => /^└/.test(strip(l)));
     for (const l of lines.slice(top, bottom + 1)) assert.equal(visible(l), columns, strip(l));
     const starts = SEAT_KEYS.map(k => { const c = strip(seatRow(lines, k)); return visible(c.slice(0, c.indexOf(k === 'S-4' ? 'PAUSED ' : `${k}: `))); });
-    assert.deepEqual(new Set(starts), new Set([2 + 4 + 5 + 2 + 2 + 1]), JSON.stringify(starts));   // border and blank, the priority and a blank (ASS-454), five glyphs, 🤖/💻's two cells (ASS-456), the seat's two cells, a blank
+    assert.deepEqual(new Set(starts), new Set([2 + 4 + 5 + 2 + 1]), JSON.stringify(starts));   // border and blank, the priority and a blank (ASS-454), five glyphs, 🤖/💻's two cells (ASS-456), a blank (ASS-559: no seat column)
     // Each row starts with its priority (set by hand here) in three cells (ASS-454), then the icon columns.
     const rank = k => seatFeatures.find(t => t.key === k.split('.')[0])['manual-priority'];
     for (const k of SEAT_KEYS) assert.ok(strip(seatRow(lines, k)).startsWith(`│ ${String(rank(k)).padStart(3)} `), k);
   }
 });
 
-// ASS-469 AC7: in vm+workstation mode, the in-progress seat a variation holds on a workstation (control's seats.json)
-// is ⛅ in the seat column, 💺 a VM seat (or a planning seat); the key explains ⛅ — only for a project on workstations.
-test('ASS-469 AC7: ⛅ for a workstation seat, 💺 for a VM seat, in the same two-cell column; the key lists ⛅ for a project on workstations alone', () => {
-  const ws = { id: 'ws-1', 'gcp-project': 'g', region: 'r', cluster: 'c', config: 'cfg' };
-  const at = '2026-10-01T16:00:00Z';
-  const onWs = { ...seatProject(), devEnvironments: { mode: 'vm+workstation', workstations: [ws] },
-    workstations: { 'ws-1': { connected: true, 'connected-at': at, setup: { ok: true, 'checked-at': at } } },
-    seats: [{ key: 'S-3', variation: 'A', kind: 'workstation', workstation: 'ws-1' }, { key: 'S-11', variation: 'A', kind: 'vm' }, { key: 'S-5', variation: 'A', kind: 'vm' }] };
-  const lines = render(seatState([onWs]), wide);
-  const mark = k => strip(seatRow(lines, k)).slice(LEFT, LEFT + TEXT);
-  assert.ok(mark('S-3').includes('⛅') && !mark('S-3').includes(SEAT), mark('S-3'));
-  for (const k of ['S-11.A', 'S-1', 'S-5']) assert.ok(mark(k).includes(SEAT) && !mark(k).includes('⛅'), k);
-  assert.equal(visible('⛅'), 2);
-  const starts = ['S-3', 'S-5'].map(k => { const c = strip(seatRow(lines, k)); return visible(c.slice(0, c.indexOf(`${k}: `))); });
-  assert.equal(starts[0], starts[1]);
-  assert.ok(keyLines(lines).map(strip).join('  ').split('  ').includes('⛅ holds a workstation seat'));
-  assert.ok(!keyLines(render(seatState(), wide)).map(strip).join('  ').includes('⛅'), 'not for a project in VMs alone');
-});
-
-// ASS-481 AC6: a variation holding a cloud VM seat (seats.json kind cloud-vm) is 🌐, distinct from 💺 and ⛅, and the
-// key lists 🌐 for a project with cloud VMs; ⛅ only while it has workstations too.
-test('ASS-481 AC6: 🌐 for a cloud VM seat, distinct from ⛅ and 💺, in the same two-cell column; the key lists it for a project with cloud VMs', () => {
+// ASS-469 AC7, ASS-481 AC6 → ASS-559 AC2: a variation in a workstation's seat (control's seats.json) shows
+// "GCP workstation <id>" (the id under it when narrow) and runs in a slot; one in a cloud VM's "Cloud VM <id>"; a VM
+// seat "Mac" / "Lima VM" (⛅, 🌐 and 💺 in a seat column before).
+test('ASS-469 AC7, ASS-481 AC6, ASS-559 AC2: a workstation seat shows its machine as GCP workstation <id>, a cloud VM seat as Cloud VM <id>, a VM seat as Mac — each in a slot or its Lima VM', () => {
   const ws = { id: 'ws-1', 'gcp-project': 'g', region: 'r', cluster: 'c', config: 'cfg' };
   const vm = { kind: 'cloud-vm', id: 'vm-1', 'gcp-project': 'g', zone: 'z' };
   const at = '2026-10-01T16:00:00Z', up = { connected: true, 'connected-at': at, setup: { ok: true, 'checked-at': at } };
   const both = { ...seatProject(), devEnvironments: { mode: 'vm+workstation', workstations: [ws, vm] }, workstations: { 'ws-1': up, 'vm-1': up },
     seats: [{ key: 'S-3', variation: 'A', kind: 'workstation', workstation: 'ws-1' }, { key: 'S-5', variation: 'A', kind: 'cloud-vm', workstation: 'vm-1' }, { key: 'S-11', variation: 'A', kind: 'vm' }] };
   const lines = render(seatState([both]), wide);
-  const mark = k => strip(seatRow(lines, k)).slice(LEFT, LEFT + TEXT);
-  assert.ok(mark('S-5').includes('🌐') && !mark('S-5').includes(SEAT) && !mark('S-5').includes('⛅'), mark('S-5'));
-  assert.ok(mark('S-3').includes('⛅') && !mark('S-3').includes('🌐'), mark('S-3'));
-  assert.ok(mark('S-11.A').includes(SEAT) && !mark('S-11.A').includes('🌐'));
-  assert.equal(visible('🌐'), 2);
-  const starts = ['S-3', 'S-5'].map(k => { const c = strip(seatRow(lines, k)); return visible(c.slice(0, c.indexOf(`${k}: `))); });
-  assert.equal(starts[0], starts[1]);
-  const key = keyLines(lines).map(strip).join('  ').split('  ');
-  assert.ok(key.includes('🌐 holds a cloud VM seat') && key.includes('⛅ holds a workstation seat'), key.join(' | '));
-  assert.ok(key.indexOf('🌐 holds a cloud VM seat') === key.indexOf('⛅ holds a workstation seat') + 1, 'after ⛅');
-  const alone = keyLines(render(seatState([{ ...both, devEnvironments: { mode: 'workstation', workstations: [vm] } }]), wide)).map(strip).join('  ');
-  assert.ok(alone.includes('🌐 holds a cloud VM seat') && !alone.includes('⛅'), 'cloud VMs alone: 🌐, no ⛅');
-  assert.ok(!keyLines(render(seatState([{ ...both, devEnvironments: { mode: 'vm', workstations: [vm] } }]), wide)).map(strip).join('  ').includes('🌐'), 'vm mode: none');
+  const where = k => [cellsOf(lines, k).Machine, cellsOf(lines, k)['Runs in']];
+  assert.deepEqual(where('S-3'), ['GCP workstation ws-1', 'slot']);
+  assert.deepEqual(where('S-5'), ['Cloud VM vm-1', 'slot']);
+  assert.deepEqual(where('S-11.A'), ['Mac', 'Lima VM']);
+  const starts = ['S-3', 'S-5', 'S-11.A'].map(k => { const c = strip(seatRow(lines, k)); return visible(c.slice(0, c.indexOf(`${k}: `))); });
+  assert.equal(new Set(starts).size, 1, JSON.stringify(starts));
 });
 
 // ASS-357 with ASS-355: the planner skips a variation its dependencies hold
@@ -552,18 +541,18 @@ test('ASS-357 AC1: a variation its dependencies hold (AWAITING) holds no seat, a
   const outside = [{ key: 'X-1', 'ticket-system-status': 'In Progress' }, { key: 'X-2', 'ticket-system-status': 'Done' }];
   const project = on => ({
     id: 'p', name: 'P', stateEngine: 'e', questions: [], backlog: [], outside, waitForDependencies: on,
-    limits: { project: { 'max-tickets-in-progress': 2 }, harness: {} },
+    seatBudget: { seats: 2 }, limits: { project: {}, harness: {} },
     sprint: { number: 10, start: '2026-09-18', end: '2026-10-01', features: deps, bugs: [], spikes: [] },
   });
   const keys = ['D-1', 'D-3', 'D-4', 'D-2'];
-  const seatedOf = lines => keys.filter(k => strip(seatRow(lines, k)).slice(LEFT, LEFT + TEXT).includes(SEAT));
+  const seatedOf = lines => keys.filter(k => cellsOf(lines, k).Machine !== '');   // ASS-559: was its 💺
   const held = render(seatState([project(true)]), wide);
   assert.deepEqual(seatedOf(held), ['D-4', 'D-2']);
   for (const [k, on] of [['D-1', 'D-2'], ['D-3', 'X-1']]) assert.ok(strip(held[held.indexOf(seatRow(held, k)) + 1]).includes(`↳ AWAITING ${on}`), k);   // under the key (ASS-360)
   assert.deepEqual(seatedOf(render(seatState([project(false)]), wide)), ['D-1', 'D-3']);   // the flag off: nothing held, the first two seated
   // Control's own answer on its state shape: the same seats.
   const engine = { steps: seatSteps };
-  const control = { id: 'p', json: { 'max-tickets-in-progress': 2, 'wait-for-dependencies': true }, engine, engines: { e: engine }, tickets: deps.map(t => ({ ...t, type: 'feature' })), backlog: [], outside, asking: new Map() };
+  const control = { id: 'p', json: { 'wait-for-dependencies': true }, seatBudget: { seats: 2 }, engine, engines: { e: engine }, tickets: deps.map(t => ({ ...t, type: 'feature' })), backlog: [], outside, asking: new Map() };
   const seats = seatsOf({ projects: [control], allProjects: [control], engines: { e: engine }, assignments: [], harness: {} }, control);
   assert.deepEqual(seats['in-progress'], ['D-4 A', 'D-2 A']);
 });
@@ -575,11 +564,11 @@ test('ASS-404 AC3: a variation whose VM is held for memory holds no seat, as con
   const tickets = [seatTicket('M-1', 1, [['A', 'build']]), seatTicket('M-2', 2, [['A', 'build']]), seatTicket('M-3', 3, [['A', 'build']])];
   const project = memoryHold => ({
     id: 'p', name: 'P', stateEngine: 'e', questions: [], backlog: [], outside: [], memoryHold,
-    limits: { project: { 'max-tickets-in-progress': 2 }, harness: {} },
+    seatBudget: { seats: 2 }, limits: { project: {}, harness: {} },
     sprint: { number: 10, start: '2026-09-18', end: '2026-10-01', features: tickets, bugs: [], spikes: [] },
   });
   const keys = ['M-1', 'M-2', 'M-3'];
-  const seatedOf = lines => keys.filter(k => strip(seatRow(lines, k)).slice(LEFT, LEFT + TEXT).includes(SEAT));
+  const seatedOf = lines => keys.filter(k => cellsOf(lines, k).Machine !== '');   // ASS-559: was its 💺
   const hold = { since: '2026-10-01T16:00:00Z', vm: 'm-1-a', held: [{ vm: 'm-1-a', key: 'M-1', variation: 'A', state: 'build' }] };
   assert.deepEqual(seatedOf(render(seatState([project(hold)]), wide)), ['M-2', 'M-3']);
   assert.deepEqual(seatedOf(render(seatState([project(null)]), wide)), ['M-1', 'M-2']);
@@ -706,7 +695,7 @@ const rankedRow = (key, lines = rankedRaw) => lines.find(l => new RegExp(`(^|\\s
 
 test('ASS-454 AC1, AC5: the grid has no Priority column; the others keep their order; the Ticket header starts with the four-cell indent, centred over the rest of its column', () => {
   const header = strip(rankedRaw.find(l => /│ +Ticket +│/.test(strip(l))));
-  assert.deepEqual(header.split('│').slice(1, -1).map(h => h.trim()), ['Ticket', 'Status', 'Points', 'Dev', 'Testing', 'Total Token Spend', 'Agents']);   // no Assignee (ASS-488)
+  assert.deepEqual(header.split('│').slice(1, -1).map(h => h.trim()), ['Ticket', 'Status', 'Points', 'Machine', 'Runs in', 'Spend', 'Agents']);   // no Assignee (ASS-488); ASS-559: Machine and Runs in for Dev and Testing
   assert.ok(!rankedRaw.some(l => /│ Priority │/.test(strip(l))));
   const width = header.indexOf('│', 1) - 3;                           // the Ticket column's text width
   assert.equal(header.indexOf('Ticket') - 2, 4 + Math.floor((width - 4 - 'Ticket'.length) / 2));
@@ -838,7 +827,7 @@ test('ASS-456 AC3: rows with 🤖, 💻 and neither line up — icon, seat and t
 test('ASS-456 AC4: the key reads "🤖 agent working  💻 script running", and ⚉ is drawn nowhere', () => {
   const r = render(runState(), wide);
   const key = keyLines(r);
-  assert.ok(strip(key.join('  ')).includes('⦿ assumption  🤖 agent working  💻 script running  💺 holds a seat'), strip(key.join('  ')));
+  assert.ok(strip(key.join('  ')).includes('⦿ assumption  🤖 agent working  💻 script running  PAUSED paused'), strip(key.join('  ')));   // ASS-559: no 💺 entry
   assert.ok(key.join('').includes('🤖\x1b[2m agent working\x1b[0m') && key.join('').includes('💻\x1b[2m script running\x1b[0m'));
   assert.ok(!r.some(l => l.includes('⚉')));
   assert.ok(!render(handleKey(runState(), { sequence: '?' }, wide), wide).some(l => l.includes('⚉')));

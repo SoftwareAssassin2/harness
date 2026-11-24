@@ -12,7 +12,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { seatCapacity, seatLimits, lostWhy, keepSeats, placeSeats, seatedIn } from '../../src/control/seat-kinds.js';
+import { seatCapacity, lostWhy, keepSeats, placeSeats, seatedIn } from '../../src/control/seat-kinds.js';
 import { planDispatch } from '../../src/control/plan.js';
 import { assignSeats, seatNeeds, SEAT_HEALTH } from '../../src/control/seats.js';
 import { workstationNeeds } from '../../src/control/workstations.js';
@@ -24,7 +24,7 @@ const ws = id => ({ id, 'gcp-project': 'g', region: 'r', cluster: 'c', config: '
 const at = '2026-11-16T00:00:00Z';
 const usable = { connected: true, 'connected-at': at, setup: { ok: true, 'checked-at': at } };
 const expired = { connected: false, 'last-error': { at, kind: 'expired', message: 'login expired' } };
-const project = (mode, { vm = 2, list = ['ws-1', 'ws-2'], live = {}, seats = [] } = {}) => ({ id: 'p', json: { 'max-tickets-in-progress': vm }, devEnvironments: { mode, workstations: list.map(ws) }, workstations: live, seats });
+const project = (mode, { vm = 2, list = ['ws-1', 'ws-2'], live = {}, seats = [] } = {}) => ({ id: 'p', json: {}, seatBudget: vm == null ? null : { seats: vm }, devEnvironments: { mode, workstations: list.map(ws) }, workstations: live, seats });
 const r = (key, variation = 'A') => ({ key, variation });
 const kinds = records => records.map(s => `${s.key} ${s.kind === 'vm' ? 'vm' : s.workstation}`);
 
@@ -34,9 +34,11 @@ test('AC1, AC9: the capacity is the VM seats plus one seat per usable workstatio
   assert.deepEqual(seatCapacity(project('workstation')).total, 2);
   assert.deepEqual(seatCapacity(project('workstation', { live: { 'ws-1': expired } })).workstations.map(w => [w.id, w.seats, Boolean(w.lost)]), [['ws-1', 1, true], ['ws-2', 1, false]]);
   assert.equal(seatCapacity(project('vm+workstation', { vm: null })).total, Infinity);
-  assert.equal(seatLimits(project('vm+workstation', { live: { 'ws-2': expired } }))['max-tickets-in-progress'], 3);
-  assert.equal(seatLimits(project('vm+workstation', { vm: null }))['max-tickets-in-progress'], null);
-  assert.deepEqual(seatLimits({ json: { 'max-tickets-in-progress': 4 }, devEnvironments: { mode: 'vm', workstations: [ws('w')] } }), { 'max-tickets-in-progress': 4 });
+  assert.equal(seatCapacity(project('vm+workstation', { live: { 'ws-2': expired } })).total, 3);
+  assert.equal(seatCapacity(project('vm+workstation', { live: { 'ws-2': expired } })).remote, 1);
+  // ASS-528: the VM seats are the seat budget's, project.json's max-tickets-in-progress not read.
+  assert.equal(seatCapacity({ json: { 'max-tickets-in-progress': 4 }, devEnvironments: { mode: 'vm', workstations: [ws('w')] } }).vm, Infinity);
+  assert.equal(seatCapacity({ json: {}, seatBudget: { seats: 4 }, devEnvironments: { mode: 'vm', workstations: [ws('w')] } }).total, 4);
 });
 
 test('AC5: a workstation\'s seat is lost while its login lapsed, its setup failed or its last connect failed; one merely stopped keeps it', () => {
@@ -97,11 +99,11 @@ test('AC5, AC9: a lost workstation\'s holder is taken out of its seat; never two
 test('the planner keeps a recorded seat ahead of the rest: when the seats shrink (a workstation lost), those taken out wait, not the lowest-ranked', () => {
   const engine = { steps: [{ id: 'build', sequence: 1, action: { type: 'prompt', prompt: 'b' } }] };
   const ranked = ['T-1', 'T-2', 'T-3'].map(key => ({ key, variations: [{ name: 'A', 'harness-status': { state: 'build', 'state-engine': 'e' } }] }));
-  const plan = seated => planDispatch({ ranked, engine, harness: {}, project: { 'max-tickets-in-progress': 2 }, seated }).reserved.map(s => s.key);
+  const plan = seated => planDispatch({ ranked, engine, harness: {}, seats: { mac: 2, remote: 0 }, seated }).reserved.map(s => s.key);
   assert.deepEqual(plan(), ['T-1', 'T-2']);   // as before: rank order
   const p = { seats: [{ key: 'T-2', variation: 'A', kind: 'vm' }, { key: 'T-3', variation: 'A', kind: 'vm' }] };   // T-1 was taken out of a lost seat
   assert.deepEqual(plan(seatedIn(p)), ['T-2', 'T-3']);
-  assert.deepEqual(planDispatch({ ranked, engine, harness: {}, project: { 'max-tickets-in-progress': 2 }, seated: seatedIn(p) }).waiting, [{ key: 'T-1', variation: 'A' }]);
+  assert.deepEqual(planDispatch({ ranked, engine, harness: {}, seats: { mac: 2, remote: 0 }, seated: seatedIn(p) }).waiting, [{ key: 'T-1', variation: 'A' }]);
 });
 
 test('AC6: a workstation is needed while its seat is held, while it is free and a ticket waits for a seat or sits in a VM seat to move, and while lost with tickets in progress; never with nobody seated and nobody waiting', () => {
@@ -120,13 +122,18 @@ test('AC6: a workstation is needed while its seat is held, while it is free and 
   assert.equal(workstationNeeds({ assignments: [] }, proj, {}, new Map([['ws-1', 'T-1 A wants it for a step (its seat)']]), new Map([['ws-1', 'its seat: T-1 A']])).get('ws-1'), 'T-1 A wants it for a step (its seat)');
 });
 
+// vmSeats(at, n) — ASS-528: the project's VM seats, as control's seat budget would record them (seat-budget.json).
+const vmSeats = (at, n) => writeFileSync(at('projects', 'p', 'seat-budget.json'), JSON.stringify({ seats: n }));
+
 // The control fixture's p in vm+workstation mode on ada-dev, one VM seat, ABC-3 A, ABC-4 A and ABC-5 A at build (in
 // progress), ranked in that order; harness.json's cap out of the way.
 function seated() {
   const c = controlFixture();
   const at2 = (...rest) => join(c.dir, ...rest);
-  edit(at2('harness.json'), h => { h['max-tickets-in-progress'] = 9; });
-  edit(at2('projects', 'p', 'project.json'), p => { p['max-tickets-in-progress'] = 1; p['dev-environments'] = { mode: 'vm+workstation', workstations: [ws(ID)] }; });
+  // ASS-527: a seat only at a step that uses its machine — the fixture's build, a host script, made one run in the VM.
+  edit(at2('engines', 'example-development', 'workflow.yaml'), e => { e.steps.find(s => s.id === 'build')['run-location'] = 'vm'; });
+  edit(at2('projects', 'p', 'project.json'), p => { p['dev-environments'] = { mode: 'vm+workstation', workstations: [ws(ID)] }; });
+  vmSeats(at2, 1);   // ASS-528: one VM seat, the seat budget's (this phase runs alone, with no budget phase before it)
   edit(at2('projects', 'p', 'sprints', 'sprint-10', 'sprint.json'), sp => {
     sp.features = ['ABC-3', 'ABC-4', 'ABC-5'].map((key, i) => ({ key, 'manual-priority': i + 1, 'ticket-system-status': 'In Progress', variations: [{ name: 'A', 'harness-status': { state: 'build', 'state-engine': 'example-development' }, 'state-changes': [] }] }));
   });
@@ -170,7 +177,7 @@ test('AC2, AC3, AC5: the tick phase records the seats; a lost workstation\'s hol
 test('AC3: a VM-seat holder whose step runs on its machine does not move until that step has ended', async () => {
   const s = seated();
   writeFileSync(s.at('projects', 'p', 'seats.json'), JSON.stringify({ seats: [{ key: 'ABC-3', variation: 'A', kind: 'vm', since: at }] }));
-  edit(s.at('projects', 'p', 'project.json'), p => { p['max-tickets-in-progress'] = 2; });
+  vmSeats(s.at, 2);
   edit(s.at('projects', 'p', 'sprints', 'sprint-10', 'sprint.json'), sp => { sp.features = sp.features.slice(0, 1); });
   // Its step's lease holds its VM (workstation-steps.js): mid-step.
   s.c.ctx.memory.workstationSteps = new Map([['p/ABC-3/A', { project: 'p', key: 'ABC-3', variation: 'A', state: 'vm', scripts: new Set(), dispatching: 0 }]]);
@@ -181,7 +188,8 @@ test('AC3: a VM-seat holder whose step runs on its machine does not move until t
   assert.deepEqual(s.seats(), ['ABC-3 ada-dev'], s.log());
 });
 
-test('AC4: workstation:claim --workstation claims that workstation alone, or none (exit 4)', { timeout: 120_000 }, async t => {
+// ASS-545: no timeout of its own — test/run.sh's 600 s per test is the hang guard; a fixed one a loaded Mac outlasts.
+test('AC4: workstation:claim --workstation claims that workstation alone, or none (exit 4)', async t => {
   t.after(closeAll);
   const s = wsFixture({ ids: [ID, 'ws-2'] });
   for (const id of [ID, 'ws-2']) {
@@ -194,7 +202,7 @@ test('AC4: workstation:claim --workstation claims that workstation alone, or non
   assert.equal(s.entry(ID).holder, undefined);
   const busy = await s.result('workstation:claim', 'p', 'ABC-3', 'A', '--workstation', 'ws-2');
   assert.equal(busy.code, 4);
-  assert.match(busy.err, /ws-2: held by ABC-3 A/);
+  assert.match(busy.err, /ws-2: ABC-3 A holds a step there already/);   // ASS-529: another ticket would take a slot beside it
   assert.equal(s.entry(ID).holder, undefined, 'never another one');
   const unknown = await s.result('workstation:claim', 'p', 'ABC-3', 'A', '--workstation', 'nope');
   assert.equal(unknown.code, 1);

@@ -31,6 +31,18 @@
 // SESSION in a line standing for the session's own sshd, fake-ssh.js's and
 // fake-gcloud.js's FAKE_SSH_SESSION_PID) whose pid is still alive, and a
 // `sudo` that runs its command as is, each call logged in its `sudo` file.
+// ASS-563: its bin folder holds a `bwrap` and a `socat` that succeed, so setup finds Claude Code's sandbox able
+// to run and installs nothing for it (a test of that install takes them away).
+// ASS-529: workstation:usage reads WORKSTATION_PROC_ROOT, the fake's `proc`
+// folder (meminfo, stat, cpuinfo), in place of /proc — by default a small
+// machine nearly full (8 GiB, 6 used, 2 cores), so it carries one ticket and
+// tests from before ASS-529 see one seat per machine; machine(totalGib,
+// usedGib, cores) writes another. Its /proc/stat never moves, so its CPU reads
+// idle (0%).
+// ASS-557: its `proc` folder's `df` file is df -kP's output for the disk the
+// work lives on, which workstation:usage reads in place of df — by default
+// 100 GiB with 40 used (60 free, above any disk hold); machine(…, { totalGib,
+// usedGib }) or disk(totalGib, usedGib) writes another.
 import { mkdtempSync, mkdirSync, symlinkSync, existsSync, readFileSync, readdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -48,9 +60,25 @@ export function fakeWorkstation(base = process.env) {
   made.push(workstations);
   const env = { HARNESS_WS_METADATA_URL: 'http://127.0.0.1:9/computeMetadata/v1/instance/preempted', HARNESS_WS_WATCHER_SECONDS: '1', ...base, PATH: `${bin}:${base.PATH}`, FAKE_WS_DIR: workstations, FAKE_GCLOUD_LOG: join(dir, 'gcloud.log'), FAKE_SSH_LOG: join(dir, 'ssh.log'), HARNESS_HOME: home, WORKSTATION_POLL_SECONDS: '0.1' };
   const lines = file => (existsSync(file) ? readFileSync(file, 'utf8').trim().split('\n').filter(Boolean).map(l => JSON.parse(l)) : []);
+  const proc = join(dir, 'proc');
+  const kib = g => Math.round(g * 1024 * 1024);
+  const disk = (totalGib, usedGib) => {
+    mkdirSync(proc, { recursive: true });
+    writeFileSync(join(proc, 'df'), `Filesystem 1024-blocks Used Available Capacity Mounted on\n/dev/sdb ${kib(totalGib)} ${kib(usedGib)} ${kib(totalGib - usedGib)} ${Math.round(usedGib / totalGib * 100)}% /home\n`);
+  };
+  const machine = (totalGib, usedGib, cores, d = null) => {
+    mkdirSync(proc, { recursive: true });
+    if (d) disk(d.totalGib, d.usedGib);
+    writeFileSync(join(proc, 'meminfo'), `MemTotal:       ${kib(totalGib)} kB\nMemFree:        0 kB\nMemAvailable:   ${kib(totalGib - usedGib)} kB\n`);
+    writeFileSync(join(proc, 'cpuinfo'), Array.from({ length: cores }, (_, i) => `processor\t: ${i}\n`).join('\n'));
+    writeFileSync(join(proc, 'stat'), 'cpu  1000 0 0 1000 0 0 0 0 0 0\n');
+  };
+  machine(8, 6, 2, { totalGib: 100, usedGib: 40 });
+  env.WORKSTATION_PROC_ROOT = proc;
+  env.WORKSTATION_USAGE_SAMPLE_SECONDS = '0';
   const at = (id, ...rest) => join(workstations, id, ...rest);
   return {
-    dir, bin, env, harnessHome: home,
+    dir, bin, env, harnessHome: home, machine, disk,
     workstation: (id, state = 'STATE_STOPPED') => {
       mkdirSync(at(id, 'bin'), { recursive: true });
       writeFileSync(at(id, 'state'), state);
@@ -60,6 +88,7 @@ export function fakeWorkstation(base = process.env) {
       writeFileSync(at(id, 'bin', 'claude'), '#!/bin/bash\necho "2.0.0 (Claude Code)"\n', { mode: 0o755 });
       writeFileSync(at(id, 'bin', 'ss'), SS, { mode: 0o755 });
       writeFileSync(at(id, 'bin', 'sudo'), SUDO, { mode: 0o755 });
+      for (const t of ['bwrap', 'socat']) writeFileSync(at(id, 'bin', t), '#!/bin/bash\nexit 0\n', { mode: 0o755 });
     },
     // ASS-481: cloudVm(id, status) — a cloud VM (fake-gcloud-compute.js, fake-ssh-master.js), TERMINATED by default,
     // ready for workstation:setup as a workstation is; status(id) reads its status, setStatus(id, s) sets it.
@@ -72,6 +101,7 @@ export function fakeWorkstation(base = process.env) {
       writeFileSync(at(id, 'bin', 'claude'), '#!/bin/bash\necho "2.0.0 (Claude Code)"\n', { mode: 0o755 });
       writeFileSync(at(id, 'bin', 'ss'), SS, { mode: 0o755 });
       writeFileSync(at(id, 'bin', 'sudo'), SUDO, { mode: 0o755 });
+      for (const t of ['bwrap', 'socat']) writeFileSync(at(id, 'bin', t), '#!/bin/bash\nexit 0\n', { mode: 0o755 });
     },
     status: id => readFileSync(at(id, 'status'), 'utf8').trim(),
     setStatus: (id, s) => writeFileSync(at(id, 'status'), s),

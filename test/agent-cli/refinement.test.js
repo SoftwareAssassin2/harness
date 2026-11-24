@@ -25,8 +25,8 @@ function inBacklog(state = 'groom', extra = {}) {
   const f = fixture();
   const engines = join(f.dir, 'engines');
   mkdirSync(join(engines, 'example-backlog-refinement'), { recursive: true });
-  copyFileSync(join(engineDir('example-backlog-refinement'), 'state-engine.json'), join(engines, 'example-backlog-refinement', 'state-engine.json'));
-  edit(join(engines, 'example-development', 'state-engine.json'), e => {
+  copyFileSync(join(engineDir('example-backlog-refinement'), 'workflow.yaml'), join(engines, 'example-backlog-refinement', 'workflow.yaml'));
+  edit(join(engines, 'example-development', 'workflow.yaml'), e => {
     e['backlog-refinement-steps'] = [{ id: 'backlog-refinement', sequence: 1, action: { type: 'state-engine', engine: 'example-backlog-refinement' }, 'exit-events': [{ condition: { 'is-done': true } }] }];
   });
   const file = join(f.dir, 'projects', 'p', 'backlog.json');
@@ -305,7 +305,7 @@ test('an Estimate run on a example ticket: the one estimate prompt reads the har
 function inGithub(state = 'too-large', extra = {}) {
   const f = inBacklog(state, extra);
   mkdirSync(join(f.dir, 'engines', 'example-github-backlog-refinement'), { recursive: true });
-  copyFileSync(join(engineDir('example-github-backlog-refinement'), 'state-engine.json'), join(f.dir, 'engines', 'example-github-backlog-refinement', 'state-engine.json'));
+  copyFileSync(join(engineDir('example-github-backlog-refinement'), 'workflow.yaml'), join(f.dir, 'engines', 'example-github-backlog-refinement', 'workflow.yaml'));
   edit(f.file, b => { b.tickets[0].variations[0]['harness-status']['state-engine'] = 'example-github-backlog-refinement'; });
   return f;
 }

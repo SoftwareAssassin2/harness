@@ -1,0 +1,27 @@
+# ASS-532 spike: the in-cluster echo upstream (echo-server.mjs from a ConfigMap).
+apiVersion: v1
+kind: Namespace
+metadata: { name: spike-echo }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: echo, namespace: spike-echo }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: echo } }
+  template:
+    metadata: { labels: { app: echo } }
+    spec:
+      containers:
+      - name: echo
+        image: node:24-slim
+        command: ["bash", "-c", "apt-get update -qq >/dev/null && apt-get install -y -qq openssl >/dev/null && exec node /app/echo-server.mjs"]
+        volumeMounts: [{ name: app, mountPath: /app }]
+      volumes: [{ name: app, configMap: { name: echo-server } }]
+---
+apiVersion: v1
+kind: Service
+metadata: { name: echo, namespace: spike-echo }
+spec:
+  selector: { app: echo }
+  ports: [{ name: https, port: 443 }, { name: http, port: 80 }]

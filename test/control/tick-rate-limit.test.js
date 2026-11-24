@@ -157,7 +157,7 @@ test('ASS-215 AC3: a flat rate-limit.json from before kinds holds nothing and th
 function vmFixture(kind) {
   const f = controlFixture();
   const file = (...rest) => join(f.dir, ...rest);
-  edit(file('engines', 'example-development', 'state-engine.json'), e => { e.steps = e.steps.map(s => (s.id === 'plan' ? { ...s, 'run-location': 'vm' } : s)); });
+  edit(file('engines', 'example-development', 'workflow.yaml'), e => { e.steps = e.steps.map(s => (s.id === 'plan' ? { ...s, 'run-location': 'vm' } : s)); });
   edit(file('projects', 'p', 'sprints', 'sprint-10', 'sprint.json'), s => { s.features[0].variations[0].vm = { name: 'abc-3-a', ip: '192.168.64.9', 'created-at': '2026-10-19T00:00:00Z' }; });
   writeFileSync(file('projects', 'p', 'vms.json'), JSON.stringify({ 'abc-3-a': { ticket: 'ABC-3', variation: 'A', state: 'Running', 'disk-bytes': 0, 'last-accessed': '2026-10-19T00:00:00Z', ...(kind ? { 'credential-kind': kind } : {}) } }));
   const v = fakeVm(f.env);

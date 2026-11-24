@@ -16,7 +16,7 @@ import { detectReverts, FORGE_CALLS_AT_ONCE } from '../../src/control/reverts.js
 import { checkGlab } from '../../src/control/triggers.js';
 import { checksRunning, settleChecks, stopChecks } from '../../src/control/background-checks.js';
 import { stopStarted } from '../../src/control/stop.js';
-import { until } from '../support/until.js';
+import { until, within, LOADED_MS } from '../support/until.js';
 
 const HOUR = 3600e3, MINUTE = 60e3;
 const edit = (file, change) => { const json = JSON.parse(readFileSync(file, 'utf8')); change(json); writeFileSync(file, JSON.stringify(json, null, 4)); };
@@ -64,7 +64,7 @@ function checking({ repositories = ['https://github.com/o/app'] } = {}) {
   const gh = fakeGh(dir);
   writeFileSync(join(dir, 'vm-credentials.json'), JSON.stringify({ p: { github: { 'keychain-service': 'GitHub PAT' } } }));
   f.ctx.env = { ...f.env, PATH: gh.path, HARNESS_HOME: dir };
-  edit(join(f.dir, 'engines', 'example-development', 'state-engine.json'), e => {
+  edit(join(f.dir, 'engines', 'example-development', 'workflow.yaml'), e => {
     e['check-memory-steps'] = [{ id: 'check-memory', sequence: 1, action: { type: 'state-engine', engine: 'investigate-gap' }, 'exit-events': [{ condition: { 'is-done': true } }] }];
   });
   edit(join(f.dir, 'projects', 'p', 'project.json'), p => {
@@ -127,10 +127,15 @@ test('ASS-497 AC1: detectReverts asks the forge FORGE_CALLS_AT_ONCE repositories
   assert.equal(FORGE_CALLS_AT_ONCE, 4);
   const repositories = [...Array.from({ length: 9 }, (_, i) => `https://github.com/o/app${i}`), 'https://github.com/bad/app'];
   const { f, gh, json } = checking({ repositories });
-  gh.slow(300);
   const before = '2026-01-01T00:00:00Z';
   writeFileSync(join(f.dir, 'projects', 'p', 'revert-checks.json'), JSON.stringify({ 'https://github.com/bad/app': before }));
-  await detectReverts(f.ctx, f.ctx.load());
+  // ASS-545: the calls held until FORGE_CALLS_AT_ONCE of them are under way at once, then let go — in place of each
+  // answering after 300 ms, which on a loaded Mac could end one before the next had started.
+  gh.hold(true);
+  const asked = detectReverts(f.ctx, f.ctx.load());
+  assert.ok(await until(() => gh.calls().length === FORGE_CALLS_AT_ONCE), 'the first calls under way together');
+  gh.hold(false);
+  await asked;
   assert.equal(gh.calls().length, 10);
   assert.ok(gh.peak() > 1, `in parallel (at most ${gh.peak()} at once)`);
   assert.ok(gh.peak() <= FORGE_CALLS_AT_ONCE, `never more than ${FORGE_CALLS_AT_ONCE} at once (${gh.peak()})`);
@@ -157,16 +162,16 @@ test('ASS-497 AC5: a background check over the slow limit logs a timers line wit
 
 test('ASS-497 AC4, AC6: shutdown stops the background checks: the forge call in flight is ended, nothing is written after, no check is left running or started again', async () => {
   const { f, gh, gate, file, json, later } = checking();
-  gh.slow(30_000);
+  gh.hold(true);                                                        // ASS-545: a call that never answers until let go
   const say = (phase, detail) => f.ctx.log(phase, detail);
   const started = detectReverts(f.ctx, f.ctx.load());
   checkGlab(f.ctx, f.ctx.load());
   assert.ok(await until(() => gh.calls().length === 1), 'the forge is asked');
-  const began = Date.now();
   setTimeout(() => gate.resolve(), 200);                                // the glab answer lands while control stops
-  await stopStarted(f.ctx, say);
-  await started;
-  assert.ok(Date.now() - began < 5000, `stopped in ${Date.now() - began}ms`);
+  // ASS-545: the forge call never answers while held, so a shutdown that waited for it would never end; within() is a
+  // hang guard only (LOADED_MS), in place of a 5 s limit.
+  assert.notEqual(await within((async () => { await stopStarted(f.ctx, say); await started; })()), `still running after ${LOADED_MS}ms`, 'the forge call in flight was ended');
+  gh.hold(false);
   assert.deepEqual(checksRunning(f.ctx), []);
   assert.equal(json('revert-checks.json'), undefined, 'nothing marked checked');
   assert.equal(existsSync(file('glab-requires-reauthentication')), false, 'the login flag not written after');

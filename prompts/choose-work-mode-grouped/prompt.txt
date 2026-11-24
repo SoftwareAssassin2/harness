@@ -1,0 +1,27 @@
+Decide where ticket {ticket}, variation {variation} of project {project}, is built: in a worktree, or on a full machine.
+
+Variation {variation}'s brief: if {ticket-folder}/variation-brief-{variation}.md exists, read it before anything else — it says how this variation is to be built, the ticket being built more than one way. Where it conflicts with the ticket's answered questions ({ticket-folder}/questions-and-answers.json) or its description, the brief wins, for variation {variation} only. Another variation's brief, or its files (named -<variation>), are not yours. No brief: go by the ticket and its answers as they are.
+
+{where}
+
+- worktree: a checkout of the branch with the machine's toolchain and no running app stack (no services, database, queues or browser). Cheap and fast; unit tests, lint and type checks run there, and the merge request's CI catches the rest. Steps that need the running stack (screenshots of the app) are skipped.
+- full: a Substrate sandbox, VM, workstation or cloud VM with the whole stack, as before.
+
+As much work as possible runs in worktrees, without compromising quality. Choose worktree for small, low-risk changes, and for any change whose meaningful tests run without the stack. Choose full when the change needs the running stack to be tested properly, or when its risk is too high to leave to CI alone. Once in a worktree, a later step moves the variation to full by itself if its tests can't run there, a review flags risk, or the merge request's CI fails for a reason that needs the stack; it never goes back.
+
+Weigh, from the approved plans ({ticket-folder}/execution-plan-{variation}.md, {ticket-folder}/test-plan-{variation}.md, {ticket-folder}/root-cause-analysis-{variation}.md) and the code:
+1. Size: the ticket's points ({ticket-folder}/ticket-{variation}.json, "points"), and the files and roughly how many lines the plan changes.
+2. Risk: data migrations, authentication or permissions, billing or payments, infrastructure or deployment configuration, secrets, other security-sensitive paths.
+3. Tests: whether the test plan's meaningful tests (not just a smoke test) run without the stack — unit tests, or tests with their dependencies faked — or need services, a database, a browser or e2e suites.
+4. Contracts: APIs, events, schemas or shared libraries other services or e2e tests depend on, which only the stack or CI would exercise.
+5. History: recall from the project's memory (Hindsight, the recall tool) tickets like this one — the same area, files or kind of change — and how their CI went, especially worktree tickets whose CI failed on something the worktree couldn't catch (memories with kind work-mode-ci).
+
+Write your decision to {ticket-folder}/work-mode-{variation}.md (through `{agent-sh} work:write {project} {ticket} {variation} work-mode.md`, the whole file on stdin): the mode on its first line after its title, then one line per factor above with what you found.
+
+If {ticket-folder}/operator-review-{variation}.md exists, it holds the operator's notes from rejecting earlier passes at Human Review: read it and address each note in this step's work.
+
+The project may force a mode by its own rules (paths that always need a full machine, say): those are applied after you, so decide on the merits.
+
+Finish with JSON: {"work-mode": "worktree" | "full", "work-mode-reasons": ["<one short reason per line, the deciding ones first>"], "work-mode-files": ["<each repository path the plan changes>"]}.
+
+Be extremely concise. Sacrifice grammar for the sake of concision.

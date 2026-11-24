@@ -77,7 +77,7 @@ test('ASS-365 AC2/AC6: grouped-build enters Merge the Awaited only from Await Se
   assert.deepEqual(into(build, 'blocked-for-human').toSorted(), ['await-dependencies', 'merge-awaited'], 'grouped-build ends at Blocked for Human only from the merge loop and the operator-needed wait');
   // Grouped-build's order is as it was: Merge the Awaited sits between Address Merge Request Feedback and the wait it returns to.
   const order = build.steps.toSorted((a, b) => a.sequence - b.sequence).map(s => s.id);
-  assert.ok(inOrder(order, ['refresh-repositories', 'generate-automated-tests', 'generate-solution', 'address-merge-request-feedback', 'merge-awaited', 'await-dependencies', 'refresh-before-testing', 'automated-testing', 'ci-checks', 'code-review', 'security-review']), order.join(' '));
+  assert.ok(inOrder(order, ['refresh-repositories', 'generate-automated-tests', 'generate-solution', 'address-merge-request-feedback', 'merge-awaited', 'await-dependencies', 'refresh-before-testing', 'automated-testing', 'code-review', 'security-review']), order.join(' '));
   // Without exit 5 (no merges-awaited, as every engine here): the walk never enters it.
   for (const top of ['harness-development-grouped', 'example-development-grouped']) {
     const { trail } = walk(engines, top, { stop: ['test'] });

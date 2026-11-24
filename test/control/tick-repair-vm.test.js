@@ -23,11 +23,12 @@ import { tick } from '../../src/control/tick.js';
 import { hs } from '../agent-cli/harness-fixture.js';
 import { engineDir } from '../support/engine-walk.js';
 import { until } from '../support/until.js';
+import { readEngine } from '../../src/workflow/engine-file.js';
 
 const ROOT = join(import.meta.dirname, '..', '..');
 const edit = (file, change) => { const json = JSON.parse(readFileSync(file, 'utf8')); change(json); writeFileSync(file, JSON.stringify(json)); };
 const sprint = f => join(f.dir, 'projects', 'p', 'sprints', 'sprint-10', 'sprint.json');
-const grouped = JSON.parse(readFileSync(join(engineDir('grouped-blocked'), 'state-engine.json'), 'utf8'));
+const grouped = readEngine(join(engineDir('grouped-blocked'), 'workflow.yaml'));
 const KEPT = ['repair-vm', 'rebuild-source', 'verify-image', 'await-golden-build', 'repair-image', 'done', 'retry', 'blocked-for-human'];
 const SCRIPTS = ['vm:golden-followup', 'vm:image-recheck', 'vm:golden-wait'];
 const VERIFIED = { exitCode: 0, stdout: JSON.stringify({ 'needs-fix': false, rechecked: true, 'recheck-passed': true, summary: 'Passed on re-check; nothing to fix', recheck: { at: 'local-testing', command: 'c', exit: 0 }, 'image-verified': true }) };
@@ -37,7 +38,7 @@ const fixed = (source, change, queued = false) => ({ 'in-place': true, fixed: tr
 // `answers` the faked scripts' { exitCode, stdout } by command.
 function fixture(answers) {
   const f = controlFixture();
-  edit(join(f.dir, 'engines', 'example-development', 'state-engine.json'), e => {
+  edit(join(f.dir, 'engines', 'example-development', 'workflow.yaml'), e => {
     e['check-health-interval-seconds'] = 1e9;
     e.steps.unshift({ id: 'blocked-for-human', sequence: -1, 'is-blocked-state': true, action: { type: 'human' } });
     Object.assign(e.steps.find(s => s.id === 'blocked'), {
@@ -49,7 +50,7 @@ function fixture(answers) {
     });
   });
   mkdirSync(join(f.dir, 'engines', 'own'), { recursive: true });
-  writeFileSync(join(f.dir, 'engines', 'own', 'state-engine.json'), JSON.stringify({ steps: grouped.steps.filter(s => KEPT.includes(s.id)).map(({ vm, ...s }) => s) }));
+  writeFileSync(join(f.dir, 'engines', 'own', 'workflow.yaml'), JSON.stringify({ steps: grouped.steps.filter(s => KEPT.includes(s.id)).map(({ vm, ...s }) => s) }));
   for (const p of ['repair-vm-on-host-grouped', 'repair-image-on-host-grouped']) {
     mkdirSync(join(f.dir, 'prompts', p), { recursive: true });
     writeFileSync(join(f.dir, 'prompts', p, 'prompt.txt'), 'Repair {ticket} {variation}.\n');

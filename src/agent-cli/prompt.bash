@@ -7,7 +7,7 @@
 #   assignment_of <command> <agent-name>                      # the record, as JSON; fails when there is none
 #   template <command> <record-json> <key> <fallback-folder>  # the template the record's engine names by <key>
 #   fill <text> <placeholder> <value>                         # <text> with every {<placeholder>} replaced, literally
-#   fill_ticket <text> <record-json>                          # {code-scope}, {merge-request-title}, {numbered-files}, {acceptance-criteria-rule}, {ticket}, {project}, {variation}, {ticket-folder}, {project-folder}, {harness-folder}, {project-code-folder}, {agent-sh} from the record
+#   fill_ticket <text> <record-json>                          # {code-scope}, {merge-request-title}, {numbered-files}, {acceptance-criteria-rule}, {work-mode-rule} (ASS-556), {ticket}, {project}, {variation}, {ticket-folder}, {project-folder}, {harness-folder}, {project-code-folder}, {agent-sh} from the record
 #   fill_commands <text> <agent-name>                         # {status-update-command} and {approve-command} for the agent
 #   approve_command <agent-name>                              # the command the agent approves with
 #   persona_of <prompt-folder>                                # the persona prompts/<folder>/prompt.json names; nothing when none
@@ -59,12 +59,12 @@ assignment_of() {
 }
 
 # engine_key <engine-name> <key> [<project>] — the key's value in the engine's
-# state-engine.json, the project's own engine first (ASS-276); empty when the
+# workflow.yaml (engine_json, ASS-524), the project's own engine first (ASS-276); empty when the
 # engine or the key is missing.
 engine_key() {
   local file
   file="$(engine_path "${1%%/*}" "${3:-}")" || return 0
-  jq -r --arg key "$2" '.[$key] // empty' "$file"
+  engine_json "$file" | jq -r --arg key "$2" '.[$key] // empty'
 }
 
 template() {
@@ -190,6 +190,14 @@ fill_ticket() {
     [[ -n "$rule" ]] || text="${text//"{acceptance-criteria-rule}"$'\n\n'/}"
     text="$(fill "$text" acceptance-criteria-rule "$rule")"
   fi
+  # ASS-556: the variation's work mode (src/control/work-mode.js), a paragraph of its own: in worktree mode, what the
+  # worktree has and lacks and when to escalate to a full machine; in full mode, or none recorded, left out with its
+  # blank line, so the prompt is as before.
+  if [[ "$text" == *"{work-mode-rule}"* ]]; then
+    rule="$(work_mode_rule "$project" "$ticket" "$variation")"
+    [[ -n "$rule" ]] || text="${text//"{work-mode-rule}"$'\n\n'/}"
+    text="$(fill "$text" work-mode-rule "$rule")"
+  fi
   text="$(fill "$text" ticket "$ticket")"
   text="$(fill "$text" project "$project")"
   text="$(fill "$text" variation "$variation")"
@@ -222,6 +230,20 @@ code_scope() {
     printf '%s' "Whose code: {ticket} is {project}'s ticket, not the harness's. Its code is {project-code-folder}: every code change belongs there and nowhere else. The harness that runs you, at {harness-folder} on the host, is read-only context: read it if it helps, never change it."
   fi
   printf '%s' " The harness's data folder for {project} — its project.json, sprints and reports — is {project-folder}: read it, and the ticket's folder {ticket-folder}, as you need; change either only through the agent.sh commands you are given, each run as a Bash call of its own — agent.sh and its arguments alone on the line — its content given the way \"Where you are\" says."
+}
+
+# work_mode_rule <project> <ticket> <variation> — ASS-556: the {work-mode-rule} paragraph for a variation built in a
+# worktree (its sprint entry's work-mode.mode), with the placeholders fill_ticket fills; nothing in full mode, with none
+# recorded, or when the sprint cannot be read.
+work_mode_rule() {
+  local number sprint mode
+  [[ "$1" =~ ^[A-Za-z0-9_-]+$ && -n "$2" && -n "$3" ]] || return 0
+  number="$(jq -r 'first(.list[]? | select(.["is-active"]) | .number) // empty' "$prompt_projects_dir/$1/sprints.json" 2>/dev/null || true)"
+  sprint="$prompt_projects_dir/$1/sprints/sprint-$number/sprint.json"
+  [[ -n "$number" && -f "$sprint" ]] || return 0
+  mode="$(jq -r --arg key "$2" --arg name "$3" 'first((.features, .bugs, .spikes) // [] | .[] | select(.key | ascii_downcase == ($key | ascii_downcase)) | .variations // [] | .[] | select(.name == $name)) | .["work-mode"].mode // empty' "$sprint" 2>/dev/null || true)"
+  [[ "$mode" == worktree ]] || return 0
+  printf '%s' "Work mode: variation {variation} is built in a worktree — a checkout of its branch with the machine's toolchain, but no running app stack (no services, database, queues or browser), so don't try to bring one up. Run the unit tests, lint and type checks the change affects; the merge request's CI runs the rest. When the work needs the stack, move the variation to a full machine — once; it never comes back to a worktree by itself: \`{agent-sh} ticket:escalate-work-mode {project} {ticket} {variation} <trigger> \"<why, one line>\"\`, <trigger> tests when a test the change needs can't run here, review when your review finds risk only the running stack can check, ci when the merge request's CI failed for a reason that needs the stack (an integration or e2e job, a service contract), never for a failure you can reproduce and fix here. Then finish this step as you would when its work can't be finished here, saying so; the next steps run on a full machine."
 }
 
 approve_command() { echo "$agent_sh assignments:approve $1"; }

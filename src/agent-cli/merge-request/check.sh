@@ -149,6 +149,7 @@ set -euo pipefail
 # no merge request (but a fast-tracked ticket, ASS-151), a forge call fails, or the project, ticket or variation
 # is missing.
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../merge-requests.bash"
+source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../work-mode.bash"
 
 USAGE="merge-request:check <project> <ticket-key> <variation> [--only <ids>]"
 [[ $# -ge 3 ]] || { echo "usage: $USAGE" >&2; exit 1; }
@@ -222,6 +223,18 @@ pending="$(jq -c --argjson views "$VIEWS" --argjson only "$ONLY" --argjson pendi
 # left for an agent: open-threads dropped, it needs the operator (operator-needed below), not another round.
 VIEWS="$(jq -c --argjson pending "$pending" 'reduce ($pending[] | select(.why == "sent-unchanged") | .i) as $i (.;
   if .[$i]["held-threads"] != null then .[$i] |= (.reasons -= ["open-threads"] | .["needs-operator"] = true) else . end)' <<< "$VIEWS")"
+# ASS-556: the CI results, for the work-mode metrics — each one of the set whose pipeline is reported failed at a head
+# not reported before (as recorded just below: not held back, build-failed-head new), and each one Merged (its CI
+# passed), appended once each to the variation's ci-results with its work mode (work-mode.bash record_ci_results).
+# A write that fails is said on stderr; the check's result stands.
+ci_events="$(jq -c --argjson views "$VIEWS" --argjson only "$ONLY" --argjson pending "$pending" "$MR_ONLY"'
+  [range(length) as $i | .[$i] as $m | $views[$i] as $v | select($m.key != null and ($m | in_set($only)))
+   | if $m.status == "Open" and $v != null and $v.head != null and any($v.reasons[]; . == "build-failed") and (any($pending[]; .i == $i) | not) and $m["build-failed-head"] != $v.head
+       then { mr: $m.id, key: $m.key, head: $v.head, result: "failed" }
+     elif $m.status == "Merged" then { mr: $m.id, key: $m.key, head: ($v.head // $m["checked-head"] // null), result: "passed" }
+     else empty end]' <<< "$MRS")"
+record_ci_results "$command" "$project" "$key" "$variation" "$ci_events" || echo "$command: could not record the CI results on $key $variation" >&2
+
 # Each one reported build-failed records the head it was sent at.
 while IFS=$'\t' read -r i fields; do
   set_merge_request "$command" "$project" "$key" "$variation" "$i" "$fields"

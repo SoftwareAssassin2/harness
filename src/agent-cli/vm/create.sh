@@ -50,6 +50,25 @@ set -euo pipefail
 # vm:start it runs shares. Prints { name, ip, created } — created whether
 # this run cloned it. Fails (1) naming why otherwise.
 #
+# ASS-551: on a substrate run target (local-substrate, workstation-substrate,
+# cloud-vm-substrate: HARNESS_RUN_TARGET, which control sets for the step, else
+# the variation's recorded run-target, code:hand-over's) the variation's
+# machine is its own Substrate sandbox, so creating it means making or resuming
+# that: substrate:sandbox-up on the machine whose cluster holds it — the one its
+# sandbox record names, else the Mac for local-substrate, else its seat's
+# workstation or cloud VM (seats.json). Control has brought it up before the
+# step already (src/control/sandboxes.js sandboxWaits); sandbox-up is
+# idempotent, so this works the same run by hand. Then each repository
+# project.json lists that the sandbox image predates (added since it was built,
+# project:add-repository) is cloned into its /repos through the Mac
+# (substrate/relay.bash relay_clone: a sandbox fetches nothing itself), and its
+# repositories' git hooks set as for a VM (ASS-468 AC10). No VM, no
+# ticket:set-vm: sandbox-up records the variation's `sandbox`. Prints
+# { name, machine, ip: null, created, sandbox: true }, name the sandbox's
+# machine (substrate:<project>:<machine>:<actor>). Before ASS-551 Create VM
+# listed no substrate target, so on a project whose run targets were substrate
+# ones alone every new ticket waited at it for ever (found by ASS-543).
+#
 # ASS-435, ASS-468: a project whose dev-environments mode is workstation or
 # vm+workstation (dev-environments.bash) runs a variation's steps on its GCP
 # workstations, each step claiming a free one for its length and giving it
@@ -73,6 +92,40 @@ source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../vm.bash"
 [[ $# -eq 3 || ( $# -eq 4 && "$4" == --vm ) ]] || { echo "usage: vm:create <project> <ticket-key> <variation> [--vm]" >&2; exit 1; }
 project="$1" key="$(tr '[:lower:]' '[:upper:]' <<< "$2")" variation="$3" force_vm="${4:-}"
 variation_exists vm:create "$project" "$key" "$variation"
+
+# ASS-551: on a substrate run target, the variation's sandbox (above).
+# shellcheck disable=SC2016
+on_target="$(jq -r --arg key "$key" --arg name "$variation" 'first((.features, .bugs, .spikes) // [] | .[] | select(.key | ascii_downcase == ($key | ascii_downcase)))
+  | first(.variations // [] | .[] | select(.name == $name and (.["is-deleted"] | not)))
+  | "\((($ENV.HARNESS_RUN_TARGET // "" | if . == "" then null else . end) // .["run-target"].target // ""))\t\(.sandbox.machine // "")"' "$(sprint_file vm:create "$project")")"
+target="${on_target%%$'\t'*}" host="${on_target#*$'\t'}"
+if [[ -z "$force_vm" && "$target" == *-substrate ]]; then
+  source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../substrate/relay.bash"
+  if [[ -z "$host" && "$target" == local-substrate ]]; then host=mac
+  elif [[ -z "$host" ]]; then
+    host="$(jq -r --arg key "$key" --arg name "$variation" 'first(.seats[]? | select((.key | ascii_upcase) == $key and .variation == $name) | .workstation // empty) // ""' "$projects/$project/seats.json" 2>/dev/null || true)"
+    [[ -n "$host" ]] || { echo "vm:create: $key $variation runs on $target but holds no seat on a machine yet (control places it, then makes its sandbox)" >&2; exit 1; }
+  fi
+  up="$("$agent" substrate:sandbox-up "$project" "$key" "$variation" "$host" | tail -n 1)" \
+    || { echo "vm:create: $key $variation's sandbox could not be made or resumed on $host (substrate:sandbox-up above)" >&2; exit 1; }
+  box="$(jq -r .machine <<< "$up")"
+  mapfile -t repos < <(jq -r '.repositories[]?.url | (sub("\\.git$"; "") | split("/") | last), .' "$projects/$project/project.json")   # name, url, …
+  have="$(machine_run --workdir / "$box" -- bash -c 'for d in "${HARNESS_VM_ROOT-}"/repos/*/; do [ -e "$d.git" ] && basename "$d"; done; true' </dev/null)" \
+    || { echo "vm:create: $box is not usable" >&2; exit 1; }
+  names=()
+  for ((i = 0; i < ${#repos[@]}; i += 2)); do
+    names+=("${repos[i]}")
+    grep -qxF "${repos[i]}" <<< "$have" && continue
+    relay_clone vm:create "$box" "${repos[i]}" "${repos[i+1]}" || exit 1
+    echo "vm:create: ${repos[i]} cloned into $box's /repos through the Mac (its sandbox image predates it)" >&2
+  done
+  slug="$key"; [[ "$variation" == A ]] || slug="$key.$variation"
+  machine_run --workdir / "$box" -- bash -s -- install "the ticket's branch for this repository, change/$slug-<id> (agent.sh ticket:merge-request-plan names it)" "${names[@]+"${names[@]}"}" \
+    < "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../workstation/on-workstation/git-hooks.sh" \
+    || { echo "vm:create: could not set $box's repositories' git hooks" >&2; exit 1; }
+  jq -c --arg n "$box" '{ name: $n, machine: $n, ip: null, created: (.created == true), sandbox: true }' <<< "$up"
+  exit 0
+fi
 
 recorded="$(variation_status vm:create "$project" "$key" "$variation" >/dev/null && jq -r --arg key "$key" --arg name "$variation" 'first((.features, .bugs, .spikes) // [] | .[] | select(.key | ascii_downcase == ($key | ascii_downcase)))
   | first(.variations // [] | .[] | select(.name == $name and (.["is-deleted"] | not))) | .vm // {} | if (.name // "") == "" then "" elif (.kind // "lima") | IN("workstation", "cloud-vm") then "workstation:" else .name end' "$(sprint_file vm:create "$project")")"

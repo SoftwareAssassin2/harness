@@ -7,7 +7,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { cleared, ticketKey, runKey } from './backoff.js';
 import { changePath, stepOf, isHeld, REARM_AFTER_PUSH } from './engine.js';
-import { mayEnter, slotKind, topRun } from './plan.js';
+import { mayEnter, poolOf, topRun } from './plan.js';
 import { memoryShortForSeat, seatWords } from './seat-memory.js';   // ASS-420; ASS-422: the refusal in words
 
 // firstStepId(engine) — the id of the step with the lowest sequence, where a run starts.
@@ -223,7 +223,10 @@ export async function moveTicket(ctx, phase, project, ticket, variation, to, why
 // on its own asks first (steps.js, dispatch.js's pass-over) — all but an
 // agent's finished turn (finish.js), whose work is done and would only be
 // redone at the step it left, and Blocked's done run following its return-to
-// step (steps.js, ASS-522), which waits for its seat at the target. ASS-420: a move that takes a seat its
+// step (steps.js, ASS-522), which waits for its seat at the target. ASS-527:
+// mayEnter lets any move within the work (or back from a detour) through —
+// it waits at the target for a seat; only leaving the queue for planning, or
+// a finished plan going on to Build, waits for a free one here. ASS-420: a move that takes a seat its
 // variation does not hold, into steps that need a VM not running, is made only
 // when the VM fits in the Mac's memory (seat-memory.js memoryShortForSeat);
 // else it waits, said once per visit — replacing ASS-404's rule that, while
@@ -242,13 +245,16 @@ export function mayMove(ctx, phase, state, project, variation, who, to) {
   const key = `slot/${visit}`;
   if (!ctx.memory.warned.has(key)) {
     ctx.memory.warned.add(key);
-    ctx.log(phase, `${who}: waits for ${slotKind(stepOf(project.engine, to)) === 'planning' ? 'a planning' : 'an in-progress'} slot to move to ${to}`);
+    ctx.log(phase, `${who}: waits for ${poolOf(stepOf(project.engine, to)) === 'planning' ? 'a planning' : 'an in-progress'} slot to move to ${to}`);
   }
   return false;
 }
 
 // SKIPPED — the cause of a switched-off step's pass (ASS-192, steps.js): the history says "(skipped: switched off)".
 export const SKIPPED = { cause: 'skipped', reason: 'switched off' };
+// STACK_SKIPPED — ASS-556: a step flagged `stack: required` passed in worktree mode (work-mode.js skipsForStack): the
+// history says "(skipped: needs the running stack; built in a worktree)", a skip as SKIPPED is, never a failure.
+export const STACK_SKIPPED = { cause: 'skipped', reason: 'needs the running stack; built in a worktree' };
 
 // NO_CHOICE — a human step's pass by itself with nothing for a human to choose (its has-variations false
 // exit, the ticket's one variation; ASS-220): its exit's move, so no cause is recorded, and its gate
@@ -261,7 +267,7 @@ export const NO_CHOICE = { cause: 'no-human-choice' };
 export const TIMER = { cause: 'timer' };
 
 // passesGate(project, cause) — the move is held by no gate: a switched-off step's pass, a timer step's move (TIMER, or its re-arm after a push: REARM_AFTER_PUSH, ASS-518), or a pass with no human choice (NO_CHOICE) where the project does not hold those.
-const passesGate = (project, cause) => cause === SKIPPED || cause === TIMER || cause === REARM_AFTER_PUSH || (cause === NO_CHOICE && project?.json?.['hold-gates-with-no-human-choice'] !== true);
+const passesGate = (project, cause) => cause === SKIPPED || cause === STACK_SKIPPED || cause === TIMER || cause === REARM_AFTER_PUSH || (cause === NO_CHOICE && project?.json?.['hold-gates-with-no-human-choice'] !== true);
 
 // causeEnv(cause) — the env that records a move's cause (sprint.bash MOVE_CAUSE): a name, or { cause, reason }; none without one, nor for NO_CHOICE or TIMER.
 const causeEnv = cause => (cause && cause !== NO_CHOICE && cause !== TIMER ? { MOVE_CAUSE: JSON.stringify(typeof cause === 'string' ? { cause } : cause) } : undefined);

@@ -228,10 +228,10 @@ test('ASS-504 AC2, AC4: an interrupt line in the inbox stops the long tool call 
   appendFileSync(inbox, `${JSON.stringify({ prompt: 'run validate.sh' })}\n`);
   assert.ok(await until(() => events.some(e => e.type === 'assistant' && e.message.content.some(c => c.name === 'Bash'))));   // deep in its tool call
   assert.equal(agent.interrupted, null);
-  const at = Date.now();
   appendFileSync(inbox, `${JSON.stringify({ prompt: 'RESTART IMMINENT', interrupt: true })}\n`);
+  // ASS-545: the fake's long tool call never ends by itself (fake-agent.js: only an interrupt ends it), so a result at
+  // all is the interrupt having stopped it; until()'s LOADED_MS is a hang guard only — no 2 s limit a loaded Mac outlasts.
   assert.ok(await until(() => results.length === 1));
-  assert.ok(Date.now() - at < 2000, `the prompt's turn ended ${Date.now() - at} ms after the line was queued`);
   assert.deepEqual(interrupts, ['RESTART IMMINENT']);
   assert.match(agent.interrupted, /^\d{4}-\d\d-\d\dT/);
   assert.equal(results[0].subtype, 'success', 'the first result onResult sees is the prompt\'s turn');

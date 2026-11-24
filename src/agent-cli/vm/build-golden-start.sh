@@ -18,7 +18,10 @@ set -euo pipefail
 # second finds it building; the build itself is started without it. While
 # the disk hold is on (disk.bash disk_held, ASS-288: the disk nearly full) it
 # starts none, and fails saying so.
-source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/golden.bash"
+# ASS-534: with a declared sandbox, "current" is vm:golden-status's for the
+# whole golden environment: a stale or failed sandbox image starts the run
+# (vm:build-golden then builds only what changed).
+source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../substrate/sandbox-image.bash"
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../json-file.bash"
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../disk.bash"
 
@@ -27,9 +30,9 @@ if disk_held; then
   echo "vm:build-golden-start: Disk nearly full — work held ($(gib "$(jq '.["free-bytes"]' "$disk_space_file")") GiB free): no golden build starts until the free space is back above disk-free-warn-gb" >&2
   exit 1
 fi
-golden_definition vm:build-golden-start "$1"
+sandbox_definition vm:build-golden-start "$1"
 lock_on 6 "$projects/$1/golden-build-start.lock" vm:build-golden-start "${JSON_LOCK_TIMEOUT:-30}"
-now="$(golden_status "$1")"
+now="$("$agent" vm:golden-status "$1")"
 if [[ "$(jq -r .status <<< "$now")" != failed ]]; then jq -c '. + { started: false }' <<< "$now"; exit 0; fi
 
 dir="$projects/$1"
@@ -37,4 +40,4 @@ rm -f "$dir/golden-build-run.exit"
 perl -MPOSIX=setsid -e 'setsid(); exec @ARGV' bash -c '"$1" vm:build-golden "$2" > "$3" 2>&1; echo $? > "$4"' build-golden-start \
   "$agent" "$1" "$dir/golden-build-run.log" "$dir/golden-build-run.exit" < /dev/null > /dev/null 2>&1 6>&- &
 jq -n --argjson pid $! --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '{ pid: $pid, "started-at": $at }' | replace_file "$dir/golden-build-run.json"
-golden_status "$1" | jq -c '. + { started: true }'
+"$agent" vm:golden-status "$1" | jq -c '. + { started: true }'

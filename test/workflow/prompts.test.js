@@ -2,36 +2,219 @@
 // no project's folder and no project's ticket key prefix — the off-board
 // key-prefix, or the Jira project in a work source's url — in what an agent is
 // sent (prompt.txt, the personas) or in an input argument's example. HD is the
-// harness's old prefix. A prompt.json description is not sent; it may cite the
-// ticket that made the prompt.
+// harness's old prefix.
+//
+// ASS-547: of a prompt.json, an agent is sent only
+// - `output`, whole — every description and enum in it: dispatch.js
+//   outputSchema reads it and process.js agentCommand passes it as
+//   --json-schema (a confined host agent's with withSandboxRefused's
+//   sandbox-refused property added);
+// - `persona`, as the persona file it names (prompt.bash persona_of, put
+//   before the prompt by agent:dispatch), which the personas check covers.
+// The rest never reaches an agent: `description` and `input-arguments` (the
+// examples are checked all the same, below) are maintainer notes, and
+// `supported-models` and `supported-command-line-interfaces` are read by
+// control (assignments:create, validate.js). So those may cite the ticket that
+// made the prompt; a ticket behind an output field goes in `output-tickets`,
+// a maintainer-only map of output property to ticket.
+//
+// ASS-544: data/projects is local and untracked, so a worktree or a fresh
+// clone has none, and the check once saw only HD there — two prompts naming
+// "(ASS-509)" passed every worktree run. So a checkout with no data/projects
+// reads the main checkout's (the first entry of `git worktree list
+// --porcelain`), and every checkout also checks the generic key shape
+// ([A-Z][A-Z0-9]+-<digits>) against an allowlist of what the prompts use on
+// purpose, so a clone with no data at all still catches a key.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readdirSync, readFileSync, existsSync } from 'node:fs';
+import { readdirSync, readFileSync, existsSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { execFileSync } from 'node:child_process';
 import { engineDir, engineNames } from '../support/engine-walk.js';
+import { readEngine } from '../../src/workflow/engine-file.js';
+import { outputSchema, withSandboxRefused } from '../../src/control/dispatch.js';
 
 const ROOT = join(import.meta.dirname, '..', '..');
-// The projects on this machine: data/projects is local, untracked, so a fresh clone has none.
-const projects = (existsSync(join(ROOT, 'data', 'projects')) ? readdirSync(join(ROOT, 'data', 'projects')) : []).filter(p => existsSync(join(ROOT, 'data', 'projects', p, 'project.json')));
-const prefixes = ['HD', ...projects.flatMap(p => JSON.parse(readFileSync(join(ROOT, 'data', 'projects', p, 'project.json'), 'utf8'))['work-sources'] ?? [])
-  .map(s => s['key-prefix'] ?? s.url?.match(/\/projects\/([A-Z]+)\b/)?.[1]).filter(Boolean)];
-const key = new RegExp(`\\b(${prefixes.join('|')})-(\\d+|n)\\b`);
-const prompts = readdirSync(join(ROOT, 'prompts')).filter(p => existsSync(join(ROOT, 'prompts', p, 'prompt.json')));
+
+// Not ticket keys, though shaped like one: the example key the prompts give
+// on purpose (a merge request title, an input argument's example), and
+// standard names a prompt may cite. HD-n, the old harness placeholder, has no
+// digits, so the generic shape never matches it; HD is a prefix below.
+const ALLOWED_KEYS = new Set(['ABC-1234', 'UTF-8', 'SHA-1', 'SHA-256', 'SHA-512', 'ISO-8601']);
+const GENERIC_KEY = /\b[A-Z][A-Z0-9]+-\d+\b/g;
+
+// The main checkout of the repository `root` is in: the first worktree git lists, or none.
+function mainCheckout(root) {
+  try {
+    return execFileSync('git', ['-C', root, 'worktree', 'list', '--porcelain'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
+      .match(/^worktree (.+)$/m)?.[1] ?? null;
+  } catch { return null; }
+}
+
+// The projects on this machine and their key prefixes: from root's data/projects, else the main checkout's.
+function knownProjects(root) {
+  const dirs = [root, mainCheckout(root)].filter(Boolean).map(r => join(r, 'data', 'projects'));
+  const dir = dirs.find(d => existsSync(d));
+  const projects = (dir ? readdirSync(dir) : []).filter(p => existsSync(join(dir, p, 'project.json')));
+  const prefixes = ['HD', ...projects.flatMap(p => JSON.parse(readFileSync(join(dir, p, 'project.json'), 'utf8'))['work-sources'] ?? [])
+    .map(s => s['key-prefix'] ?? s.url?.match(/\/projects\/([A-Z]+)\b/)?.[1]).filter(Boolean)];
+  return { projects, prefixes };
+}
+
+// The ticket keys a text names: any known prefix's (KEY-n included), and any key-shaped word not allowlisted.
+function keyFinder(prefixes) {
+  const known = new RegExp(`\\b(${prefixes.join('|')})-(\\d+|n)\\b`, 'g');
+  return text => [...new Set([...text.matchAll(known)].map(m => m[0])
+    .concat([...text.matchAll(GENERIC_KEY)].map(m => m[0]).filter(k => !ALLOWED_KEYS.has(k))))];
+}
+
+const promptNames = root => readdirSync(join(root, 'prompts')).filter(p => existsSync(join(root, 'prompts', p, 'prompt.json')));
+const prompts = promptNames(ROOT);
+const findKeys = keyFinder(knownProjects(ROOT).prefixes);
+
+// What an agent is sent, under root, that names a key: "<file>: <keys>".
+function sentTextsNamingKeys(root) {
+  const find = keyFinder(knownProjects(root).prefixes);
+  const texts = [
+    ...promptNames(root).filter(p => existsSync(join(root, 'prompts', p, 'prompt.txt'))).map(p => join('prompts', p, 'prompt.txt')),
+    ...(existsSync(join(root, 'personas')) ? readdirSync(join(root, 'personas')) : []).map(f => join('personas', f)),
+  ];
+  return texts.map(f => [f, find(readFileSync(join(root, f), 'utf8'))]).filter(([, keys]) => keys.length).map(([f, keys]) => `${f}: ${keys.join(', ')}`);
+}
+
+// Input-argument examples, under root, naming a project's folder or a key.
+function examplesNamingProjects(root) {
+  const { projects, prefixes } = knownProjects(root);
+  const find = keyFinder(prefixes);
+  return promptNames(root).flatMap(p => (JSON.parse(readFileSync(join(root, 'prompts', p, 'prompt.json'), 'utf8'))['input-arguments'] ?? [])
+    .filter(a => typeof a.example === 'string' && (find(a.example).length || projects.some(id => a.example === id || a.example.includes(`projects/${id}`))))
+    .map(a => `${p}: ${a.name} = ${a.example}`));
+}
+
+// ASS-547: the prompt.json fields, under root, an agent is sent (see the top)
+// that name a key: "<prompt>.<path>: <keys>" for each string in `output`, and
+// the `persona` name.
+const strings = (value, path) => (typeof value === 'string' ? [[path, value]]
+  : value && typeof value === 'object' ? Object.entries(value).flatMap(([k, v]) => strings(v, `${path}.${k}`)) : []);
+function sentPromptJsonNamingKeys(root) {
+  const find = keyFinder(knownProjects(root).prefixes);
+  return promptNames(root).flatMap(p => {
+    const json = JSON.parse(readFileSync(join(root, 'prompts', p, 'prompt.json'), 'utf8'));
+    return [...strings(json.output, `${p}.output`), ...strings(json.persona, `${p}.persona`)]
+      .map(([path, text]) => [path, find(text)]).filter(([, keys]) => keys.length).map(([path, keys]) => `${path}: ${keys.join(', ')}`);
+  });
+}
 
 test('the prompts and personas an agent is sent name no project\'s ticket key', () => {
-  const texts = [
-    ...prompts.filter(p => existsSync(join(ROOT, 'prompts', p, 'prompt.txt'))).map(p => join('prompts', p, 'prompt.txt')),
-    ...readdirSync(join(ROOT, 'personas')).map(f => join('personas', f)),
-  ];
-  const named = texts.filter(f => key.test(readFileSync(join(ROOT, f), 'utf8')));
-  assert.deepEqual(named, [], `${key} found in these`);
+  assert.deepEqual(sentTextsNamingKeys(ROOT), []);
+});
+
+test('ASS-547 AC2, AC3: the prompt.json fields an agent is sent (output, persona) name no ticket key', () => {
+  assert.deepEqual(sentPromptJsonNamingKeys(ROOT), []);
+  // The schema the agent gets is exactly the output field checked, and the property control adds names no key.
+  for (const p of prompts) {
+    const json = JSON.parse(readFileSync(join(ROOT, 'prompts', p, 'prompt.json'), 'utf8'));
+    if (json.output && Object.keys(json.output).length) assert.deepEqual(outputSchema(join(ROOT, 'prompts'), p), json.output, p);
+  }
+  assert.deepEqual(strings(withSandboxRefused({ type: 'object', properties: {} }), 'sandbox').flatMap(([, t]) => findKeys(t)), []);
 });
 
 test('no prompt\'s input-argument example names a project\'s folder or ticket key', () => {
-  const named = prompts.flatMap(p => (JSON.parse(readFileSync(join(ROOT, 'prompts', p, 'prompt.json'), 'utf8'))['input-arguments'] ?? [])
-    .filter(a => typeof a.example === 'string' && (key.test(a.example) || projects.some(id => a.example === id || a.example.includes(`projects/${id}`))))
-    .map(a => `${p}: ${a.name} = ${a.example}`));
-  assert.deepEqual(named, []);
+  assert.deepEqual(examplesNamingProjects(ROOT), []);
+});
+
+// A throwaway checkout: one prompt (its text, an input argument's example, any other prompt.json fields) and one persona.
+function writePrompts(root, { text, example, persona = 'You are a careful engineer.', json = {} }) {
+  mkdirSync(join(root, 'prompts', 'sample'), { recursive: true });
+  mkdirSync(join(root, 'personas'), { recursive: true });
+  writeFileSync(join(root, 'prompts', 'sample', 'prompt.txt'), text);
+  writeFileSync(join(root, 'prompts', 'sample', 'prompt.json'), JSON.stringify({ 'input-arguments': [{ name: 'ticket', example }], ...json }));
+  writeFileSync(join(root, 'personas', 'engineer.md'), persona);
+}
+
+test('ASS-544 AC2, AC4: in a git worktree with no data/, the checks read the main checkout\'s project prefixes and fail a prompt or an example naming one', t => {
+  const dir = mkdtempSync(join(tmpdir(), 'ass-544-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const main = join(dir, 'main'), wt = join(dir, 'wt');
+  const git = (cwd, ...args) => execFileSync('git', ['-C', cwd, '-c', 'user.name=t', '-c', 'user.email=t@example.com', ...args], { stdio: 'ignore' });
+  mkdirSync(main);
+  git(main, 'init', '-q');
+  writePrompts(main, { text: 'Name the ticket {ticket}.', example: 'ABC-1234' });
+  git(main, 'add', '-A');
+  git(main, 'commit', '-qm', 'prompts');
+  // The main checkout's projects, untracked as in the real repo: one off-board prefix, one Jira url.
+  for (const [p, source] of [['one', { type: 'off-board', 'key-prefix': 'ZQX' }], ['two', { type: 'jira', url: 'https://example.atlassian.net/jira/software/c/projects/WVY/boards/1' }]]) {
+    mkdirSync(join(main, 'data', 'projects', p), { recursive: true });
+    writeFileSync(join(main, 'data', 'projects', p, 'project.json'), JSON.stringify({ name: p, 'work-sources': [source] }));
+  }
+  git(main, 'worktree', 'add', '-q', '--detach', wt);
+  assert.equal(existsSync(join(wt, 'data')), false, 'the worktree has no data/');
+  assert.deepEqual(knownProjects(wt), { projects: ['one', 'two'], prefixes: ['HD', 'ZQX', 'WVY'] });
+  assert.deepEqual(sentTextsNamingKeys(wt), []);
+  assert.deepEqual(examplesNamingProjects(wt), []);
+  // KEY-n has no digits, so only the prefix check can catch it.
+  writePrompts(wt, { text: 'Like ZQX-n before it (WVY-12).', example: 'ZQX-n', persona: 'See ZQX-7.' });
+  assert.deepEqual(sentTextsNamingKeys(wt), ['prompts/sample/prompt.txt: ZQX-n, WVY-12', 'personas/engineer.md: ZQX-7']);
+  assert.deepEqual(examplesNamingProjects(wt), ['sample: ticket = ZQX-n']);
+  writePrompts(wt, { text: 'Name the ticket {ticket}.', example: 'projects/two/work' });
+  assert.deepEqual(examplesNamingProjects(wt), ['sample: ticket = projects/two/work'], 'a project\'s folder from the main checkout');
+});
+
+test('ASS-544 AC3, AC4: with no data/ and no main checkout, the generic key shape still fails a prompt or an example naming a key like ABC-123; the allowlisted ones pass', t => {
+  const dir = mkdtempSync(join(tmpdir(), 'ass-544-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  assert.equal(mainCheckout(dir), null, 'not in a git repository');
+  assert.deepEqual(knownProjects(dir).prefixes, ['HD']);
+  writePrompts(dir, { text: 'Title it "ABC-1234: Fix the search timeout", UTF-8, hashed with SHA-256; {ticket}, change/<KEY>-<id>.', example: 'ABC-1234' });
+  assert.deepEqual(sentTextsNamingKeys(dir), [], 'the allowlisted placeholders pass');
+  assert.deepEqual(examplesNamingProjects(dir), []);
+  writePrompts(dir, { text: 'As ABC-123 found (HD-n).', example: 'XY9-42', persona: 'Since FOO-1.' });
+  assert.deepEqual(sentTextsNamingKeys(dir), ['prompts/sample/prompt.txt: HD-n, ABC-123', 'personas/engineer.md: FOO-1']);
+  assert.deepEqual(examplesNamingProjects(dir), ['sample: ticket = XY9-42']);
+});
+
+// ASS-547: a prompt.json whose maintainer-only fields cite tickets and whose output does not.
+const notesOnly = {
+  description: 'Prompt for sampling (ZQX-3, ABC-123)',
+  'input-arguments': [{ name: 'ticket', description: 'The ticket (ZQX-4, ABC-124)', example: 'ABC-1234' }],
+  'output-tickets': { verdict: 'ZQX-5, ABC-125' },
+  output: { type: 'object', properties: { verdict: { type: 'string', enum: ['pass', 'fail'], description: 'pass or fail, from the evidence' } }, required: ['verdict'] },
+};
+const withOutput = (description, enumValue = 'fail') => ({ ...notesOnly, output: { ...notesOnly.output, properties: { verdict: { type: 'string', enum: ['pass', enumValue], description } } } });
+
+test('ASS-547 AC3: in a git worktree with no data/, a main checkout\'s prefix or the generic shape in any output string or the persona name fails; the maintainer-only fields may cite tickets', t => {
+  const dir = mkdtempSync(join(tmpdir(), 'ass-547-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const main = join(dir, 'main'), wt = join(dir, 'wt');
+  const git = (cwd, ...args) => execFileSync('git', ['-C', cwd, '-c', 'user.name=t', '-c', 'user.email=t@example.com', ...args], { stdio: 'ignore' });
+  mkdirSync(main);
+  git(main, 'init', '-q');
+  writePrompts(main, { text: 'Judge {ticket}.', example: 'ABC-1234', json: notesOnly });
+  git(main, 'add', '-A');
+  git(main, 'commit', '-qm', 'prompts');
+  mkdirSync(join(main, 'data', 'projects', 'one'), { recursive: true });
+  writeFileSync(join(main, 'data', 'projects', 'one', 'project.json'), JSON.stringify({ name: 'one', 'work-sources': [{ type: 'off-board', 'key-prefix': 'ZQX' }] }));
+  git(main, 'worktree', 'add', '-q', '--detach', wt);
+  assert.equal(existsSync(join(wt, 'data')), false, 'the worktree has no data/');
+  assert.deepEqual(sentPromptJsonNamingKeys(wt), [], 'description, input-argument descriptions and output-tickets may cite tickets');
+  assert.deepEqual(sentPromptJsonNamingKeys(main), []);
+  writePrompts(wt, { text: 'Judge {ticket}.', example: 'ABC-1234', json: withOutput('pass or fail (ZQX-n), from the evidence') });
+  assert.deepEqual(sentPromptJsonNamingKeys(wt), ['sample.output.properties.verdict.description: ZQX-n'], 'only the prefix check catches ZQX-n');
+  writePrompts(wt, { text: 'Judge {ticket}.', example: 'ABC-1234', json: withOutput('pass or fail, from the evidence', 'ZQX-9') });
+  assert.deepEqual(sentPromptJsonNamingKeys(wt), ['sample.output.properties.verdict.enum.1: ZQX-9'], 'an enum value is sent too');
+  writePrompts(wt, { text: 'Judge {ticket}.', example: 'ABC-1234', json: { ...notesOnly, persona: 'zqx-7-ZQX-7' } });
+  assert.deepEqual(sentPromptJsonNamingKeys(wt), ['sample.persona: ZQX-7']);
+});
+
+test('ASS-547 AC3: with no data/ and no main checkout, the generic key shape in an output description fails; the allowlisted ones pass', t => {
+  const dir = mkdtempSync(join(tmpdir(), 'ass-547-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  assert.equal(mainCheckout(dir), null, 'not in a git repository');
+  writePrompts(dir, { text: 'Judge {ticket}.', example: 'ABC-1234', json: withOutput('Titled "ABC-1234: Fix it", UTF-8, on change/<KEY>-<id>') });
+  assert.deepEqual(sentPromptJsonNamingKeys(dir), [], 'description, input-argument descriptions and output-tickets may cite tickets; the allowlist passes');
+  writePrompts(dir, { text: 'Judge {ticket}.', example: 'ABC-1234', json: withOutput('pass or fail (XY9-42, HD-n)') });
+  assert.deepEqual(sentPromptJsonNamingKeys(dir), ['sample.output.properties.verdict.description: HD-n, XY9-42']);
 });
 
 // A step whose forward exit is file-updated goes on only once its file is
@@ -45,8 +228,8 @@ const RECHECK = /Write it every run, even when nothing (needs changing|has chang
 const fileUpdated = c => Boolean(c && typeof c === 'object' && !c.not && (c['file-updated'] || (c.all ?? c.any ?? []).some(fileUpdated)));
 
 test('AC1, AC2, AC3: every grouped and v2 step whose forward exit is file-updated names a prompt saying to write its file every run', () => {
-  const engines = engineNames().filter(d => /^(grouped|v2)-|-(grouped|v2)$/.test(d) && existsSync(join(engineDir(d), 'state-engine.json')));
-  const steps = engines.flatMap(d => JSON.parse(readFileSync(join(engineDir(d), 'state-engine.json'), 'utf8')).steps
+  const engines = engineNames().filter(d => /^(grouped|v2)-|-(grouped|v2)$/.test(d) && existsSync(join(engineDir(d), 'workflow.yaml')));
+  const steps = engines.flatMap(d => readEngine(join(engineDir(d), 'workflow.yaml')).steps
     .filter(s => s.action?.type === 'prompt' && (s['exit-events'] ?? []).some(e => fileUpdated(e.condition)))
     .map(s => ({ step: `${d}/${s.id}`, prompt: s.action.prompt })));
   assert.ok(steps.length >= 4, `found ${steps.map(s => s.step)}`);
@@ -293,7 +476,7 @@ test('ASS-116: explain-the-change replaces the whole of any "## Summary" section
   assert.match(text, /leave exactly one "## Summary", first/);
   assert.match(text, /\{agent-sh\} merge-request:view \{project\} \{ticket\} \{variation\} <id>/);
   assert.match(text, /\{agent-sh\} merge-request:update \{project\} \{ticket\} \{variation\} <id> -/);
-  const users = engineNames().filter(d => existsSync(join(engineDir(d), 'state-engine.json')) && readFileSync(join(engineDir(d), 'state-engine.json'), 'utf8').includes('"prompt": "explain-the-change"'));
+  const users = engineNames().filter(d => existsSync(join(engineDir(d), 'workflow.yaml')) && JSON.stringify(readEngine(join(engineDir(d), 'workflow.yaml'))).includes('"prompt":"explain-the-change"'));
   assert.deepEqual(users, ['grouped-review', 'v2-review'], 'no flat engine runs it: no -grouped copy needed');
 });
 
@@ -359,7 +542,7 @@ test('ASS-79 AC2: judge-requirements-change judges the built work — every merg
 test('ASS-79 AC3/AC4: root-cause-analysis-grouped starts from requirements-change-reason.md, and every grouped revising prompt the v2 engine runs reads requirements-change.md; the flat engines\' prompts are unchanged', () => {
   assert.ok(text('root-cause-analysis-grouped').includes(READ_REASON));
   const v2 = engineNames().filter(d => d === 'harness-development-v2' || d.startsWith('v2-'))
-    .flatMap(d => JSON.parse(readFileSync(join(engineDir(d), 'state-engine.json'), 'utf8')).steps.map(s => s.action?.prompt).filter(Boolean));
+    .flatMap(d => readEngine(join(engineDir(d), 'workflow.yaml')).steps.map(s => s.action?.prompt).filter(Boolean));
   for (const p of REVISING) {
     assert.ok(v2.includes(`${p}-grouped`), `the v2 engine runs ${p}-grouped`);
     assert.ok(text(`${p}-grouped`).includes(READ_CHANGE), `${p}-grouped`);
@@ -549,7 +732,7 @@ test('ASS-198 AC2.1/2: check-on-merge-request, check-on-merge-request-grouped an
 
 test('ASS-198 AC2.3: the Conflicts: paragraph names no ticket key, and routes its change log entry through work:append, never a direct write', () => {
   for (const shared of CONFLICTS.map(paragraph)) {
-    assert.doesNotMatch(shared, key, 'no project\'s ticket key');
+    assert.deepEqual(findKeys(shared), [], 'no project\'s ticket key');
     assert.match(shared, /\{ticket-folder\}\/change-log-\{variation\}\.md \(through `\{agent-sh\} work:append \{project\} \{ticket\} \{variation\} change-log\.md`, the entry on stdin\)/);
   }
 });
@@ -759,7 +942,7 @@ test('ASS-248 AC8: the refinement and grouped/v2 planning, build and test prompt
     for (const call of text(p).match(/question:ask \{project\} \{ticket\}[^`]*/g) ?? []) assert.match(call, /--(non-)?blocking/, `${p}: ${call}`);
   }
   const flat = ['harness-development', 'example-development', 'blocked'].flatMap(e => {
-    const engine = JSON.parse(readFileSync(join(engineDir(e), 'state-engine.json'), 'utf8'));
+    const engine = readEngine(join(engineDir(e), 'workflow.yaml'));
     return JSON.stringify(engine).match(/"prompt":"[^"]+"/g).map(m => m.slice(10, -1));
   });
   for (const p of new Set(flat)) assert.doesNotMatch(text(p), /--(non-)?blocking/, p);
@@ -771,18 +954,18 @@ test('ASS-248 AC3: revise-acceptance-criteria also takes a "question" line of re
   assert.match(t, /assumption/);
 });
 
-// ASS-249: CI Checks (ci-checks:verify) writes the project's merge-request CI
-// checks' last run to ci-checks-results-<variation>.md: Generate Solution
-// reads it to fix a new failure, Security Review as scanner evidence — and
-// never copies a secret a scanner found.
-test('ASS-249 AC5: generate-solution-grouped and security-review-grouped read ci-checks-results-{variation}.md; Security Review treats a scanner finding as evidence and never copies a secret value into its review; the flat prompts are unchanged', () => {
+// ASS-249 gave Generate Solution and Security Review the local CI checks'
+// results (ci-checks-results-<variation>.md); ASS-552 removed the CI Checks
+// step: the project's own CI runs them on the merge request, so no prompt
+// reads those results or says the workflow runs them — and Security Review
+// still never copies a secret value.
+test('ASS-552 AC3: no prompt reads ci-checks-results or says the CI checks run locally; the grouped ones say the project\'s CI runs them on the merge request; Security Review never copies a secret value', () => {
   const read = name => readFileSync(join(ROOT, 'prompts', name, 'prompt.txt'), 'utf8');
-  assert.match(read('generate-solution-grouped'), /\{ticket-folder\}\/ci-checks-results-\{variation\}\.md/);
-  const security = read('security-review-grouped');
-  assert.match(security, /\{ticket-folder\}\/ci-checks-results-\{variation\}\.md/);
-  assert.match(security, /scanner finding is evidence/);
-  assert.match(security, /[Nn]ever copy a secret value/);
-  for (const flat of ['generate-solution', 'security-review']) assert.doesNotMatch(read(flat), /ci-checks/, flat);
+  for (const name of readdirSync(join(ROOT, 'prompts')).filter(d => existsSync(join(ROOT, 'prompts', d, 'prompt.txt'))))
+    assert.doesNotMatch(read(name), /ci-checks/, name);
+  for (const name of ['generate-solution-grouped', 'security-review-grouped'])
+    assert.match(read(name), /runs? no(ne of the project's)? CI checks[^.]*itself: the project's own CI pipeline runs them on the merge request/, name);
+  assert.match(read('security-review-grouped'), /[Nn]ever copy a secret value/);
 });
 
 // ASS-305: every criterion the harness writes must be one a Test agent can

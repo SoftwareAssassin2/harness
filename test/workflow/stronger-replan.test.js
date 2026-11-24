@@ -16,13 +16,16 @@ import { firstStepId } from '../../src/control/moves.js';
 import { modelFor } from '../../src/control/dispatch.js';
 import { validateStateEngine } from '../../src/workflow/validate.js';
 import { EXAMPLE_ENGINES, engineDir } from '../support/engine-walk.js';
+import { readEngine } from '../../src/workflow/engine-file.js';
 
 const ROOT = join(import.meta.dirname, '..', '..');
-const engine = name => JSON.parse(readFileSync(join(engineDir(name), 'state-engine.json'), 'utf8'));
+const engine = name => readEngine(join(engineDir(name), 'workflow.yaml'));
 const PLAN = engine('grouped-plan');
 const rejected = reviseFrom => ({ 'is-approved': false, 'revise-from': reviseFrom });
 const APPROVED = { 'is-approved': true };
 const PASS = ['write-execution-plan', 'write-test-plan', 'enrich-automated-test-data', 'review-plan'];
+// ASS-556: an approved plan goes on through Choose Where to Work and Record Where to Work to done.
+const DONE = ['choose-work-mode', 'record-work-mode', 'done'];
 const STRONGER = ['record-objections-for-stronger-plan', 'write-execution-plan-stronger', 'write-test-plan', 'enrich-automated-test-data', 'review-plan'];
 
 // walk(reviews, { open, from, changes }) — grouped-plan's run from `from` (its first step), every fact passing but
@@ -70,7 +73,7 @@ test('ASS-399 AC1: the third rejection, which would end Plan at its max visits, 
   for (const reviseFrom of ['write-execution-plan', 'write-test-plan']) {
     const { trail } = walk([rejected(reviseFrom), rejected(reviseFrom), rejected(reviseFrom), APPROVED]);
     const again = reviseFrom === 'write-execution-plan' ? PASS : PASS.slice(1);
-    assert.deepEqual(fromReview(trail), ['review-plan', 'record-plan-objections', ...again, 'record-plan-objections', ...again, ...STRONGER, 'done'], reviseFrom);
+    assert.deepEqual(fromReview(trail), ['review-plan', 'record-plan-objections', ...again, 'record-plan-objections', ...again, ...STRONGER, ...DONE], reviseFrom);
     assert.equal(trail.filter(s => s === 'write-execution-plan-stronger').length, 1, reviseFrom);
   }
   // Without ASS-399 the third rejection's re-plan was Write Execution Plan's fourth visit: Blocked.
@@ -102,7 +105,7 @@ test('ASS-399 AC1: Write Execution Plan reads every objection so far, plan-objec
 test('ASS-399 AC2: the stronger plan approved, Plan goes on as normal to done', () => {
   const { trail, end } = walk([rejected('write-execution-plan'), rejected('write-execution-plan'), rejected('write-execution-plan'), APPROVED]);
   assert.equal(end, 'done');
-  assert.deepEqual(trail.slice(-6), [...STRONGER, 'done']);
+  assert.deepEqual(trail.slice(-8), [...STRONGER, ...DONE]);
   assert.ok(!trail.includes('ask-operator-about-plan'));
 });
 
@@ -114,7 +117,7 @@ test('ASS-399 AC3: the stronger plan rejected too, the operator is asked instead
   assert.ok(!waiting.trail.includes('blocked'));
   // Answered: back to Write Execution Plan, the visits counted afresh — two more rejections re-plan as normal, the third goes to the stronger re-plan again.
   const answered = walk([...reviews.slice(0, 3), APPROVED], { open: () => false, from: 'awaiting-plan-answer', changes: waiting.changes });
-  assert.deepEqual(answered.trail, ['awaiting-plan-answer', ...PASS, 'record-plan-objections', ...PASS, 'record-plan-objections', ...PASS, ...STRONGER, 'done']);
+  assert.deepEqual(answered.trail, ['awaiting-plan-answer', ...PASS, 'record-plan-objections', ...PASS, 'record-plan-objections', ...PASS, ...STRONGER, ...DONE]);
   // A failing record or question command still ends Plan at Blocked.
   for (const id of ['record-plan-objections', 'record-objections-for-stronger-plan', 'ask-operator-about-plan']) assert.equal(nextState(stepOf(PLAN, id), PLAN, { exitCode: 1 }).to, 'blocked', id);
 });

@@ -50,7 +50,17 @@ set -euo pipefail
 #     anything), home, runtime, boot-id (ASS-435: the workstation's boot it
 #     ran under — vm:start records it on the holder, so a restart since shows),
 #     did: [what it changed], failed: [{ what, why }],
-#     error: one line naming each failure | null }
+#     error: one line naming each failure | null,
+#     sandbox: { ok, why? } (ASS-555: whether Claude Code's sandbox can run
+#     there — bubblewrap, socat, bwrap allowed; never a setup failure: without
+#     it the worktree targets skip the machine. ASS-563: setup installs
+#     bubblewrap and socat and loads bwrap's AppArmor profile when the kernel
+#     restricts user namespaces, on the machine as it is; what it could not do
+#     is in sandbox.why and in failed, marked `sandbox: true`, and never in
+#     error nor ok) }
+# ASS-533: and, for a project with a Substrate cluster on the machine, its
+# host setup (on-machine/substrate.sh host-setup, run by every setup so what
+# it keeps outside /home is re-applied at each start) and its sha256.
 # --version prints the version alone, asking the workstation nothing: control
 # compares it with the live data's to rerun setup when it changes
 # (src/control/workstations.js), as it reruns it after every connect, before
@@ -100,7 +110,17 @@ if [[ -n "$installer" ]]; then
   done < <(find "$folder" -mindepth 1 -maxdepth 1 -type f ! -name '.*' | LC_ALL=C sort)
 fi
 
+# ASS-533: a project with a Substrate cluster on this machine (dev-environments.substrate) has its host setup —
+# on-machine/substrate.sh host-setup: Docker's data-root under /home on a workstation, the inotify limits kind needs,
+# the cluster's node started again after a restart — shipped and run by every setup, so what it puts outside /home
+# (which a workstation's restart resets) is re-applied at each start. The machine's host kind (workstation or
+# cloud-vm) goes as HARNESS_WS_SUBSTRATE. A wrong substrate list adds nothing here (control and substrate:up name it).
+substrate_script="" substrate_host=""
+if substrate_host="$(node "$here/../substrate.js" "$ws_projects" "$project" "$id" 2>/dev/null | jq -r 'select(.kind == "kind") | .host')" && [[ -n "$substrate_host" ]]; then
+  substrate_script="$here/../substrate/on-machine/substrate.sh"
+fi
 version="$( { shasum -a 256 "$script" "$agent_sh" "$helper" "$watcher" ${installer:+"$installer"} | cut -d' ' -f1; echo "url $url"; echo "registry $registry"; printf 'tool %s\n' "${tools[@]+"${tools[@]}"}"
+  [[ -z "$substrate_script" ]] || echo "substrate $substrate_host $(shasum -a 256 < "$substrate_script" | cut -d' ' -f1)"
   for ((i = 0; i < ${#needs[@]}; i += 2)); do printf 'need %s %s\n' "${needs[i]}" "${needs[i+1]}"; done
   for n in "${shared[@]+"${shared[@]}"}"; do printf 'file %s %s\n' "$n" "$(shasum -a 256 < "$folder/$n" | cut -d' ' -f1)"; done; } | shasum -a 256 | cut -d' ' -f1)"
 if [[ $# -eq 3 ]]; then echo "$version"; exit 0; fi
@@ -113,8 +133,8 @@ err="$(mktemp "${TMPDIR:-/tmp}/workstation-setup.XXXXXX")"
 trap 'rm -f "$err"' EXIT
 rc=0
 # Without the lock's descriptor: a setup left hanging past its time is ended (ws_timeout), and holds no lock meanwhile.
-out="$( { b64 "$agent_sh"; b64 "$installer"; b64 "$helper"; b64 "$watcher"; for n in "${shared[@]+"${shared[@]}"}"; do printf '%s ' "$n"; b64 "$folder/$n"; done; } | ws_timeout "${WORKSTATION_SETUP_TIMEOUT:-900}" bash -c "source '$here/../workstation.bash' && workstation_ssh \"\$@\"" _ \
-  "$project" "$id" env "HARNESS_KEEP_FOLDER=$(workstation_entry "$project" "$id" | jq -r '.holder.folder // ""')" "HARNESS_WS_REGISTRY=$registry" "HARNESS_WS_WATCHER_VERSION=$(shasum -a 256 < "$watcher" | cut -d' ' -f1)" bash -c "$(cat "$script")" workstation-setup "$version" "$url" "${tools[@]+"${tools[@]}"}" ${needs[0]+-- "${needs[@]}"} 2>"$err" 8>&- 9>&-)" || rc=$?
+out="$( { b64 "$agent_sh"; b64 "$installer"; b64 "$helper"; b64 "$watcher"; b64 "$substrate_script"; for n in "${shared[@]+"${shared[@]}"}"; do printf '%s ' "$n"; b64 "$folder/$n"; done; } | ws_timeout "${WORKSTATION_SETUP_TIMEOUT:-900}" bash -c "source '$here/../workstation.bash' && workstation_ssh \"\$@\"" _ \
+  "$project" "$id" env "HARNESS_KEEP_FOLDER=$(workstation_entry "$project" "$id" | jq -r '.holder.folder // ""')" "HARNESS_WS_REGISTRY=$registry" "HARNESS_WS_SUBSTRATE=$substrate_host" "HARNESS_WS_WATCHER_VERSION=$(shasum -a 256 < "$watcher" | cut -d' ' -f1)" bash -c "$(cat "$script")" workstation-setup "$version" "$url" "${tools[@]+"${tools[@]}"}" ${needs[0]+-- "${needs[@]}"} 2>"$err" 8>&- 9>&-)" || rc=$?
 cat "$err" >&2
 result="$(tail -n 1 <<< "$out")"
 if ! jq -e 'type == "object" and has("ok")' <<< "$result" >/dev/null 2>&1; then
@@ -127,9 +147,10 @@ fi
 workstation_record "$project" "$id" --argjson r "$result" '
   .setup = ((.setup // {}) + {
     ok: $r.ok, version: $r.version, "checked-at": $at, did: $r.did, failed: $r.failed,
-    error: (if $r.ok then null else ($r.failed | map("\(.what): \(.why)") | join("; ")) end) }
+    error: (if $r.ok then null else ($r.failed | map(select(.sandbox != true) | "\(.what): \(.why)") | join("; ")) end) }
     + (if $r.home then { home: $r.home, runtime: $r.runtime } else {} end)
     + (if $r["boot-id"] then { "boot-id": $r["boot-id"] } else {} end)
+    + (if $r.sandbox then { sandbox: $r.sandbox } else {} end)
     + (if ($r.did | length) > 0 then { "set-up-at": $at } else {} end))'
 entry="$(workstation_entry "$project" "$id")"
 if [[ "$(jq -r .ok <<< "$result")" != true ]]; then

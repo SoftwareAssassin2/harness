@@ -74,12 +74,19 @@
 // and on shutdown; a tick over 30 seconds logs a 'tick' line with its three
 // slowest phases and sub-routines. harness:tick-stats prints them.
 //
+// ASS-526: the loops finished since start — 0 written at once, one more after
+// each tick returns or throws — in data/projects/<project>/loop-count.json
+// ($HARNESS_HOME/loop-count.json without --project), written after every
+// loop (loop-count.js), for the dashboard's bottom-right counter.
+//
 // For the tests only (ASS-425): with CONTROL_TEST_TICK_LINES=1 it also says
 // "<ISO time> test tick ran" after each tick, so a test counts ticks in the
 // same stream as the lines it checks, rather than timing them. ASS-460: with
 // CONTROL_TEST_FAULT=tick its first two ticks throw; =uncaught an exception is
 // thrown outside any tick after the first; =rejection a promise is rejected
-// with nobody awaiting it after the first.
+// with nobody awaiting it after the first. ASS-545: with CONTROL_TEST_FAULT_WHEN=<file> too, the uncaught or
+// rejection fault waits for <file> to exist (checked after each tick), so a test strikes at the moment it chose —
+// a connection being opened, say — rather than after the first tick, however slow the machine.
 import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
@@ -93,6 +100,7 @@ import { sessionSpend } from './finish.js';
 import { endTicketHealthRuns } from './triggers.js';
 import { recordControlCommit } from './control-commit.js';
 import { tickStats, tickStatsFile, newTickTimes } from './tick-stats.js';
+import { loopCounter, loopCountFile } from './loop-count.js';
 
 const ROOT = join(import.meta.dirname, '..', '..');
 const args = process.argv.slice(2);
@@ -106,6 +114,8 @@ const say = (phase, text) => console.log(`${new Date().toISOString()} ${phase} $
 const tickLines = process.env.CONTROL_TEST_TICK_LINES === '1';
 const alive = pid => { try { process.kill(pid, 0); return true; } catch { return false; } };
 const fault = process.env.CONTROL_TEST_FAULT ?? '';
+const faultWhen = process.env.CONTROL_TEST_FAULT_WHEN;
+const faultDue = () => !faultWhen || existsSync(faultWhen);
 // The exit codes the dashboard restarts on (with any other but 0 and 75): see above.
 const DATA_EXIT_CODE = 69, CRASH_EXIT_CODE = 70;
 // An error with its stack, on one line.
@@ -136,6 +146,9 @@ const ctx = createContext({ root: ROOT, env: { ...process.env, HARNESS_CONTROL_P
 const removePidfile = () => { try { if (Number(readFileSync(pidfile, 'utf8')) === process.pid) rmSync(pidfile, { force: true }); } catch { /* gone */ } };
 // ASS-490: the ticks' timings (tick-stats.js), written on shutdown too.
 const timings = tickStats({ file: tickStatsFile({ paths: ctx.paths, home, project }), log: say, tickMs });
+// ASS-526: the loops finished since this control started (loop-count.js), written at 0 now and after every loop, for the
+// dashboard's bottom-right counter.
+const loops = loopCounter({ file: loopCountFile({ paths: ctx.paths, home, project }), log: say });
 process.on('exit', () => { killStarted(ctx); try { disconnectAtExit(ctx); } catch { /* the last resort: nothing more to do */ } removePidfile(); });
 say('startup', `control ${process.pid}, tick every ${tickMs}ms`);
 if (stalePidfile) say('startup', stalePidfile);
@@ -280,7 +293,7 @@ while (!stopping) {
     try {
       if (fault === 'tick' && faults < 2) { faults++; throw new Error('test: the tick failed'); }
       await tick(ctx);
-    } finally { timings.record(performance.now() - began, ctx.tickTimes); }
+    } finally { loops.finished(); timings.record(performance.now() - began, ctx.tickTimes); }
   } catch (error) {
     say('error', `the tick failed, control goes on: ${withStack(error)}`);
   }
@@ -290,8 +303,8 @@ while (!stopping) {
     break;
   }
   if (tickLines) say('test', 'tick ran');
-  if (fault === 'uncaught' && !faults++) setImmediate(() => { throw new Error('test: thrown outside a tick'); });
-  if (fault === 'rejection' && !faults++) Promise.reject(new Error('test: rejected with nobody awaiting'));
+  if (fault === 'uncaught' && faultDue() && !faults++) setImmediate(() => { throw new Error('test: thrown outside a tick'); });
+  if (fault === 'rejection' && faultDue() && !faults++) Promise.reject(new Error('test: rejected with nobody awaiting'));
   if (once) break;
   await sleep(tickMs);
 }

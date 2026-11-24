@@ -1,5 +1,5 @@
 // A project's own state engines (ASS-276): data/projects/<project>/engines/
-// <name>/state-engine.json, looked up first for that project's work, then
+// <name>/workflow.yaml, looked up first for that project's work, then
 // engines/ — engine.bash's resolver, and the agent-cli commands that read an
 // engine through it, the engines a grouped engine names and the "-prompt"
 // keys prompt.bash reads among them. Another project never sees them.
@@ -8,6 +8,7 @@ import assert from 'node:assert/strict';
 import { cpSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fixture, run, AGENT, TEST_ENGINE } from './harness-fixture.js';
+import { readEngine } from '../../src/workflow/engine-file.js';
 
 const ENGINE_BASH = join(import.meta.dirname, '..', '..', 'src', 'agent-cli', 'engine.bash');
 const fails = (promise, message) => assert.rejects(promise, e => message.test(e.stderr));
@@ -23,23 +24,23 @@ const step = (id, engine) => ({ id, sequence: 1, 'is-done': null, action: { type
 
 test('engine_path finds a project\'s own engine before engines/\'s, engines/\'s for another project or none, and nothing for a name that climbs out', async () => {
   const f = fixture();
-  write(join(f.dir, 'projects', 'p', 'engines', 'test', 'state-engine.json'), { steps: [] });
-  write(join(f.dir, 'projects', 'p', 'engines', 'only-p', 'state-engine.json'), { steps: [] });
-  assert.equal(await bash(f, 'engine_path test p'), `${join(f.dir, 'projects', 'p', 'engines', 'test', 'state-engine.json')}\n`);
-  assert.equal(await bash(f, 'engine_path test q'), `${join(f.dir, 'engines', 'test', 'state-engine.json')}\n`);
-  assert.equal(await bash(f, 'engine_path test'), `${join(f.dir, 'engines', 'test', 'state-engine.json')}\n`);
-  assert.equal(await bash(f, 'engine_path only-p p'), `${join(f.dir, 'projects', 'p', 'engines', 'only-p', 'state-engine.json')}\n`);
+  write(join(f.dir, 'projects', 'p', 'engines', 'test', 'workflow.yaml'), { steps: [] });
+  write(join(f.dir, 'projects', 'p', 'engines', 'only-p', 'workflow.yaml'), { steps: [] });
+  assert.equal(await bash(f, 'engine_path test p'), `${join(f.dir, 'projects', 'p', 'engines', 'test', 'workflow.yaml')}\n`);
+  assert.equal(await bash(f, 'engine_path test q'), `${join(f.dir, 'engines', 'test', 'workflow.yaml')}\n`);
+  assert.equal(await bash(f, 'engine_path test'), `${join(f.dir, 'engines', 'test', 'workflow.yaml')}\n`);
+  assert.equal(await bash(f, 'engine_path only-p p'), `${join(f.dir, 'projects', 'p', 'engines', 'only-p', 'workflow.yaml')}\n`);
   assert.equal(await bash(f, 'engine_path only-p q || echo none'), 'none\n');
   assert.equal(await bash(f, 'engine_path ../engines/test p || echo none'), 'none\n');
-  assert.equal(await bash(f, 'engine_path test ../p'), `${join(f.dir, 'engines', 'test', 'state-engine.json')}\n`);   // no project folder outside the projects folder
+  assert.equal(await bash(f, 'engine_path test ../p'), `${join(f.dir, 'engines', 'test', 'workflow.yaml')}\n`);   // no project folder outside the projects folder
 });
 
 test('engine_steps_of and engine_file take the project, its own engine shadowing engines/\'s of the same name for it alone', async () => {
   const f = fixture();
-  write(join(f.dir, 'projects', 'p', 'engines', 'test', 'state-engine.json'), { steps: [{ id: 'own', sequence: 1 }] });
+  write(join(f.dir, 'projects', 'p', 'engines', 'test', 'workflow.yaml'), { steps: [{ id: 'own', sequence: 1 }] });
   assert.deepEqual(JSON.parse(await bash(f, 'engine_steps_of x test p')).map(s => s.id), ['own']);
   assert.deepEqual(JSON.parse(await bash(f, 'engine_steps_of x test q')).map(s => s.id), ['test', 'take-screenshots', 'done']);
-  assert.equal(await bash(f, 'engine_file x test p'), `${join(f.dir, 'projects', 'p', 'engines', 'test', 'state-engine.json')}\n`);
+  assert.equal(await bash(f, 'engine_file x test p'), `${join(f.dir, 'projects', 'p', 'engines', 'test', 'workflow.yaml')}\n`);
   own(f, 'p', 'example-development');
   assert.deepEqual(JSON.parse(await bash(f, 'engine_steps_of x example-development/check-health-steps p')).map(s => s.id), ['check-health', 'done']);
   await assert.rejects(bash(f, 'engine_steps_of x example-development q'), e => /x: no state engine example-development/.test(e.stderr));
@@ -47,20 +48,20 @@ test('engine_steps_of and engine_file take the project, its own engine shadowing
 
 test('connected_engines follows a grouped engine into the sub-engines the project alone has, and theirs', async () => {
   const f = fixture();
-  write(join(f.dir, 'engines', 'grouped-x', 'state-engine.json'), { steps: [step('a', 'sub-x')], 'check-steps': [step('c', 'test')] });
-  write(join(f.dir, 'projects', 'p', 'engines', 'sub-x', 'state-engine.json'), { steps: [step('b', 'sub-sub-x')] });
-  write(join(f.dir, 'projects', 'p', 'engines', 'sub-sub-x', 'state-engine.json'), { steps: [] });
+  write(join(f.dir, 'engines', 'grouped-x', 'workflow.yaml'), { steps: [step('a', 'sub-x')], 'check-steps': [step('c', 'test')] });
+  write(join(f.dir, 'projects', 'p', 'engines', 'sub-x', 'workflow.yaml'), { steps: [step('b', 'sub-sub-x')] });
+  write(join(f.dir, 'projects', 'p', 'engines', 'sub-sub-x', 'workflow.yaml'), { steps: [] });
   assert.equal(await bash(f, 'connected_engines grouped-x p'), 'sub-x\ntest\nsub-sub-x\n');
   assert.equal(await bash(f, 'connected_engines grouped-x q'), 'sub-x\ntest\n');   // q has no sub-x to follow
 });
 
 test('engine_files lists every engine the project sees, engines/\'s first and then its own, so a by-name reduce keeps its own', async () => {
   const f = fixture();
-  write(join(f.dir, 'projects', 'p', 'engines', 'test', 'state-engine.json'), { steps: [] });
+  write(join(f.dir, 'projects', 'p', 'engines', 'test', 'workflow.yaml'), { steps: [] });
   const engines = join(f.dir, 'engines'), mine = join(f.dir, 'projects', 'p', 'engines');
   assert.deepEqual((await bash(f, 'engine_files p')).trim().split('\n'),
-    ['example-development', 'self-healing', 'test'].map(n => join(engines, n, 'state-engine.json')).concat(join(mine, 'test', 'state-engine.json')));
-  assert.deepEqual((await bash(f, 'engine_files q')).trim().split('\n'), ['example-development', 'self-healing', 'test'].map(n => join(engines, n, 'state-engine.json')));
+    ['example-development', 'self-healing', 'test'].map(n => join(engines, n, 'workflow.yaml')).concat(join(mine, 'test', 'workflow.yaml')));
+  assert.deepEqual((await bash(f, 'engine_files q')).trim().split('\n'), ['example-development', 'self-healing', 'test'].map(n => join(engines, n, 'workflow.yaml')));
   rmSync(engines, { recursive: true });
   assert.equal(await bash(f, 'engine_files q'), '');
 });
@@ -93,9 +94,9 @@ test('ASS-276 AC3: with its engines only in data/projects/p/engines, p\'s prompt
 
 test('ASS-276: a project switches onto an engine of its own, and a grouped engine\'s project-only sub-engine is entered and run', async () => {
   const f = fixture();
-  const grouped = JSON.parse(readFileSync(join(f.dir, 'engines', 'example-development', 'state-engine.json'), 'utf8'));
+  const grouped = readEngine(join(f.dir, 'engines', 'example-development', 'workflow.yaml'));
   grouped.steps = grouped.steps.map(s => (s.id === 'local-testing' ? { ...s, action: { type: 'state-engine', engine: 'own-test' } } : s));
-  write(join(f.dir, 'projects', 'p', 'engines', 'own-grouped', 'state-engine.json'), grouped);
+  write(join(f.dir, 'projects', 'p', 'engines', 'own-grouped', 'workflow.yaml'), grouped);
   cpSync(join(f.dir, 'engines', 'test'), join(f.dir, 'projects', 'p', 'engines', 'own-test'), { recursive: true });
   assert.match((await f.agent('project:set-execution-engine', 'p', 'own-grouped')).stdout, /p: example-development → own-grouped/);
   await f.agent('ticket:change-state', 'p', 'ABC-3', 'A', 'generate-solution', 'local-testing', 'test');
@@ -107,9 +108,9 @@ test('ASS-276: a project switches onto an engine of its own, and a grouped engin
 test('ASS-276: ticket:sync seeds backlog tickets at the first step of a refinement engine only the project has, named by its own execution engine', async () => {
   const f = fixture();
   own(f, 'p', 'example-development');
-  const file = join(f.dir, 'projects', 'p', 'engines', 'example-development', 'state-engine.json');
+  const file = join(f.dir, 'projects', 'p', 'engines', 'example-development', 'workflow.yaml');
   write(file, { ...JSON.parse(readFileSync(file, 'utf8')), 'backlog-refinement-steps': [step('refine', 'own-refinement')] });
-  write(join(f.dir, 'projects', 'p', 'engines', 'own-refinement', 'state-engine.json'), { steps: [{ id: 'second', sequence: 2 }, { id: 'first', sequence: 1 }] });
+  write(join(f.dir, 'projects', 'p', 'engines', 'own-refinement', 'workflow.yaml'), { steps: [{ id: 'second', sequence: 2 }, { id: 'first', sequence: 1 }] });
   write(join(f.dir, 'projects', 'p', 'backlog.json'), { tickets: [] });
   write(join(f.dir, 'fetched.json'), { tickets: [{ key: 'ABC-9', title: 'New', 'ticket-system-status': 'Backlog' }] });
   await f.agent('ticket:sync', 'p', 'backlog', join(f.dir, 'fetched.json'));

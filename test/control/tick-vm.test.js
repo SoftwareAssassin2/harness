@@ -20,8 +20,8 @@ function vmFixture({ where = 'vm', vm = VM, devContainer = false } = {}) {
   const f = controlFixture();
   const at = (...rest) => join(f.dir, ...rest);
   const located = s => (where ? { ...s, 'run-location': where } : s);
-  edit(at('engines', 'example-development', 'state-engine.json'), e => { e.steps = e.steps.map(s => (s.id === 'plan' ? located({ ...s, action: { ...s.action, 'run-in-dev-container': devContainer } }) : s.id === 'build' ? located(s) : s)); });
-  edit(at('engines', 'test', 'state-engine.json'), e => { e.steps = e.steps.map(s => (s.action.type === 'prompt' ? located(s) : s)); });
+  edit(at('engines', 'example-development', 'workflow.yaml'), e => { e.steps = e.steps.map(s => (s.id === 'plan' ? located({ ...s, action: { ...s.action, 'run-in-dev-container': devContainer } }) : s.id === 'build' ? located(s) : s)); });
+  edit(at('engines', 'test', 'workflow.yaml'), e => { e.steps = e.steps.map(s => (s.action.type === 'prompt' ? located(s) : s)); });
   edit(at('projects', 'p', 'project.json'), p => {
     p.repositories = [{ url: 'https://github.com/o/harness', description: 'The harness itself.' }, { url: 'https://gitlab.com/g/example-corpus.git', description: 'The corpus.' }];
     if (devContainer) p['dev-container'] = 'devc';

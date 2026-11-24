@@ -1,5 +1,18 @@
 # The grouped development engines (ASS-68)
 
+Each engine is its folder's `workflow.yaml` (ASS-524; a `state-engine.json`
+before, with the same fields, structure and key order): `engines/<name>/workflow.yaml`,
+or a project's own at `data/projects/<project>/engines/<name>/workflow.yaml`,
+read first for that project's work. Write a `#` comment beside a step to say
+why it is there. Everything reads an engine through `src/workflow/engine-file.js`;
+from a shell, `./agent.sh engine:show <project|-> <engine>` prints one as JSON
+for jq, and `./agent.sh engine:validate <project|-> [<engine>]` checks them,
+naming the file, line and reason of a malformed one. The bash commands read
+engines through a cache of their JSON in `data/cache/engines/` (ASS-548,
+`src/workflow/engine-cache.js`), so they start no node process per read: it is
+keyed by each file's exact content, so an edited `workflow.yaml` is read anew
+at once, and it is gitignored and safe to delete.
+
 `harness-development-grouped` is the current `harness-development` regrouped
 into a few high-level states; a project's own grouped engine, kept with its own
 flat engine in `data/projects/<project>/engines/` (ASS-276), regroups that flat
@@ -13,7 +26,7 @@ rollback.
 | Backlog, Committed | (plain steps) | |
 | Setup | `grouped-setup` | Check Setup Complete, Create VM, Mark Setup Complete |
 | Plan | `grouped-plan` | Extract Acceptance Criteria, Root Cause Analysis, Review Root Cause Analysis, Write Execution Plan, Write Test Plan, Enrich Automated Test Data, Review Plan |
-| Build | `grouped-build` | Refresh the Reference Repositories, Generate Automated Tests, Generate Solution, Address Merge Request Feedback (only from Await Sequential Merge), Check the Feedback Round, Merge the Awaited (`grouped-merge`; only from Await Sequential Merge, only with `merges-awaited`), Await Sequential Merge, Refresh the Reference Repositories Before Testing, Automated Testing, CI Checks, Code Review, Security Review |
+| Build | `grouped-build` | Refresh the Reference Repositories, Generate Automated Tests, Generate Solution, Address Merge Request Feedback (only from Await Sequential Merge), Check the Feedback Round, Merge the Awaited (`grouped-merge`; only from Await Sequential Merge, only with `merges-awaited`), Await Sequential Merge, Refresh the Reference Repositories Before Testing, Automated Testing, Code Review, Security Review (no CI Checks: the project's CI runs them on the merge request, ASS-552) |
 | Test | `grouped-test` | Local Testing (`grouped-local-testing`), Steps to Test (`grouped-steps-to-test`) |
 | Document | `grouped-document` | Update Documentation, Update Merge Request Details, Check Merge Request Details, Add Screenshots to Merge Request |
 | Review | `grouped-review` | Explain the Change, Risk Assessment, AI Token Expense Check, Payment Gate, Variation Selection |
@@ -376,7 +389,7 @@ saying so — so code compared with another repository's master (a parity
 check, say) is compared with CI's. The ticket's own repositories are untouched.
 A merge request with no repository — an id-less one `ticket:sync` found on the
 forge, matching no planned branch — is in none, and is passed over, here and
-by CI Checks below (ASS-321).
+by `ci-checks:verify` below (ASS-321).
 Only a VM not running, or deps not installed (below), fails it: Blocked. Test's Rebuild enters Build at
 Generate Solution, past the first refresh; the second still runs.
 
@@ -447,13 +460,25 @@ the merge-request plan, a branch no repository has, or changes not committed.
 Entries without it run as before. `automated-tests:verify-success` does not
 read the field yet: its `run` commands still all run in one checkout.
 
-CI Checks (ASS-249; grouped Build only — v2-build and the flat engines have
-none — `ci-checks:verify`, in the VM, max-visits 3) runs, between Automated
-Testing and Code Review, the merge-request CI checks the project declares for
-each repository with a merge request not Closed: the gates its CI would fail
-(a leaked secret, an unpinned image, a policy violation), caught before the
-merge request reaches the forge. They are declared in `ci-checks.json` in the
-project's golden-image folder, beside `tests.json`:
+No CI checks run in the workflow (ASS-552). The project's own CI pipeline
+runs them on the merge request, and the merge steps (`merge-request:check`,
+Await, Merge in Turn) wait for that pipeline as before; a failing pipeline
+comes back as merge request feedback. Grouped Build had a CI Checks step
+(ASS-249, `ci-checks:verify` between Automated Testing and Code Review); it
+is removed, and Automated Testing's success goes straight on to Code Review,
+where CI Checks' success led. A ticket still at CI Checks when this lands is
+not stranded: grouped-build's `removed-steps-move-to: { ci-checks:
+code-review }` tells control (`steps.js`; `engine.js removedStepMovesTo`) to
+move its run, or its sub-status when it has no run, on to Code Review
+(validate.js checks the map: each removed id no step, each target one). Should
+that ever fail, the operator's one line is
+`./agent.sh ticket:change-sub-state <project> <KEY> <var> grouped-build ci-checks code-review`.
+
+`ci-checks:verify` itself stays, for running a project's declared checks by
+hand in a ticket's machine (nothing in the workflow calls it). They are
+declared in `ci-checks.json` in the project's golden-image folder, beside
+`tests.json`, which a workstation's setup still reads for the commands they
+need (ASS-471):
 
 ```json
 { "repositories": {
@@ -470,15 +495,14 @@ one, `{a,b}` either, as CI's `rules:changes`); `baseline: false` (optional)
 marks a check over the merge request's own commits, which has no master run to
 compare with; in a repository whose planned merge requests are all Merged it is
 skipped (ASS-474: no merge request range is left to scan), said so in the
-results, so a finished ticket is not sent round Build; `needs` (optional, ASS-471) lists commands the check's scripts
+results, so a finished ticket's run says so; `needs` (optional, ASS-471) lists commands the check's scripts
 are known to run that its command line does not show, which a workstation's
 setup checks with each command's first word (see "A GCP workstation's setup"). A check that fails is run on `origin/<base>` too, as Automated
-Testing's tests are (ASS-99), and failing as it does on master passes. Exit 0
-(every run check passed, or failed only as on master) goes to Code Review, 3
-(a check could not run, no VM, or the file malformed) to Blocked, any other (a
-new failure) back to Generate Solution. `ci-checks-results-<variation>.md` in
-the ticket's folder holds each check's job, command, exit code and output, for
-Generate Solution and Security Review. A project without the file, or a ticket
+Testing's tests are (ASS-99), and failing as it does on master passes. It
+exits 0 (every run check passed, or failed only as on master), 3 (a check could
+not run, no VM, or the file malformed) or 1 (a new failure).
+`ci-checks-results-<variation>.md` in the ticket's folder holds each check's
+job, command, exit code and output. A project without the file, or a ticket
 whose repositories declare none, passes with nothing run.
 
 `ci-checks.json` is not an input of the golden image (it is of a workstation's setup, ASS-471): changing it rebuilds
@@ -491,8 +515,8 @@ failed for another target (a tool missing in the VM), and verify-success,
 whose output named no test, called it "red on master too, with no test
 results to compare" — for the operator. Now Automated Testing fetches origin
 in each repository before it reads master's commit (twice; one it cannot
-reach is compared as last fetched, and the results say "not fetched"), CI
-Checks fetches it before `origin/<base>` is read (the same: compared as last
+reach is compared as last fetched, and the results say "not fetched"), `ci-checks:verify`
+fetches it before `origin/<base>` is read (the same: compared as last
 fetched, "not fetched" in the results — a forge outage blocks no ticket),
 and each result compared with master names
 the commit (`### On master (exit N; origin/<branch> at <sha>…)`, and the
@@ -523,7 +547,7 @@ it too. An agent calling either mid-step (Generate Solution, Address Merge
 Request Feedback) gets the read-only check: nothing pushed beneath it. The top of `automated-test-results-<variation>.md` and
 `ci-checks-results-<variation>.md` says what was done. So a re-run of a
 failing check after master moved is not doomed to repeat — Check First's
-re-run of Automated Testing included. Only Automated Testing and CI Checks
+re-run of Automated Testing included. Only Automated Testing and `ci-checks:verify`
 do this, not every step's start (`vm:step-start` still only fast-forwards):
 a push to an open merge request resets its approvals and restarts its
 pipeline, which the reviews and Release after the checks must not have done
@@ -1213,7 +1237,7 @@ a run of the check an earlier harness left is ended as control starts.
   with its groups at their caps resumes where it returns instead of being
   redirected straight back to Blocked. The other clears — a retry, an
   environment repaired, nothing found wrong — keep the counts. A merge-gate
-  red (ASS-315, the merge queue below) restarts it too, but only for the
+  red (ASS-315, the merge gate below) restarts it too, but only for the
   groups downstream of Release it sends the ticket back through (Build, Test,
   Document, Review): Release's own keeps counting across reds, so a gate that
   never goes green still blocks at Release's `max-visits`.
@@ -1354,6 +1378,27 @@ backquotes; a VM gives the argument (the forwarder's `max-args`).
 
 ## VMs by state, and the disk limit (ASS-75)
 
+- **A seat only while its step uses its machine (ASS-527).** On top of
+  each step's `vm`, a variation's VM runs only while it holds a seat, and it
+  holds one only while its current step (the deepest level of its status)
+  uses its machine: a `prompt` step, or a `script` step whose command
+  `src/control/machine-steps.js` `SCRIPT_COMMANDS` declares `machine` (or one
+  with `run-location: vm`). At a host-only script, a `none` step, a `human`
+  step or a gate it holds none (ASS-203's seat at a gate is gone): its seat
+  goes to the next ticket in rank order that tick, logged once, and its VM is
+  stopped once no agent (ASS-349) or in-machine script is at work in it; its
+  steps there are judged with the VM stopped, never waited for. A `vm:hold`
+  (ASS-427) still keeps it running. A ticket at work moves into any step
+  without a free seat (ASS-522's return from Blocked, generalised) and, at a
+  step that uses its machine, waits there — no script, run step or agent —
+  until it takes the next free seat in rank order; Committed into planning,
+  and a finished plan on to Build (ASS-362), still wait for a free seat
+  before moving. Blocked, Blocked for Human and Requirements Changed take no
+  seat by position, and follow their steps' `vm` as before. Every script
+  command an engine's step runs must be in `SCRIPT_COMMANDS` (as `machine` or
+  `host`): validation fails one that is not, so a new in-machine script is
+  declared once. A timer `vm:refresh-repositories` is in-machine, so it polls
+  only while seated: it never starts a stopped VM just to poll.
 - **Running and stopping.** A step's `vm` says whether the variation's VM runs
   there (`running`) or is kept, stopped (`stopped`); the deepest level of the
   variation's status that sets it decides. Running: Setup through Review, and
@@ -1389,7 +1434,7 @@ backquotes; a VM gives the argument (the forwarder's `max-args`).
   and Release's own setting. A step keeps the VM running when:
   - it runs in it (`run-location: vm`): every agent of Plan, Build, Test,
     Document and Review, Address Merge Request Feedback, the repairs and
-    Troubleshoot, Automated Testing and CI Checks;
+    Troubleshoot, and Automated Testing;
   - its command reaches it (`limactl`, `in_project`, a `vm:` command): Setup's
     Create VM and Mark Setup Complete, Build's Refresh the Reference
     Repositories (both), Check Numbered Files, Blocked's own-branch checks,
@@ -1481,7 +1526,7 @@ backquotes; a VM gives the argument (the forwarder's `max-args`).
   does not fit takes no seat: it waits as for a slot —
   its VM not started, no move, no ticket-system status change, no visit
   spent — listed in the project's `memory-wait.json` (`plan.js`
-  `memoryWaiting`: no 💺 on the dashboard; with the free and reclaimable
+  `memoryWaiting`: no Machine on the dashboard's sprint screen; with the free and reclaimable
   figures and the rule that refused it, ASS-422), its Health `Waiting for
   memory for its VM (need X GB, Y GB free)` — under warn `(need X GB, Y GB
   reclaimable, pressure warn)`, or `macOS swapping` — cleared once it gets
@@ -1739,7 +1784,7 @@ arguments, to install them under `$HOME`; not an input of the golden image),
 then checked again. Anything missing or unusable fails setup, each named.
 
 ASS-471: so is every command the project's CI checks need, so a missing one
-shows at setup rather than as a ticket's CI Checks step exiting 127 (Blocked):
+shows at setup rather than as `ci-checks:verify` exiting 127 there:
 the first word of each simple command in each check's `command` in the
 golden-image `ci-checks.json` (`src/agent-cli/ci-check-commands.js`: past
 `NAME=value` assignments, keywords such as `if`/`do`/`!`/`exec` and
@@ -2004,8 +2049,8 @@ folder per variation.
 
 - **Which steps.** A step whose work runs on the variation's machine,
   top-level or a sub-engine's (`workstation-steps.js machineWork`): a
-  `run-location: vm` prompt or script (Generate Solution's agents, CI
-  Checks' `ci-checks:verify`), or a host script that works in the machine
+  `run-location: vm` prompt or script (Generate Solution's agents, Automated
+  Testing's `automated-tests:verify-success`), or a host script that works in the machine
   (`vm:refresh-repositories`). No other step needs or waits for a workstation.
 - **The claim (AC1, AC2).** Before such a step's agent is dispatched or its
   script started (`stepWaits`, asked in `dispatch.js` once every other gate
@@ -2114,11 +2159,14 @@ folder per variation.
 
 In a project on workstations every ticket variation in progress (each step
 `slotKind` counts as `progress`) sits in exactly one seat: a VM seat or a
-workstation seat (operator decisions, 2026-11-15/16). `project.json`'s
-`max-tickets-in-progress` is the project's VM seats; each workstation in
-`dev-environments.workstations` is exactly one workstation seat (AC9: no
-setting). The planner's in-progress limit for the project is its VM seats
-plus its usable workstations (`src/control/seat-kinds.js` `seatLimits`;
+workstation seat (operator decisions, 2026-11-15/16). The project's VM
+seats are its seat budget's (ASS-528, `src/control/seat-budget.js`: from the
+Mac's memory and CPU and its `share`); each workstation in
+`dev-environments.workstations` was exactly one workstation seat (AC9: no
+setting) — since ASS-529 it has as many as its own memory and CPU carry
+(below, "Several tickets on one workstation or cloud VM"). The planner's seats for the project (ASS-528: one pool, planning
+and building) are its VM seats plus its usable workstations
+(`src/control/seat-kinds.js` `seatCapacity`;
 `vm` mode: VM seats only, as before; `workstation` mode: workstation seats
 only), under `harness.json`'s cap as before. Planning seats have no kinds.
 
@@ -2161,12 +2209,213 @@ only), under `harness.json`'s cap as before. Planning seats have no kinds.
   tickets in progress would take it (its connect retried after the backoff);
   with no seat-holder and nobody waiting it lets it disconnect and stop
   itself. A stopped workstation with work for its seat is started at once.
-- **TUI.** The sprint screen's seat column shows 💺 for a VM (or planning)
-  seat and ⛅ for a workstation seat (the key lists ⛅ for a project on
-  workstations); the gcp workstations box shows `seat lost` on a
+- **TUI.** The sprint screen's Machine column (ASS-559; a seat column of 💺
+  and ⛅ before) shows `Mac` for a VM (or planning) seat and `GCP workstation
+  <id>` for a workstation seat, Runs in its `Lima VM` or `slot`; the gcp workstations box shows `seat lost` on a
   workstation that can't be used (ASS-485 dropped the `<used>/1 seats`
-  count); the models box, in
-  `vm+workstation` mode, `vm seats: <used>/<VM seats>` (∞ with no limit).
+  count). ASS-530 dropped the models box's `vm seats` count: the footer
+  shows the budgets behind the seats instead (see "The local virtual machines
+  box", below, and the use line under each remote machine).
+
+## Run targets (ASS-540)
+
+Every machine-using step runs on a **run target** (`src/control/run-targets.js`):
+`local-substrate`, `workstation-substrate`, `cloud-vm-substrate` (Substrate
+sandboxes, built in ASS-535), `local-vm`, `workstation`, `cloud-vm`,
+`workstation-worktree` and `cloud-vm-worktree` (ASS-553: the variation's own
+worktree folder on a workstation or cloud VM, taking that machine's seat), and
+on the Mac itself `local-worktree` (a worktree per ticket variation, from the
+harness's own clone since ASS-553) and
+`local-workspace` (the project's checkout, one ticket at a time). The Mac
+targets take no seat; their load is in the Mac's measured use. An AI step on any
+of the four worktree targets runs inside Claude Code's own sandbox (ASS-555:
+writes held to its worktree, hosts to the project's allowlist; its prompt is told
+so and calls agent.sh by absolute path, a bare line); where that sandbox can't
+run (ASS-564: a remote machine whose setup found it unavailable or hasn't probed
+it, the Mac without Seatbelt) the step runs there all the same, its agent
+unsandboxed in its worktree, logged and marked on the dashboard.
+
+- A step may set `run-targets:` (one target or a list, in order of
+  preference). Only machine-using steps may; validation names the file, the
+  step and the reason for an unknown target, a repeat, or a step that uses no
+  machine.
+- A project lists its targets as `dev-environments.run-targets`, its default
+  order (unset: from `mode`: `vm` = `[local-vm]`, `workstation` =
+  `[workstation, cloud-vm]`, `vm+workstation` = `[workstation, cloud-vm,
+  local-vm]`; then planning in `vm+workstation` stays on the local VM, as
+  before).
+- **Resolution:** the step's list filtered to the project's, in the step's
+  order (none of its own: the project's). The first with a free seat now; none
+  free, it waits (planner `waiting`); none at all, it is never started
+  (planner `refused`, logged once). Docker commands never go to a substrate
+  target, and machine-only commands never to the Mac targets.
+- The grouped engines set `run-targets` only on the steps that can't run
+  somewhere: the machine-only scripts (`vm:refresh-repositories`,
+  `vm:mark-setup-complete` and Check Setup Complete's `vm:setup-complete`,
+  `merge-request:check-numbered-files`, Blocked's `ticket:catch-up-base` and
+  `ticket:own-branch-fix`) list the eight machine targets (ASS-553: the remote worktrees
+  too). Every AI step leaves
+  it unset, so a project decides.
+- **Setup and Add the Missing Repository on a sandbox (ASS-551):** Setup's
+  Create VM (`vm:create`) and Blocked's Add the Missing Repository
+  (`project:add-repository`) list the eight machine targets too, substrate ones
+  first. On a substrate target "the machine" is the variation's sandbox:
+  control brings it up before the step (as before any in-machine script), and
+  `vm:create` makes or resumes it (`substrate:sandbox-up`, idempotent), clones
+  into its `/repos` any repository its image predates through the Mac
+  (`relay.bash` `relay_clone`), and sets its git hooks; Mark Setup Complete
+  writes the marker in it (proving `claude`, the forwarder's URL and token);
+  Check Setup Complete reads it there. Add the Missing Repository's download is
+  that `vm:create`. Before this a project on substrate targets alone had no
+  target for Create VM, and every new ticket waited there for ever.
+- `./agent.sh engine:validate <project>` also fails, naming the engine and the
+  step, on any machine step the project's tickets can reach that can run on
+  none of its run targets (ASS-551: the check control logs,
+  `run-targets.js` `projectRunTargetProblems`). `code:create-branch`, `code:create-worktree`,
+  `code:update-workspace` and `merge-request:create` run with control on the
+  Mac's own checkout: host scripts, holding no seat and taking no run target.
+- **Pool choice (ASS-553):** a step may set `pool-choice:` (`first`,
+  `most-room` or `remote-first`; only on a machine-using step), else the
+  project's `dev-environments.pool-choice`, else `remote-first` when one of its
+  candidates is a worktree target and `first` otherwise. `remote-first` fills
+  the remote machines first (the most headroom first; a stopped one is started
+  and waited for up to `remote-boot-wait-seconds`) and the Mac only when they
+  are full; `most-room` takes the most headroom anywhere
+  (`src/control/pool-choice.js`). Each placement decided so is logged once.
+- **Worktree steps (ASS-554):** a step may set `worktree: true` (true or
+  false; only on a machine-using step) when it only reads code and writes text.
+  It then runs only on the worktree targets (`local-worktree`,
+  `workstation-worktree`, `cloud-vm-worktree`) its project lists, by pool
+  choice (`remote-first` unless set otherwise); its own `run-targets`, if any,
+  may name worktree targets only. Validation names the file and the step for a
+  value not true or false, a flag on a step that uses no machine, and a
+  flagged step's own non-worktree target; a project that lists no worktree
+  target for a flagged step it can reach is control's `projectRunTargetProblems`
+  (logged, and `engine:validate <project>` fails naming the engine and step).
+  A project still on its `mode` ignores the flag. An unflagged step with no
+  `run-targets` of its own keeps off the project's worktree targets while a
+  sandbox, VM, workstation or cloud VM is left for it. Flagged in the shipped
+  engines: grouped-plan / v2-plan's Extract Acceptance Criteria, Root Cause
+  Analysis and its review, Write Execution Plan (and its stronger retry),
+  Write Test Plan, Enrich Automated Test Data and Review Plan; Code Review and
+  Security Review (grouped-build, v2-build, grouped-merge); grouped-review /
+  v2-review's Explain the Change, Risk Assessment and AI Token Expense Check;
+  grouped-document / v2-document's three; Write Steps to Test
+  (grouped-steps-to-test, v2-steps-to-test, steps-to-test); Requirements
+  Changed's Revise Acceptance Criteria and Judge; and harness-development's
+  same steps. Plan's record-objections and ask-the-operator steps are host
+  scripts (no machine), so they carry no flag. Moving between a flagged step and
+  a sandbox or VM step hands the branch over (`code:hand-over`); a worktree
+  branch with nothing of its own (Plan's) is not pushed, and the worktree is
+  moved onto Build's branch when the ticket comes back to it.
+- **Work mode (ASS-556, `src/control/work-mode.js`):** grouped-plan and
+  v2-plan end, after Review Plan approves, with Choose Where to Work (a prompt,
+  `choose-work-mode-grouped`, flagged `worktree: true`; it answers
+  `work-mode`, `work-mode-reasons`, `work-mode-files`) and Record Where to Work
+  (`ticket:choose-work-mode {project} {ticket} {variation} {run}`, a host
+  script: exit 0 → done, else blocked). The variation's `work-mode` is
+  project.json `work-mode.force-full`'s matching rule (full), else
+  `work-mode.force`, else the AI's answer, else full; full for a project that
+  lists no worktree target; an escalated or operator-set mode kept. A step may
+  set `stack: required` (only that value, never with `worktree: true`;
+  validated): in worktree mode it takes no seat and no agent and is passed by
+  its first exit, recorded with cause `skipped`, reason `needs the running
+  stack; built in a worktree` (moves.js STACK_SKIPPED), at the top level or in
+  a run. Flagged in the shipped engines: grouped-local-testing and
+  v2-local-testing's Take Screenshots. In worktree mode every other machine
+  step's candidates are its list's worktree targets when it has any
+  (run-targets.js candidates' mode). `ticket:escalate-work-mode` (tests,
+  review, ci) moves a worktree variation to full once and for good;
+  `ticket:set-work-mode` is the operator's; merge-request:check appends to the
+  variation's `ci-results`. The prompts with `{work-mode-rule}`:
+  generate-solution-grouped, generate-automated-tests-grouped, test-grouped,
+  code-review-grouped, security-review-grouped,
+  check-on-merge-request-build-grouped.
+- A ticket that changes target between steps is handed over first
+  (`code:hand-over`): its branch committed and pushed where it was, pulled
+  where it goes. A vm step on a Mac target runs on the host, in the worktree or
+  the workspace.
+- **Substrate targets (ASS-535):** a step on one runs in the ticket
+  variation's own sandbox on its seat's machine's cluster (the Mac's,
+  a workstation's or a cloud VM's), made before the step starts (the step
+  waits for it, `sandbox …` in control's log), stopped (hibernated) when the
+  variation holds no substrate seat, deleted once the ticket is done.
+  Hibernation (ASS-537) waits until no agent turn or in-machine script of it
+  runs, and keeps its files and processes; back at a machine step, the step
+  waits while it is resumed, then starts where it is (no step re-run, no visit
+  spent); a resume failing 3 times in a row sends the ticket to Blocked. A move
+  onto or off a sandbox hands the branch over through the Mac. So a Build whose agent steps run in a sandbox and
+  whose Docker steps (`vm:create`) run on `local-vm` keeps one branch.
+  Its agents' `agent.sh` calls go to the Mac's forwarder, and their memory to
+  the project's Hindsight, as a VM's do (ASS-536: the sandbox's own token and
+  egress rules), so a prompt's commands work unchanged there.
+  Its model API calls and git go out through Substrate's egress gateway,
+  which injects the credentials (ASS-538: no token in the sandbox) and refuses
+  hosts off the project's allowlist; a step that needs another host (a package
+  registry beyond npm's) needs it in `dev-environments.substrate.egress.allow`.
+
+## Several tickets on one workstation or cloud VM (ASS-529)
+
+Operator decision, 2026-11-22: a big remote machine is used fully. Each
+workstation and cloud VM takes as many of its project's tickets as its own
+memory and CPU allow (`src/control/remote-seats.js`); machines are never
+shared between projects, and they are outside the Mac's seat budget.
+
+- **Measured over SSH.** While a machine is connected and a ticket of the
+  project holds a seat or a step on it, control's workstation job runs
+  `workstation:usage` once a minute (`remote-usage-interval-seconds`):
+  `/proc/meminfo` (a container's cgroup `memory.max`/`memory.current` when it
+  is limited below that), the cores, and two `/proc/stat` samples a second
+  apart. Recorded as `usage` on its `workstations.json` entry, the last five
+  CPU samples kept and averaged over 5 minutes.
+- **Its limits.** The entry's `max-memory-percent` / `max-cpu-percent` in
+  `dev-environments`, else `harness.json`'s (90 / 90). Set with
+  `machine:set-limits` and `harness:set-budget` (ASS-546).
+- **Admission (AC1).** The tick phase `budgetRemote` (before the Mac's
+  budget) gives each machine the seats it holds plus one while its measured
+  memory and CPU, plus one ticket's expected use for each seat given whose
+  step has not claimed it yet, plus one more ticket, stay within both limits
+  (one ticket: the machine's use over its tickets, at least
+  `memory-need-floor-gib` / `cpu-need-floor-percent`). One with no ticket of
+  the project always takes one. Not measured (stopped, not connected, its
+  reading older than 5 minutes): the seats it holds, at least one, so a
+  ticket taking it has it started. A reading that failed while connected: no
+  new ticket, those held keep running, logged once per outage. The result is
+  `data/projects/<p>/remote-seats.json` (`seatCapacity`'s per-machine
+  seats, the dashboard's too), each change logged as `remote <p> <id>: …`.
+  Free remote seats are filled in list order, so a machine is filled before
+  the next is used and idle ones stop themselves.
+- **A folder of its own (AC2).** A step claims a machine beside the other
+  tickets' steps there while those steps are fewer than its seats.
+  `workstation:claim` gives it the first free **slot**: slot 0 is the shared
+  root `~/harness` (`holder` in the live data, as before), slot n
+  `~/harness/slots/<n>` (`holders["<n>"]`). Each slot stands in for a VM's
+  root — its own `repos/` (cloned once, from the shared root's checkout as a
+  reference when there, kept clean on master between steps), `ticket/`, its
+  own machine name and so forwarder binding, its own token
+  (`agent-token-<n>` in the runtime folder). `workstation:release --slot <n>`
+  ends that step alone: its trees cleaned and pushed, its containers and
+  ticket copy removed; the project's credentials in the runtime folder stay
+  while another slot is held.
+- **Tests kept apart (AC3).** `dev-environments.ticket-isolation`:
+  `"one-at-a-time"`, the default when unset — the project's steps that run
+  tests or CI checks (`machine-steps.js` `runsTests`:
+  `automated-tests:verify-success`, `:verify-exist-and-runnable`,
+  `ci-checks:verify`, `vm:test-repos`, or a step with `runs-tests: true`)
+  wait while another ticket's such step holds the same machine, their Health
+  saying so, and nothing is added to its sessions (slot 0 has no `slot.env`,
+  exactly as before ASS-529; a slot n's names only `AGENT_TOKEN_FILE`, its
+  own forwarder token). `"separate"`, opt-in — every slot's `slot.env`
+  names `HARNESS_TICKET`, `HARNESS_VARIATION`, `HARNESS_SLOT`,
+  `HARNESS_PORT_OFFSET` (100 × n), `COMPOSE_PROJECT_NAME=harness-slot<n>`
+  (containers, volumes, networks and their databases named apart) and
+  `AGENT_TOKEN_FILE`, sourced by every session there, and tests may run side
+  by side; the project's compose files and test scripts add
+  `$HARNESS_PORT_OFFSET` to host ports they bind.
+- **Lost and idle (AC4, AC5).** A machine that can't be used loses all its
+  seats, every ticket on it taken out as before. It stays connected while
+  any ticket on it holds a seat or a step to end, and disconnects (so it can
+  stop itself) only once none does.
 
 ## A step's end runs on the machine it ran on (ASS-480)
 
@@ -2293,7 +2542,7 @@ the workstation path above.
   reverse-forwarded to its loopback as on a workstation. Every session,
   copy and signal is a channel over that master, as on a workstation. Once
   it is up, `workstation:connect` records the VM's boot id (`boot-id`).
-- **The same lifecycle (AC3).** Each cloud VM is exactly one remote seat,
+- **The same lifecycle (AC3).** Each cloud VM is a remote seat (ASS-529: as many as it carries),
   recorded in `seats.json` as `{ kind: cloud-vm, workstation: <id> }`: a
   workstation seat in every rule of "VM seats and workstation seats" —
   preferred over VM seats, lost while it can't be used (its login lapsed,
@@ -2334,13 +2583,12 @@ the workstation path above.
   cut to 20 with an ellipsis. When one row of boxes would be wider than the
   screen it goes on a row of its own under the others, so the footer fits
   the TUI's 120 columns. The `gcp workstations` box lists workstations
-  alone. On the sprint screen a variation in a cloud VM seat is marked 🌐
-  (💺 a VM seat, ⛅ a workstation seat), and the key lists it for a project
-  with cloud VMs.
+  alone. On the sprint screen a variation in a cloud VM seat shows `Cloud VM
+  <id>` in the Machine column (ASS-559; 🌐 before).
 - **Tests.** `test/agent-cli/cloud-vm.test.js` and
   `test/control/cloud-vms.test.js` against a fake cloud VM
   (`test/support/fake-gcloud-compute.js`, `fake-ssh-master.js`);
-  `test/tui/virtual-machines-box.test.js`; and
+  `test/tui/network-screen.test.js` (the n screen's cards, ASS-572; `virtual-machines-box.test.js` before); and
   `test/agent-cli/cloud-vm-real.test.js`, run only with
   `HARNESS_CLOUD_VM_TESTS=1`, against ada-vm (or the VM
   `CLOUD_VM_TEST_ID`, `_PROJECT`, `_ZONE`, `_GCLOUD_CONFIG`, `_SSH_USER`
@@ -2366,33 +2614,141 @@ the workstation path above.
   `test/control/forwarder.test.js`, `test/agents/process.test.js` and
   `test/control/restart-imminent.test.js`.
 
-## The local virtual machines box (ASS-486, ASS-489, ASS-491)
+## The local virtual machines box (ASS-486, ASS-489, ASS-491, ASS-530)
 
-The TUI footer's rightmost box, `local virtual machines`, shows every seat
-that uses one of the Mac's Lima VMs, one line each, in `vm` and
-`vm+workstation` mode (never in `workstation` mode, where tickets have no
+> **ASS-572:** these boxes are gone. The footer lost them to the compute network screen (`n`) in ASS-566, and ASS-572
+> replaced them there with one card per machine (`src/tui/screens/network.js`): what each box listed is now the `On it`
+> of its machine's card (`src/tui/machine-tickets.js` `ticketsOn`: 💺 Lima VMs, 📦 sandboxes, 🌿 worktrees, 📁 slots, 📂
+> the workspace), each figure on its card's gauges, `Seats`, `Cluster` and `Share` lines. Tests:
+> `test/tui/network-screen.test.js`, `test/tui/budget-lines.test.js`, `test/tui/substrate-dashboard.test.js`. The
+> rules below still say what is listed and when; the layout they describe is history.
+
+The TUI footer's rightmost box, `local virtual machines`, is there in `vm`
+and `vm+workstation` mode (never in `workstation` mode, where tickets have no
 VMs). ASS-489 replaced ASS-486's "busy VMs" rule; ASS-491 added the planning
-seats. The in-progress VM seats come first. Their holders: control's
-`seats.json` rows of kind `vm`, in their order (oldest first). Each shows the
-Lima VM whose `vms.json` row has the seat's ticket (case-insensitive) and
+seats; ASS-530 replaced the seat counts with the budget.
+
+It starts with the budget lines (`budgetLines`), from control's
+`seat-budget.json` (`seat-budget.js`, ASS-528): `mac memory: <used>/<limit>
+GiB` and `mac cpu: <used>/<limit>%` — the Mac's measured use against the
+harness budget, red with `over` past a limit (CPU also while its hysteresis
+holds; `mac: not read` in red while neither reads, `mac: not limited` in gray
+with no reader) — then `share: <n>%` (a gray `split` when unset),
+`allotment: <n> tickets · <GiB> <cpu>%` (after reallocation),
+`uses: <n> tickets · <GiB> <cpu>%` (the seats held and the project's VMs'
+measured memory and CPU; red `over` while above its allotment), and, when its
+share is reallocated, `lends: <GiB> <cpu>%` (what other projects use of its
+share) or `borrows: <GiB> <cpu>%` (what it uses of theirs). Before the file
+exists, a gray `budget: not yet`. ASS-539: with a Substrate cluster on the Mac, a
+`cluster: <GiB> GiB <cpu>%` line under `uses` (`clusterUseLine`, from
+`used.substrate`: its part of the shared cluster's fixed cost, its warm
+workers' requests and, unless its seats count them, its active sandboxes; a
+gray `not up` while the cluster wasn't up at its last check).
+
+Then one line per seat holder that uses a Lima VM. The in-progress VM seats
+come first. Their holders: control's `seats.json` rows of kind `vm`, in their
+order (oldest first), never more than the budget's seats. Each shows the Lima
+VM whose `vms.json` row has the seat's ticket (case-insensitive) and
 variation, as ASS-485's `<id> <activity> <state>` (`machineLine`): the
 activity the variation's agents and 💻 for a running script step
 (`variationActivity`), the state the VM's own word lowercased, `running` in
 green — e.g. `vm-1 🤖x2 running`, `vm-2 💻 running` — a name cut to 20 with
 an ellipsis. A holder whose VM has no `vms.json` row yet shows its expected
 name (lowercased key-variation, e.g. `vm-3-a`) with a gray `creating`. Then
-one gray `free build seat` line per VM seat left, so these lines number the
-VM seat count (`seatCapacity`, the models box's `vm seats: <used>/<n>`). Then
-the planning seats, every one a local VM's since planning always runs on Lima
-VMs (ASS-469), taken from `seatPlan` so they agree with the sprint screen's
-💺: its planning holders in its order, each in the same line as above, then
-one gray `free planning seat` line per free planning seat (`max-tickets-in-planning`
-within `harness.json`'s limit). With no limit (∞) of either kind only its
-holders are listed; with no lines at all, one gray `none`. A VM whose ticket
-holds no seat — waiting at a gate, blocked, or in a workstation or cloud-vm
-seat — is not listed. When a row of boxes would be wider than the screen it
-wraps as the cloud box does, staying rightmost on its row, so the footer fits
-the TUI's 120 columns. Tests: `test/tui/local-virtual-machines-box.test.js`.
+the planning holders, every one a local VM's since planning always runs on
+Lima VMs (ASS-469), taken from `seatPlan` so they agree with the sprint
+screen's Machine column (ASS-559; its 💺 before), in the same lines. No holders: one gray `no tickets`. There are
+no `free build seat` / `free planning seat` lines (ASS-530): the budget lines
+say the room left. A VM whose ticket holds no seat — waiting at a gate,
+blocked, or in a workstation or cloud-vm seat — is not listed.
+
+Each machine of the `gcp workstations` and `cloud virtual machines` boxes has,
+under its `<id> <activity> <state>` line, an indented use line (ASS-530,
+`remoteUseLine`, from `remote-seats.json`): `  <n> tickets · <used>/<limit>
+GiB <cpu>/<limit>%` — the tickets it holds and its memory and CPU against its
+own `max-memory-percent` / `max-cpu-percent` — a figure past its limit red
+with `over`, a gray `full` when it takes no more tickets, `not measured`
+(gray) or `not read` (red) without a reading. With a Substrate cluster on the machine,
+an indented `  cluster: <GiB> GiB <cpu>%` line follows (ASS-539, from
+`remote-seats.json`'s `substrate`). A holder on a substrate run target runs in
+its sandbox, not a VM or slot: it is listed in the substrate sandboxes box
+(below), not here (ASS-535 listed it here). When a row of boxes would be
+wider than the screen it wraps, the local virtual machines box staying
+rightmost on its row but for the `local` box (below), so the footer fits the
+TUI's 120 columns. Tests:
+`test/tui/network-screen.test.js` (ASS-572; `local-virtual-machines-box.test.js` before), `test/tui/budget-lines.test.js`.
+
+## The substrate sandboxes box (ASS-539)
+
+> **ASS-572:** these boxes are gone. The footer lost them to the compute network screen (`n`) in ASS-566, and ASS-572
+> replaced them there with one card per machine (`src/tui/screens/network.js`): what each box listed is now the `On it`
+> of its machine's card (`src/tui/machine-tickets.js` `ticketsOn`: 💺 Lima VMs, 📦 sandboxes, 🌿 worktrees, 📁 slots, 📂
+> the workspace), each figure on its card's gauges, `Seats`, `Cluster` and `Share` lines. Tests:
+> `test/tui/network-screen.test.js`, `test/tui/budget-lines.test.js`, `test/tui/substrate-dashboard.test.js`. The
+> rules below still say what is listed and when; the layout they describe is history.
+
+The footer's `substrate sandboxes` box (`frame.js` `sandboxBox`) comes after
+`local virtual machines`, wrapping as the others do, while the project
+declares a kind cluster (`load.js` `substrateMachines`, from
+`dev-environments.substrate.clusters`; a GKE entry adds none until approved)
+or has a sandbox. It lists every sandbox of the project on every machine, one
+line each: `📦 <key>[ <variation>] <machine> <activity> <state> <memory>
+<cpu>`.
+
+- The rows: each sprint variation's `sandbox` record; then a seat holder on a
+  substrate run target with no sandbox on its seat's machine yet (`starting`,
+  gray); then any actor the clusters' checks measured that no variation names,
+  by its actor's name. In the order of the project's clusters.
+- The state is the cluster's check's (`substrate.json`'s `sandbox-use`) when
+  it is newer than the record: `running` (green), `resuming`, `hibernating`,
+  `hibernated` (gray); else the record's (`running`, `stopped` as
+  `hibernated`).
+- Memory and CPU are its measured use while it runs (its worker pod's cgroup,
+  rootfs writes included; CPU in percent of one core), a gray `not measured`
+  before the next check. A hibernated one uses neither: its snapshot's disk
+  shows instead, gray (`snapshot 0.2 GiB`).
+- The activity is `variationActivity`'s (🤖xN, 💻). Keys and machines are cut
+  to 12 with an ellipsis; at most 8 lines, then `+N more`; none, a gray `no
+  sandboxes`. The footer fits 120 columns.
+
+Tests: `test/tui/substrate-dashboard.test.js`.
+
+## The local box (ASS-541)
+
+> **ASS-572:** these boxes are gone. The footer lost them to the compute network screen (`n`) in ASS-566, and ASS-572
+> replaced them there with one card per machine (`src/tui/screens/network.js`): what each box listed is now the `On it`
+> of its machine's card (`src/tui/machine-tickets.js` `ticketsOn`: 💺 Lima VMs, 📦 sandboxes, 🌿 worktrees, 📁 slots, 📂
+> the workspace), each figure on its card's gauges, `Seats`, `Cluster` and `Share` lines. Tests:
+> `test/tui/network-screen.test.js`, `test/tui/budget-lines.test.js`, `test/tui/substrate-dashboard.test.js`. The
+> rules below still say what is listed and when; the layout they describe is history.
+
+The footer's `local` box (`frame.js` `localBox`) shows what runs on the Mac
+itself — the two run targets that take no seat (ASS-540) and so appear in no
+other box. It is there only while the project's run targets (`load.js`
+`runTargets`: `projectRunTargets`, its own list or its mode's; none while its
+dev-environments is wrong) include `local-workspace` or `local-worktree`, and
+comes after `local virtual machines`, wrapping to a new row as the others do.
+Its holders are control's `seats.json` `local` list (`{ key, variation,
+target }`, loaded as `project.localSeats`).
+
+- While `local-workspace` is allowed, its first line is the project's
+  checkout: `workspace: <key>[ <variation>] <icon> <step>` while the variation
+  holding it has an agent (🤖) or a script step (💻) working,
+  `workspace: <key>[ <variation>] idle` while it holds it between them, and a
+  gray `workspace: idle` while no ticket holds it.
+- Then one line per ticket worktree on the Mac:
+  `worktree <key>[ <variation>] <icon> <step>`, else `… idle`. The variations
+  on `local-worktree` come first, in `seats.json` order; then every other
+  sprint variation whose `build.worktree-folder` is set (a worktree made
+  earlier, kept until the ticket is done or deleted), idle since its work is
+  elsewhere now. With worktrees only and none yet, a gray `no worktrees`.
+
+The icons follow the other machine boxes' rules (`variationActivity`: the
+project's agents on the variation, a script step by `runsScript`), counted
+only while the variation is on that place; both icons when both. The step is
+the variation's deepest step's name. The variation shows when not `A`. Keys
+are cut to 12 columns and steps to 20, with an ellipsis, so the box sits
+beside the others at 120 columns. Tests: `test/tui/network-screen.test.js` (ASS-572; `local-box.test.js` before).
 
 ## A finished plan holds no seat (ASS-362)
 
@@ -2400,7 +2756,7 @@ A variation at Plan whose `grouped-plan` run has reached its `done` step has
 finished planning: it only waits for an in-progress slot to move on to Build
 (control logs `waits for an in-progress slot to move to build`). While it
 waits it holds no planning slot and no in-progress slot, so the next ticket at
-Committed may start planning under `max-tickets-in-planning`. The rule is
+Committed may start planning if a seat is free (ASS-528: one pool). The rule is
 generic (`src/control/engine.js` `finishedPlanning`, `src/control/plan.js`
 `slotKind`): a top-level planning step (`is-planning-stage`) whose sub-engine
 is at an `is-done` step, with an exit out of planning to a step that holds a
@@ -2429,8 +2785,11 @@ are unchanged.
   While that count reaches the cap, no ticket enters planning (`free.planning`
   is false). Tickets at Committed stay there, logged once per visit: `waits
   to enter planning: max-tickets-ready-for-build reached (…)`. A ticket
-  already planning keeps its slot and its agents.
-- **Shown:** the sprint row has no 💺 (ASS-357), and its Status cell has
+  already planning keeps its slot and its agents. While the project's focus on
+  planning is on (ASS-531: `project:set-planning-focus`, the sprint screen's
+  `P`), the cap does not hold planning back, and variations at a planning step
+  (Committed included) rank ahead of the rest for seats and agents.
+- **Shown:** the sprint row runs on no machine (ASS-357; ASS-559: blank Machine and Runs in), and its Status cell has
   `Planned, waiting for a build seat` under the step chain. The ticket screen's
   Status says the same. The progress update lists it under `In Progress:
   planned, waiting for a build seat`, not `In Progress: planning`. It is not
@@ -2554,6 +2913,42 @@ dependency merges, a merge request it unblocks that is not set yet makes
 resumes. Each wave of dependency merges costs one visit of each, so a chain
 deeper than Ensure Auto-Merge's `max-visits` allows still blocks.
 
+### Tickets merge side by side (ASS-560)
+
+Nothing serialises merges across the tickets of a project. Each ticket
+merges as soon as its own merge requests are ready. Order is kept only
+inside a ticket variation: its merge requests merge in their planned
+depends-on order, because that order can matter (a library before its
+consumer). Ensure Auto-Merge arms a dependent only once its dependencies
+have merged, and the harness's own merge gate (`merge-request:merge-in-turn`,
+below) takes them one at a time. A ticket that depends on another ticket
+still waits for it: the dependency hold (`src/control/dependencies.js`,
+`wait-for-dependencies`) keeps it at its step, Merge Pull Request included,
+until that ticket is done.
+
+The price is more rebases. When two tickets' merge requests target the same
+repository and one lands first, the other's base has moved:
+- **On a forge (grouped-merge):** the forge refuses a non-fast-forward or an
+  out-of-date branch, or the pipeline ran on the old base. `merge-request:check`
+  reports `needs-rebase`. Address Merge Request Feedback rebases, and the new
+  head is reviewed again (Check Reviewed at Head). Auto-merge is then armed
+  again (a re-arm after a push spends no visit, ASS-518), and the forge merges
+  once the new pipeline passes. The rounds count toward Address Merge Request
+  Feedback's `max-visits`, then Blocked.
+- **The harness's own merge gate (v2-release):** a gate whose main moves under
+  it says `base-moved`. Merge Pull Request goes back into itself, where it is
+  rebased onto the new main and fully tested again. Each return is a visit,
+  so its `max-visits` (5) bounds the rebases, and then the ticket goes to
+  Blocked. The recorded output's ai-feedback says that main kept moving.
+
+**The CI trade-off.** Each merge request is tested on its own: by its
+pipeline on the forge, and for the harness by its gate, on main as it was
+then. Two changes that are each green but break together, merged at the
+same moment, are not caught before the merge. The project's CI runs on main
+after every merge (ASS-552), and that is where such a semantic conflict
+shows. The operator accepted this trade (2026-11-23) in exchange for not
+holding a busy project to one merge at a time.
+
 A GitLab merge request held by a reviewer waits too (ASS-508): when every
 open blocking thread's last note (a system note aside) is the harness's
 (`mr_harness_accounts`), the reviewer holding the resolve, and its failed
@@ -2655,7 +3050,7 @@ other commands): each Open one's head is read from its forge, and it prints
 `{ "changed": <bool>, "merge-requests": [{ id, key, head, "checked-head",
 acted }] }`, changed false only when there is an Open one and every head is
 its `checked-head` with nothing resolved or retried. Its exit on changed
-false goes back to the check with `"cause": "no-op-round"` in the engine JSON;
+false goes back to the check with `cause: no-op-round` in the engine;
 control records an exit's cause on a script step's move, and on a run's own
 `state-changes` too (`transient-state-engine:change-state` takes
 `MOVE_CAUSE`), and counts visits over the history with each no-op round taken
@@ -2968,24 +3363,44 @@ stay the reference to copy from.
   Restart's `harness:restarted {ticket}` passes as before. The steps' keyed
   commands are unchanged; an empty key is refused, never taken for the
   operator's.
-- **The merge queue (ASS-197), v2's own.** v2-release's Merge Pull Request
-  is no longer grouped-release-harness's: it runs
-  `merge-request:merge-in-turn … npm test` on a one-minute timer. One ticket
-  of a project merges at a time — its gate holds a flock on
-  `data/projects/<p>/merge.lock`, which the kernel drops when the gate ends
-  however it ends, so a crashed holder never jams the queue;
-  `merge-lock.json` beside it names the holder. A ticket behind it waits at
-  the step (exit 0, `waiting`), its ai-feedback saying "waiting to merge
-  behind <key>". Holding the lock, the gate runs in the background (the
-  tests take minutes; control's tick is not held): the branch rebased onto
-  the latest main in a scratch worktree, the full tests run there; green —
-  the rebased branch pushed and merged, so what merges is what was tested;
-  red (a conflict, a failing test) — nothing pushed or merged, why in
-  execution-plan-<variation>.md, exit 2 to the new `rebuild` end, which Release sends
-  into Build at Generate Solution, the exit itself marked `cause: merge-gate-red`
-  so that move restarts Build/Test/Document/Review's visit counting (ASS-315,
-  above) rather than spending it on a gate red unrelated to the change. The
-  grouped engines keep the plain merge.
+- **The merge gate (ASS-197; ASS-560: per ticket, side by side), v2's own.**
+  v2-release's Merge Pull Request is no longer grouped-release-harness's. It
+  runs `merge-request:merge-in-turn … npm test` on a one-minute timer and
+  records its output (`record-script-output`). There is no project-wide lock
+  or turn: ASS-197's `merge.lock` and `merge-lock.json` are gone, and tickets
+  of a project run their gates at the same time. Only one gate of a ticket
+  variation runs at once. It holds a flock on
+  `work/<KEY>/merge-gate-<variation>.lock`, which the kernel drops when the
+  gate ends however it ends, so a crashed gate never jams its ticket.
+  `merge-gate-holder-<variation>.json` beside it names the gate. While the
+  gate runs, the step waits (exit 0, `waiting`). The gate runs in the
+  background, since the tests take minutes and control's tick must not be
+  held. It takes the variation's Open pull requests one at a time in
+  depends-on order. For each, it rebases the branch onto the latest main in
+  a scratch worktree and runs the full tests there. The fetch goes into the
+  variation's own `refs/merge-gate/<KEY>/<variation>/…`, so two gates never
+  race for a ref. If main has not moved and the tests are green, the rebased
+  branch is pushed and that one pull request is merged
+  (`merge-request:merge --first`), so what merges is what was tested. Then
+  the gate goes on to the next.
+  - **Main moved during the run** (another ticket merged first), or the forge
+    refused the merge after main moved: nothing more is merged. The step
+    says `{ waiting, base-moved }` (exit 0) with an ai-feedback. Its first
+    exit takes that back into Merge Pull Request, a visit, where the next ask
+    rebases onto the new main and runs the full tests again. `max-visits` (5)
+    bounds the rebases, then Blocked. The output is exit 0 for two reasons:
+    control counts any other non-zero exit as a failure, and a project
+    Release without that exit reads it as waiting, so it never mistakes a
+    base move for a merge.
+  - **Red** (a conflict, a failing test): nothing more is pushed or merged,
+    and why goes in execution-plan-<variation>.md. Exit 2 goes to the
+    `rebuild` end, which Release sends into Build at Generate Solution. The
+    exit is marked `cause: merge-gate-red`, so that move restarts Build,
+    Test, Document and Review's visit counting (ASS-315, above) rather than
+    spending it on a gate red unrelated to the change. The pull requests
+    merged before the red one stay merged.
+
+  The grouped engines keep the plain merge.
 - **A merge-gate red on master's flake (ASS-394).** A red test run in the
   merge gate (`merge-request:merge-in-turn`) is not at once the ticket's. The
   failing tests run again, once, in the same rebased worktree: node --test's
@@ -3039,3 +3454,21 @@ What follows each step added, before the next one is added:
 
 A test run passes when the operator has checked the new step's work and the
 ticket reached Done. Only then is the next step added.
+
+## Where each ticket runs, on the sprint screen (ASS-559)
+
+The sprint screen's **Machine** and **Runs in** columns say where each ticket variation's current step runs, from the
+files control writes (`src/tui/places.js`): the variation's `seats.json` record — its `target` (ASS-540; ASS-553's
+`workstation-worktree` / `cloud-vm-worktree` too) and its machine's id (`workstation`) — in the `seats`, `planning` or
+`local` list, or the planner's target for a holder control has not recorded yet. Machine is `Mac`, `GCP workstation
+<id>` or `Cloud VM <id>` (the id goes under the label in a narrow column); Runs in is `Lima VM` (local-vm), `slot`
+(workstation, cloud-vm: the machine's working folder, ASS-529), `Substrate sandbox` (the three substrate targets),
+`worktree` (local-worktree and the remote ones) or `workspace` (local-workspace). A sandbox that is hibernated or
+hibernating (its record, or its cluster's newer check — the substrate sandboxes box's rule) has `hibernated` beneath;
+a ticket seated nowhere (gate, wait, host-only step, waiting for a seat) has both blank, except that its hibernated
+sandbox still shows, in gray, where its work is parked. They replaced the per-row seat marks (💺 a VM or planning
+seat, ⛅ a workstation's, 🌐 a cloud VM's, 📦 a Substrate sandbox with "· sandbox on <machine>" after the title) and the
+Dev and Testing columns, whose acceptance-criteria statuses and automated test tally are on the ticket screen's
+**Acceptance criteria** tab (last: 7 without Chat, 8 with it), with links to `test-results-<var>.md` (the testing
+statuses' evidence), `code-review-<var>.md` and `change-log-<var>.md` (the dev statuses'). The Total Token Spend column
+is headed Spend, so the grid still fits 120 columns.

@@ -4,6 +4,10 @@ Variation {variation}'s brief: if {ticket-folder}/variation-brief-{variation}.md
 
 {where}
 
+{work-mode-rule}
+
+When the variation is built in a worktree and your review finds risk only a full machine can check, escalate it (Work mode, above) with review, say why in code-review-{variation}.md, and finish {"is-approved": false}: it is built again on a full machine.
+
 The changes are in every merge request not Closed: {agent-sh} ticket:merge-request-plan {project} {ticket} {variation} lists each one's id, repository, branch and base. Review them all in one pass: in each one's repository checkout, git fetch origin, then its changes are git diff origin/<base>...origin/<branch>.
 
 Look for:

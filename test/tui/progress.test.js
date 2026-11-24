@@ -5,10 +5,11 @@ import { join } from 'node:path';
 import { engineDir } from '../support/engine-walk.js';
 import { progressBar, stateColor } from '../../src/tui/progress.js';
 import { visible } from '../../src/tui/text.js';
+import { readEngine } from '../../src/workflow/engine-file.js';
 
 // An engine of colorless steps at sequences 0 to 29: black at 0, Done at 29.
 const steps = Array.from({ length: 30 }, (_, sequence) => ({ sequence }));
-const engine = name => JSON.parse(readFileSync(join(engineDir(name), 'state-engine.json'))).steps;
+const engine = name => readEngine(join(engineDir(name), 'workflow.yaml')).steps;
 const DONE = '\x1b[38;2;58;112;58m';
 const rgb = code => code.match(/^\x1b\[38;2;(\d+);(\d+);(\d+)m$/).slice(1).map(Number);
 const strip = s => s.replace(/\x1b\[[0-9;]*m/g, '');

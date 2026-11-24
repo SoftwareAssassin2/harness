@@ -2,6 +2,10 @@ Resolve whatever is blocking ticket {ticket}'s merge requests, variation {variat
 
 {where}
 
+{work-mode-rule}
+
+When the variation is built in a worktree and a failed job needs the running stack to reproduce (an integration or e2e job, a service contract), escalate it (Work mode, above) with ci, naming the job and what it needs, then fix what you can here and reply on the merge request; the next round runs on a full machine.
+
 If {ticket-folder}/operator-review-{variation}.md exists, it holds the operator's notes from rejecting earlier passes at Human Review: read it and address each note in this step's work.
 
 The merge requests: {agent-sh} ticket:merge-request-plan {project} {ticket} {variation} lists each one's id, repository, branch, base, url and status. Look at every one that is Open with `{agent-sh} merge-request:view {project} {ticket} {variation} <id>` — its unresolved threads, its review comments (`comments`: plain comments, no thread, left since its latest commit) and failed jobs, with their logs — and, in its repository's checkout, for each that needs it:

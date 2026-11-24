@@ -11,10 +11,11 @@ import { join } from 'node:path';
 import { stepOf, nextState } from '../../src/control/engine.js';
 import { validateStateEngine } from '../../src/workflow/validate.js';
 import { EXAMPLE_ENGINES, engineDir } from '../support/engine-walk.js';
+import { readEngine } from '../../src/workflow/engine-file.js';
 
 const ROOT = join(import.meta.dirname, '..', '..');
 const read = (...path) => readFileSync(join(ROOT, ...path), 'utf8');
-const engine = name => JSON.parse(readFileSync(join(engineDir(name), 'state-engine.json'), 'utf8'));
+const engine = name => readEngine(join(engineDir(name), 'workflow.yaml'));
 // The top-level engines whose Review group runs an engine with a Human Review to reject at — v2-review's.
 // ASS-314 took grouped-review's out, so harness-development-grouped and example-development-grouped have no return step to name.
 const TOPS = { 'harness-development-v2': 'v2-review', 'example-github-development': 'v2-review' };

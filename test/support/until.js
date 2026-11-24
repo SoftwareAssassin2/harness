@@ -4,8 +4,13 @@
 // agent, control, the downloader). The default allows for a busy machine,
 // where starting a process can take seconds (ASS-109): a check that comes
 // true returns at once, so only a failing test waits the whole limit.
+// ASS-545: 90 s (was 30 s): four full suites at once beside other builds
+// (load averages of 100-180 on 14 cores) took over 30 s for one fake agent's
+// turn; a hang guard costs nothing while tests pass, so it is set well above
+// that. A test whose guard tells a hang from a slow alternative makes the
+// alternative far longer (10 minutes, or never) rather than the guard short.
 import { appendFileSync } from 'node:fs';
-export const LOADED_MS = 30_000;
+export const LOADED_MS = 90_000;
 const note = (ms, how, check) => { if (process.env.UNTIL_LOG) try { appendFileSync(process.env.UNTIL_LOG, `${ms}\t${how}\t${String(check).replace(/\s+/g, ' ').slice(0, 80)}\n`); } catch { /* ignore */ } };
 export const until = async (check, ms = LOADED_MS) => {
   const began = Date.now();

@@ -18,14 +18,14 @@ const sprint = f => join(f.dir, 'projects', 'p', 'sprints', 'sprint-10', 'sprint
 // ABC-3 A at `at`; with `blocked`, Blocked troubleshoots (a one-prompt run).
 function fixture({ at = 'plan', blocked = false, manual = false } = {}) {
   const f = controlFixture();
-  edit(join(f.dir, 'engines', 'example-development', 'state-engine.json'), e => {
+  edit(join(f.dir, 'engines', 'example-development', 'workflow.yaml'), e => {
     e['check-health-interval-seconds'] = 1e9;
     e.steps.unshift({ id: 'blocked-for-human', sequence: 0, 'is-blocked-state': true, action: { type: 'human' } });
     if (blocked) Object.assign(e.steps.find(s => s.id === 'blocked'), { action: { type: 'state-engine', engine: 'troubleshoot' } });
   });
   if (blocked) {
     mkdirSync(join(f.dir, 'engines', 'troubleshoot'), { recursive: true });
-    writeFileSync(join(f.dir, 'engines', 'troubleshoot', 'state-engine.json'), JSON.stringify({ steps: [
+    writeFileSync(join(f.dir, 'engines', 'troubleshoot', 'workflow.yaml'), JSON.stringify({ steps: [
       { id: 'troubleshoot', sequence: 1, action: { type: 'prompt', prompt: 'test', 'agent-count': 1 }, 'exit-events': [{ condition: { 'turn-complete': true }, 'move-to-state': 'done' }] },
       { id: 'done', sequence: 2, 'is-done': true, action: { type: 'none' } },
     ] }));

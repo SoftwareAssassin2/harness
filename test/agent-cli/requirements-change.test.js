@@ -9,6 +9,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync } from 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { engineDir } from '../support/engine-walk.js';
+import { readEngine } from '../../src/workflow/engine-file.js';
 
 const run = promisify(execFile);
 const AGENT = join(import.meta.dirname, '..', '..', 'agent.sh');
@@ -33,7 +34,7 @@ function folders(ticket = {}) {
     }],
   }, null, 4));
   mkdirSync(join(dir, 'engines', 'e'), { recursive: true });
-  writeFileSync(join(dir, 'engines', 'e', 'state-engine.json'), JSON.stringify({ steps: [
+  writeFileSync(join(dir, 'engines', 'e', 'workflow.yaml'), JSON.stringify({ steps: [
     { id: 'setup', name: 'Setup', sequence: 1 },
     { id: 'plan', name: 'Plan', sequence: 2, 'recheck-on-requirements-change': true },
     { id: 'build', name: 'Build', sequence: 3, 'recheck-on-requirements-change': true },
@@ -106,7 +107,7 @@ test('ticket:take-new applies the new description, clears the change, un-pauses 
 });
 
 test('the v2 and grouped development engines flag Plan and every later step before Done for a re-check on a requirements change, and no earlier one; the flat engines flag none (ASS-78)', () => {
-  const engine = name => JSON.parse(readFileSync(join(engineDir(name), 'state-engine.json'), 'utf8'));
+  const engine = name => readEngine(join(engineDir(name), 'workflow.yaml'));
   const flagged = name => engine(name).steps.filter(s => s['recheck-on-requirements-change'] === true).map(s => s.id);
   assert.deepEqual(flagged('harness-development-v2'), ['plan', 'build', 'test', 'document', 'review', 'release']);
   assert.deepEqual(flagged('harness-development-grouped'), ['plan', 'build', 'test', 'document', 'review', 'release']);
@@ -129,7 +130,7 @@ test('ticket:requirements-changed moves the variation from the step it is in to 
 
 test('ticket:requirements-changed fails, writing nothing, when the engine has no requirements-changed step, the variation is unknown, or on bad usage (ASS-79)', async () => {
   const dir = folders();
-  const file = join(dir, 'engines', 'e', 'state-engine.json');
+  const file = join(dir, 'engines', 'e', 'workflow.yaml');
   const engine = JSON.parse(readFileSync(file, 'utf8'));
   writeFileSync(file, JSON.stringify({ steps: engine.steps.filter(s => s.id !== 'requirements-changed') }));
   const before = readFileSync(sprintFile(dir), 'utf8');

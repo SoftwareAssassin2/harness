@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Description: End a ticket variation's step on a project's GCP workstation and free it — a completed step's leftovers committed, the rest discarded, committed work pushed, every repository back on master at the latest — workstation:release <project> <id> [--force] [--completed <step>]; prints what it did.
+# Description: End a ticket variation's step on a project's GCP workstation and free it — a completed step's leftovers committed, the rest discarded, committed work pushed, every repository back on master at the latest — workstation:release <project> <id> [--force] [--completed <step>] [--slot <n>]; prints what it did.
 set -euo pipefail
 
 # ASS-468 AC3, AC9, AC10: a step's end, whatever its outcome (success,
@@ -47,15 +47,22 @@ set -euo pipefail
 # fails, the holder kept, when it is not. Nothing outside ~/harness and the
 # runtime folder is touched, nor ~/harness's bin, lib, tools, env,
 # setup.json and golden-image.
+#
+# ASS-529: a machine takes several tickets' steps at once, each in a folder of
+# its own (a slot, workstation-variation.bash): --slot <n> ends the step of the
+# holder of slot n (0, the shared root, without it) and frees that slot alone;
+# the other slots' steps go on, and the project's credentials in the runtime
+# folder stay while any is held.
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../vm.bash"
 
 command=workstation:release
-usage="usage: $command <project> <id> [--force] [--completed <step>]"
-force="" wsv_completed=incomplete wsv_message="" args=()
+usage="usage: $command <project> <id> [--force] [--completed <step>] [--slot <n>]"
+force="" wsv_completed=incomplete wsv_message="" wsv_slot=0 args=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --force) force=1; shift ;;
     --completed) [[ $# -ge 2 && -n "$2" ]] || { echo "$usage" >&2; exit 1; }; wsv_completed=completed step="$2"; shift 2 ;;
+    --slot) [[ $# -ge 2 && "$2" =~ ^[0-9]+$ ]] || { echo "$usage" >&2; exit 1; }; wsv_slot="$2"; shift 2 ;;
     *) args+=("$1"); shift ;;
   esac
 done
@@ -63,7 +70,7 @@ done
 project="${args[0]}" id="${args[1]}"
 workstation_settings "$command" "$project" "$id" >/dev/null
 wsv_pool_lock "$command" "$project"
-holder="$(workstation_entry "$project" "$id" | jq -c '.holder // empty')"
+holder="$(workstation_entry "$project" "$id" | jq -c --argjson n "$wsv_slot" "$wsv_holders"' | map(select(.slot == $n)) | first // empty')"
 if [[ -n "$holder" && -z "$force" ]] && wsv_busy "$project" "$(jq -r .ticket <<< "$holder")" "$(jq -r .variation <<< "$holder")"; then
   echo "$command: $(jq -r '"\(.ticket) \(.variation)"' <<< "$holder") still has an agent at work on $project's workstation $id; --force to free it anyway" >&2
   exit 1

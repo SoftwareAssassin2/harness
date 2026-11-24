@@ -1,6 +1,8 @@
-// ASS-197's merge queue fixture (merge-request:merge-in-turn), shared by its
+// ASS-197's merge gate fixture (merge-request:merge-in-turn), shared by its
 // tests: a real workspace, a clone of a bare origin; gh a fake that merges into
-// it. ASS-257: every process a test starts through it — the lock holders it
+// it. ASS-560: no project-wide merge lock any more — each ticket variation's
+// own (work/<KEY>/merge-gate-<variation>.lock, its gate named in
+// merge-gate-holder-<variation>.json). ASS-257: every process a test starts through it — the lock holders it
 // spawns, and each gate (a session of its own, setsid, so its process group is
 // its pid) with all it runs — is killed when the test ends, however it ends:
 // passing, failing or past its time limit (t.after), or the test process
@@ -8,7 +10,7 @@
 // first, and gives up by itself after a couple of minutes, so not even a test
 // process killed outright leaves a gate behind for long.
 import { execFileSync, spawn } from 'node:child_process';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, chmodSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, chmodSync, rmSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fixture, run, AGENT } from './harness-fixture.js';
@@ -17,6 +19,9 @@ export const git = (dir, ...args) => execFileSync('git', ['-C', dir, ...args], {
 export const ID = { GIT_AUTHOR_NAME: 'T', GIT_AUTHOR_EMAIL: 't@example.com', GIT_COMMITTER_NAME: 'T', GIT_COMMITTER_EMAIL: 't@example.com' };
 const REPO = 'https://github.com/owner/repo';
 const pause = ms => new Promise(r => setTimeout(r, ms));
+// ASS-549: how long the cleanup waits for a gate just started to record its pid — a hang guard; it takes well under
+// a second unloaded, and the wait ends as soon as the pid is there.
+const GATE_START_MS = 60_000;
 
 // The cleanups of the queues not yet cleaned up, run once more as the test process exits.
 const pending = new Set();
@@ -33,18 +38,26 @@ export const exited = child => (child.exitCode !== null || child.signalCode !== 
 // while q.slow is on) and a sprint of ABC-3 and ABC-4, each variation A with
 // one Open pull request (#3, #4) from its branch, both cut from main before
 // main moved on (main.txt). `t` is the test, whose end cleans up.
-export function queue(t) {
+// ASS-549: { hang: <file> } — the full tests also hang while <file> exists, a
+// hang the cleanup does NOT lift (only whoever made the file does, for up to
+// 10 minutes): ASS-257 AC2's outer test makes it, so a gate gone after the
+// inner test ended can only have gone by the cleanup's process-group kill.
+// Lifted by the cleanup, the slow hang let the gate finish by itself, and the
+// test passed with the kill switched off (ASS-545's D1). (Not `hold`: that is
+// the lock holder below.)
+export function queue(t, { hang: hangFile = '' } = {}) {
   const f = fixture(), dir = mkdtempSync(join(tmpdir(), 'mit-'));
   const origin = join(dir, 'origin.git'), ws = join(dir, 'workspace'), bin = join(dir, 'bin'), runs = join(dir, 'runs.log');
   const slowFlag = join(dir, 'slow'), groupsLog = join(dir, 'groups.log');
   execFileSync('git', ['init', '--bare', '--initial-branch=main', origin], { stdio: 'ignore' });
   execFileSync('git', ['clone', '--quiet', origin, ws], { stdio: 'ignore' });
   const commit = (file, text, message) => { writeFileSync(join(ws, file), text); git(ws, 'add', '.'); execFileSync('git', ['-C', ws, 'commit', '-q', '-m', message], { env: { ...process.env, ...ID } }); };
-  // The process group first (the gate's: it is the session's leader), then the run; a hang lasts at most ~2 minutes, failing then.
+  // The process group first (the gate's: it is the session's leader), then the run; a slow hang lasts at most ~2 minutes, failing then (a hang file, ASS-549, at most 10).
   writeFileSync(join(ws, 'check.sh'), `#!/bin/sh
 ps -o pgid= -p $$ | tr -d ' ' >> "$GATE_GROUPS"
 pwd -P >> "$GATE_RUNS"
 i=0; while [ -e "$GATE_SLOW" ] && [ $i -lt 1200 ]; do sleep 0.1; i=$((i + 1)); done
+i=0; while [ -n "$GATE_HANG" ] && [ -e "$GATE_HANG" ] && [ $i -lt 6000 ]; do sleep 0.1; i=$((i + 1)); done
 test ! -e "$GATE_SLOW" && test ! -e broken
 `);
   chmodSync(join(ws, 'check.sh'), 0o755);
@@ -52,7 +65,9 @@ test ! -e "$GATE_SLOW" && test ! -e broken
   git(ws, 'push', '-q', '-u', 'origin', 'main');
   git(ws, 'remote', 'set-head', 'origin', 'main');
   const branch = (name, file, text) => { git(ws, 'checkout', '-q', '-b', name, 'main'); commit(file, text, name); git(ws, 'push', '-q', 'origin', name); git(ws, 'checkout', '-q', 'main'); };
-  // The fake gh: each pull request's view from pr-<n>.json; a merge merges its branch into main on origin, as GitHub would.
+  // The fake gh: each pull request's view from pr-<n>.json; a merge merges its branch into main on origin, as GitHub
+  // would — ASS-560: only a branch up to date with main (as a forge requiring that, or a fast-forward, does), so a
+  // gate whose main moved after its check is refused, and two gates' merges racing, the later push is refused too.
   mkdirSync(bin);
   writeFileSync(join(bin, 'gh'), `#!/usr/bin/env bash
 printf '%s\\n' "$*" >> "${dir}/gh.log"
@@ -60,8 +75,12 @@ case "$1 $2" in
   "api repos/owner/repo") echo '{"default_branch":"main"}' ;;
   "pr view") cat "${dir}/pr-$3.json" ;;
   "pr ready") ;;
+  "pr edit") n="$3"; while [ $# -gt 0 ]; do [ "$1" = --base ] && b="$2"; shift; done
+    jq --arg b "$b" '.baseRefName = $b' "${dir}/pr-$n.json" > "${dir}/pr-$n.json.$$" && mv "${dir}/pr-$n.json.$$" "${dir}/pr-$n.json" ;;
   "pr merge") b="$(jq -r .branch "${dir}/pr-$3.json")"; w="$(mktemp -d)"
-    git clone -q "${origin}" "$w" && git -C "$w" merge -q --no-ff "origin/$b" -m "Merge #$3" && git -C "$w" push -q origin main && git -C "$w" push -q origin --delete "$b" || exit 1
+    git clone -q "${origin}" "$w" || exit 1
+    git -C "$w" merge-base --is-ancestor origin/main "origin/$b" || { echo "#$3 is out of date with main" >&2; exit 1; }
+    git -C "$w" merge -q --no-ff "origin/$b" -m "Merge #$3" && git -C "$w" push -q origin main && git -C "$w" push -q origin --delete "$b" || exit 1
     jq '.state = "MERGED"' "${dir}/pr-$3.json" > "$w/v" && mv "$w/v" "${dir}/pr-$3.json" ;;
   *) exit 1 ;;
 esac
@@ -69,16 +88,28 @@ esac
   chmodSync(join(bin, 'gh'), 0o755);
   const project = JSON.parse(readFileSync(join(f.dir, 'projects', 'p', 'project.json'), 'utf8'));
   writeFileSync(join(f.dir, 'projects', 'p', 'project.json'), JSON.stringify({ ...project, 'local-environments': [{ name: 'local-pc', type: 'local-pc', folder: ws }] }));
-  const ticket = (key, n) => {
-    writeFileSync(join(dir, `pr-${n}.json`), JSON.stringify({ state: 'OPEN', baseRefName: 'main', title: key, isDraft: false, mergeable: 'MERGEABLE', mergeStateStatus: 'CLEAN', branch: `change/${key}-1` }));
-    return { key, 'ticket-system-status': 'In Progress', variations: [{ name: 'A', 'merge-request': [{ id: 1, repository: REPO, branch: `change/${key}-1`, contents: 'x', 'depends-on': [], status: 'Open', key: `#${n}`, url: `${REPO}/pull/${n}`, base: 'main' }] }] };
+  // A pull request's view (pr-<n>.json) and its planned row: MR <id> from <branch> onto <base>, after those in <dependsOn>.
+  const pr = (key, n, { id = 1, branch = `change/${key}-${id}`, base = 'main', dependsOn = [] } = {}) => {
+    writeFileSync(join(dir, `pr-${n}.json`), JSON.stringify({ state: 'OPEN', baseRefName: base, title: key, isDraft: false, mergeable: 'MERGEABLE', mergeStateStatus: 'CLEAN', branch }));
+    return { id, repository: REPO, branch, contents: 'x', 'depends-on': dependsOn, status: 'Open', key: `#${n}`, url: `${REPO}/pull/${n}`, base };
   };
+  const ticket = (key, mrs) => ({ key, 'ticket-system-status': 'In Progress', variations: [{ name: 'A', 'merge-request': mrs }] });
   const sprintFile = join(f.dir, 'projects', 'p', 'sprints', 'sprint-10', 'sprint.json');
-  writeFileSync(sprintFile, JSON.stringify({ number: 10, bugs: [], spikes: [], features: [ticket('ABC-3', 3), ticket('ABC-4', 4)] }, null, 4));
+  const features = [ticket('ABC-3', [pr('ABC-3', 3)]), ticket('ABC-4', [pr('ABC-4', 4)])];
+  const writeSprint = () => writeFileSync(sprintFile, JSON.stringify({ number: 10, bugs: [], spikes: [], features }, null, 4));
+  writeSprint();
+  // ASS-560: <key>'s variation A planned as these pull requests ([{ n, id, branch, base, dependsOn }]), replacing its own.
+  const plan = (key, rows) => {
+    const mrs = rows.map(r => pr(key, r.n, r)), at = features.findIndex(x => x.key === key);
+    if (at >= 0) features[at] = ticket(key, mrs); else features.push(ticket(key, mrs));
+    writeSprint();
+  };
   // ASS-394: not a part of this test run, so a gate's own node --test runs its files (NODE_TEST_CONTEXT would skip them).
   const { NODE_TEST_CONTEXT, ...outside } = f.env;
-  const env = { ...outside, ...ID, PATH: `${bin}:${process.env.PATH}`, GATE_RUNS: runs, GATE_SLOW: slowFlag, GATE_GROUPS: groupsLog, OFF_BOARD_DIR: join(dir, 'off-board') };  // ASS-394: tickets the gate raises off-board land here
-  const step = key => run(AGENT, ['merge-request:merge-in-turn', 'p', key, 'A', './check.sh'], { env, timeout: 60_000 }).then(r => ({ code: 0, out: JSON.parse(r.stdout) }), e => ({ code: e.code, err: e.stderr }));
+  const env = { ...outside, ...ID, PATH: `${bin}:${process.env.PATH}`, GATE_RUNS: runs, GATE_SLOW: slowFlag, GATE_GROUPS: groupsLog, GATE_HANG: hangFile, OFF_BOARD_DIR: join(dir, 'off-board') };  // ASS-394: tickets the gate raises off-board land here
+  // An ask of the step: its exit and its JSON (ASS-560: every ending prints one, a failing one too, for record-script-output).
+  const json = text => { try { return JSON.parse(text); } catch { return undefined; } };
+  const step = key => run(AGENT, ['merge-request:merge-in-turn', 'p', key, 'A', './check.sh'], { env, timeout: 60_000 }).then(r => ({ code: 0, out: JSON.parse(r.stdout) }), e => ({ code: e.code, err: e.stderr, ...(json(e.stdout) && { out: json(e.stdout) }) }));
   // until <condition> <what> [ms] — polls until it holds; past the deadline, an error naming what never happened.
   const until = async (condition, what, ms = 60_000) => {
     for (const end = Date.now() + ms; !condition();) {
@@ -90,46 +121,67 @@ esac
   const settle = async (key, ms = 120_000) => {
     for (const end = Date.now() + ms; Date.now() < end;) {
       const r = await step(key);
-      if (!(r.code === 0 && r.out.waiting)) return r;
+      if (!(r.code === 0 && r.out.waiting) || r.out['base-moved']) return r;   // ASS-560: a base move is an ending too (the engine's exit)
       await pause(100);
     }
     throw new Error(`${key}: the gate never finished`);
   };
+  // ASS-560: asked as the engine does — a base move (main moved under the gate) going back into the step — until it
+  // ends otherwise: that ending, and how many times main moved first.
+  const settleMoving = async (key, ms = 240_000) => {
+    let moved = 0;
+    for (const end = Date.now() + ms; ;) {
+      const r = await settle(key, Math.max(1, end - Date.now()));
+      if (!r.out?.['base-moved']) return { ...r, moved };
+      moved += 1;
+    }
+  };
   const variation = key => JSON.parse(readFileSync(sprintFile, 'utf8')).features.find(x => x.key === key).variations[0];
   const onMain = file => { try { git(origin, 'cat-file', '-e', `main:${file}`); return true; } catch { return false; } };
   const read = (...p) => (existsSync(join(f.dir, 'projects', 'p', ...p)) ? readFileSync(join(f.dir, 'projects', 'p', ...p), 'utf8') : '');
-  const lock = join(f.dir, 'projects', 'p', 'merge.lock');
-  // A holder of the merge lock, as another ticket's gate would hold it, until killed.
+  // ASS-560: a variation's own merge-gate lock and its gate's record (work/<KEY>/), the project having none.
+  const work = join(f.dir, 'projects', 'p', 'work');
+  const lockOf = key => join(work, key, 'merge-gate-A.lock');
+  const holderOf = key => join(work, key, 'merge-gate-holder-A.json');
+  const keys = () => (existsSync(work) ? readdirSync(work) : []);
+  const readHolder = key => (existsSync(holderOf(key)) ? readFileSync(holderOf(key), 'utf8') : '');
+  // A holder of <key>'s merge-gate lock, as its own gate would hold it, until killed.
   const holders = [];
   const hold = async key => {
-    writeFileSync(join(f.dir, 'projects', 'p', 'merge-lock.json'), JSON.stringify({ ticket: key, variation: 'A', pid: 1, 'taken-at': '2026-10-27T00:00:00Z' }));
+    mkdirSync(join(work, key), { recursive: true });
+    writeFileSync(holderOf(key), JSON.stringify({ ticket: key, variation: 'A', pid: 1, 'taken-at': '2026-10-27T00:00:00Z' }));
     const ready = join(dir, `held-${key}`);
-    const child = spawn('perl', ['-MFcntl=:flock', '-e', 'open(my $fh, ">>", $ARGV[0]) or die; flock($fh, LOCK_EX) or die; open(my $r, ">", $ARGV[1]); close $r; sleep 600', lock, ready], { stdio: 'ignore' });
+    const child = spawn('perl', ['-MFcntl=:flock', '-e', 'open(my $fh, ">>", $ARGV[0]) or die; flock($fh, LOCK_EX) or die; open(my $r, ">", $ARGV[1]); close $r; sleep 600', lockOf(key), ready], { stdio: 'ignore' });
     holders.push(child);
     await until(() => existsSync(ready) || child.exitCode !== null, 'the lock holder taking the lock', 30_000);
     if (!existsSync(ready)) throw new Error('no lock');
     return child;
   };
-  // The lock free and its holder record gone: the last gate has cleaned up and ended (it does so just after its result).
+  // Every ticket's lock free and its holder record gone: the last gates have cleaned up and ended (each does so just
+  // after its result). The holder records left, joined ('' when none).
   const idle = async () => {
-    const free = () => execFileSync('perl', ['-MFcntl=:flock', '-e', 'open(my $f, ">>", $ARGV[0]) or die; print flock($f, LOCK_EX | LOCK_NB) ? 1 : 0', lock], { encoding: 'utf8' }) === '1';
-    await until(free, 'the merge lock freed');
-    return read('merge-lock.json');
+    const free = key => !existsSync(lockOf(key)) || execFileSync('perl', ['-MFcntl=:flock', '-e', 'open(my $f, ">>", $ARGV[0]) or die; print flock($f, LOCK_EX | LOCK_NB) ? 1 : 0', lockOf(key)], { encoding: 'utf8' }) === '1';
+    await until(() => keys().every(free), 'every merge-gate lock freed');
+    return keys().map(readHolder).join('');
   };
-  // The gate running now, per the holder record (it writes its pid first thing): its pid, if that process is a gate.
-  const gateNow = () => {
-    const pid = Number(read('merge-lock.json').match(/"pid": (\d+)/)?.[1]);
-    return pid > 1 && /merge-in-turn\.sh --gate /.test(commandOf(pid)) ? pid : null;
-  };
+  // The gates running now, per their holder records (each writes its pid first thing): their pids, those that are gates.
+  const gatesNow = () => keys().map(k => Number(readHolder(k).match(/"pid": (\d+)/)?.[1])).filter(pid => pid > 1 && /merge-in-turn\.sh --gate /.test(commandOf(pid)));
   // The process groups of the gates that got as far as the full tests, each a gate's (its pid).
   const groups = () => (existsSync(groupsLog) ? [...new Set(readFileSync(groupsLog, 'utf8').split('\n').filter(Boolean).map(Number))] : []);
+  // ASS-549: a gate the step has just started but that has not yet written its pid into the holder record (its
+  // first act) — the record there, pid-less — is waited for, so the kill below finds it. The leak ASS-257 AC2 could
+  // hit: a test that ended in that window (the old 15 s limit ran out with the gate still starting, on a loaded Mac)
+  // killed no gate, and the gate ran on — through its full tests and the merge, or for as long as a hang file held it.
+  // Bounded (GATE_START_MS) and synchronous: the cleanup also runs as the process exits.
+  const gateStarting = () => keys().some(k => existsSync(holderOf(k)) && !/"pid":/.test(readHolder(k)));
+  const nap = new Int32Array(new SharedArrayBuffer(4));
   // Synchronous, so it can run as the process exits: the hang lifted, the holders and every gate's process group killed.
   const cleanup = () => {
     pending.delete(cleanup);
     rmSync(slowFlag, { force: true });
     for (const child of holders) if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
-    const gate = gateNow();
-    for (const g of new Set([...groups(), ...(gate ? [gate] : [])])) {
+    for (const end = Date.now() + GATE_START_MS; gateStarting() && Date.now() < end;) Atomics.wait(nap, 0, 0, 50);
+    for (const g of new Set([...groups(), ...gatesNow()])) {
       if (!(g > 1) || g === myGroup()) continue;
       try { process.kill(-g, 'SIGKILL'); } catch { /* the group has ended */ }
     }
@@ -138,5 +190,5 @@ esac
   t?.after(cleanup);
   // slow(on) — the full tests hang while on.
   const slow = on => (on ? writeFileSync(slowFlag, '') : rmSync(slowFlag, { force: true }));
-  return { f, dir, idle, ws, origin, runs, branch, commit, step, settle, until, variation, onMain, read, hold, slow, groups, cleanup, ghLog: () => readFileSync(join(dir, 'gh.log'), 'utf8').trim().split('\n') };
+  return { f, dir, idle, ws, origin, runs, branch, commit, step, settle, settleMoving, until, variation, onMain, read, readHolder, hold, slow, groups, cleanup, plan, ghLog: () => readFileSync(join(dir, 'gh.log'), 'utf8').trim().split('\n') };
 }

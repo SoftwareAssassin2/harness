@@ -205,7 +205,7 @@ test('the mark survives every sync: ticket:sync keeps it on a ticket it updates,
 // ASS-146: the memories an agent saved working a deleted ticket may not hold;
 // deleting it starts its project's check-memory run scoped to it — the
 // execution engine's check-memory-steps, the ticket's key its work-item — once.
-const withMemoryCheck = f => edit(join(f.dir, 'engines', 'example-development', 'state-engine.json'), e => {
+const withMemoryCheck = f => edit(join(f.dir, 'engines', 'example-development', 'workflow.yaml'), e => {
   e['check-memory-steps'] = [{ id: 'check-memory', sequence: 1, action: { type: 'state-engine', engine: 'check-memory' } }, { id: 'done', sequence: 2, 'is-done': true, action: { type: 'none' } }];
 });
 const reviews = f => f.assignments()['transient-state-engines'].filter(r => r.parent.trigger === 'check-memory');

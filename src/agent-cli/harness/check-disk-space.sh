@@ -12,8 +12,9 @@ set -euo pipefail
 #          dashboard and the health check say so;
 #   ok   — at or above it: nothing is shown.
 # GB are 10^9 bytes (as vm-disk-limit-gb); 50 and 15 without the keys. Writes
-# { as-of, level, free-bytes, warn-bytes, hold-bytes, held-since, volumes:
-# [{ mount, free-bytes, paths }] } to disk-space.json beside harness.json
+# { as-of, level, free-bytes, total-bytes (ASS-557: the size of the volume the
+# free space is of), warn-bytes, hold-bytes, held-since, volumes:
+# [{ mount, free-bytes, total-bytes, paths }] } to disk-space.json beside harness.json
 # (DISK_SPACE_FILE overrides it) — live data, under its lock, the previous
 # level read in the same write so every control agrees on the hold — and
 # prints it. Control runs it at most once a minute. With --report (the health
@@ -43,17 +44,18 @@ read -r warn hold < <(disk_levels "$command") || exit 1
 lima="$(lima_home)"
 volumes="[]"
 for path in "$lima" "$disk_data_folder"; do
-  line="$(volume_of "$path" 2>&1)" || { echo "$command: $line" >&2; exit 1; }
-  IFS=$'\t' read -r free mount <<<"$line"
-  volumes="$(jq -c --arg m "$mount" --argjson f "$free" --arg p "$path" '
-    if any(.[]; .mount == $m) then map(if .mount == $m then .paths += [$p] else . end) else . + [{ mount: $m, "free-bytes": $f, paths: [$p] }] end' <<<"$volumes")"
+  line="$(volume_stats "$path" 2>&1)" || { echo "$command: $line" >&2; exit 1; }
+  IFS=$'\t' read -r free total mount <<<"$line"
+  volumes="$(jq -c --arg m "$mount" --argjson f "$free" --argjson t "$total" --arg p "$path" '
+    if any(.[]; .mount == $m) then map(if .mount == $m then .paths += [$p] else . end) else . + [{ mount: $m, "free-bytes": $f, "total-bytes": $t, paths: [$p] }] end' <<<"$volumes")"
 done
 
 update_json --create "$disk_space_file" --argjson v "$volumes" --argjson warn "$warn" --argjson hold "$hold" '
   (.level // "ok") as $was | (.["held-since"] // null) as $since
   | ($v | map(.["free-bytes"]) | min) as $free
   | (if $free < $hold or ($was == "hold" and $free < $warn) then "hold" elif $free < $warn then "warn" else "ok" end) as $level
-  | { "as-of": (now | floor | todate), level: $level, "free-bytes": $free, "warn-bytes": $warn, "hold-bytes": $hold,
+  | ($v | min_by(.["free-bytes"]) | .["total-bytes"]) as $total
+  | { "as-of": (now | floor | todate), level: $level, "free-bytes": $free, "total-bytes": $total, "warn-bytes": $warn, "hold-bytes": $hold,
       "held-since": (if $level != "hold" then null elif $was == "hold" and $since != null then $since else (now | floor | todate) end),
       volumes: $v }'
 record="$(jq -c . "$disk_space_file")"

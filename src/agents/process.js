@@ -6,7 +6,7 @@
 // from here.
 import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
-import { openSync, writeSync, closeSync, mkdirSync, readSync, fstatSync } from 'node:fs';
+import { openSync, writeSync, closeSync, mkdirSync, readSync, fstatSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { sessionDir, eventLines } from './session.js';
 import { initialUsage, foldUsage, toUsageJson, writeUsage, billingOf } from './session-usage.js';
@@ -28,13 +28,20 @@ const UNSANDBOXED = JSON.stringify({ sandbox: { enabled: false } });
 // chat's rules: chats.js) when given, then `--settings`: confinedBy, the
 // settings file of a confined host agent (confinement.js), which then runs
 // without --dangerously-skip-permissions, its settings deciding what it may
-// do; else UNSANDBOXED. Never docker exec: an agent runs on
+// do; else, ASS-555, `sandbox` — the settings object of an agent on a
+// worktree run target (worktree-sandbox.js sandboxSettings), inline, the
+// agent keeping --dangerously-skip-permissions (the settings' strict
+// allowlist and allowUnsandboxedCommands: false hold in that mode too), with
+// `--add-dir <dir>` for each of `addDirs` (more working directories its file
+// tools may write: blockWritesOutsideWorkingDirectories); else UNSANDBOXED.
+// Never docker exec: an agent runs on
 // the host whatever it works in — one working in the dev container is told
 // the container and its folder there in its prompt (control's dispatch.js).
-export function agentCommand({ command = CLAUDE, model, jsonSchema, mcpConfig, resume, systemPrompt, confinedBy } = {}) {
+export function agentCommand({ command = CLAUDE, model, jsonSchema, mcpConfig, resume, systemPrompt, confinedBy, sandbox, addDirs = [] } = {}) {
+  const settings = confinedBy ?? (sandbox ? JSON.stringify(sandbox) : UNSANDBOXED);
   return [...(confinedBy ? command.filter(a => a !== BYPASS) : command), ...(model ? ['--model', model] : []), ...(jsonSchema ? ['--json-schema', JSON.stringify(jsonSchema)] : []),
     ...(mcpConfig ? ['--mcp-config', JSON.stringify(mcpConfig)] : []), ...(resume ? ['--resume', resume] : []),
-    ...(systemPrompt ? ['--append-system-prompt', systemPrompt] : []), '--settings', confinedBy ?? UNSANDBOXED];
+    ...(systemPrompt ? ['--append-system-prompt', systemPrompt] : []), ...(sandbox && !confinedBy ? addDirs.flatMap(d => ['--add-dir', d]) : []), '--settings', settings];
 }
 
 // billingOf(init) — what a session is billed to (ASS-216), from its init
@@ -46,12 +53,16 @@ export { billingOf };
 // for an agent whose session never said (no init event).
 export const billed = (agent, usd) => (agent.billing === 'subscription' ? 0 : usd);
 
-// startAgent({ name, root, dir, cwd, vm, command, model, jsonSchema, mcpConfig, resume, systemPrompt, confinedBy, startTime, env,
+// startAgent({ name, root, dir, cwd, vm, command, model, jsonSchema, mcpConfig, resume, systemPrompt, confinedBy, sandbox, addDirs, sandboxed, startTime, env,
 // usage, onEvent, onResult, onExit }) — starts agentCommand(…) in `cwd`, in its own
 // process group, with `env` (this process's by default), and its session log at
 // `dir` when given, else sessionDir(root, name, startTime) — `startTime` the assignment record's,
 // so the inbox agent:dispatch queued there is the one read; now when not
-// given. With `usage` ({ prices, windows }: session-usage.js's foldUsage) each
+// given. ASS-555: with `sandbox` (and `addDirs`, agentCommand's) a copy of the
+// settings it starts with is kept as <dir>/sandbox-settings.json (no secret is
+// ever in them), what the agent was allowed, for whoever looks later. ASS-564: with `sandboxed` ({ sandboxed, why?,
+// target, machine }: whether a worktree agent runs in Claude Code's sandbox, and why not) that is kept as
+// <dir>/sandbox.json (session.js readSandboxed), which the dashboard shows. With `usage` ({ prices, windows }: session-usage.js's foldUsage) each
 // assistant and result event also rewrites <dir>/usage.json. onEvent(event)
 // for each JSON line it prints; onResult(event) for each `result` event, before lastTotalCost moves on to its total_cost_usd,
 // so the turn's own cost is event.total_cost_usd - agent.lastTotalCost
@@ -80,14 +91,16 @@ export const billed = (agent, usd) => (agent.billing === 'subscription' ? 0 : us
 // lastTotalCost stays, so the next turn's cost includes it. `interrupted` (the
 // ISO time of the last interrupt, else null) says one came;
 // onInterrupt(prompt) is called with it, before the prompt is sent.
-export function startAgent({ name, root, dir: given, cwd, vm, command, model, jsonSchema, mcpConfig, resume, systemPrompt, confinedBy, startTime = new Date().toISOString(), env = process.env, usage, onEvent = () => {}, onResult = () => {}, onInterrupt = () => {}, onExit = () => {} }) {
+export function startAgent({ name, root, dir: given, cwd, vm, command, model, jsonSchema, mcpConfig, resume, systemPrompt, confinedBy, sandbox, addDirs, sandboxed, startTime = new Date().toISOString(), env = process.env, usage, onEvent = () => {}, onResult = () => {}, onInterrupt = () => {}, onExit = () => {} }) {
   startTime = startTime.replace(/\.\d+Z$/, 'Z');
   const dir = given ?? sessionDir(root, name, startTime);
   mkdirSync(dir, { recursive: true });
   let log = openSync(join(dir, 'session.txt'), 'a');
   const write = lines => { if (log !== null) writeSync(log, lines.map(l => `${l}\n`).join('')); };
   const marker = vm ? newMarker() : undefined;
-  const argv = agentCommand({ command, model, jsonSchema, mcpConfig, resume, systemPrompt, confinedBy });
+  if (sandbox && !confinedBy) writeFileSync(join(dir, 'sandbox-settings.json'), `${JSON.stringify(sandbox, null, 2)}\n`);
+  if (sandboxed && !confinedBy) writeFileSync(join(dir, 'sandbox.json'), `${JSON.stringify(sandboxed)}\n`);
+  const argv = agentCommand({ command, model, jsonSchema, mcpConfig, resume, systemPrompt, confinedBy, sandbox, addDirs });
   const run = vm ? machineCommand(vm, argv, { cwd: cwd ?? machinePaths(vm).repos, marker, env }) : { argv, env };
   const [file, ...args] = run.argv;
   const child = spawn(file, args, { cwd: vm ? undefined : cwd, env: run.env, detached: true, stdio: ['pipe', 'pipe', 'pipe'] });

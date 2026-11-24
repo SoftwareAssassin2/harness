@@ -80,21 +80,21 @@ function openedOn(engineSteps, fields) {
 const NO_BLOCK = '┌ 1 Actions( ●)? │ 2 Details │ 3 Merge requests │ 4 History │ 5 Questions';
 
 test('ASS-439 AC1: a Blocked tab second, right after Actions, at Blocked and at Blocked for Human; every later tab one number on, with and without Chat', () => {
-  assert.match(bar(lines(atHuman())), /^┌ 1 Actions │ 2 Blocked ● │ 3 Details │ 4 Merge requests │ 5 History │ 6 Questions ─/);
-  assert.match(bar(lines(atHuman({}, { chat: true }))), /^┌ 1 Actions │ 2 Blocked ● │ 3 Details │ 4 Merge requests │ 5 History │ 6 Questions │ 7 Chat ─/);
-  assert.match(bar(lines(atBlocked('troubleshoot', null))), /^┌ 1 Actions │ 2 Blocked │ 3 Details │ 4 Merge requests │ 5 History │ 6 Questions ─/);
-  assert.match(bar(lines(atBlocked('troubleshoot', null, {}, { chat: true }))), /^┌ 1 Actions │ 2 Blocked │ 3 Details │ 4 Merge requests │ 5 History │ 6 Questions │ 7 Chat ─/);
-  assert.deepEqual(tabsOf(true, true).map(([, label]) => label), ['Actions', 'Blocked', 'Details', 'Merge requests', 'History', 'Questions', 'Chat']);
-  assert.deepEqual(tabsOf(false, true).map(([, label]) => label), ['Actions', 'Blocked', 'Details', 'Merge requests', 'History', 'Questions']);
+  assert.match(bar(lines(atHuman())), /^┌ 1 Actions │ 2 Blocked ● │ 3 Details │ 4 Merge requests │ 5 History │ 6 Questions │ 7 Commits │ 8 Acceptance criteria ─/);
+  assert.match(bar(lines(atHuman({}, { chat: true }))), /^┌ 1 Actions │ 2 Blocked ● │ 3 Details │ 4 Merge requests │ 5 History │ 6 Questions │ 7 Chat │ 8 Commits │ 9 Acceptance criteria ─/);
+  assert.match(bar(lines(atBlocked('troubleshoot', null))), /^┌ 1 Actions │ 2 Blocked │ 3 Details │ 4 Merge requests │ 5 History │ 6 Questions │ 7 Commits │ 8 Acceptance criteria ─/);
+  assert.match(bar(lines(atBlocked('troubleshoot', null, {}, { chat: true }))), /^┌ 1 Actions │ 2 Blocked │ 3 Details │ 4 Merge requests │ 5 History │ 6 Questions │ 7 Chat │ 8 Commits │ 9 Acceptance criteria ─/);
+  assert.deepEqual(tabsOf(true, true).map(([, label]) => label), ['Actions', 'Blocked', 'Details', 'Merge requests', 'History', 'Questions', 'Chat', 'Commits', 'Acceptance criteria']);
+  assert.deepEqual(tabsOf(false, true).map(([, label]) => label), ['Actions', 'Blocked', 'Details', 'Merge requests', 'History', 'Questions', 'Commits', 'Acceptance criteria']);
 });
 
 test('ASS-439 AC1: at any other step — the pipeline, Self Healing (quarantine, but no block) — no Blocked tab and the numbering as without it', () => {
-  assert.match(bar(lines(atBuild())), new RegExp(`^${NO_BLOCK} ─`));
-  assert.match(bar(lines(atBuild({ chat: true }))), /^┌ 1 Actions │ 2 Details │ 3 Merge requests │ 4 History │ 5 Questions │ 6 Chat ─/);
-  assert.match(bar(lines(opened({ 'harness-status': hs('self-healing') }))), new RegExp(`^${NO_BLOCK} ─`));
+  assert.match(bar(lines(atBuild())), new RegExp(`^${NO_BLOCK} │ 6 Commits │ 7 Acceptance criteria ─`));
+  assert.match(bar(lines(atBuild({ chat: true }))), /^┌ 1 Actions │ 2 Details │ 3 Merge requests │ 4 History │ 5 Questions │ 6 Chat │ 7 Commits │ 8 Acceptance criteria ─/);
+  assert.match(bar(lines(opened({ 'harness-status': hs('self-healing') }))), new RegExp(`^${NO_BLOCK} │ 6 Commits │ 7 Acceptance criteria ─`));
   assert.deepEqual(tabsOf(true), TABS);
-  assert.deepEqual(tabsOf(false).map(([id]) => id), ['actions', 'details', 'merges', 'history', 'questions']);
-  assert.match(bar(lines(openedOn(unquarantined(), { 'harness-status': hs('blocked-for-human'), blocks: [OWN] }))), new RegExp(`^${NO_BLOCK} ─`));
+  assert.deepEqual(tabsOf(false).map(([id]) => id), ['actions', 'details', 'merges', 'history', 'questions', 'commits', 'criteria']);   // ASS-558: Commits; ASS-559: Acceptance criteria last
+  assert.match(bar(lines(openedOn(unquarantined(), { 'harness-status': hs('blocked-for-human'), blocks: [OWN] }))), new RegExp(`^${NO_BLOCK} │ 6 Commits │ 7 Acceptance criteria ─`));
 });
 
 test('ASS-439 AC1: the blocked steps are told by id and area, never by name — another engine\'s, renamed, are found; a pipeline step named Blocked is not', () => {
@@ -109,14 +109,17 @@ test('ASS-439 AC1: the blocked steps are told by id and area, never by name — 
   const on = id => openedOn(renamed, { 'harness-status': hs(id) });
   assert.match(bar(lines(on('held'))), /^┌ 1 Actions │ 2 Blocked ● │ 3 Details/);
   assert.match(bar(lines(on('unsticking'))), /^┌ 1 Actions │ 2 Blocked │ 3 Details/);
-  assert.match(bar(lines(on('build'))), new RegExp(`^${NO_BLOCK} ─`));
+  assert.match(bar(lines(on('build'))), new RegExp(`^${NO_BLOCK} │ 6 Commits │ 7 Acceptance criteria ─`));
 });
 
 test('ASS-439 AC1: the number keys open the tabs by the numbers shown — 2 Blocked, 3 Details while blocked; 2 Details otherwise — and tab steps through Blocked', () => {
   const s = atHuman();
   assert.deepEqual(['1', '2', '3', '4', '5', '6'].map(n => press(s, n).ticketTab), ['actions', 'blocked', 'details', 'merges', 'history', 'questions']);
-  assert.equal(press(s, '7').ticketTab, s.ticketTab);   // no 7th tab without Chat
+  assert.equal(press(s, '7').ticketTab, 'commits');   // ASS-558: Commits last, 7th without Chat
+  assert.equal(press(s, '8').ticketTab, 'criteria');   // ASS-559: Acceptance criteria after it
+  assert.equal(press(s, '9').ticketTab, s.ticketTab);   // no 9th tab without Chat
   assert.equal(press(atHuman({}, { chat: true }), '7').ticketTab, 'chat');
+  assert.equal(press(atHuman({}, { chat: true }), '8').ticketTab, 'commits');
   assert.equal(press(press(s, '1'), 'tab').ticketTab, 'blocked');
   assert.deepEqual(['1', '2', '3'].map(n => press(atBuild(), n).ticketTab), ['actions', 'details', 'merges']);
 });
@@ -152,9 +155,9 @@ test('ASS-439 AC2: the ticket screen opens on the Blocked tab when the variation
   assert.equal(defaultTab({ choices: [{}] }, 3, true, true), 'blocked');
   assert.equal(defaultTab(null, 0, false), 'details');
   const hint = s => lines(s).find(l => l.startsWith('esc returns to the sprint'));
-  assert.match(hint(atHuman()), /tab or 1-6 switch tabs {3}↑\/↓ choose how to resolve the block {3}enter records the choice {3}PgUp\/PgDn scroll/);
-  assert.match(hint(atBlocked('classify', null)), /tab or 1-6 switch tabs {3}↑\/↓ scroll why it is blocked/);
-  assert.match(hint(atHuman({}, { chat: true })), /tab or 1-7 switch tabs/);
+  assert.match(hint(atHuman()), /tab or 1-8 switch tabs {3}↑\/↓ choose how to resolve the block {3}enter records the choice {3}PgUp\/PgDn scroll/);
+  assert.match(hint(atBlocked('classify', null)), /tab or 1-8 switch tabs {3}↑\/↓ scroll why it is blocked/);
+  assert.match(hint(atHuman({}, { chat: true })), /tab or 1-9 switch tabs/);   // ASS-559: nine with Blocked, Chat and Acceptance criteria
 });
 
 test('ASS-439 AC3: at Blocked for Human, top to bottom — where and since when, summary and root cause, what Classify found (own branch), attempts, the human action in red, the earlier blocks newest first', () => {
@@ -306,7 +309,7 @@ test('ASS-439: a screen left on the Blocked tab once the ticket moves on shows A
   const moved = { ...s, projects: [{ ...s.projects[0], sprint: { ...s.projects[0].sprint, features: [ticket({ 'harness-status': hs('build') })] } }] };
   assert.equal(moved.ticketTab, 'blocked');
   const out = lines(moved);
-  assert.match(bar(out), new RegExp(`^${NO_BLOCK} ─`));
+  assert.match(bar(out), new RegExp(`^${NO_BLOCK} │ 6 Commits │ 7 Acceptance criteria ─`));
   assert.ok(tabText(out).some(l => l.includes('Set manual priority')));
   assert.equal(press(moved, 'tab').ticketTab, 'details');
 });

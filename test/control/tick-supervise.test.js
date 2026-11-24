@@ -4,14 +4,14 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { join } from 'node:path';
 import { writeFileSync, readFileSync, rmSync, mkdirSync } from 'node:fs';
-import { controlFixture } from './control-fixture.js';
+import { controlFixture, macSeats } from './control-fixture.js';
 import { tick } from '../../src/control/tick.js';
 import { until } from '../support/until.js';
 
 const turnsEnd = ctx => until(() => [...ctx.agents.values()].every(a => a.result));
 const alive = pid => { try { process.kill(pid, 0); return true; } catch { return false; } };
 const edit = (f, file, change) => { const data = JSON.parse(readFileSync(file, 'utf8')); change(data); writeFileSync(file, JSON.stringify(data, null, 4)); };
-const engineFile = f => join(f.dir, 'engines', 'example-development', 'state-engine.json');
+const engineFile = f => join(f.dir, 'engines', 'example-development', 'workflow.yaml');
 
 test('tick: a Running agent quiet past the engine\'s seconds is asked for a status update, once per silence', async () => {
   const f = controlFixture();
@@ -163,7 +163,7 @@ test('ASS-450: no state change starts a ticket health check, though the harness 
   writeFileSync(engineFile(f), JSON.stringify(engine));
   // h, the harness project, runs an engine of its own (data/projects/h/engines, ASS-276) declaring the removed keys.
   mkdirSync(join(f.dir, 'projects', 'h', 'engines', 'harness-e'), { recursive: true });
-  const own = join(f.dir, 'projects', 'h', 'engines', 'harness-e', 'state-engine.json');
+  const own = join(f.dir, 'projects', 'h', 'engines', 'harness-e', 'workflow.yaml');
   writeFileSync(own, JSON.stringify({ ...engine, ...health, ...obsolete }));
   mkdirSync(join(f.dir, 'projects', 'h', 'sprints', 'sprint-1'), { recursive: true });
   writeFileSync(join(f.dir, 'projects', 'h', 'project.json'), JSON.stringify({ name: 'H', 'execution-state-engine': 'harness-e', 'work-sources': [], 'local-environments': [{ name: 'local-pc', type: 'local-pc', folder: join(f.dir, 'workspace'), 'active-branch': null }] }));
@@ -200,7 +200,8 @@ test('tick: timers start check-health and check-variation-appeal runs at their i
     e['check-variation-appeal-steps'] = [{ id: 'check-variation-appeal', sequence: 1, action: { type: 'state-engine', engine: 'investigate-gap' }, 'exit-events': [{ condition: { 'is-done': true } }] }];
   });
   // A stale self-healing-trigger left in harness.json fires nothing: self-healing starts only from check-health's assess step.
-  edit(f, join(f.dir, 'harness.json'), h => { h['self-healing-trigger'] = [{ id: 'heal', action: { type: 'state-engine', engine: 'self-healing' }, 'execution-turns-interval': 2 }]; h['max-tickets-in-planning'] = 2; h['harness-project'] = 'p'; });
+  edit(f, join(f.dir, 'harness.json'), h => { h['self-healing-trigger'] = [{ id: 'heal', action: { type: 'state-engine', engine: 'self-healing' }, 'execution-turns-interval': 2 }]; h['harness-project'] = 'p'; });
+  macSeats(f.ctx, 3);   // ASS-528: A and B both in planning, one pool
   edit(f, join(f.dir, 'projects', 'p', 'sprints', 'sprint-10', 'sprint.json'), s => { s.features[0].variations.push({ name: 'B', 'harness-status': { state: 'plan', 'state-engine': 'example-development' }, 'state-changes': [{ 'from-state': 'committed', 'to-state': 'plan', 'agent-dispatch-log': [] }] }); });
   const runs = () => f.assignments()['transient-state-engines'].map(r => [r['state-engine'], r.parent.trigger ?? null, r.parent['work-item'] ?? null, r.parent.variation ?? null]);
   let clock = f.ctx.started.getTime();

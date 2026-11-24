@@ -26,11 +26,11 @@ const FUTURE = '2099-01-01T00:00:00Z';
 // whether ABC-3's plan step has one, holds() the hold lines logged.
 function weekly() {
   const f = controlFixture();
-  edit(join(f.dir, 'engines', 'example-development', 'state-engine.json'), e => {
+  edit(join(f.dir, 'engines', 'example-development', 'workflow.yaml'), e => {
     e['backlog-refinement-steps'] = [{ id: 'backlog-refinement', sequence: 1, action: { type: 'state-engine', engine: 'refine' }, 'exit-events': [{ condition: { 'is-done': true } }] }];
   });
   mkdirSync(join(f.dir, 'engines', 'refine'));
-  writeFileSync(join(f.dir, 'engines', 'refine', 'state-engine.json'), JSON.stringify({ steps: [
+  writeFileSync(join(f.dir, 'engines', 'refine', 'workflow.yaml'), JSON.stringify({ steps: [
     { id: 'groom', sequence: 1, action: { type: 'prompt', prompt: 'test', 'agent-count': 1 }, 'exit-events': [{ condition: { 'turn-complete': true }, 'move-to-state': 'done' }] },
     { id: 'done', sequence: 2, 'is-done': true, action: { type: 'none' } },
   ] }));
@@ -145,7 +145,7 @@ test('ASS-327 AC1: a dual project at the limit still starts its BACKGROUND trigg
   const f = weekly();
   let clock = f.ctx.started.getTime();
   f.ctx.now = () => new Date(clock);
-  edit(join(f.dir, 'engines', 'example-development', 'state-engine.json'), e => { e['check-health-interval-seconds'] = 300; });
+  edit(join(f.dir, 'engines', 'example-development', 'workflow.yaml'), e => { e['check-health-interval-seconds'] = 300; });
   const triggers = () => f.assignments()['transient-state-engines'].map(r => r.parent.trigger).filter(Boolean);
   try {
     dual(f);
@@ -204,7 +204,7 @@ test('ASS-232 AC2: at the limit no BACKGROUND trigger starts, and a background r
   const f = weekly();
   let clock = f.ctx.started.getTime();
   f.ctx.now = () => new Date(clock);
-  edit(join(f.dir, 'engines', 'example-development', 'state-engine.json'), e => { e['check-health-interval-seconds'] = 300; });
+  edit(join(f.dir, 'engines', 'example-development', 'workflow.yaml'), e => { e['check-health-interval-seconds'] = 300; });
   const triggers = () => f.assignments()['transient-state-engines'].map(r => r.parent.trigger).filter(Boolean);
   try {
     f.usage(92);

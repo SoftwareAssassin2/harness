@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import { join } from 'node:path';
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { hs } from '../agent-cli/harness-fixture.js';
-import { controlFixture } from './control-fixture.js';
+import { controlFixture, macSeats } from './control-fixture.js';
 import { tick } from '../../src/control/tick.js';
 import { until } from '../support/until.js';
 
@@ -159,10 +159,11 @@ test('tick: a project whose expected-account is not its login starts none of its
   }
 });
 
-test('tick: a project\'s own limits in project.json hold its moves and dispatches, whatever the harness\'s allow', async () => {
-  // No planning slot (ASS-126: the steps phase reads the project's limits too): it stays in the queue; no agent: it reaches the prompt step, held there.
-  for (const [limits, at] of [[{ 'max-tickets-in-planning': 0 }, 'committed'], [{ 'max-agents': 0 }, 'plan']]) {
+test('tick: no seat on the Mac holds a ticket\'s move, and the project\'s own max-agents its dispatch, whatever the harness\'s allow', async () => {
+  // No seat (ASS-528: the Mac's budget carries none; the steps phase reads the seats too): it stays in the queue; no agent: it reaches the prompt step, held there.
+  for (const [limits, at, seats] of [[{}, 'committed', 0], [{ 'max-agents': 0 }, 'plan', 1]]) {
     const f = controlFixture();
+    macSeats(f.ctx, seats);
     const file = join(f.dir, 'projects', 'p', 'project.json');
     writeFileSync(file, JSON.stringify({ ...JSON.parse(readFileSync(file, 'utf8')), ...limits }));
     try {

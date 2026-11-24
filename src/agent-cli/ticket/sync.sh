@@ -138,10 +138,11 @@ else
   # The refinement engine's first step, and its resting steps (human or done) a change sends back there.
   state="" engine="" resting='[]'
   execution="$(jq -r '.["execution-state-engine"] // empty' "$projects/$project/project.json" 2>/dev/null || true)"
-  [[ -n "$execution" ]] && execution_file="$(engine_path "$execution" "$project")" && engine="$(jq -r 'first(.["backlog-refinement-steps"] // [] | .[] | .action.engine // empty) // empty' "$execution_file")"
+  [[ -n "$execution" ]] && execution_file="$(engine_path "$execution" "$project")" && engine="$(engine_json "$execution_file" | jq -r 'first(.["backlog-refinement-steps"] // [] | .[] | .action.engine // empty) // empty')"
   if [[ -n "$engine" ]] && engine_file="$(engine_path "$engine" "$project")"; then
-    state="$(jq -r '.steps // [] | sort_by(.sequence) | first | .id // empty' "$engine_file")"
-    resting="$(jq -c '[.steps // [] | .[] | select(.action.type? == "human" or .["is-done"] == true) | .id]' "$engine_file")"
+    engine_doc="$(engine_json "$engine_file")"
+    state="$(jq -r '.steps // [] | sort_by(.sequence) | first | .id // empty' <<< "$engine_doc")"
+    resting="$(jq -c '[.steps // [] | .[] | select(.action.type? == "human" or .["is-done"] == true) | .id]' <<< "$engine_doc")"
   else
     engine=""
   fi
@@ -149,12 +150,12 @@ fi
 # Where a new sprint ticket starts, by its ticket-system status: { "<status>": "<step id>" }.
 seeds='{}'
 if [[ "$target" == sprint && -n "$engine" ]] && engine_file="$(engine_path "$engine" "$project")"; then
-  seeds="$(jq -c '[.steps // [] | .[] | select(.["paired-ticket-system-status"] != null)]
+  seeds="$(engine_json "$engine_file" | jq -c '[.steps // [] | .[] | select(.["paired-ticket-system-status"] != null)]
     | group_by(.["paired-ticket-system-status"])
     | map({ key: .[0]["paired-ticket-system-status"],
             value: ((map(select(.area != "quarantine")) | sort_by(.sequence) | first)
                     // (sort_by(if .action.type == "human" then 0 else 1 end, .sequence) | first) | .id) })
-    | from_entries' "$engine_file")"
+    | from_entries')"
 fi
 
 # The reassignment hold's inputs (ASS-345): the signed-in account id (JSON,
@@ -165,7 +166,7 @@ if [[ "$target" == sprint ]]; then
   [[ ! -f "$projects/$project/ticket-system-account-id" ]] || account="$(jq -Rs 'sub("\\s+$"; "") | if . == "" then null else . end' "$projects/$project/ticket-system-account-id")"
   if [[ "$account" != null ]]; then
     mapfile -t engine_list < <(engine_files "$project")
-    [[ ${#engine_list[@]} -eq 0 ]] || done_steps="$(jq -n 'reduce inputs as $e ({}; .[input_filename | split("/") | .[-2]] = [$e.steps[]? | select(.["is-done"] == true) | .id])' "${engine_list[@]}" 2>/dev/null || echo '{}')"
+    [[ ${#engine_list[@]} -eq 0 ]] || done_steps="$(engines_by_name "${engine_list[@]}" 2>/dev/null | jq -c 'map_values([.steps[]? | select(.["is-done"] == true) | .id])' 2>/dev/null || echo '{}')"
   fi
 fi
 

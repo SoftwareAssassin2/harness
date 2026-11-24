@@ -7,7 +7,8 @@
 // one, grouped-plan and grouped-setup beneath it, and the flat ones.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { planDispatch, slotKind } from '../../src/control/plan.js';
+import { planDispatch, slotKind, poolOf } from '../../src/control/plan.js';
+import { usesMachine } from '../../src/control/machine-steps.js';
 import { statusIn, statusOf } from '../../src/control/engine.js';
 import { loadEngines } from '../support/engine-walk.js';
 
@@ -15,6 +16,9 @@ const engines = loadEngines();
 const ENGINE = 'example-development-grouped', engine = engines[ENGINE];
 const at = (state, sub, extra = {}) => ({ name: 'A', 'harness-status': { state, 'state-engine': ENGINE, ...(sub ? { 'sub-status': { state: sub[1], 'state-engine': sub[0] } } : {}) }, 'state-changes': [], ...extra });
 const kindOf = v => { const status = statusIn(engine, v, engines); return slotKind(status.step, status); };
+// ASS-527: the pool a position belongs to (by position, as ASS-362 judged it), apart from whether it takes a seat now.
+const poolAt = v => { const status = statusIn(engine, v, engines); return poolOf(status.step, status); };
+const seatAt = v => { const status = statusIn(engine, v, engines); return slotKind(status.step, status, v); };
 const ticket = (key, ...variations) => ({ key, variations });
 const plan = (ranked, harness = {}, extra = {}) => planDispatch({ ranked, engine, engines, harness, ...extra });
 const seat = key => ({ key, variation: 'A' });
@@ -25,7 +29,7 @@ test('ASS-362 AC1: a variation at grouped-plan\'s done step takes no seat (slotK
   assert.equal(kindOf(v), null);
   assert.equal(statusIn(engine, v, engines).planned, true);
   // It holds neither a planning seat nor an in-progress one: it is ready for build.
-  const result = plan([ticket('T-1', v)], { 'max-tickets-in-planning': 1, 'max-tickets-in-progress': 1 });
+  const result = plan([ticket('T-1', v)], {}, { seats: { mac: 1, remote: 0 } });
   assert.deepEqual([result.inPlanning, result.reserved, result.waiting, result.ready], [[], [], [], [seat('T-1')]]);
   assert.deepEqual(result.free, { planning: true, progress: true });
 });
@@ -46,21 +50,26 @@ test('ASS-362 AC1: the rule is generic — any planning step\'s sub-engine at an
   assert.equal(slotKind(status('draw').step, status('draw')), 'planning');
 });
 
-test('ASS-362 AC4: a done planning sub-step that goes on to more planning (grouped Setup\'s done, on to Plan) keeps its planning seat', () => {
-  assert.equal(kindOf(at('setup', ['grouped-setup', 'done'])), 'planning');
+test('ASS-362 AC4: a done planning sub-step that goes on to more planning (grouped Setup\'s done, on to Plan) stays in the planning pool; ASS-527: it takes no seat there (a none step uses no machine)', () => {
+  assert.equal(poolAt(at('setup', ['grouped-setup', 'done'])), 'planning');
+  assert.equal(kindOf(at('setup', ['grouped-setup', 'done'])), null);
 });
 
-test('ASS-362 AC4: planning not finished keeps its seat as today — any other Plan step, a plan sent back for revision, a gate on leaving Plan; Requirements Changed keeps its own', () => {
-  for (const step of engines['grouped-plan'].steps.filter(s => s['is-done'] !== true)) assert.equal(kindOf(at('plan', ['grouped-plan', step.id])), 'planning', step.id);
+test('ASS-362 AC4: planning not finished stays in the planning pool — any other Plan step, a plan sent back for revision, a gate on leaving Plan; Requirements Changed keeps its own; ASS-527: a seat only at a step that uses its machine', () => {
+  for (const step of engines['grouped-plan'].steps.filter(s => s['is-done'] !== true)) {
+    assert.equal(poolAt(at('plan', ['grouped-plan', step.id])), 'planning', step.id);
+    assert.equal(kindOf(at('plan', ['grouped-plan', step.id])), usesMachine(step) ? 'planning' : null, step.id);
+  }
   // Review Plan rejected it: back at Write Execution Plan, revising.
   const revising = at('plan', ['grouped-plan', 'write-execution-plan'], { 'state-changes': [{ 'from-state': 'plan', 'to-state': 'plan', 'sub-state-change': { 'state-engine': 'grouped-plan', 'from-state': 'review-plan', 'to-state': 'write-execution-plan' } }] });
   assert.equal(kindOf(revising), 'planning');
-  // Gated on leaving Plan, its work there done: it waits on a person, and keeps the seat.
+  // Gated on leaving Plan, its work there done: it waits on a person — in the planning pool, but (ASS-527) holding no seat.
   const gated = at('plan', PLANNED, {
     'gate-when-leaving-state': [`${ENGINE}/plan`],
     'state-changes': [{ 'from-state': 'plan', 'to-state': 'plan', 'work-is-done': true, 'sub-state-change': { 'state-engine': 'grouped-plan', 'from-state': 'review-plan', 'to-state': 'done' } }],
   });
-  assert.equal(kindOf(gated), 'planning');
+  assert.equal(poolAt(gated), 'planning');
+  assert.equal(seatAt(gated), null);
   // Requirements Changed (a detour it returns from, follow-return-to-state) is no planning step: its own done is no finished plan, and takes what it took before (none).
   for (const sub of ['done', 'judge']) {
     const v = at('requirements-changed', ['grouped-requirements-changed', sub]);
@@ -77,10 +86,9 @@ test('ASS-362: no step of a flat engine is ever planned — their seats are as b
   }
 });
 
-test('ASS-362 AC2: with one planning seat and a finished plan waiting, the in-progress seats full, the next ticket in planning takes the seat and is dispatched', () => {
-  const harness = { 'max-tickets-in-planning': 1, 'max-tickets-in-progress': 1 };
+test('ASS-362 AC2, ASS-528: with two seats and a finished plan waiting, the next ticket in planning takes the seat the plan does not hold, and is dispatched', () => {
   const ranked = [ticket('T-1', at('build', ['grouped-build', 'generate-solution'])), ticket('T-2', at('plan', PLANNED)), ticket('T-3', at('plan', ['grouped-plan', 'enrich-ac']))];
-  const result = plan(ranked, harness);
+  const result = plan(ranked, {}, { seats: { mac: 2, remote: 0 } });
   assert.deepEqual([result.reserved, result.inPlanning, result.ready, result.waiting, result.held], [[seat('T-1')], [seat('T-3')], [seat('T-2')], [], []]);
 });
 
@@ -100,8 +108,15 @@ test('ASS-362 AC5: max-tickets-ready-for-build, unset by default, caps the ready
   // harness.json's counts every project's: others' ready and planning too.
   const alone = [ticket('T-1', at('plan', PLANNED)), ticket('T-3', at('committed'))];
   assert.equal(plan(alone, { 'max-tickets-ready-for-build': 3 }).free.planning, true);
-  assert.equal(plan(alone, { 'max-tickets-ready-for-build': 3 }, { readyElsewhere: 1, planningElsewhere: 1 }).free.planning, false);
+  assert.equal(plan(alone, { 'max-tickets-ready-for-build': 3 }, { readyElsewhere: 1, planningPoolElsewhere: 1 }).free.planning, false);
   // The cap keeps no one already in planning from its seat, nor from its agent.
   const capped = plan([ticket('T-2', at('plan', ['grouped-plan', 'enrich-ac']))], {}, { project: { 'max-tickets-ready-for-build': 0 } });
   assert.deepEqual([capped.inPlanning, capped.held], [[seat('T-2')], []]);
+});
+
+test('ASS-527: max-tickets-ready-for-build counts every variation in planning, seated or not — one waiting at Plan\'s Awaiting the Plan Answer (a human step, no seat) still counts', () => {
+  const asking = at('plan', ['grouped-plan', 'awaiting-plan-answer']);
+  assert.equal(kindOf(asking), null);
+  const result = plan([ticket('T-1', at('plan', PLANNED)), ticket('T-2', asking)], {}, { project: { 'max-tickets-ready-for-build': 2 } });
+  assert.deepEqual([result.planning, result.planningPool, result.ready.length, result.readyFull, result.free.planning], [0, 1, 1, true, false]);
 });

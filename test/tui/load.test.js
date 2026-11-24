@@ -43,8 +43,8 @@ test('projects come from project.json, sorted by name, each with its folder as i
   write(join(dir, 'a-dir', 'sprints', 'days', 'notes.json'), { ignored: true });
   mkdirSync(join(dir, 'not-a-project'));
   assert.deepEqual(loadProjects(dir), [
-    { id: 'z-dir', dir: join(dir, 'z-dir'), name: 'Alpha', stateEngine: undefined, switchedOffSteps: [], environments: [], repositories: [], sprint: null, backlog: [], backlogOfSprint: [], days: {}, questions: [], highlights: [], gcloudReauthentication: false, gcloudLogins: [], workstations: {}, seats: [], vms: {}, glabReauthentication: false, backgroundWorkOff: false, notifications: true, waitForDependencies: false, outside: [], limits: { project: {}, harness: {} }, rateLimit: null, claudeUsage: null, pushAccount: null, memoryHold: null, memoryWait: null, accountHold: null, credentialsHold: null, jiraTokenRejected: null, apiCapHold: null, apiKey: false, hindsight: null, collaborations: {}, chatSpend: null, memorySpend: [], demoPlans: {}, reviews: {}, spendLimit: null, apiCost: null, golden: null, devEnvironments: { mode: 'vm', workstations: [] } },
-    { id: 'a-dir', dir: join(dir, 'a-dir'), name: 'Beta', stateEngine: 'example-development', switchedOffSteps: [], environments: [{ name: 'ws', type: 'local-pc' }], repositories: [{ url: 'https://gitlab.com/g/r' }], sprint: { number: 10, start: '2026-09-18', end: '2026-10-01', features: [{ key: 'ABC-2' }] }, backlog: [{ key: 'ABC-1' }], backlogOfSprint: [{ key: 'abc-2' }], days: { '2026-09-18': { number: 10, features: [] } }, questions: [], highlights: [{ ticket: 'ABC-1', color: '#ffff00' }], gcloudReauthentication: true, gcloudLogins: [], workstations: {}, seats: [], vms: {}, glabReauthentication: false, backgroundWorkOff: true, notifications: true, waitForDependencies: false, outside: [], limits: { project: {}, harness: {} }, rateLimit: { since: '2026-10-11T12:00:00Z', type: 'five_hour', 'resets-at': '2026-10-11T13:00:00Z' }, claudeUsage: { email: 'me@example.com', session: { percent: 7, 'resets-at': '2026-10-11T13:00:00Z' }, 'as-of': '2026-10-11T12:00:00Z' }, pushAccount: { project: 'a-dir', provider: 'GitLab', account: 'ada', error: null, 'checked-at': '2026-10-11T12:00:00Z' }, memoryHold: null, memoryWait: null, accountHold: null, credentialsHold: { since: '2026-10-11T12:00:00Z', problems: [{ credential: 'the gh login (github.com)', problem: 'gh is not authenticated on github.com', fix: 'gh auth login --hostname github.com' }] }, jiraTokenRejected: null, apiCapHold: null, apiKey: false, hindsight: null, collaborations: {}, chatSpend: null, memorySpend: [], demoPlans: {}, reviews: {}, spendLimit: null, apiCost: null, golden: null, devEnvironments: { mode: 'vm', workstations: [] } },
+    { id: 'z-dir', dir: join(dir, 'z-dir'), name: 'Alpha', stateEngine: undefined, switchedOffSteps: [], environments: [], repositories: [], sprint: null, backlog: [], backlogOfSprint: [], days: {}, questions: [], highlights: [], gcloudReauthentication: false, gcloudLogins: [], workstations: {}, seats: [], planningSeats: [], localSeats: [], seatBudget: null, remoteBudget: null, planningFocus: null, seatQueue: [], vms: {}, glabReauthentication: false, backgroundWorkOff: false, notifications: true, waitForDependencies: false, outside: [], limits: { project: {}, harness: {} }, rateLimit: null, claudeUsage: null, pushAccount: null, memoryHold: null, memoryWait: null, accountHold: null, credentialsHold: null, jiraTokenRejected: null, apiCapHold: null, apiKey: false, hindsight: null, collaborations: {}, chatSpend: null, memorySpend: [], demoPlans: {}, commits: {}, reviews: {}, spendLimit: null, apiCost: null, golden: null, devEnvironments: { mode: 'vm', workstations: [] }, runTargetPlan: { targets: ['local-vm'], derived: true, mode: 'vm', docker: new Set(), poolChoice: null }, runTargets: ['local-vm'], substrate: {}, substrateMachines: [], sandboxFailures: [], sandboxImages: {} },
+    { id: 'a-dir', dir: join(dir, 'a-dir'), name: 'Beta', stateEngine: 'example-development', switchedOffSteps: [], environments: [{ name: 'ws', type: 'local-pc' }], repositories: [{ url: 'https://gitlab.com/g/r' }], sprint: { number: 10, start: '2026-09-18', end: '2026-10-01', features: [{ key: 'ABC-2' }] }, backlog: [{ key: 'ABC-1' }], backlogOfSprint: [{ key: 'abc-2' }], days: { '2026-09-18': { number: 10, features: [] } }, questions: [], highlights: [{ ticket: 'ABC-1', color: '#ffff00' }], gcloudReauthentication: true, gcloudLogins: [], workstations: {}, seats: [], planningSeats: [], localSeats: [], seatBudget: null, remoteBudget: null, planningFocus: null, seatQueue: [], vms: {}, glabReauthentication: false, backgroundWorkOff: true, notifications: true, waitForDependencies: false, outside: [], limits: { project: {}, harness: {} }, rateLimit: { since: '2026-10-11T12:00:00Z', type: 'five_hour', 'resets-at': '2026-10-11T13:00:00Z' }, claudeUsage: { email: 'me@example.com', session: { percent: 7, 'resets-at': '2026-10-11T13:00:00Z' }, 'as-of': '2026-10-11T12:00:00Z' }, pushAccount: { project: 'a-dir', provider: 'GitLab', account: 'ada', error: null, 'checked-at': '2026-10-11T12:00:00Z' }, memoryHold: null, memoryWait: null, accountHold: null, credentialsHold: { since: '2026-10-11T12:00:00Z', problems: [{ credential: 'the gh login (github.com)', problem: 'gh is not authenticated on github.com', fix: 'gh auth login --hostname github.com' }] }, jiraTokenRejected: null, apiCapHold: null, apiKey: false, hindsight: null, collaborations: {}, chatSpend: null, memorySpend: [], demoPlans: {}, commits: {}, reviews: {}, spendLimit: null, apiCost: null, golden: null, devEnvironments: { mode: 'vm', workstations: [] }, runTargetPlan: { targets: ['local-vm'], derived: true, mode: 'vm', docker: new Set(), poolChoice: null }, runTargets: ['local-vm'], substrate: {}, substrateMachines: [], sandboxFailures: [], sandboxImages: {} },
   ]);
 });
 
@@ -79,13 +79,30 @@ test('ASS-191 AC1, AC5: a project\'s spendLimit is its project.json\'s max-spend
   assert.deepEqual(loadProjects(dir).map(p => [p.id, p.spendLimit]), [['none', 25], ['own', 100]]);
 });
 
-test('ASS-357: a project\'s limits are the fields of its project.json and of the data folder\'s harness.json control\'s planner reads, and no others', () => {
+test('ASS-357, ASS-528: a project\'s limits are the fields of its project.json and of the data folder\'s harness.json control\'s planner reads, and no others — the seat counts no longer among them', () => {
   const data = mkdtempSync(join(tmpdir(), 'tui-')), dir = join(data, 'projects');
   write(join(dir, 'own', 'project.json'), { name: 'Own', 'max-tickets-in-progress': 2, 'max-tickets-in-planning': 1, 'max-agents': 3, 'max-spend-per-ticket-usd': 100, 'background-work': false });
   write(join(dir, 'none', 'project.json'), { name: 'None' });
-  assert.deepEqual(loadProjects(dir).map(p => [p.id, p.limits]), [['none', { project: {}, harness: {} }], ['own', { project: { 'max-tickets-in-progress': 2, 'max-tickets-in-planning': 1, 'max-agents': 3, 'max-spend-per-ticket-usd': 100 }, harness: {} }]]);
-  write(join(data, 'harness.json'), { 'max-tickets-in-progress': 5, 'max-tickets-in-planning': 0, 'agents-grid-columns': 3 });
-  assert.deepEqual(loadProjects(dir).map(p => p.limits.harness), [{ 'max-tickets-in-progress': 5, 'max-tickets-in-planning': 0 }, { 'max-tickets-in-progress': 5, 'max-tickets-in-planning': 0 }]);
+  assert.deepEqual(loadProjects(dir).map(p => [p.id, p.limits]), [['none', { project: {}, harness: {} }], ['own', { project: { 'max-agents': 3, 'max-spend-per-ticket-usd': 100 }, harness: {} }]]);
+  write(join(data, 'harness.json'), { 'max-tickets-in-progress': 5, 'max-tickets-in-planning': 0, 'max-agents': 4, 'agents-grid-columns': 3 });
+  assert.deepEqual(loadProjects(dir).map(p => p.limits.harness), [{ 'max-agents': 4 }, { 'max-agents': 4 }]);
+  // ASS-528: its seats are control's seat budget's (seat-budget.json), and its planning holders seats.json's.
+  write(join(dir, 'own', 'seat-budget.json'), { seats: 3, share: 100 });
+  write(join(dir, 'own', 'seats.json'), { seats: [], planning: [{ key: 'T-1', variation: 'A', since: '2026-11-22T00:00:00Z' }] });
+  const own = loadProjects(dir).find(p => p.id === 'own');
+  assert.deepEqual([own.seatBudget, own.planningSeats], [{ seats: 3, share: 100 }, [{ key: 'T-1', variation: 'A', since: '2026-11-22T00:00:00Z' }]]);
+});
+
+test('ASS-541: a project\'s runTargets are its run targets (its own list, else its mode\'s), [] while its dev-environments is wrong; its localSeats seats.json\'s local list, [] without', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'tui-'));
+  write(join(dir, 'own', 'project.json'), { name: 'Own', 'dev-environments': { 'run-targets': ['local-worktree', 'local-vm'] } });
+  write(join(dir, 'mode', 'project.json'), { name: 'Mode', 'dev-environments': { mode: 'vm+workstation', workstations: [{ id: 'ws-1', 'gcp-project': 'g', region: 'r', cluster: 'c', config: 'cfg' }] } });
+  write(join(dir, 'bad', 'project.json'), { name: 'Bad', 'dev-environments': { 'run-targets': ['nowhere'] } });
+  const local = [{ key: 'T-1', variation: 'A', target: 'local-worktree', since: '2026-11-22T00:00:00Z' }];
+  write(join(dir, 'own', 'seats.json'), { seats: [], planning: [], local });
+  assert.deepEqual(loadProjects(dir).map(p => [p.id, p.runTargets, p.localSeats]), [
+    ['bad', [], []], ['mode', ['workstation', 'cloud-vm', 'local-vm'], []], ['own', ['local-worktree', 'local-vm'], local],
+  ]);
 });
 
 test('ASS-221 AC2: a project\'s apiCost is its own api-cost.json with its api-monthly-budget-usd, when its project.json names an admin key; the harness project\'s the data folder\'s (loadApiCost); any other\'s null, never borrowed', () => {
@@ -305,7 +322,7 @@ test('loadChats reads chats.json\'s chats (ASS-33); none without the file', () =
   assert.deepEqual(loadChats(join(dir, 'chats.json')).map(c => c.id), ['c1']);
 });
 
-test('dataFiles: every file the dashboard reads (ASS-307: push-account.json too; ASS-395: credentials-hold.json; ASS-333: vms.json; ASS-355: outside-tickets.json; ASS-469: seats.json, workstations.json), with one sprint file — the selected project\'s active sprint.json, or the snapshot of the past day on show', () => {
+test('dataFiles: every file the dashboard reads (ASS-307: push-account.json too; ASS-395: credentials-hold.json; ASS-333: vms.json; ASS-355: outside-tickets.json; ASS-469: seats.json, workstations.json; ASS-525: seat-queue.json), with one sprint file — the selected project\'s active sprint.json, or the snapshot of the past day on show', () => {
   const root = mkdtempSync(join(tmpdir(), 'tui-'));
   const p = name => join(root, 'data', 'projects', name);
   write(join(p('a'), 'sprints.json'), { list: [{ number: 9 }, { number: 10, 'is-active': true }] });
@@ -313,9 +330,9 @@ test('dataFiles: every file the dashboard reads (ASS-307: push-account.json too;
   mkdirSync(p('b'), { recursive: true });
   const state = { projects: [{ id: 'a' }, { id: 'b' }], workflows: [{ name: 'standard' }], project: 0, day: null };
   const common = [
-    join(root, 'data', 'assignments.json'), join(root, 'data', 'chats.json'), join(root, 'data', 'api-cost.json'), join(root, 'data', 'context-windows.json'), join(root, 'data', 'harness.json'), join(root, 'data', 'disk-space.json'), join(root, 'engines', 'standard', 'state-engine.json'),
-    join(p('a'), 'project.json'), join(p('a'), 'gcloud-requires-reauthentication'), join(p('a'), 'glab-requires-reauthentication'), join(p('a'), 'rate-limit.json'), join(p('a'), 'claude-usage.json'), join(p('a'), 'push-account.json'), join(p('a'), 'credentials-hold.json'), join(p('a'), 'jira-token-rejected.json'), join(p('a'), 'api-cost.json'), join(p('a'), 'memory-spend.json'), join(p('a'), 'sprints.json'), join(p('a'), 'backlog.json'), join(p('a'), 'global-questions-and-answers.json'), join(p('a'), 'chat-spend.json'), join(p('a'), 'vms.json'), join(p('a'), 'outside-tickets.json'), join(p('a'), 'memory-hold.json'), join(p('a'), 'memory-wait.json'), join(p('a'), 'seats.json'), join(p('a'), 'workstations.json'), join(p('a'), 'work', 'abc-1', 'questions-and-answers.json'), join(p('a'), 'work', 'abc-1', 'collaboration.json'),
-    join(p('b'), 'project.json'), join(p('b'), 'gcloud-requires-reauthentication'), join(p('b'), 'glab-requires-reauthentication'), join(p('b'), 'rate-limit.json'), join(p('b'), 'claude-usage.json'), join(p('b'), 'push-account.json'), join(p('b'), 'credentials-hold.json'), join(p('b'), 'jira-token-rejected.json'), join(p('b'), 'api-cost.json'), join(p('b'), 'memory-spend.json'), join(p('b'), 'sprints.json'), join(p('b'), 'backlog.json'), join(p('b'), 'global-questions-and-answers.json'), join(p('b'), 'chat-spend.json'), join(p('b'), 'vms.json'), join(p('b'), 'outside-tickets.json'), join(p('b'), 'memory-hold.json'), join(p('b'), 'memory-wait.json'), join(p('b'), 'seats.json'), join(p('b'), 'workstations.json'),
+    join(root, 'data', 'assignments.json'), join(root, 'data', 'chats.json'), join(root, 'data', 'api-cost.json'), join(root, 'data', 'context-windows.json'), join(root, 'data', 'harness.json'), join(root, 'data', 'disk-space.json'), join(root, 'engines', 'standard', 'workflow.yaml'),
+    join(p('a'), 'project.json'), join(p('a'), 'gcloud-requires-reauthentication'), join(p('a'), 'glab-requires-reauthentication'), join(p('a'), 'rate-limit.json'), join(p('a'), 'claude-usage.json'), join(p('a'), 'push-account.json'), join(p('a'), 'credentials-hold.json'), join(p('a'), 'jira-token-rejected.json'), join(p('a'), 'api-cost.json'), join(p('a'), 'memory-spend.json'), join(p('a'), 'sprints.json'), join(p('a'), 'backlog.json'), join(p('a'), 'global-questions-and-answers.json'), join(p('a'), 'chat-spend.json'), join(p('a'), 'vms.json'), join(p('a'), 'outside-tickets.json'), join(p('a'), 'memory-hold.json'), join(p('a'), 'memory-wait.json'), join(p('a'), 'seats.json'), join(p('a'), 'seat-queue.json'), join(p('a'), 'seat-budget.json'), join(p('a'), 'remote-seats.json'), join(p('a'), 'planning-focus.json'), join(p('a'), 'substrate.json'), join(p('a'), 'workstations.json'), join(p('a'), 'sandbox-failures.json'), join(p('a'), 'sandbox-image-amd64.json'), join(p('a'), 'sandbox-image-amd64-build.json'), join(p('a'), 'sandbox-image-arm64.json'), join(p('a'), 'sandbox-image-arm64-build.json'), join(p('a'), 'work', 'abc-1', 'questions-and-answers.json'), join(p('a'), 'work', 'abc-1', 'collaboration.json'),
+    join(p('b'), 'project.json'), join(p('b'), 'gcloud-requires-reauthentication'), join(p('b'), 'glab-requires-reauthentication'), join(p('b'), 'rate-limit.json'), join(p('b'), 'claude-usage.json'), join(p('b'), 'push-account.json'), join(p('b'), 'credentials-hold.json'), join(p('b'), 'jira-token-rejected.json'), join(p('b'), 'api-cost.json'), join(p('b'), 'memory-spend.json'), join(p('b'), 'sprints.json'), join(p('b'), 'backlog.json'), join(p('b'), 'global-questions-and-answers.json'), join(p('b'), 'chat-spend.json'), join(p('b'), 'vms.json'), join(p('b'), 'outside-tickets.json'), join(p('b'), 'memory-hold.json'), join(p('b'), 'memory-wait.json'), join(p('b'), 'seats.json'), join(p('b'), 'seat-queue.json'), join(p('b'), 'seat-budget.json'), join(p('b'), 'remote-seats.json'), join(p('b'), 'planning-focus.json'), join(p('b'), 'substrate.json'), join(p('b'), 'workstations.json'), join(p('b'), 'sandbox-failures.json'), join(p('b'), 'sandbox-image-amd64.json'), join(p('b'), 'sandbox-image-amd64-build.json'), join(p('b'), 'sandbox-image-arm64.json'), join(p('b'), 'sandbox-image-arm64-build.json'),
   ];
   assert.deepEqual(dataFiles(root, state), [...common, join(p('a'), 'sprints', 'sprint-10', 'sprint.json')]);
   assert.deepEqual(dataFiles(root, { ...state, day: '2026-09-20' }), [...common, join(p('a'), 'sprints', 'days', '2026-09-20.json')]);
@@ -365,26 +382,26 @@ test('projectsChanged: the projects whose own data changed — their files, or t
 
 test('loadWorkflows: each engine\'s steps in sequence order, and its *-steps lists, for the sub-flowcharts (ASS-7)', () => {
   const dir = mkdtempSync(join(tmpdir(), 'tui-'));
-  write(join(dir, 'e', 'state-engine.json'), { steps: [{ id: 'b', sequence: 2 }, { id: 'a', sequence: 1 }], 'check-health-steps': [{ id: 'check-health', sequence: 1 }], 'shut-down-prompt': 'x' });
+  write(join(dir, 'e', 'workflow.yaml'), { steps: [{ id: 'b', sequence: 2 }, { id: 'a', sequence: 1 }], 'check-health-steps': [{ id: 'check-health', sequence: 1 }], 'shut-down-prompt': 'x' });
   assert.deepEqual(loadWorkflows(dir), [{ name: 'e', steps: [{ id: 'a', sequence: 1 }, { id: 'b', sequence: 2 }], lists: { 'check-health-steps': [{ id: 'check-health', sequence: 1 }] } }]);
 });
 
 test('ASS-277: loadWorkflows with the projects folder sees each project\'s own engines (data/projects/<id>/engines, ASS-276), ahead of engines/\'s, each with its project and file — as control\'s loadState does; dataFiles watches each at that file; projectWorkflows keeps the selected project\'s own alone', async () => {
   const root = mkdtempSync(join(tmpdir(), 'tui-'));
   const engines = join(root, 'engines'), projects = join(root, 'data', 'projects');
-  write(join(engines, 'shared', 'state-engine.json'), { steps: [{ id: 's', sequence: 1 }] });
-  write(join(projects, 'a', 'engines', 'a-flow', 'state-engine.json'), { steps: [{ id: 'own', sequence: 1 }] });
-  write(join(projects, 'b', 'engines', 'shared', 'state-engine.json'), { steps: [{ id: 'b-only', sequence: 1 }] });
+  write(join(engines, 'shared', 'workflow.yaml'), { steps: [{ id: 's', sequence: 1 }] });
+  write(join(projects, 'a', 'engines', 'a-flow', 'workflow.yaml'), { steps: [{ id: 'own', sequence: 1 }] });
+  write(join(projects, 'b', 'engines', 'shared', 'workflow.yaml'), { steps: [{ id: 'b-only', sequence: 1 }] });
   mkdirSync(join(projects, 'c'), { recursive: true });   // no engines of its own
   const workflows = loadWorkflows(engines, projects);
   assert.deepEqual(workflows.map(w => [w.name, w.project, w.file, w.steps[0].id]), [
-    ['a-flow', 'a', join(projects, 'a', 'engines', 'a-flow', 'state-engine.json'), 'own'],
-    ['shared', 'b', join(projects, 'b', 'engines', 'shared', 'state-engine.json'), 'b-only'],
+    ['a-flow', 'a', join(projects, 'a', 'engines', 'a-flow', 'workflow.yaml'), 'own'],
+    ['shared', 'b', join(projects, 'b', 'engines', 'shared', 'workflow.yaml'), 'b-only'],
     ['shared', undefined, undefined, 's'],
   ]);
   assert.deepEqual(loadWorkflows(engines).map(w => w.name), ['shared']);   // without the projects folder, engines/'s alone
   const files = dataFiles(root, { projects: [], workflows, project: 0, day: null });
-  for (const f of [join(projects, 'a', 'engines', 'a-flow', 'state-engine.json'), join(projects, 'b', 'engines', 'shared', 'state-engine.json'), join(engines, 'shared', 'state-engine.json')]) assert.ok(files.includes(f), f);
+  for (const f of [join(projects, 'a', 'engines', 'a-flow', 'workflow.yaml'), join(projects, 'b', 'engines', 'shared', 'workflow.yaml'), join(engines, 'shared', 'workflow.yaml')]) assert.ok(files.includes(f), f);
   const { projectWorkflows } = await import('../../src/tui/screens/shared.js');
   const seen = id => projectWorkflows({ projects: [{ id }], project: 0, workflows }).map(w => `${w.name}:${w.steps[0].id}`);
   assert.deepEqual(seen('a'), ['a-flow:own', 'shared:s']);
@@ -507,6 +524,6 @@ test('ASS-292: a golden image rebuilt as vm:build-golden does it — built besid
   assert.equal(calls, 0, 'the build folder is not watched');
   rmSync(golden, { recursive: true });
   renameSync(build, golden);
-  await until(() => calls > 0, 10_000);
+  await until(() => calls > 0);                                    // ASS-545: LOADED_MS, a hang guard only (was 10 s)
   assert.equal(load.loadGolden('p', { 'golden-image': {} }, lima)['built-at'], '2026-11-07T12:00:00Z');
 });

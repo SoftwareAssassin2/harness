@@ -7,6 +7,7 @@ import { stateOf, levelChanges, isPlanned, isUnopened, mrStatus, unopenedAs } fr
 import { engineSteps, changePath, gateName } from '../control/engine.js';
 import { ticketPath } from '../control/moves.js';
 import { ticketSpend, spendText } from '../control/spend.js';
+import { EVIDENCE } from './review.js';
 
 const NONE = '—';
 const LABEL = 28;   // the field-name column
@@ -43,8 +44,6 @@ const color = code => text => `\x1b[${code}m${text}\x1b[0m`;
 // A merge request's build status colors (the sprint grid's MR column's, ASS-437 moved them to the Merge requests
 // tab): Merged and Closed gray, Running gold, Failed red, Passed green; any other uncolored.
 const BUILD_COLORS = { Merged: color('90'), Closed: color('90'), Running: color('38;2;255;215;0'), Failed: color('31'), Passed: color('32') };
-// A check's result: green Passed, red Failed, gray anything else.
-const result = status => ({ Passed: color('32'), Failed: color('31') }[status] ?? color('90'))(status ?? 'Not started');
 
 // tokenSpend(v, chat, running) — "$x.xx", the cost-usd of every agent dispatched on
 // variation `v`, summed from its state-changes, and `chat` dollars more (the
@@ -199,7 +198,28 @@ export function dependencyLine({ key, where, project, status, assignee, done }) 
 // In a column too narrow for a value beside its label (a narrow screen's tab),
 // labels sit above their values and a criterion's statuses above its
 // description, and a history entry gives up its idle bar.
-export function ticketLines(t, { status, stepName, prompted, agents, columns, steps = [], chatSpend = 0, spendLimit = null, running = 0, ticketRunning = running, gateName: gate = stepName, refinement, overlaps = t.overlaps ?? [] }) {
+// workModeFields(v) — ASS-556: the variation's work mode for its Details, [[label, value]]: "Work mode" — its mode,
+// who set it (Choose Where to Work's AI, a project rule, the operator, an escalation) and why, the AI's own choice
+// when overridden; "Escalated" — each escalation's trigger, why and step; "CI on MR" — its merge requests' CI runs
+// seen, failed and passed (ci-results). Nothing before a mode is chosen.
+export function workModeFields(v) {
+  const w = v?.['work-mode'], ci = v?.['ci-results'] ?? [];
+  const out = [];
+  if (w?.mode) {
+    const by = { ai: 'chosen by Choose Where to Work', rule: 'forced by a project rule', operator: 'set by the operator', escalation: 'escalated' }[w.by] ?? w.by;
+    const ai = w.ai?.mode && w.by !== 'ai' ? ` (the AI chose ${w.ai.mode})` : '';
+    out.push(['Work mode', `${w.mode}, ${by}${ai}${w.reasons?.length ? `: ${w.reasons.join('; ')}` : ''}`]);
+    const ups = w.escalations ?? [];
+    if (ups.length) out.push(['Escalated', ups.map(e => `${e.trigger}${e.step ? ` at ${e.step}` : ''}: ${e.why}${e.memory ? ` (memory ${e.memory})` : ''}`).join('; ')]);
+  }
+  if (ci.length) {
+    const failed = ci.filter(c => c.result === 'failed').length, passed = ci.filter(c => c.result === 'passed').length;
+    out.push(['CI on MR', `${failed} failed, ${passed} passed — ${failed + (passed ? 1 : 0)} round${failed + (passed ? 1 : 0) === 1 ? '' : 's'}${ci.at(-1)?.mode ? `, last in ${ci.at(-1).mode} mode` : ''}`]);
+  }
+  return out;
+}
+
+export function ticketLines(t, { status, stepName, prompted, agents, columns, steps = [], chatSpend = 0, spendLimit = null, running = 0, ticketRunning = running, gateName: gate = stepName, refinement, overlaps = t.overlaps ?? [], unsandboxed = [] }) {
   const v = t.variation;
   const beside = columns >= LABEL + 20;
   const width = beside ? columns - LABEL : Math.max(10, columns);
@@ -245,6 +265,8 @@ export function ticketLines(t, { status, stepName, prompted, agents, columns, st
     '',
     ...field('Branch', branch && [branchUrl ? link(branch, branchUrl) : branch]),
     ...field('Worktree', worktree && [folder ? link(worktree, pathToFileURL(folder).href) : worktree]),
+    // ASS-556: where it is built (worktree or full), by whom and why, its escalations and its merge requests' CI.
+    ...workModeFields(v).flatMap(([label, value]) => field(label, value)),
     '',
     // The ticket's spend, every variation's, its running agents' so far among it (ASS-270), against its limit (ASS-191, control/spend.js), when it has one.
     ...(spendLimit != null ? field('Spending limit', `${spendText(ticketSpend(t) + ticketRunning, spendLimit)}${runningText(ticketRunning)}`) : []),
@@ -263,12 +285,10 @@ export function ticketLines(t, { status, stepName, prompted, agents, columns, st
     // Only beside another variation is there one to be preferred over.
     ...((t.variations?.length ?? 1) > 1 ? [...field("AI's feedback", v['ai-variation-feedback']), ''] : []),
     ...field('Agents', agents.map(a => `🤖 ${a}`)),
-    ...section('Acceptance criteria', criteria.map((c, i) => {
-      const head = `  ${pad(String(c['criteria-number'] ?? i + 1), 4)}dev ${pad(result(c['dev-status']), 12)}testing ${pad(result(c['testing-status']), 12)}`;
-      if (!beside) return [head.trimEnd(), ...wrap(c.description ?? '', Math.max(10, columns - 2)).map(line => `  ${line}`)];
-      const [first, ...rest] = wrap(c.description ?? '', Math.max(20, columns - 46));
-      return [head + (first ?? ''), ...rest.map(line => ' '.repeat(46) + line)];
-    }).flat()),
+    // ASS-564: each of them running without Claude Code's sandbox, where and why (none: no field).
+    ...(unsandboxed.length ? field('Sandbox', unsandboxed.flatMap(u => wrap(u, width))) : []),
+    // ASS-559: the acceptance criteria are on their own tab (criteriaLines); Details says how many and where.
+    ...field('Acceptance criteria', criteria.length ? `${criteria.length} — see the Acceptance criteria tab` : null),
     '',
     ...field('QA', t.qa?.status),
   ];
@@ -812,9 +832,86 @@ const joinColumns = columns => columns[0].map((line, i) => columns.slice(1).redu
 
 // The ticket screen's tabs (ASS-184), in order, each [id, label]: the one
 // open fills the box left of the quick-details panel, PANEL columns wide,
-// borders included; 1–6 name them. Merge requests (ASS-437) after Details.
+// borders included; 1–7 name them. Merge requests (ASS-437) after Details.
+// Commits (ASS-558) last, after Chat, so no tab before it changes its number.
 // While the variation is blocked a Blocked tab (BLOCKED_TAB, ASS-439) goes second (tabsOf).
-export const TABS = [['actions', 'Actions'], ['details', 'Details'], ['merges', 'Merge requests'], ['history', 'History'], ['questions', 'Questions'], ['chat', 'Chat']];
+// Acceptance criteria (ASS-559) after Commits, last for the same reason: each criterion's dev and testing status (moved
+// from the sprint screen's Dev and Testing columns and the Details tab) and its evidence (criteriaLines).
+export const TABS = [['actions', 'Actions'], ['details', 'Details'], ['merges', 'Merge requests'], ['history', 'History'], ['questions', 'Questions'], ['chat', 'Chat'], ['commits', 'Commits'], ['criteria', 'Acceptance criteria']];
+
+// criteriaLines(v, { width, evidence, tests }) — the Acceptance criteria tab's lines (ASS-559): for each of variation
+// `v`'s acceptance criteria, its number, its dev and testing status — a ● and the word, green Passed, red Failed,
+// gray otherwise ("Not started" for none), as the sprint screen's dots were — and its description wrapped beneath;
+// then the automated tests' count (testCounts, the sprint screen's Dev column carried it); then where the evidence is:
+// the variation's test results for the testing statuses, its code review and change log for the dev statuses (the
+// Test step and Generate Solution / Code Review record them from those: CLAUDE.md "Acceptance criteria"), each linked
+// to its file when the work folder has it (`evidence`, loadReviews' file name → path), else named, gray, "not written
+// yet". Every line at most `width` columns.
+export function criteriaLines(v, { width, evidence = {}, tests = testCounts(v?.['local-testing']) } = {}) {
+  const fit = line => (visible(line) <= width ? line : `${clip(line, width - 1)}…`);
+  const dot = status => ({ Passed: color('32'), Failed: color('31') }[status] ?? color('90'))(`● ${status ?? 'Not started'}`);
+  const criteria = v?.['acceptance-criteria'] ?? [];
+  const lines = criteria.length ? [] : ['  no acceptance criteria'];
+  for (const [i, c] of criteria.entries()) {
+    if (i) lines.push('');
+    lines.push(fit(`  ${pad(String(c['criteria-number'] ?? i + 1), 4)}dev ${pad(dot(c['dev-status']), 14)}testing ${dot(c['testing-status'])}`));
+    lines.push(...wrap(c.description ?? NONE, Math.max(10, width - 6)).map(line => fit(`      ${line}`)));
+  }
+  lines.push('', fit(`Automated tests: ${tests ? `${tests[0]}/${tests[1]} passing` : NONE}`), '', 'Evidence');
+  for (const [stem, backs] of EVIDENCE) {
+    const name = `${stem}-${v?.name ?? 'A'}.md`;
+    const path = evidence[name] ?? evidence[`${stem}.md`];
+    const shown = path ? link(name, pathToFileURL(path).href) : color('90')(`${name} (not written yet)`);
+    lines.push(fit(`  ${pad(`${backs} status`, 16)}${shown}`));
+  }
+  return lines;
+}
+
+// The Commits tab (ASS-558): each commit's state as the tab names and colors it — merged green, in an open MR
+// cyan, pushed plain, local only (not on the forge yet) yellow.
+const COMMIT_STATES = { merged: ['merged', color('32')], 'open-mr': ['open MR', color('36')], pushed: ['pushed', String], local: ['local only', color('33')] };
+const STATE_WIDTH = 10;
+const SHA_INDENT = '  ';
+const SUBJECT_INDENT = ' '.repeat(12);
+// "2026-11-23 11:40" (UTC) from an ISO time; "—" for none.
+const commitTime = iso => { const ms = Date.parse(iso ?? ''); return Number.isFinite(ms) ? new Date(ms).toISOString().replace('T', ' ').slice(0, 16) : NONE.padEnd(16); };
+
+// commitLines(lists, { order, width, now }) — the Commits tab's lines (ASS-558): for each variation in `order` (the
+// one on show first, then the ticket's other live ones), its list from work/<KEY>/commits-<variation>.json (`lists`,
+// load.js loadCommits: { variation: list }) under a heading saying how many commits and when it was last refreshed
+// (with how long ago, from `now`), any source that could not be read in red beneath it, then each commit: its short
+// SHA (linked to its forge page once pushed), date (UTC), state, repository and branch or merge request (linked) on
+// one line, its subject and author wrapped beneath. A variation not gathered yet says so; one with no commits says
+// that. Every line at most `width` columns.
+export function commitLines(lists = {}, { order = [], width, now = new Date() }) {
+  const fit = line => (visible(line) <= width ? line : `${clip(line, width - 1)}…`);
+  const names = order.length ? order : Object.keys(lists).toSorted();
+  const out = [];
+  for (const [i, name] of names.entries()) {
+    if (i) out.push('');
+    const list = lists[name];
+    if (!list) {
+      out.push(fit(`Variation ${name} — not gathered yet`), ...wrap('control gathers it once the variation has work, or run ./agent.sh ticket:refresh-commits', width - 2).map(l => `  ${l}`));
+      continue;
+    }
+    const commits = list.commits ?? [];
+    const at = Date.parse(list['refreshed-at'] ?? '');
+    const when = Number.isFinite(at) ? `refreshed ${commitTime(list['refreshed-at'])} UTC (${duration(Math.max(0, now - at))} ago)` : 'never refreshed';
+    out.push(fit(`Variation ${name} — ${commits.length} commit${commits.length === 1 ? '' : 's'} · ${when}`));
+    for (const s of (list.sources ?? []).filter(x => !x.ok)) out.push(fit(color('31')(`  could not read ${s.source} ${s.repository}: ${s.error ?? 'failed'}`)));
+    if (!commits.length) { out.push('  no commits for this ticket yet'); continue; }
+    for (const c of commits) {
+      const [label, paint] = COMMIT_STATES[c.state] ?? [c.state ?? NONE, String];
+      const sha = c.url ? link(c.short ?? String(c.sha).slice(0, 8), c.url) : (c.short ?? String(c.sha).slice(0, 8));
+      const mr = c.mr ? (c['mr-url'] ? link(c.mr, c['mr-url']) : c.mr) : null;
+      const where = [c.repository ?? NONE, [mr, c.branch].filter(Boolean).join(' ') || NONE].join(' · ');
+      out.push(fit(`${SHA_INDENT}${sha}  ${commitTime(c.date)}  ${paint(pad(label, STATE_WIDTH))}  ${where}`));
+      const text = `${c.subject || NONE}${c.author ? ` — ${c.author}` : ''}`;
+      out.push(...wrap(text, Math.max(10, width - SUBJECT_INDENT.length)).map(l => fit(SUBJECT_INDENT + l)));
+    }
+  }
+  return out.length ? out : ['  no commits for this ticket yet'];
+}
 // tabsOf(chat) — the tabs shown: TABS, less Chat without `chat` (its flag,
 // ticket-chat-tab, off: ASS-262), the rest then numbered 1–5; with `blocked`
 // (the variation at a blocked step, blockedOf, ASS-439 AC1) a Blocked tab second,
@@ -869,13 +966,21 @@ export function needsYou(gate, open, tabs = TABS) {
 // with a red ● while a `gate` waits (gateWaits), Questions with its `open`
 // count and a red ● while any is open (ASS-185 AC2); `tabs` those shown (tabsOf, ASS-262).
 // The gate's ● is on the tab its choices are made on, `gateOn` (gateTab: Blocked's, ASS-439).
+// ASS-558: with the Commits tab seven tabs (eight with Blocked) no longer fit the 120-column minimum's tab box, so a
+// bar too wide gives its tabs their SHORT_LABELS one at a time, in order, then drops the space either side of each,
+// and only then is cut.
+// ASS-559: the Acceptance criteria tab shortens first ("Criteria"), and last of all to "ACs".
+const SHORT_LABELS = [['criteria', 'Criteria'], ['merges', 'MRs'], ['questions', 'Q&A'], ['criteria', 'ACs']];
 export function tabBar(active, width, { gate = false, open = 0, gateOn = 'actions' } = {}, tabs = TABS) {
   const dot = ' \x1b[31m●\x1b[39m';
   const badge = { [gateOn]: gate ? dot : '', questions: open ? ` (${open})${dot}` : '' };
-  const bar = `┌${tabs.map(([id, label], i) => {
-    const name = ` ${i + 1} ${label}${badge[id] ?? ''} `;
+  const draw = (short, gap) => `┌${tabs.map(([id, label], i) => {
+    const name = `${gap}${i + 1} ${short[id] ?? label}${badge[id] ?? ''}${gap}`;
     return id === active ? `\x1b[7m${name}\x1b[0m` : name;
   }).join('│')}`;
+  const shorts = SHORT_LABELS.map((_, n) => Object.fromEntries(SHORT_LABELS.slice(0, n)));
+  const all = Object.fromEntries(SHORT_LABELS);
+  const bar = [...shorts.map(short => draw(short, ' ')), draw(all, ' '), draw(all, '')].find(b => visible(b) <= width) ?? draw(all, '');
   return visible(bar) >= width ? clip(bar, width) : bar + '─'.repeat(width - visible(bar));
 }
 

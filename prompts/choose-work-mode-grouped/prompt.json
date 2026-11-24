@@ -1,0 +1,54 @@
+{
+    "description": "Prompt for choosing where a ticket variation is built after its plans are approved: in a worktree or on a full machine (the grouped and v2 engines' Choose Where to Work, ASS-556)",
+    "supported-command-line-interfaces": [
+        "claude"
+    ],
+    "supported-models": [
+        "claude-opus-5-5",
+        "claude-opus-5",
+        "claude-sonnet-5",
+        "claude-opus-4-8",
+        "claude-opus-4-7"
+    ],
+    "persona": "architect",
+    "input-arguments": [
+        {
+            "name": "ticket",
+            "description": "Ticket number",
+            "example": "ABC-1234",
+            "required": true
+        }
+    ],
+    "output": {
+        "type": "object",
+        "properties": {
+            "work-mode": {
+                "type": "string",
+                "enum": [
+                    "worktree",
+                    "full"
+                ],
+                "description": "worktree: built in a worktree, no running app stack; full: on a full machine with the stack"
+            },
+            "work-mode-reasons": {
+                "type": "array",
+                "items": {
+                    "type": "string"
+                },
+                "description": "Why, one short reason each, the deciding ones first"
+            },
+            "work-mode-files": {
+                "type": "array",
+                "items": {
+                    "type": "string"
+                },
+                "description": "Each repository path the plan changes, for the project's forced rules"
+            }
+        },
+        "required": [
+            "work-mode",
+            "work-mode-reasons"
+        ],
+        "additionalProperties": false
+    }
+}

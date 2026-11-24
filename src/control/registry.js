@@ -11,10 +11,18 @@
 // hour tries again. A project declaring arm64-images (ASS-466) then gets
 // registry:arm64-build, which builds a variant only for a pinned tag that has
 // none (a new tag in images.txt, or one swept away) and says each failure,
-// logged like the others: the image stays amd64 in VMs until a pass builds it. The work runs beside
+// logged like the others: the image stays amd64 in VMs until a pass builds it.
+// ASS-534: a project with a Substrate sandbox declared (sandbox/services.yaml),
+// a sandbox image built (sandbox-image-<arch>.json) and Substrate clusters
+// (ASS-535: the Mac's too) then gets substrate:deliver-image, which pushes the
+// image into each cluster's registry — a remote one over its connected
+// machine's SSH connection — only when its digest changed since that
+// machine's last delivery (a failure logged; the next half hour tries again). The work runs beside
 // the tick, one job per project at a time, so registry:up's wait for zot (up
 // to 30 seconds) never holds up the agents. Control leaves zot running when
 // it exits: VMs, other controls and the next control use it as it is.
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
 import { backoffDelay, held } from './backoff.js';
 import { timerDue } from './triggers.js';
 
@@ -33,13 +41,22 @@ export function superviseRegistries(ctx, state) {
     if (port == null) continue;
     const r = registries.get(project.id) ?? { job: null, failures: 0, until: 0 };
     registries.set(project.id, r);
-    r.job ??= keep(ctx, project.id, port, r, project.json['arm64-images']?.length > 0).finally(() => { r.job = null; });
+    r.job ??= keep(ctx, project.id, port, r, project.json['arm64-images']?.length > 0, deliversSandbox(ctx, project)).finally(() => { r.job = null; });
   }
+}
+
+// deliversSandbox(ctx, project) — it has a sandbox image to deliver to its clusters (ASS-534; ASS-535: the Mac's
+// cluster too, each cluster's own registry): a sandbox declared, a cluster declared, an image built.
+function deliversSandbox(ctx, project) {
+  const clusters = project.json['dev-environments']?.substrate?.clusters;
+  if (!Array.isArray(clusters) || !clusters.some(c => c?.machine && c.machine !== 'gke')) return false;
+  const dir = join(ctx.paths.projects, project.id);
+  return existsSync(join(dir, 'sandbox', 'services.yaml')) && ['amd64', 'arm64'].some(a => existsSync(join(dir, `sandbox-image-${a}.json`)));
 }
 
 // One project's pass: zot started when it does not answer (not while backed
 // off), then the half-hourly maintenance when due.
-async function keep(ctx, id, port, r, arm64) {
+async function keep(ctx, id, port, r, arm64, sandbox) {
   const now = ctx.now().getTime();
   if (await answers(port)) r.failures = 0;
   else if (now >= r.until) {
@@ -54,5 +71,5 @@ async function keep(ctx, id, port, r, arm64) {
     }
   }
   if (!timerDue(ctx.memory, `${id}/registry-maintain`, MAINTAIN_SECONDS, now, 0)) return;
-  for (const command of ['registry:refresh-credentials', 'registry:sweep', ...(arm64 ? ['registry:arm64-build'] : [])]) await ctx.attempt(PHASE, `${id} ${command}`, () => ctx.cli([command, id]));
+  for (const command of ['registry:refresh-credentials', 'registry:sweep', ...(arm64 ? ['registry:arm64-build'] : []), ...(sandbox ? ['substrate:deliver-image'] : [])]) await ctx.attempt(PHASE, `${id} ${command}`, () => ctx.cli([command, id]));
 }

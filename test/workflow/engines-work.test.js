@@ -11,6 +11,7 @@ import { readdirSync, readFileSync, existsSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { validateStateEngine } from '../../src/workflow/validate.js';
 import { ROOT, loadEngines, EXAMPLE_ENGINES } from '../support/engine-walk.js';
+import { readEngine } from '../../src/workflow/engine-file.js';
 
 const engines = loadEngines();
 // Every list of steps an engine holds: `steps` and each top-level `*-steps` / `*-trigger`.
@@ -34,9 +35,9 @@ test('every folder under engines/ holds a state engine that loads', () => {
   const folders = readdirSync(join(ROOT, 'engines')).filter(d => statSync(join(ROOT, 'engines', d)).isDirectory());
   assert.ok(folders.length > 0);
   for (const name of folders) {
-    const file = join(ROOT, 'engines', name, 'state-engine.json');
-    assert.ok(existsSync(file), `${name}: no state-engine.json`);
-    const engine = JSON.parse(readFileSync(file, 'utf8'));
+    const file = join(ROOT, 'engines', name, 'workflow.yaml');
+    assert.ok(existsSync(file), `${name}: no workflow.yaml`);
+    const engine = readEngine(file);
     assert.ok(Array.isArray(engine.steps) && engine.steps.length > 0, `${name}: no steps`);
   }
 });
@@ -114,7 +115,7 @@ const PROJECTS = join(ROOT, 'data', 'projects');
 for (const id of existsSync(PROJECTS) ? readdirSync(PROJECTS).toSorted() : []) {
   const own = join(PROJECTS, id, 'engines');
   if (!existsSync(own)) continue;
-  for (const [name, engine] of Object.entries(loadEngines(ROOT, own)).filter(([n]) => existsSync(join(own, n, 'state-engine.json'))))
+  for (const [name, engine] of Object.entries(loadEngines(ROOT, own)).filter(([n]) => existsSync(join(own, n, 'workflow.yaml'))))
     test(`data/projects/${id}/engines/${name} passes the harness's validator as ${id}'s own`, () => {
       assert.deepEqual(validateStateEngine(engine, ROOT, name, own), []);
     });

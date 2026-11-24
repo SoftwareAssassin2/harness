@@ -17,10 +17,11 @@ import { controlFixture } from './control-fixture.js';
 import { tick } from '../../src/control/tick.js';
 import { hs } from '../agent-cli/harness-fixture.js';
 import { engineDir } from '../support/engine-walk.js';
+import { readEngine } from '../../src/workflow/engine-file.js';
 
 const edit = (file, change) => { const json = JSON.parse(readFileSync(file, 'utf8')); change(json); writeFileSync(file, JSON.stringify(json)); };
 const sprint = f => join(f.dir, 'projects', 'p', 'sprints', 'sprint-10', 'sprint.json');
-const grouped = JSON.parse(readFileSync(join(engineDir('grouped-blocked'), 'state-engine.json'), 'utf8'));
+const grouped = readEngine(join(engineDir('grouped-blocked'), 'workflow.yaml'));
 const KEPT = ['dependency-wait', 'done', 'retry', 'blocked-for-human'];
 const WAITS = sub => ({ 'awaits-dependency': true, dependency: { id: 1, repository: 'https://gitlab.com/example/images', status: 'Open', key: '!12', url: 'https://gitlab.com/example/images/-/merge_requests/12', 'waited-by': 2 },
   'resume-at': 'build', 'resume-source': 'declared', 'resume-why': 'Blocked\'s dependency route (ASS-390) declares resume-at await-dependencies (in build)', 'resume-ignored': [],
@@ -29,7 +30,7 @@ const WAITS = sub => ({ 'awaits-dependency': true, dependency: { id: 1, reposito
 // ABC-3 A blocked at local-testing after Build's third visit (its max-visits); Build a group whose engine has Await Sequential Merge second.
 function fixture(answer) {
   const f = controlFixture();
-  edit(join(f.dir, 'engines', 'example-development', 'state-engine.json'), e => {
+  edit(join(f.dir, 'engines', 'example-development', 'workflow.yaml'), e => {
     e['check-health-interval-seconds'] = 1e9;
     e.steps.unshift({ id: 'blocked-for-human', sequence: -1, 'is-blocked-state': true, action: { type: 'human' } });
     Object.assign(e.steps.find(s => s.id === 'blocked'), {
@@ -42,9 +43,9 @@ function fixture(answer) {
     Object.assign(e.steps.find(s => s.id === 'build'), { action: { type: 'state-engine', engine: 'mini-build' }, 'exit-events': [{ condition: { 'is-done': true }, 'move-to-state': 'local-testing' }] });
   });
   mkdirSync(join(f.dir, 'engines', 'own'), { recursive: true });
-  writeFileSync(join(f.dir, 'engines', 'own', 'state-engine.json'), JSON.stringify({ steps: grouped.steps.filter(s => KEPT.includes(s.id)).map(({ vm, ...s }) => s) }));
+  writeFileSync(join(f.dir, 'engines', 'own', 'workflow.yaml'), JSON.stringify({ steps: grouped.steps.filter(s => KEPT.includes(s.id)).map(({ vm, ...s }) => s) }));
   mkdirSync(join(f.dir, 'engines', 'mini-build'), { recursive: true });
-  writeFileSync(join(f.dir, 'engines', 'mini-build', 'state-engine.json'), JSON.stringify({ steps: [
+  writeFileSync(join(f.dir, 'engines', 'mini-build', 'workflow.yaml'), JSON.stringify({ steps: [
     { id: 'refresh', sequence: 1, action: { type: 'none' } },
     { id: 'await-dependencies', sequence: 2, action: { type: 'none' } },
     { id: 'done', sequence: 3, 'is-done': true, action: { type: 'none' } },

@@ -59,11 +59,11 @@ test('loadState reads the harness, the assignments and their runs and pauses, ev
 // (data/projects/<id>/engines, as family's and software-assassin's do) — is read without them, each such engine named once.
 test('ASS-450 AC3: loadState drops check-ticket-health-sample-every and check-ticket-health-steps from every engine it reads, naming each engine that had them in obsoleteEngineKeys', () => {
   const f = fixture();
-  const file = join(f.dir, 'engines', 'example-development', 'state-engine.json');
+  const file = join(f.dir, 'engines', 'example-development', 'workflow.yaml');
   const old = { 'check-ticket-health-sample-every': 5, 'check-ticket-health-steps': [{ id: 'check-ticket-health', sequence: 1, action: { type: 'state-engine', engine: 'check-ticket-health-grouped' } }] };
   const shared = JSON.parse(readFileSync(file, 'utf8'));
   writeFileSync(file, JSON.stringify({ ...shared, 'check-ticket-health-sample-every': 2 }));
-  const own = join(f.dir, 'projects', 'q', 'engines', 'example-development', 'state-engine.json');
+  const own = join(f.dir, 'projects', 'q', 'engines', 'example-development', 'workflow.yaml');
   mkdirSync(join(own, '..'), { recursive: true });
   writeFileSync(own, JSON.stringify({ ...shared, ...old }));
   const state = loadState(paths('/repo', f.env));

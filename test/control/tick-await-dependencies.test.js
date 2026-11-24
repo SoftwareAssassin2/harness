@@ -13,10 +13,11 @@ import { controlFixture } from './control-fixture.js';
 import { tick } from '../../src/control/tick.js';
 import { hs } from '../agent-cli/harness-fixture.js';
 import { engineDir } from '../support/engine-walk.js';
+import { readEngine } from '../../src/workflow/engine-file.js';
 
 const edit = (file, change) => { const json = JSON.parse(readFileSync(file, 'utf8')); change(json); writeFileSync(file, JSON.stringify(json)); };
 const sprint = f => join(f.dir, 'projects', 'p', 'sprints', 'sprint-10', 'sprint.json');
-const grouped = JSON.parse(readFileSync(join(engineDir('grouped-build'), 'state-engine.json'), 'utf8'));
+const grouped = readEngine(join(engineDir('grouped-build'), 'workflow.yaml'));
 const KEPT = ['generate-solution', 'address-merge-request-feedback', 'check-feedback-round', 'await-dependencies', 'refresh-before-testing', 'done', 'blocked'];
 
 // The control fixture with ABC-3 A at local-testing, which runs grouped-build's own await-dependencies, generate-solution
@@ -25,7 +26,7 @@ const KEPT = ['generate-solution', 'address-merge-request-feedback', 'check-feed
 // Every script faked, exiting each of `codes` in turn, then 0.
 function fixture(codes) {
   const f = controlFixture();
-  edit(join(f.dir, 'engines', 'example-development', 'state-engine.json'), e => {
+  edit(join(f.dir, 'engines', 'example-development', 'workflow.yaml'), e => {
     e['check-health-interval-seconds'] = 1e9;
     Object.assign(e.steps.find(s => s.id === 'local-testing'), { action: { type: 'state-engine', engine: 'build' }, 'exit-events': [
       { condition: { all: [{ 'is-done': true }, { 'sub-engine-ended-at': 'blocked' }] }, 'move-to-state': 'blocked' },
@@ -38,7 +39,7 @@ function fixture(codes) {
     return rest;
   });
   mkdirSync(join(f.dir, 'engines', 'build'), { recursive: true });
-  writeFileSync(join(f.dir, 'engines', 'build', 'state-engine.json'), JSON.stringify({ steps }));
+  writeFileSync(join(f.dir, 'engines', 'build', 'workflow.yaml'), JSON.stringify({ steps }));
   edit(sprint(f), s => {
     s.features[0]['ticket-system-status'] = 'In Progress';
     s.features[0].variations[0]['harness-status'] = hs('local-testing');

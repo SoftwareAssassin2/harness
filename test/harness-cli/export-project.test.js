@@ -74,9 +74,9 @@ function setup({ key = 'p', project = {}, engines = ['dev', 'build', 'test', 'he
     test: { steps: [{ id: 'test', sequence: 1, 'is-done': null, action: { type: 'prompt', prompt: 'test' } }] },
     health: { steps: [step('back', 'dev')] },
   };
-  for (const name of engines) write(at('engines', name, 'state-engine.json'), all[name]);
-  for (const name of own) write(at('projects', key, 'engines', name, 'state-engine.json'), all[name]);
-  write(at('engines', 'unused', 'state-engine.json'), { steps: [] });
+  for (const name of engines) write(at('engines', name, 'workflow.yaml'), all[name]);
+  for (const name of own) write(at('projects', key, 'engines', name, 'workflow.yaml'), all[name]);
+  write(at('engines', 'unused', 'workflow.yaml'), { steps: [] });
   write(at('home', '.harness', 'vm-credentials.json'), {
     [key]: {
       gitlab: { 'keychain-service': 'GitLab PAT (Acme)', host: 'gitlab.com', 'npm-registries': { '@acme': '123' } },
@@ -263,27 +263,27 @@ test('ASS-276 AC2: export-project bundles data/projects/<project>/engines/ as en
   const r = s.exportProject('p', 'b.tar.gz');
   assert.equal(r.status, 0, r.stderr);
   const b = s.unpack(s.at('out', 'b.tar.gz'));
-  assert.deepEqual(b.files.filter(f => f.startsWith('engines/')), ['engines/health/state-engine.json', 'engines/notes.md', 'engines/test/state-engine.json']);
-  assert.deepEqual(b.json('engines/test/state-engine.json'), { steps: [{ id: 'test', sequence: 1, 'is-done': null, action: { type: 'prompt', prompt: 'test' } }] });
+  assert.deepEqual(b.files.filter(f => f.startsWith('engines/')), ['engines/health/workflow.yaml', 'engines/notes.md', 'engines/test/workflow.yaml']);
+  assert.deepEqual(b.json('engines/test/workflow.yaml'), { steps: [{ id: 'test', sequence: 1, 'is-done': null, action: { type: 'prompt', prompt: 'test' } }] });
   assert.equal(b.text('engines/notes.md'), '# Our engines\n');
   const m = b.json('manifest.json');
   assert.equal(m.format, 1);
   assert.deepEqual(m['state-engines'], ['build', 'dev', 'health', 'test']);
   assert.deepEqual(m['project-engines'], ['health', 'test']);
-  assert.ok(m.files.includes('engines/test/state-engine.json'));
+  assert.ok(m.files.includes('engines/test/workflow.yaml'));
 });
 
 test('ASS-276 AC2: the engine walk follows a grouped engine into a sub-engine only the project has, its own copy of a shared engine winning', () => {
   const s = setup({ engines: ['dev', 'build', 'test', 'health'], own: ['build'] });
   rmSync(s.at('engines', 'test'), { recursive: true });
-  write(s.at('projects', 'p', 'engines', 'test', 'state-engine.json'), { steps: [] });
-  write(s.at('projects', 'p', 'engines', 'build', 'state-engine.json'), { steps: [{ id: 'own', sequence: 1, 'is-done': null, action: { type: 'state-engine', engine: 'test' } }] });
+  write(s.at('projects', 'p', 'engines', 'test', 'workflow.yaml'), { steps: [] });
+  write(s.at('projects', 'p', 'engines', 'build', 'workflow.yaml'), { steps: [{ id: 'own', sequence: 1, 'is-done': null, action: { type: 'state-engine', engine: 'test' } }] });
   const r = s.exportProject('p', 'b.tar.gz');
   assert.equal(r.status, 0, r.stderr);
   const b = s.unpack(s.at('out', 'b.tar.gz'));
   assert.deepEqual(b.json('manifest.json')['state-engines'], ['build', 'dev', 'health', 'test']);
   assert.deepEqual(b.json('manifest.json')['project-engines'], ['build', 'test']);
-  assert.equal(b.json('engines/build/state-engine.json').steps[0].id, 'own');
+  assert.equal(b.json('engines/build/workflow.yaml').steps[0].id, 'own');
 });
 
 test('ASS-276 AC2: the execution engine itself may be the project\'s own; one in neither place still fails the export', () => {
@@ -296,8 +296,8 @@ test('ASS-276 AC2: the execution engine itself may be the project\'s own; one in
 
 test('ASS-276 AC2: the scan covers the project\'s engines too', () => {
   const s = setup({ engines: ['dev', 'build', 'health'], own: ['test'] });
-  write(s.at('projects', 'p', 'engines', 'test', 'state-engine.json'), { steps: [], note: 'see /Users/someone/notes' });
-  fails(s, /engines\/test\/state-engine\.json.*machine path/);
+  write(s.at('projects', 'p', 'engines', 'test', 'workflow.yaml'), { steps: [], note: 'see /Users/someone/notes' });
+  fails(s, /engines\/test\/workflow\.yaml.*machine path/);
 });
 
 // ASS-280: --as <key> and --name <display name> export the project under
@@ -358,8 +358,8 @@ test('ASS-280 AC1: --name defaults to the current name, and the options may come
 // the shared engines test and health in engines/.
 const prefixed = () => {
   const s = setup({ key: 'acme-shop', engines: ['test'], project: { 'execution-state-engine': 'acme-dev' } });
-  write(s.at('engines', 'health', 'state-engine.json'), { steps: [] });
-  const engine = (name, text) => write(s.at('projects', 'acme-shop', 'engines', name, 'state-engine.json'), text);
+  write(s.at('engines', 'health', 'workflow.yaml'), { steps: [] });
+  const engine = (name, text) => write(s.at('projects', 'acme-shop', 'engines', name, 'workflow.yaml'), text);
   engine('acme-dev', '{\n    "steps": [{ "id": "build", "action": { "type": "state-engine", "engine": "acme-build" } }],\n'
     + '    "check-health-steps": [{ "id": "check", "action": {"type":"state-engine","engine":"health"} }],\n'
     + '    "note": "acme-dev runs acme-build"\n}\n');
@@ -373,25 +373,25 @@ test('ASS-280 AC2: --engine-prefix renames the bundle\'s own engines with that p
   const r = s.exportProject('acme-shop', 'b.tar.gz', '--as', 'engineering', '--engine-prefix', 'acme=engineering');
   assert.equal(r.status, 0, r.stderr);
   const b = s.unpack(s.at('out', 'b.tar.gz'));
-  assert.deepEqual(b.files.filter(f => f.startsWith('engines/')), ['engines/engineering-build/state-engine.json', 'engines/engineering-dev/state-engine.json']);
+  assert.deepEqual(b.files.filter(f => f.startsWith('engines/')), ['engines/engineering-build/workflow.yaml', 'engines/engineering-dev/workflow.yaml']);
   const m = b.json('manifest.json');
   assert.equal(m['execution-state-engine'], 'engineering-dev');
   assert.deepEqual(m['state-engines'], ['engineering-build', 'engineering-dev', 'health', 'test']);
   assert.deepEqual(m['project-engines'], ['engineering-build', 'engineering-dev']);
-  assert.ok(m.files.includes('engines/engineering-dev/state-engine.json'));
+  assert.ok(m.files.includes('engines/engineering-dev/workflow.yaml'));
   assert.equal(b.json('project.json')['execution-state-engine'], 'engineering-dev');
   // only the references change, the rest of each engine's text as it was
   // (a mention of an engine's name in prose is not a reference).
-  assert.equal(b.text('engines/engineering-dev/state-engine.json'),
+  assert.equal(b.text('engines/engineering-dev/workflow.yaml'),
     '{\n    "steps": [{ "id": "build", "action": { "type": "state-engine", "engine": "engineering-build" } }],\n'
     + '    "check-health-steps": [{ "id": "check", "action": {"type":"state-engine","engine":"health"} }],\n'
     + '    "note": "acme-dev runs acme-build"\n}\n');
-  assert.equal(b.text('engines/engineering-build/state-engine.json'),
+  assert.equal(b.text('engines/engineering-build/workflow.yaml'),
     '{ "steps": [ { "id": "test", "action": { "type": "state-engine", "engine" : "test" } } ],\n'
     + '  "review-steps": [ { "id": "again", "action": { "type": "state-engine", "engine": "engineering-dev" } } ] }\n');
   // the operator's own engines keep their names and content.
   assert.deepEqual(readdirSync(s.at('projects', 'acme-shop', 'engines')).sort(), ['acme-build', 'acme-dev']);
-  assert.match(readFileSync(s.at('projects', 'acme-shop', 'engines', 'acme-dev', 'state-engine.json'), 'utf8'), /"engine": "acme-build"/);
+  assert.match(readFileSync(s.at('projects', 'acme-shop', 'engines', 'acme-dev', 'workflow.yaml'), 'utf8'), /"engine": "acme-build"/);
   assert.equal(JSON.parse(readFileSync(s.at('projects', 'acme-shop', 'project.json'), 'utf8'))['execution-state-engine'], 'acme-dev');
 });
 
@@ -431,21 +431,21 @@ test('ASS-280 AC3: an invalid --as key, --engine-prefix or option fails, writing
 test('ASS-280 AC3: an --engine-prefix that would rename a shared engine, or one a shared engine names, fails, writing nothing', () => {
   const t = prefixed();
   rmSync(t.at('engines', 'test'), { recursive: true });
-  write(t.at('engines', 'acme-test', 'state-engine.json'), { steps: [] });
-  write(t.at('projects', 'acme-shop', 'engines', 'acme-build', 'state-engine.json'), { steps: [{ id: 'test', action: { type: 'state-engine', engine: 'acme-test' } }] });
+  write(t.at('engines', 'acme-test', 'workflow.yaml'), { steps: [] });
+  write(t.at('projects', 'acme-shop', 'engines', 'acme-build', 'workflow.yaml'), { steps: [{ id: 'test', action: { type: 'state-engine', engine: 'acme-test' } }] });
   failsWith(t, ['acme-shop', 'b.tar.gz', '--engine-prefix', 'acme=engineering'], /shared engine acme-test/);
   // a shared engine naming one of the project's engines would lose it.
   const u = prefixed();
-  write(u.at('engines', 'health', 'state-engine.json'), { steps: [{ id: 'back', action: { type: 'state-engine', engine: 'acme-dev' } }] });
+  write(u.at('engines', 'health', 'workflow.yaml'), { steps: [{ id: 'back', action: { type: 'state-engine', engine: 'acme-dev' } }] });
   failsWith(u, ['acme-shop', 'b.tar.gz', '--engine-prefix', 'acme=engineering'], /shared engine health names acme-dev/);
 });
 
 test('ASS-280 AC3: an --engine-prefix whose new name collides with an existing engine fails, writing nothing', () => {
   const s = prefixed();
-  write(s.at('engines', 'engineering-dev', 'state-engine.json'), { steps: [] });   // unused, but the installing harness has it
+  write(s.at('engines', 'engineering-dev', 'workflow.yaml'), { steps: [] });   // unused, but the installing harness has it
   failsWith(s, ['acme-shop', 'b.tar.gz', '--engine-prefix', 'acme=engineering'], /engineering-dev.*already/);
   const t = prefixed();
-  write(t.at('projects', 'acme-shop', 'engines', 'engineering-build', 'state-engine.json'), { steps: [] });   // the project's own
+  write(t.at('projects', 'acme-shop', 'engines', 'engineering-build', 'workflow.yaml'), { steps: [] });   // the project's own
   failsWith(t, ['acme-shop', 'b.tar.gz', '--engine-prefix', 'acme=engineering'], /engineering-build.*already/);
 });
 
@@ -487,4 +487,22 @@ test('ASS-508 AC1: export-project carries project.json\'s review-gate-jobs as it
   const project = s.unpack(s.at('out', 'b.tar.gz')).json('project.json');
   assert.deepEqual(project['advisory-review-bots'], ['review-helper']);
   assert.deepEqual(project['review-gate-jobs'], ['review-gate', 'gate']);
+});
+
+// ASS-524: an engine is YAML; --engine-prefix changes only its references, comments and layout kept.
+test('ASS-524 AC3: --engine-prefix renames the references in a YAML engine, its comments and layout as they were', () => {
+  const s = prefixed();
+  const yaml = '# The acme-dev flow: build, then health.\nsteps:\n  - id: build   # acme-build does the work\n    action:\n      type: state-engine\n      engine: acme-build\n'
+    + 'check-health-steps:\n  - id: check\n    action: { type: state-engine, engine: health }\nnote: acme-dev runs acme-build\n';
+  write(s.at('projects', 'acme-shop', 'engines', 'acme-dev', 'workflow.yaml'), yaml);
+  const r = s.exportProject('acme-shop', 'b.tar.gz', '--as', 'engineering', '--engine-prefix', 'acme=engineering');
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(s.unpack(s.at('out', 'b.tar.gz')).text('engines/engineering-dev/workflow.yaml'), yaml.replace('engine: acme-build', 'engine: engineering-build'));
+});
+
+test('ASS-524 AC3: a project\'s own engine still only a state-engine.json fails the export, naming the migration', () => {
+  const s = setup({ engines: ['dev', 'build', 'health'], own: ['test'] });
+  rmSync(s.at('projects', 'p', 'engines', 'test', 'workflow.yaml'));
+  write(s.at('projects', 'p', 'engines', 'test', 'state-engine.json'), { steps: [{ id: 'own', sequence: 1 }] });
+  failsWith(s, ['p', 'b.tar.gz'], /test\/state-engine\.json is not yet a workflow\.yaml: .*engine:convert-to-yaml --project p/);
 });

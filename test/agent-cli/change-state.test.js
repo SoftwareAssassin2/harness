@@ -9,6 +9,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { withExampleEngines, engineDir } from '../support/engine-walk.js';
 import { stepOf, nextState } from '../../src/control/engine.js';
+import { readEngine } from '../../src/workflow/engine-file.js';
 // A harness-status at `state` of the example-development engine.
 const hs = state => ({ state, 'state-engine': 'example-development' });
 
@@ -172,7 +173,7 @@ test('ticket:change-state blocked → build with a start step records fix-landed
 });
 
 // ASS-514 AC2: after that move, build's done exit goes on to test though test had its 3 visits before the block.
-const ghEngine = JSON.parse(readFileSync(join(engineDir('example-github-development'), 'state-engine.json'), 'utf8'));
+const ghEngine = readEngine(join(engineDir('example-github-development'), 'workflow.yaml'));
 const buildDone = changes => nextState(stepOf(ghEngine, 'build'), ghEngine, { subEngineDone: true, subEngineState: 'done' }, changes);
 test('nextState from build\'s done exit after a manual blocked → build counts no visits to test from before the block (AC2, ASS-514)', async () => {
   const dir = blockedProjects();

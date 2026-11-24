@@ -420,11 +420,11 @@ test('ASS-502 AC4: an expired login is not retried beyond EXPIRED_RETRY\'s neede
 
 test('ASS-502 AC5: the full loop — a seat holder\'s machine fails to connect, its seat is lost and it is taken out; nothing needing it, control keeps retrying it with the backoff; once it connects it is back, and the next tick seats the waiting holder on it again', async () => {
   const s = setup({ need: false }), tries = connects(s);
-  edit(s.at('harness.json'), h => { h['max-tickets-in-progress'] = 9; });
   edit(s.at('projects', 'p', 'project.json'), p => { p['dev-environments'].mode = 'workstation'; });
   const sprint = s.at('projects', 'p', 'sprints', 'sprint-10', 'sprint.json');
   const variation = change => edit(sprint, sp => { sp.features[0]['ticket-system-status'] = 'In Progress'; change(sp.features[0].variations[0]); });
-  variation(v => { v['harness-status'] = { state: 'build', 'state-engine': 'example-development' }; });
+  // ASS-527: at a step that uses its machine (local-testing, whose run starts at a prompt), so it holds a seat.
+  variation(v => { v['harness-status'] = { state: 'local-testing', 'state-engine': 'example-development' }; });
   const seatsFile = s.at('projects', 'p', 'seats.json');
   writeFileSync(seatsFile, JSON.stringify({ seats: [{ key: 'ABC-3', variation: 'A', kind: 'workstation', workstation: ID, since: '2026-11-17T22:00:00Z' }] }));
   const seats = () => (existsSync(seatsFile) ? JSON.parse(readFileSync(seatsFile, 'utf8')).seats.map(x => `${x.key} ${x.variation} ${x.workstation ?? x.kind}`) : []);

@@ -1,6 +1,6 @@
 // The sprint flow screen (S): the project's state engine as a factory floor (ASS-201: moved from app.js).
 import { flowchart, NOTE_WIDTH } from '../flowchart.js';
-import { floorNotes } from '../metrics.js';
+import { floorNotes, workModeMetrics, workModeLines } from '../metrics.js';
 import { scrollBox } from '../table.js';
 import { link } from '../text.js';
 import { below, headerLines, platform } from './frame.js';
@@ -36,6 +36,8 @@ function flowchartView(state, { columns = 0, rows = Infinity, now = 0 }) {
     };
   });
   const notes = state.flowchartView === 'metrics' && floorNotes(tickets.map(t => t.variation), NOTE_WIDTH);
+  // ASS-556: in the metrics view, the sprint's tickets by work mode first (CI pass rate, rounds, time to merge).
+  if (notes) head.push(...workModeLines(workModeMetrics(tickets.map(t => t.variation))));
   const floor = nestedFloor(steps, entries, { workflows: projectWorkflows(state), expanded: state.flowchartExpanded, notes });
   const boxHeight = Math.max(3, rows - headerLines(state, columns, now).length - below(state) - platform(state, columns, now).length - head.length);
   return { head, list: flowchart(steps, { ...floor, columns: columns - 4 }), boxHeight, height: boxHeight - 2 };

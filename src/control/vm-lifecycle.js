@@ -11,9 +11,16 @@
 // stop a VM, nor does a rate limit as a pause; ASS-400 below stops one for it; one with an assignment on its variation is left as
 // it is, neither stopped under its agent nor started, until it ends) or it was set aside
 // (is-deleted) or waits for a slot (ASS-233: in motion but holding none,
-// plan.js planFor's `waiting`; a seat holder at a gate or a human step,
-// ASS-203, keeps its seat and so its VM; a finished plan waiting for a build
-// seat, ASS-362, planFor's `ready`, holds none, so its queue costs no RAM) or for a ticket it depends on
+// plan.js planFor's `waiting`; a finished plan waiting for a build
+// seat, ASS-362, planFor's `ready`, holds none, so its queue costs no RAM) or
+// holds no seat because its current step does not use its machine (ASS-527,
+// replacing ASS-203's rule that a seat holder at a gate or a human step kept
+// its seat and so its VM: plan.js slotKind — a gate, a human step, a wait, a
+// host-only script; `idle` below — stopped once no assignment or in-machine
+// script runs on it, machine-steps.js machineScriptRunning, and never waited
+// for: awaitsVm passes it, its step judged with its VM stopped; the vm-hold,
+// ASS-427, still keeps it running; Blocked and the other detours, which take
+// no seat by position, follow their steps' `vm` as before) or for a ticket it depends on
 // (ASS-355: dependencies.js heldBy, the predicate control holds it with —
 // stopped as one waiting for a slot is, its agent at work let finish first,
 // and started again once the hold lifts) or holds a workstation seat
@@ -155,12 +162,17 @@ import { readJson } from './read.js';
 import { join } from 'node:path';
 import { statusOf, isHeld, isActive, stepOf, isManual } from './engine.js';
 import { heldKinds, payWith } from './state.js';
-import { planFor } from './plan.js';
+import { planFor, poolOf, slotKind } from './plan.js';
+import { machineScriptRunning } from './machine-steps.js';
 import { holdOf, heldBy } from './dependencies.js';
 import { backoffDelay, held } from './backoff.js';
 import { runsInVm } from './vm.js';
-import { machineStatuses, runInMachine, machineOf, onWorkstation } from './machine.js';
+import { onMacTarget, onSubstrateTarget } from './seat-kinds.js';
+// ticketKeyOf(project, variation) — the key of the ticket the variation is of.
+const ticketKeyOf = (project, variation) => project.tickets?.find(t => t.variations?.includes(variation))?.key;
+import { machineStatuses, runInMachine, machineOf, onWorkstation, runTargetOf } from './machine.js';
 import { entriesOf, onWorkstationVariation, onWorkstationSeat } from './workstation-machines.js';
+import { holdersOf } from './workstation-connection.js';
 import { diskHeld } from './disk.js';
 import { memoryShort, memoryHeldVm, liftMemoryHolds, unhold } from './host-memory.js';
 import { humanPause, moveTicket } from './moves.js';
@@ -178,6 +190,14 @@ export const vmUse = (engines, engineName, variation) => statusOf(engines, engin
 // or its plan is finished and it waits for a build seat (`ready`, ASS-362).
 const waitsForSlot = (plan, ticket, variation) => [...plan.waiting, ...plan.ready, ...(plan.memoryWaiting ?? [])].some(w => w.key === ticket?.key && w.variation === variation.name);
 
+// idleAt(engines, engineName, variation) — ASS-527: the variation, in the work (its position in a pool of seats:
+// plan.js poolOf), is at a step that does not use its machine (slotKind none: a gate, a human step, a wait, a
+// host-only script), so it holds no seat and its VM is stopped. (Exported for the tests.)
+export const idleAt = (engines, engineName, variation) => {
+  const status = statusOf(engines, engineName, variation);
+  return poolOf(status.step, status) != null && slotKind(status.step, status, variation) == null;
+};
+
 // rateLimitStop(ctx, state, project, variation) — ASS-400: why the
 // variation's VM is stopped for a rate limit (see the module comment), as {
 // kind (the kind holding it), until (when it can next pay: the earliest reset
@@ -189,7 +209,7 @@ export function rateLimitStop(ctx, state, project, variation) {
   if (!held.length) return null;
   const step = statusOf(project.engines ?? state.engines, project.engineName, variation).detailStep;
   if (step?.action?.type !== 'prompt' || !isActive(step)) return null;
-  const inVm = runsInVm(step), recorded = inVm ? credentialKindOf(ctx, project.id, machineOf(variation)) : null;
+  const inVm = runsInVm(step) && !onMacTarget(project, ticketKeyOf(project, variation), variation.name), recorded = inVm ? credentialKindOf(ctx, project.id, machineOf(variation)) : null;
   const both = inVm ? recorded === 'both' : existsSync(join(ctx.paths.projects, project.id, '.claude-api'));
   const kind = both ? null : inVm ? recorded : ctx.memory.hostKinds?.get(project.id)?.kind ?? 'claude';
   const capHold = project.json?.['api-cap-hold'] ?? null;
@@ -243,11 +263,14 @@ export const NEVER_UP = 'never-up';
 export function awaitsVm(ctx, state, project, variation, who) {
   if (onWorkstationVariation(variation) || !variation?.vm?.name) return false;
   if (onWorkstationSeat(project, variation)) return false;   // ASS-469: its steps run on its seat's workstation
+  const k = ticketKeyOf(project, variation);
+  if (k != null && onSubstrateTarget(project, k, variation.name)) return false;   // ASS-535: its step runs in its sandbox (sandboxes.js sandboxWaits)
   const name = variation?.vm?.name;
   if (!name || (ctx.memory.vmsUp ??= new Set()).has(name) || vmUse(project.engines ?? state.engines, project.engineName, variation) !== 'running') return false;
   const ticket = project.tickets.find(t => t.variations?.includes(variation));
   if (ticket && heldBy(state, project)(ticket, variation)) return true;   // its VM stopped while its dependencies hold it (ASS-355)
   if (statusOf(project.engines ?? state.engines, project.engineName, variation).planned) return false;   // ASS-362: moves on to Build without it
+  if (idleAt(project.engines ?? state.engines, project.engineName, variation)) return false;   // ASS-527: its step uses no machine — judged with its VM stopped
   if (rateLimitStop(ctx, state, project, variation)) return true;   // ASS-400: its VM stopped while a rate limit with no API fallback holds its next agent
   if (waitsForSlot(planFor(state, project), ticket, variation)) return true;   // its VM stopped till it holds one
   if (memoryHeldVm(ctx, project, name)) return true;   // ASS-398: not started for want of memory — waits as for a slot
@@ -331,10 +354,14 @@ const inventoryOf = (ctx, projectId) => {
 // vms.json row records (ASS-215: 'claude' or 'anthropic'; 'both', ASS-217,
 // for a VM holding both, whose agents control pays per dispatch), or null.
 // `name` is the variation's machine (machine.js machineOf): a workstation's
-// (ASS-435) is its live data holder's, as vm:start recorded it.
+// (ASS-435) is its live data holder's, as vm:start recorded it — ASS-529: the holder of the machine's folder (its
+// slot), several tickets' steps sharing one machine.
 export const credentialKindOf = (ctx, projectId, name) => {
   const ws = onWorkstation(name);
-  if (ws) return entriesOf(ctx, projectId)[ws.id]?.holder?.['credential-kind'] || null;
+  if (ws) {
+    const hs = holdersOf(entriesOf(ctx, projectId)[ws.id]);
+    return (hs.find(h => h.folder === ws.folder) ?? hs[0])?.['credential-kind'] || null;
+  }
   return (name && inventoryOf(ctx, projectId)[name]?.['credential-kind']) || null;
 };
 
@@ -354,7 +381,7 @@ function declaredVmKind(ctx, id) {
 // inventory knows it, yet its variation is in the sprint — a vm:create that failed before linking it — logged so when it is stopped),
 // paused (ASS-297: the scope of the human pause holding the project, when only that keeps it from running), keep (paused and busy:
 // left as it is till its assignment ends), release (ASS-325: at a `vm: released` step, not held, set aside or paused: to delete),
-// rateLimited (ASS-400: rateLimitStop's, when only that keeps it from running), health (its variation's ai-feedback-long),
+// rateLimited (ASS-400: rateLimitStop's, when only that keeps it from running), idle (ASS-527: idleAt, its step using no machine, when only that keeps it from running; busy also counts an in-machine script of it running), health (its variation's ai-feedback-long),
 // hold (ASS-427 AC7: its variation's vm-hold, vm:hold's { by, since, note }, or null — held, it is to run, whatever else says not) }.
 function vmsOf(ctx, state, project) {
   const vms = new Map();
@@ -369,18 +396,24 @@ function vmsOf(ctx, state, project) {
     if (!v.vm?.name || onWorkstationVariation(v)) continue;   // ASS-435: a workstation's machine is workstations.js's
     const use = vmUse(project.engines ?? state.engines, project.engineName, v), free = !v['is-deleted'] && !isHeld(t, v);
     const wants = free && use === 'running', release = free && !pause && use === 'released';
-    const busy = state.assignments.some(a => a.project === project.id && a['work-item'] === t.key && a.variation === v.name);
+    const busy = state.assignments.some(a => a.project === project.id && a['work-item'] === t.key && a.variation === v.name)
+      || machineScriptRunning(ctx, project.id, t.key, v.name);   // ASS-527 AC2: an in-machine script of it running there holds a stop as an agent does
     const dependsOn = wants && !pause ? holdOf(state, project, t, v).waits : [];   // ASS-355: held by what it depends on, stopped as one waiting for a slot
     const waits = wants && !pause && !dependsOn.length && waitsForSlot(plan ??= planFor(state, project), t, v);
     const rateLimited = wants && !pause && !dependsOn.length && !waits ? rateLimitStop(ctx, state, project, v) : null;   // ASS-400
     const seated = wants && !pause && !dependsOn.length && !waits && !rateLimited && onWorkstationSeat(project, v);   // ASS-469: machines follow seats — its steps on its seat's workstation, its VM stopped
-    const run = wants && !waits && !dependsOn.length && !pause && !rateLimited && !seated;
+    const idle = wants && !pause && !dependsOn.length && !waits && !rateLimited && !seated && (idleAt(project.engines ?? state.engines, project.engineName, v)   // ASS-527: no seat, its step using no machine
+      || onMacTarget(project, t.key, v.name)   // ASS-540: its step runs on a Mac run target (local-worktree, local-workspace), not in its VM
+      // ASS-535: its step runs in its Substrate sandbox, not in its VM — once its branches have moved there (its recorded
+      // run-target a substrate one: code:hand-over reads them out of this VM first).
+      || (onSubstrateTarget(project, t.key, v.name) && /-substrate$/.test(runTargetOf(v)?.target ?? '')));
+    const run = wants && !waits && !dependsOn.length && !pause && !rateLimited && !seated && !idle;
     const ready = waits && plan.ready.some(r => r.key === t.key && r.variation === v.name);   // ASS-362: a finished plan, said so
     const paused = wants && pause ? pause : undefined, keep = !!pause && busy;   // ASS-297: paused, stopped once idle, never started
     const hold = !v['is-deleted'] && v['vm-hold'] ? v['vm-hold'] : null;   // ASS-427 AC7: held running for the operator — whatever its step, pause or wait says
     vms.set(v.vm.name, { ...vms.get(v.vm.name), ticket: t.key, variation: v.name, state: v['harness-status']?.state, health: v['ai-feedback-long'] ?? null, hold,
       ...(hold ? { run: true, waits: false, ready: false, dependsOn: [], busy, paused: undefined, keep: false, release: false, rateLimited: null }
-        : { run, waits, ready, dependsOn, busy, paused, keep, release, rateLimited, seated }) });
+        : { run, waits, ready, dependsOn, busy, paused, keep, release, rateLimited, seated, idle }) });
   }
   // ASS-480 AC1: a step's end pending on it keeps it running (started when stopped), never stopped, deleted or recreated.
   for (const [name, end] of pendingVmEnds(ctx, project.id)) {
@@ -536,8 +569,8 @@ async function match(ctx, id, vms, r, status, diskHold = false, stampEvery = CRE
     else if (vm.run && s == null) [args, did] = [['vm:create', id, vm.ticket, vm.variation], `recreated (${vm.ticket} ${vm.variation} at ${vm.state}; it had been deleted)`];
     else if (vm.run && s != null && s !== 'Running') [args, did] = [['vm:start', id, vm.ticket, vm.variation], `started (${vm.ticket} ${vm.variation} at ${vm.state}${vm.hold ? '; held for the operator' : ''}${vm.pendingEnd && vm.overridden ? `; for its step's end, pending on it` : ''})`];
     else if (!vm.run && s === 'Running') {
-      const why = `${vm.ticket} ${vm.variation} ${vm.state ? `at ${vm.state}` : vm.unlinked ? 'not linked to its variation' : 'is not in the sprint'}${vm.waits ? (vm.ready ? '; planned, waits for a build seat' : '; waits for a slot') : ''}${vm.dependsOn?.length ? `; waits on ${vm.dependsOn.join(', ')}` : ''}${vm.paused ? `; ${vm.paused === 'all' ? 'all projects are' : `${id} is`} paused` : ''}${vm.rateLimited ? `; rate-limited until ${vm.rateLimited.until}, no API fallback` : ''}${vm.seated ? '; it holds a workstation seat, its steps run there' : ''}`;
-      if (vm.busy) {   // ASS-349: an assignment on its variation — its agent at work in it — holds the stop till it ends
+      const why = `${vm.ticket} ${vm.variation} ${vm.state ? `at ${vm.state}` : vm.unlinked ? 'not linked to its variation' : 'is not in the sprint'}${vm.waits ? (vm.ready ? '; planned, waits for a build seat' : '; waits for a slot') : ''}${vm.dependsOn?.length ? `; waits on ${vm.dependsOn.join(', ')}` : ''}${vm.paused ? `; ${vm.paused === 'all' ? 'all projects are' : `${id} is`} paused` : ''}${vm.rateLimited ? `; rate-limited until ${vm.rateLimited.until}, no API fallback` : ''}${vm.seated ? '; it holds a workstation seat, its steps run there' : ''}${vm.idle ? '; its step does not use its machine, so it holds no seat' : ''}`;
+      if (vm.busy) {   // ASS-349: an assignment on its variation — its agent at work in it — holds the stop till it ends (ASS-527: or an in-machine script)
         if (!ctx.memory.warned.has(holding)) { ctx.memory.warned.add(holding); ctx.log(PHASE, `${id} ${name}: to stop (${why}); waits until its agent finishes`); }
         continue;
       }

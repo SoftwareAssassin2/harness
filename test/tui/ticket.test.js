@@ -375,21 +375,23 @@ test('a gate with nothing to choose (Awaiting Answers: its exit is no open quest
 test('ASS-262 AC4: without the Chat tab, five tabs numbered 1–5 (ASS-437), the screen opening on Details where it would have on Chat', () => {
   const approve = [{ decision: 'Approve', leadsTo: 'Done' }];
   const gate = { step: { name: 'Human Review', action: { type: 'human' } }, choices: approve };
-  assert.deepEqual(tabsOf(false).map(([id]) => id), ['actions', 'details', 'merges', 'history', 'questions']);
+  assert.deepEqual(tabsOf(false).map(([id]) => id), ['actions', 'details', 'merges', 'history', 'questions', 'commits', 'criteria']);   // ASS-558: Commits; ASS-559: Acceptance criteria last
   assert.equal(tabsOf(true), TABS);
   assert.deepEqual([defaultTab(gate, 2, false), defaultTab(null, 2, false), defaultTab(null, 0, false)], ['actions', 'questions', 'details']);
-  assert.match(strip(tabBar('details', 100, {}, tabsOf(false))), /^┌ 1 Actions │ 2 Details │ 3 Merge requests │ 4 History │ 5 Questions ─+$/);
+  assert.match(strip(tabBar('details', 100, {}, tabsOf(false))), /^┌ 1 Actions │ 2 Details │ 3 Merge requests │ 4 History │ 5 Questions │ 6 Commits │ 7 Criteria ─+$/);   // ASS-559: Criteria first
   const out = ticketTabs({ tab: 'details', panes: [{ lines: ['detail one'] }], panel: ['key'], columns: 120, height: 3, tabs: tabsOf(false) });
-  assert.match(strip(out[0]), /^┌ 1 Actions │ 2 Details │ 3 Merge requests │ 4 History │ 5 Questions ─+┬ Ticket ─+┐$/);
+  // ASS-558: at 120 columns the six tabs fit with Merge requests shortened to MRs; ASS-559: seven, with Criteria and Q&A.
+  assert.match(strip(out[0]), /^┌ 1 Actions │ 2 Details │ 3 MRs │ 4 History │ 5 Q&A │ 6 Commits │ 7 Criteria ─+┬ Ticket ─+┐$/);
 });
 
 test('ASS-184 AC1/AC4, ASS-437 AC2: six tabs in order, numbered, Merge requests after Details; the active one alone in reverse video', () => {
-  assert.deepEqual(TABS.map(([id]) => id), ['actions', 'details', 'merges', 'history', 'questions', 'chat']);
-  const bar = tabBar('history', 100);
-  assert.match(strip(bar), /^┌ 1 Actions │ 2 Details │ 3 Merge requests │ 4 History │ 5 Questions │ 6 Chat ─+$/);
-  assert.equal(strip(bar).length, 100);
+  assert.deepEqual(TABS.map(([id]) => id), ['actions', 'details', 'merges', 'history', 'questions', 'chat', 'commits', 'criteria']);   // ASS-558: Commits; ASS-559: Acceptance criteria last
+  const bar = tabBar('history', 140);   // ASS-559: wide enough for every label whole (100 was, before Acceptance criteria)
+  assert.match(strip(bar), /^┌ 1 Actions │ 2 Details │ 3 Merge requests │ 4 History │ 5 Questions │ 6 Chat │ 7 Commits │ 8 Acceptance criteria ─+$/);
+  assert.equal(strip(bar).length, 140);
+  assert.match(strip(tabBar('history', 100)), /^┌ 1 Actions │ 2 Details │ 3 MRs │ 4 History │ 5 Questions │ 6 Chat │ 7 Commits │ 8 Criteria ─+$/);
   assert.deepEqual([...bar.matchAll(/\x1b\[7m([^\x1b]*)\x1b\[0m/g)].map(m => m[1]), [' 4 History ']);
-  assert.deepEqual([...tabBar('merges', 100).matchAll(/\x1b\[7m([^\x1b]*)\x1b\[0m/g)].map(m => m[1]), [' 3 Merge requests ']);
+  assert.deepEqual([...tabBar('merges', 140).matchAll(/\x1b\[7m([^\x1b]*)\x1b\[0m/g)].map(m => m[1]), [' 3 Merge requests ']);
 });
 
 test('ASS-184 AC1/AC2: the tabbed box — the tab bar over the active tab\'s panes, the panel 40 wide at the right, every row the screen\'s width', async () => {
@@ -397,7 +399,7 @@ test('ASS-184 AC1/AC2: the tabbed box — the tab bar over the active tab\'s pan
   const out = ticketTabs({ tab: 'details', panes: [{ lines: ['detail one', 'detail two'] }], panel: ['✨ ABC-1'], columns: 120, height: 5 });
   assert.equal(out.length, 7);
   assert.ok(out.every(l => visible(l) === 120), out.map(visible).join(','));
-  assert.match(strip(out[0]), /^┌ 1 Actions .*─┬ Ticket ─+┐$/);
+  assert.match(strip(out[0]), /^┌ ?1 Actions.*─┬ Ticket ─+┐$/);   // ASS-559: eight tabs drop their gaps at 120
   assert.equal(strip(out[0]).indexOf('┬'), 120 - PANEL);
   assert.match(strip(out[1]), /^│ detail one +│ ✨ ABC-1 +│$/);
   assert.match(strip(out.at(-1)), /^└─+┴─+┘$/);
@@ -420,7 +422,7 @@ test('ASS-185 AC1: below 100 columns the panel is a 3-line strip above the tabs,
   const out = ticketTabs({ tab: 'details', panes: [{ lines: ['detail one'] }], panel: ['one', 'two', 'three'], columns: 96, height: 4 });
   assert.equal(out.length, 3 + 6);
   assert.deepEqual(out.slice(0, 3).map(strip), ['one', 'two', 'three']);
-  assert.match(strip(out[3]), /^┌ 1 Actions │ 2 Details │ 3 Merge requests │ 4 History │ 5 Questions │ 6 Chat ─+┐$/);
+  assert.match(strip(out[3]), /^┌ 1 Actions │ 2 Details │ 3 MRs │ 4 History │ 5 Questions │ 6 Chat │ 7 Commits │ 8 Criteria ─+┐$/);   // ASS-559
   assert.match(strip(out[4]), /^│ detail one +│$/);
   assert.match(strip(out.at(-1)), /^└─+┘$/);
   assert.ok(out.slice(3).every(l => visible(l) === 96), out.map(visible).join(','));
@@ -447,14 +449,14 @@ test('ASS-185 AC1: the strip — key · variation · title; state · Needs you; 
 });
 
 test('ASS-185 AC2: Actions shows a red ● while a gate waits, Questions its open count and a red ●; labels stay whole, active or not', () => {
-  const bar = tabBar('details', 100, { gate: true, open: 2 });
-  assert.match(strip(bar), /^┌ 1 Actions ● │ 2 Details │ 3 Merge requests │ 4 History │ 5 Questions \(2\) ● │ 6 Chat ─+$/);
+  const bar = tabBar('details', 140, { gate: true, open: 2 });   // ASS-559: 140, every label whole
+  assert.match(strip(bar), /^┌ 1 Actions ● │ 2 Details │ 3 Merge requests │ 4 History │ 5 Questions \(2\) ● │ 6 Chat │ 7 Commits │ 8 Acceptance criteria ─+$/);
   assert.match(bar, /Questions \(2\) \x1b\[31m●/);
-  assert.equal(strip(bar).length, 100);
+  assert.equal(strip(bar).length, 140);
   assert.match(bar, /\x1b\[31m●/);
-  assert.match(strip(tabBar('actions', 100, { gate: true, open: 0 })), /^┌ 1 Actions ● │ 2 Details │ 3 Merge requests │ 4 History │ 5 Questions │ 6 Chat/);
+  assert.match(strip(tabBar('actions', 140, { gate: true, open: 0 })), /^┌ 1 Actions ● │ 2 Details │ 3 Merge requests │ 4 History │ 5 Questions │ 6 Chat/);
   assert.match(tabBar('actions', 100, { gate: true }), /^┌\x1b\[7m 1 Actions \x1b\[31m●\x1b\[39m \x1b\[0m/, 'the ● keeps the reverse video');
-  assert.match(strip(tabBar('chat', 100, { gate: false, open: 0 })), /^┌ 1 Actions │ 2 Details │ 3 Merge requests │ 4 History │ 5 Questions │ 6 Chat ─+$/);
+  assert.match(strip(tabBar('chat', 140, { gate: false, open: 0 })), /^┌ 1 Actions │ 2 Details │ 3 Merge requests │ 4 History │ 5 Questions │ 6 Chat │ 7 Commits │ 8 Acceptance criteria ─+$/);
 });
 
 // ASS-196: an overlap is stored once — on the ticket whose Find Dependencies

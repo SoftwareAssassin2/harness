@@ -100,7 +100,7 @@ test('ASS-288 AC4/AC6: below the hold level control starts no agent and runs no 
   w.free(20);                                                   // 20480 bytes: below hold
   w.later(MINUTE);
   // ABC-4 at a step that makes its VM: held, never run.
-  edit(join(w.f.dir, 'engines', 'example-development', 'state-engine.json'), e => {
+  edit(join(w.f.dir, 'engines', 'example-development', 'workflow.yaml'), e => {
     e.steps.find(s => s.id === 'build').action.command = './agent.sh vm:create {project} {ticket} {variation}';
   });
   edit(join(w.f.dir, 'projects', 'p', 'sprints', 'sprint-10', 'sprint.json'), s => {

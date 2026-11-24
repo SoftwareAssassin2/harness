@@ -17,7 +17,11 @@ import { runSteps } from '../../src/control/steps.js';
 import { dispatch, VM_UP_CEILING, vmUpCeilingMs } from '../../src/control/dispatch.js';
 import { runCli } from '../../src/control/cli.js';
 import { fakeVm } from '../support/fake-vm.js';
+import { planFor } from '../../src/control/plan.js';
+import { noteReleases } from '../../src/control/seats.js';
+import { trackMachineScript, machineScriptRunning } from '../../src/control/machine-steps.js';
 import { engineDir, engineNames } from '../support/engine-walk.js';
+import { readEngine } from '../../src/workflow/engine-file.js';
 
 const ROOT = join(import.meta.dirname, '..', '..');
 const ENGINE = 'example-development-grouped';
@@ -26,12 +30,12 @@ const at = (state, sub) => ({ state, 'state-engine': ENGINE, ...(sub ? { 'sub-st
 // p on example-development-grouped, ticket ABC-3's variations as `variations` gives them ({ name: [harness-status, VM
 // status or null for none, extra fields] }), each VM abc-3-<name>; agent.sh calls recorded, each answered by fail(args),
 // else printing answer(args) (ASS-215: vm:start's JSON); HARNESS_HOME a folder of its own (vm-credentials.json);
-// harness.json's ticket limits `limits` (default: none in progress, so every variation holds its seat, ASS-233).
-function lifecycle(variations, { fail = () => null, answer = () => '', limits = { 'max-tickets-in-progress': null } } = {}) {
+// `seats` on the Mac (ASS-528; default: not limited, so every variation holds its seat, ASS-233).
+function lifecycle(variations, { fail = () => null, answer = () => '', seats = Infinity } = {}) {
   const f = controlFixture();
   const file = (...rest) => join(f.dir, ...rest);
-  writeFileSync(file('harness.json'), JSON.stringify({ ...JSON.parse(readFileSync(file('harness.json'), 'utf8')), ...limits }));
-  for (const name of engineNames()) if (!existsSync(file('engines', name)) && existsSync(join(engineDir(name), 'state-engine.json'))) cpSync(engineDir(name), file('engines', name), { recursive: true });
+  f.seats(seats);
+  for (const name of engineNames()) if (!existsSync(file('engines', name)) && existsSync(join(engineDir(name), 'workflow.yaml'))) cpSync(engineDir(name), file('engines', name), { recursive: true });
   const project = JSON.parse(readFileSync(file('projects', 'p', 'project.json'), 'utf8'));
   writeFileSync(file('projects', 'p', 'project.json'), JSON.stringify({ ...project, 'execution-state-engine': ENGINE }));
   const v = fakeVm(f.env);
@@ -61,11 +65,11 @@ function lifecycle(variations, { fail = () => null, answer = () => '', limits = 
   };
 }
 
-test('each variation\'s VM runs from Setup through Review and in Self Healing, and is stopped at Release, Done, Blocked, Blocked for Human, while paused and once set aside', async () => {
+test('each variation\'s VM runs from Setup through Review, and is stopped at Release, Done, Blocked, Blocked for Human, while paused and once set aside; ASS-527: Self Healing, about to start its run at a host-only step, holds no seat and starts none', async () => {
   const l = lifecycle({
     A: [at('setup', ['grouped-setup', 'mark-setup-complete']), 'Stopped'],
     B: [at('review', ['grouped-review', 'explain-the-change']), 'Stopped'],   // ASS-418: Variation Selection, a human step, now stops it
-    C: [at('self-healing'), 'Stopped'],
+    C: [at('self-healing'), 'Stopped'],                                                     // ASS-527: its run starts at Pause Work, a host-only script
     D: [at('build', ['grouped-build', 'code-review']), 'Running'],                         // as it should be
     E: [at('release', ['grouped-release-example', 'team-code-review']), 'Running'],
     F: [at('done'), 'Running'],
@@ -76,7 +80,7 @@ test('each variation\'s VM runs from Setup through Review and in Self Healing, a
     K: [at('done'), 'Stopped'],                                                              // as it should be
   });
   assert.deepEqual(await l.pass(), [
-    'vm:start p ABC-3 A', 'vm:start p ABC-3 B', 'vm:start p ABC-3 C',
+    'vm:start p ABC-3 A', 'vm:start p ABC-3 B',
     'vm:stop p abc-3-e', 'vm:stop p abc-3-f', 'vm:stop p abc-3-g', 'vm:stop p abc-3-h', 'vm:stop p abc-3-i', 'vm:stop p abc-3-j',
   ]);
   assert.ok(l.f.lines.includes('vm p abc-3-e: stopped (ABC-3 E at release)'), l.f.lines.join('\n'));
@@ -616,7 +620,7 @@ test('ASS-215 AC1: a refresh whose vm:start prints a kind other than the declare
 // ASS-233: a VM runs only for a variation that holds its seat (plan.js
 // planFor) — ex-2280-a and ex-2493-a, waiting for a slot, held 32 of the
 // host's 48 GiB. One in-progress slot here (the fixture's harness.json).
-const ONE_SEAT = { limits: { 'max-tickets-in-progress': 1 } };
+const ONE_SEAT = { seats: 1 };   // ASS-528: one seat on the Mac
 // ASS-314: grouped-review's Human Review is gone; its Payment Gate is the human step a variation waits at there.
 const PAYMENT_GATE = at('review', ['grouped-review', 'payment-gate']);
 
@@ -626,16 +630,16 @@ test('ASS-233 AC1, AC3: a variation waiting for a slot has its VM stopped, logge
   assert.ok(l.f.lines.includes('vm p abc-3-b: stopped (ABC-3 B at build; waits for a slot)'), l.f.lines.join('\n'));
 });
 
-// ASS-418: the seat holder keeps its seat at a human step (ASS-203), but no longer its VM: Payment Gate says vm stopped.
-test('ASS-233 AC1, AC3, ASS-418: a seat holder waiting at a human step (ASS-203) keeps its seat, its VM stopped there; the variation behind it waits for the slot without one', async () => {
+// ASS-418: Payment Gate says vm stopped. ASS-527 (replacing ASS-203): at a human step it holds no seat either — the variation behind it takes it.
+test('ASS-233 AC1, AC3, ASS-418, ASS-527: a variation waiting at a human step holds no seat, its VM stopped there; the variation behind it takes the slot, its VM running', async () => {
   const l = lifecycle({ A: [PAYMENT_GATE, 'Running'], B: [BUILDING, 'Running'] }, ONE_SEAT);
-  assert.deepEqual(await l.pass(), ['vm:stop p abc-3-a', 'vm:stop p abc-3-b']);
+  assert.deepEqual(await l.pass(), ['vm:stop p abc-3-a']);
   assert.ok(l.f.lines.includes('vm p abc-3-a: stopped (ABC-3 A at review)'), l.f.lines.join('\n'));
-  assert.ok(l.f.lines.includes('vm p abc-3-b: stopped (ABC-3 B at build; waits for a slot)'), l.f.lines.join('\n'));
 });
 
 test('ASS-233 AC2, AC3: once the seat holder leaves, the waiting variation\'s VM is started, and its step waits for it (awaitsVm) — not judged while it waits for its slot', async () => {
-  const l = await reentering({ A: [PAYMENT_GATE, 'Running'], B: [TESTING, 'Running'] }, ONE_SEAT);
+  // ASS-527: the seat holder is at a step that uses its machine (a gate would hold none).
+  const l = await reentering({ A: [BUILDING, 'Running'], B: [TESTING, 'Running'] }, ONE_SEAT);
   await l.tick(); await l.settle();
   assert.ok(l.calls.includes('vm:stop p abc-3-b'), l.calls.join('\n'));
   writeFileSync(join(l.v.instances, 'abc-3-b', 'status'), 'Stopped');   // as vm:stop left it
@@ -651,7 +655,8 @@ test('ASS-233 AC2, AC3: once the seat holder leaves, the waiting variation\'s VM
 // ASS-362 AC5: a finished plan (grouped Plan at done) holds no seat while it waits for one in progress: its VM is stopped
 // as one waiting for a slot is, so the queue for Build costs no RAM; it needs none to move on, so once a seat frees it goes.
 test('ASS-362 AC5: a finished plan waiting for a build seat has its VM stopped, said so; once a seat frees it moves on to Build without waiting for its VM', async () => {
-  const l = await reentering({ A: [PAYMENT_GATE, 'Running'], B: [at('plan', ['grouped-plan', 'done']), 'Running'] }, ONE_SEAT);
+  // ASS-527: the seat holder is at a step that uses its machine (a gate would hold none).
+  const l = await reentering({ A: [BUILDING, 'Running'], B: [at('plan', ['grouped-plan', 'done']), 'Running'] }, ONE_SEAT);
   const runs = l.file('assignments.json'), data = JSON.parse(readFileSync(runs, 'utf8'));
   for (const r of data['transient-state-engines']) if (r.parent.variation === 'B') r['is-done'] = true;   // its Plan run over
   writeFileSync(runs, JSON.stringify(data));
@@ -745,7 +750,7 @@ test('ASS-297 AC3: another project\'s human pause, an AI pause (its own or "all"
 // a variation at a running or stopped step; golden images never.
 const QA = at('qa');
 const released = l => {
-  const file = l.file('engines', ENGINE, 'state-engine.json'), engine = JSON.parse(readFileSync(file, 'utf8'));
+  const file = l.file('engines', ENGINE, 'workflow.yaml'), engine = readEngine(file);
   engine.steps.find(s => s.id === 'qa').vm = 'released';
   writeFileSync(file, JSON.stringify(engine));
   return l;
@@ -806,4 +811,101 @@ test('ASS-325 AC3: QA → Blocked → Build: the VM deleted at QA is not recreat
   l.edit(t => { t.variations[0]['harness-status'] = BUILDING; });
   assert.deepEqual(await l.pass(), ['vm:create p ABC-3 A']);
   assert.ok(l.f.lines.includes('vm p abc-3-a: recreated (ABC-3 A at build; it had been deleted)'), l.f.lines.join('\n'));
+});
+
+// ASS-527: a variation holds a seat only while its current step uses its machine (plan.js slotKind,
+// machine-steps.js usesMachine); at a gate, a human step, a wait or a host-only script it holds none, its seat
+// going to the next in rank order, and its VM is stopped once nothing runs in it. One back at a step that uses its
+// machine waits there for the next free seat. ONE_SEAT: one seat (ASS-528: on the Mac).
+const GATED = (extra = {}) => ({ 'gate-when-leaving-state': ['grouped-build/generate-solution'], 'state-changes': [{ 'from-state': 'build', 'to-state': 'build', 'work-is-done': true, 'sub-state-change': { 'state-engine': 'grouped-build', 'from-state': 'generate-automated-tests', 'to-state': 'generate-solution' } }], ...extra });
+const holders = l => { const p = planFor(l.f.ctx.load(), l.f.ctx.load().projects[0]); return { reserved: p.reserved.map(s => s.variation), waiting: p.waiting.map(s => s.variation) }; };
+const REFRESHING = at('build', ['grouped-build', 'refresh-repositories']);
+const NUMBERED = at('build', ['grouped-build', 'check-numbered-files']);
+
+test('ASS-527 AC1, AC2, AC6: a variation at a gate (its work done, gate-when-leaving-state) releases its seat — logged once — and its VM is stopped though its step says vm running; the next in rank order takes the seat and its VM is started', async () => {
+  const l = lifecycle({ A: [BUILDING, 'Running'], B: [BUILDING, 'Stopped'] }, ONE_SEAT);
+  noteReleases(l.f.ctx, l.f.ctx.load());   // A holds the one seat
+  assert.deepEqual(holders(l), { reserved: ['A'], waiting: ['B'] });
+  l.edit(t => { Object.assign(t.variations[0], GATED()); });   // A's work at Generate Solution done: it waits at its gate
+  assert.deepEqual(holders(l), { reserved: ['B'], waiting: [] });
+  noteReleases(l.f.ctx, l.f.ctx.load());
+  noteReleases(l.f.ctx, l.f.ctx.load());
+  assert.deepEqual(l.f.lines.filter(x => x.includes('releases its')), ['seats ABC-3 A: releases its in-progress seat at build/generate-solution: its step does not use its machine; its VM stops once nothing runs in it'], l.f.lines.join('\n'));
+  assert.deepEqual(await l.pass(), ['vm:start p ABC-3 B', 'vm:stop p abc-3-a']);
+  assert.ok(l.f.lines.includes('vm p abc-3-a: stopped (ABC-3 A at build; its step does not use its machine, so it holds no seat)'), l.f.lines.join('\n'));
+});
+
+test('ASS-527 AC1, AC6: a host-only script step (Await Sequential Merge) and a human step (Payment Gate) hold no seat; an in-VM script step (Automated Testing) and an in-machine host script (Check Numbered Files) keep theirs', async () => {
+  for (const [status, held] of [[AWAITING_MERGE, false], [PAYMENT_GATE, false], [TESTING, true], [NUMBERED, true], [REFRESHING, true]]) {
+    const l = lifecycle({ A: [status, 'Running'], B: [BUILDING, 'Stopped'] }, ONE_SEAT);
+    assert.deepEqual(holders(l), held ? { reserved: ['A'], waiting: ['B'] } : { reserved: ['B'], waiting: [] }, JSON.stringify(status));
+    assert.deepEqual(await l.pass(), held ? [] : ['vm:start p ABC-3 B', 'vm:stop p abc-3-a'], JSON.stringify(status));
+  }
+});
+
+test('ASS-527 AC3, AC6: back from its gate at a step that uses its machine, a variation waits for a seat — its VM not started, no agent, no step run — and takes the next free one in rank order', async () => {
+  const l = await reentering({ A: [PAYMENT_GATE, 'Stopped'], B: [TESTING, 'Running'] }, ONE_SEAT);
+  await l.tick(); await l.settle();
+  assert.deepEqual(holders(l), { reserved: ['B'], waiting: [] });
+  // The operator approves the payment gate: A moves on, into a Review step that uses its machine — without a free seat.
+  l.edit(t => { t.variations[0]['harness-status'] = at('review', ['grouped-review', 'risk-assessment']); });
+  const runs = l.file('assignments.json'), data = JSON.parse(readFileSync(runs, 'utf8'));
+  for (const r of data['transient-state-engines']) if (r.parent.variation === 'A') r.state = 'risk-assessment';
+  writeFileSync(runs, JSON.stringify(data));
+  writeFileSync(l.file('projects', 'p', 'seats.json'), JSON.stringify({ seats: [{ key: 'ABC-3', variation: 'B', kind: 'vm', since: '2026-10-24T11:00:00Z' }] }));   // B's seat, as seats.js records it
+  {
+    // B, mid-step at Automated Testing, keeps its seat (seats.js's record, kept ahead of rank): A waits.
+    assert.deepEqual(holders(l), { reserved: ['B'], waiting: ['A'] });
+    const before = l.calls.length;
+    await l.tick(); await l.settle(); await l.tick();
+    assert.ok(!l.calls.slice(before).includes('vm:start p ABC-3 A'), l.calls.join('\n'));
+    await dispatch(l.f.ctx, l.f.ctx.load());
+    assert.deepEqual(l.f.assignments().assignments, [], 'no agent for A while it waits');
+  }
+  // B reaches Done: A takes the seat, its VM is started.
+  l.edit(t => { t.variations[1]['harness-status'] = at('done'); });
+  assert.deepEqual(holders(l), { reserved: ['A'], waiting: [] });
+  await l.tick(); await l.settle();
+  assert.ok(l.calls.includes('vm:start p ABC-3 A'), l.calls.join('\n'));
+});
+
+test('ASS-527 AC2, AC6: an agent mid-turn is not cut off — the VM of a variation moved to a gate (by hand) while its agent works is left running till the agent ends, then stopped; an in-machine script running holds the stop too; a vm-hold keeps it running', async () => {
+  const l = lifecycle({ A: [PAYMENT_GATE, 'Running'] });
+  pauseWith(l, {}, [working('A')]);
+  assert.deepEqual(await l.pass(), []);
+  assert.ok(l.f.lines.some(x => x.startsWith('vm p abc-3-a: to stop (ABC-3 A at review') && x.endsWith('waits until its agent finishes')), l.f.lines.join('\n'));
+  pauseWith(l, {}, []);
+  l.f.ctx.memory.machineScripts = new Map([['p/ABC-3/A', 1]]);   // an in-machine script of its step still running there
+  assert.deepEqual(await l.pass(), []);
+  l.f.ctx.memory.machineScripts = new Map();
+  assert.deepEqual(await l.pass(), ['vm:stop p abc-3-a']);
+  // A vm-hold (ASS-427) keeps it running at a gate, started when stopped.
+  const h = lifecycle({ A: [at('build', ['grouped-build', 'generate-solution']), 'Stopped', GATED({ 'vm-hold': { by: 'operator', since: '2026-10-24T11:00:00Z', note: null } })] });
+  assert.deepEqual(await h.pass(), ['vm:start p ABC-3 A']);
+});
+
+test('ASS-527 AC2: an in-machine script step\'s run is counted on its variation while it runs (machine-steps.js trackMachineScript), a host-only one is not', async () => {
+  const ctx = { memory: {} };
+  let finish;
+  const running = trackMachineScript(ctx, 'p', 'abc-3', 'A', { action: { type: 'script', command: './agent.sh ci-checks:verify {project} {ticket} {variation}' } }, new Promise(r => { finish = r; }));
+  assert.equal(machineScriptRunning(ctx, 'p', 'ABC-3', 'A'), true);
+  trackMachineScript(ctx, 'p', 'ABC-3', 'B', { action: { type: 'script', command: './agent.sh merge-request:check {project} {ticket} {variation}' } }, Promise.resolve());
+  assert.equal(machineScriptRunning(ctx, 'p', 'ABC-3', 'B'), false);
+  finish({ exitCode: 0 });
+  assert.deepEqual(await running, { exitCode: 0 });
+  assert.equal(machineScriptRunning(ctx, 'p', 'ABC-3', 'A'), false);
+});
+
+test('ASS-527 AC5, AC6: a waiting Refresh the Reference Repositories (timer mode) with no seat does not start its stopped VM just to poll — nothing polled; once a seat frees its VM is started and it polls there', async () => {
+  const l = await reentering({ A: [TESTING, 'Running'], B: [REFRESHING, 'Stopped'] }, ONE_SEAT);
+  await l.tick(); await l.settle();
+  for (let i = 0; i < 3; i++) { l.later(5 * 60_000); await l.tick(); await Promise.all([...l.f.ctx.memory.vms.values()].map(r => r.job)); }
+  assert.ok(!l.calls.includes('vm:start p ABC-3 B'), l.calls.join('\n'));
+  assert.ok(!l.calls.some(c => c.startsWith('vm:refresh-repositories')), l.calls.join('\n'));
+  assert.deepEqual(holders(l), { reserved: ['A'], waiting: ['B'] });
+  l.edit(t => { t.variations[0]['harness-status'] = at('done'); });   // A's seat freed
+  await l.tick(); await Promise.all([...l.f.ctx.memory.vms.values()].map(r => r.job));
+  assert.ok(l.calls.includes('vm:start p ABC-3 B'), l.calls.join('\n'));
+  await l.tick();
+  assert.equal(l.calls.filter(c => c.startsWith('vm:refresh-repositories')).length, 1, l.calls.join('\n'));
 });

@@ -7,6 +7,7 @@
     "ticket:post-comment": { "project": 0, "ticket": 1, "stdin": [2] },
     "ticket:set-acceptance-criteria": { "project": 0, "ticket": 1, "variation": 2, "stdin": [3] },
     "ticket:set-ac-status": { "project": 0, "ticket": 1, "variation": 2 },
+    "ticket:escalate-work-mode": { "project": 0, "ticket": 1, "variation": 2 },
     "ticket:merge-request-plan": { "project": 0, "ticket": 1, "variation": 2 },
     "ticket:demo-plan": { "project": 0, "ticket": 1, "variation": 2 },
     "ticket:set-merge-request-plan": { "project": 0, "ticket": 1, "variation": 2, "stdin": [3] },

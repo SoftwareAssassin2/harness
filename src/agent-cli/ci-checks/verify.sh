@@ -2,10 +2,12 @@
 # Description: Run the merge-request CI checks the project declares, in the variation's VM, for each repository the ticket changes; pass when each passes or fails only as on master — ci-checks:verify <project> <ticket-key> <variation>.
 set -euo pipefail
 
-# ASS-249. The grouped Build's CI Checks step, between Automated Testing and
-# Code Review: the gates a merge request's CI would fail (a leaked secret, an
-# unpinned image, a policy violation) run in the VM first, so a failure goes
-# back to Generate Solution before the merge request reaches the forge.
+# ASS-249. The gates a merge request's CI would fail (a leaked secret, an
+# unpinned image, a policy violation), run in the VM. ASS-552: no workflow
+# step runs it any more (grouped Build's CI Checks step is removed: the
+# project's own CI runs its checks on the merge request, which the merge
+# steps wait for); it stays for the operator to run by hand. Its exits:
+# 0 passed, 3 could not run, any other a new failure.
 #
 # The checks are declared in ci-checks.json in the project's golden-image
 # folder (project.json golden-image.folder, beside tests.json), each
@@ -66,13 +68,13 @@ set -euo pipefail
 #
 # Each check's job name, command, exit code and output (its last
 # $TAIL lines; master's too when compared) go to the ticket's folder,
-# ci-checks-results-<variation>.md, replaced each run, for Generate Solution
-# and Security Review to read; both it and the baseline are WORK_MANAGED.
+# ci-checks-results-<variation>.md, replaced each run, for whoever ran it to
+# read (no prompt reads it since ASS-552); both it and the baseline are WORK_MANAGED.
 # Prints { passed, failed, skipped } and exits 0 when no run check failed but
-# as on master; 1 on a new failure (→ Generate Solution); 3 when a check could
+# as on master; 1 on a new failure; 3 when a check could
 # not run — exit 125/126/127, verify-success's NOT_RUNNABLE output, master's
 # run refused (changes not committed) — or the step could not (no VM, the
-# declaration malformed) (→ Blocked).
+# declaration malformed).
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../automated-tests.bash"
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../work.bash"
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../catch-up-base.bash"

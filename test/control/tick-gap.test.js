@@ -17,7 +17,7 @@ const ticks = async (ctx, n, until) => { for (let i = 0; i < n && !until(); i++)
 // The control fixture with the investigate-gap engine shaped as the real one — check-done (none) accepts a Done status through accept-done (script), anything else goes to the investigate prompt — ABC-3 at backlog with the ticket system saying `status`, and ABC-4 at backlog with no gap.
 function gapFixture(status) {
   const f = controlFixture();
-  edit(join(f.dir, 'engines', 'investigate-gap', 'state-engine.json'), e => {
+  edit(join(f.dir, 'engines', 'investigate-gap', 'workflow.yaml'), e => {
     e.steps = [
       { id: 'check-done', sequence: 1, action: { type: 'none' }, 'exit-events': [{ condition: { 'ticket-system-status': 'Done' }, 'move-to-state': 'accept-done' }, { condition: { not: { 'ticket-system-status': 'Done' } }, 'move-to-state': 'investigate' }] },
       { id: 'accept-done', sequence: 2, action: { type: 'script', command: './agent.sh ticket:accept-ticket-system-status {project} {ticket} {variation}' }, 'exit-events': [{ condition: { 'exit-code': 0 }, 'move-to-state': 'done' }, { condition: { not: { 'exit-code': 0 } }, 'move-to-state': 'investigate' }] },
@@ -67,14 +67,14 @@ test('tick: any other gap holds the ticket where it is and goes to the investiga
 // resolution, no agent; the run takes that exit on its next poll and the step moves by its own exits.
 function releaseFixture() {
   const f = gapFixture('In Review');
-  edit(join(f.dir, 'engines', 'example-development', 'state-engine.json'), e => {
+  edit(join(f.dir, 'engines', 'example-development', 'workflow.yaml'), e => {
     e.steps.push(
       { id: 'release', sequence: 7, 'paired-ticket-system-status': 'In Review', action: { type: 'state-engine', engine: 'release' },
         'exit-events': [{ condition: { all: [{ 'is-done': true }, { 'sub-engine-ended-at': 'rebuild' }] }, 'move-to-state': 'build' }, { condition: { 'is-done': true }, 'move-to-state': 'qa' }] },
       { id: 'qa', sequence: 8, 'paired-ticket-system-status': 'In Testing', action: { type: 'human' }, 'exit-events': [] });
   });
   mkdirSync(join(f.dir, 'engines', 'release'), { recursive: true });
-  writeFileSync(join(f.dir, 'engines', 'release', 'state-engine.json'), JSON.stringify({ steps: [
+  writeFileSync(join(f.dir, 'engines', 'release', 'workflow.yaml'), JSON.stringify({ steps: [
     { id: 'team-code-review', sequence: 1, action: { type: 'script', command: './agent.sh ticket:set-paused {project} {ticket} {variation} false', mode: 'timer', 'timer-minutes': 5 },
       'exit-events': [{ condition: { 'ticket-system-status': 'In Testing' }, 'move-to-state': 'done' }, { condition: { 'ticket-system-status': 'In Progress' }, 'move-to-state': 'rebuild' }] },
     { id: 'done', sequence: 2, 'is-done': true, action: { type: 'none' } },
@@ -131,13 +131,13 @@ test('ASS-224 AC3: gated on leaving Release, the status-driven move waits at the
 // The ticket entered QA at In Testing and its run waits at qa-testing; then QA sets `status`.
 function qaFixture() {
   const f = gapFixture('In Testing');
-  edit(join(f.dir, 'engines', 'example-development', 'state-engine.json'), e => {
+  edit(join(f.dir, 'engines', 'example-development', 'workflow.yaml'), e => {
     e.steps.push({ id: 'qa', sequence: 7, 'paired-ticket-system-status': 'In Testing', 'max-visits': 3, 'on-max-visits': 'blocked', 'return-to-state': 'qa',
       action: { type: 'state-engine', engine: 'grouped-qa' },
       'exit-events': [{ condition: { all: [{ 'is-done': true }, { 'sub-engine-ended-at': 'blocked' }] }, 'move-to-state': 'blocked' }, { condition: { 'is-done': true }, 'move-to-state': 'done' }] });
   });
   mkdirSync(join(f.dir, 'engines', 'grouped-qa'), { recursive: true });
-  writeFileSync(join(f.dir, 'engines', 'grouped-qa', 'state-engine.json'), readFileSync(join(import.meta.dirname, '..', '..', 'engines', 'grouped-qa', 'state-engine.json'), 'utf8'));
+  writeFileSync(join(f.dir, 'engines', 'grouped-qa', 'workflow.yaml'), readFileSync(join(import.meta.dirname, '..', '..', 'engines', 'grouped-qa', 'workflow.yaml'), 'utf8'));
   edit(join(f.dir, 'projects', 'p', 'sprints', 'sprint-10', 'sprint.json'), s => { s.features[0].variations[0]['harness-status'] = hs('qa'); s.features.pop(); });
   return f;
 }

@@ -135,6 +135,49 @@ export const floorNotes = (variations, width) => (steps, parents) => {
   return Object.fromEntries(steps.map(s => [s.id, metricLines(metrics[s.id], s.action?.type === 'prompt', width)]));
 };
 
+// ASS-556: the work-mode metrics, by mode, over the variations: each in one group by its work-mode (src/control/
+// work-mode.js) — worktree (built in one throughout), escalated (begun in a worktree, moved to full), full (full from
+// the start, by the AI, a rule or the operator); one with no mode chosen is in none. Per group { tickets, escalated (the
+// escalations, by trigger), ciRuns (its merge requests' CI runs seen: ci-results), ciPassRate (passed / runs, null
+// with none), rounds (CI runs per merged merge request, null with none merged), time (ms from the first work-mode
+// decision to its first merge request merged, averaged over those merged; null with none) }.
+export const MODE_GROUPS = ['worktree', 'escalated', 'full'];
+export function workModeMetrics(variations) {
+  const groups = Object.fromEntries(MODE_GROUPS.map(g => [g, { tickets: 0, escalated: {}, ciRuns: 0, passed: 0, merged: 0, times: [] }]));
+  for (const v of variations) {
+    const w = v?.['work-mode'];
+    if (!w?.mode) continue;
+    const ups = w.escalations ?? [];
+    const g = groups[ups.length ? 'escalated' : w.mode === 'worktree' ? 'worktree' : 'full'];
+    g.tickets++;
+    for (const e of ups) g.escalated[e.trigger] = (g.escalated[e.trigger] ?? 0) + 1;
+    const ci = v['ci-results'] ?? [];
+    g.ciRuns += ci.length;
+    const passes = ci.filter(c => c.result === 'passed');
+    g.passed += passes.length;
+    g.merged += new Set(passes.map(c => c.mr)).size;
+    const from = Date.parse(w.history?.[0]?.at ?? w.at), to = Date.parse(passes[0]?.at);
+    if (Number.isFinite(from) && Number.isFinite(to) && to >= from) g.times.push(to - from);
+  }
+  return Object.fromEntries(MODE_GROUPS.map(name => {
+    const g = groups[name];
+    return [name, { tickets: g.tickets, escalated: g.escalated, ciRuns: g.ciRuns, ciPassRate: g.ciRuns ? g.passed / g.ciRuns : null,
+      rounds: g.merged ? g.ciRuns / g.merged : null, time: g.times.length ? g.times.reduce((a, b) => a + b, 0) / g.times.length : null }];
+  }));
+}
+
+// workModeLines(metrics) — workModeMetrics as the flow screens' lines: a heading, then a row per group with tickets,
+// CI pass rate, rounds and time to merge ("—" for none), and the escalations by trigger; nothing when no variation
+// has a mode yet.
+export function workModeLines(metrics) {
+  if (!MODE_GROUPS.some(g => metrics[g].tickets)) return [];
+  const pct = r => (r == null ? '—' : `${Math.round(r * 100)}%`);
+  return ['By work mode (ASS-556): tickets · CI pass rate · CI rounds per merge · time to merge', ...MODE_GROUPS.filter(g => metrics[g].tickets).map(g => {
+    const m = metrics[g], ups = Object.entries(m.escalated).map(([t, n]) => `${t} ${n}`).join(', ');
+    return `  ${g.padEnd(9)} ${String(m.tickets).padStart(3)} · CI ${pct(m.ciPassRate)} of ${m.ciRuns} · ${m.rounds == null ? '—' : Number(m.rounds.toFixed(2))} rounds · ${m.time == null ? '—' : duration(m.time)}${ups ? ` · escalated: ${ups}` : ''}`;
+  })];
+}
+
 // "1d 4h", "2h 14m", "6m 30s" or "45s": `ms` in its two largest units.
 export function duration(ms) {
   const s = Math.round(ms / 1000);

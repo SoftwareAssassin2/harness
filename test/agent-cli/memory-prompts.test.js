@@ -10,10 +10,11 @@ import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { fixture } from './harness-fixture.js';
 import { engineDir } from '../support/engine-walk.js';
+import { readEngine } from '../../src/workflow/engine-file.js';
 
 const ROOT = join(import.meta.dirname, '..', '..');
 const read = (...path) => readFileSync(join(ROOT, ...path), 'utf8');
-const engine = name => JSON.parse(readFileSync(join(engineDir(name), 'state-engine.json'), 'utf8'));
+const engine = name => readEngine(join(engineDir(name), 'workflow.yaml'));
 
 test('AC7: agent:dispatch fills a wrapper\'s {step}, {model} and {date} — the record\'s state, its model and today (UTC) — the source an agent saves with each memory', async () => {
   const f = fixture();

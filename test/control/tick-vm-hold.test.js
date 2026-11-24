@@ -15,20 +15,21 @@ import { controlFixture } from './control-fixture.js';
 import { superviseVms } from '../../src/control/vm-lifecycle.js';
 import { fakeVm } from '../support/fake-vm.js';
 import { engineDir, engineNames } from '../support/engine-walk.js';
+import { readEngine } from '../../src/workflow/engine-file.js';
 
 const ENGINE = 'example-development-grouped';
 const at = (state, sub) => ({ state, 'state-engine': ENGINE, ...(sub ? { 'sub-status': { state: sub[1], 'state-engine': sub[0] } } : {}) });
 const BUILDING = at('build', ['grouped-build', 'generate-solution']);
-const ONE_SEAT = { 'max-tickets-in-progress': 1 };
+const ONE_SEAT = 1;   // ASS-528: one seat on the Mac
 const HOLDS = /waits until its agent finishes$/;
 
 // p on example-development-grouped, ticket ABC-3's variations as `variations` gives them ({ name: [harness-status, VM
-// status or null, extra fields] }), each VM abc-3-<name>; agent.sh calls recorded; harness.json's ticket limits `limits`.
-function lifecycle(variations, limits = { 'max-tickets-in-progress': null }) {
+// status or null, extra fields] }), each VM abc-3-<name>; agent.sh calls recorded; `seats` on the Mac (ASS-528; none: not limited).
+function lifecycle(variations, seats = Infinity) {
   const f = controlFixture();
   const file = (...rest) => join(f.dir, ...rest);
-  writeFileSync(file('harness.json'), JSON.stringify({ ...JSON.parse(readFileSync(file('harness.json'), 'utf8')), ...limits }));
-  for (const name of engineNames()) if (!existsSync(file('engines', name)) && existsSync(join(engineDir(name), 'state-engine.json'))) cpSync(engineDir(name), file('engines', name), { recursive: true });
+  f.seats(seats);
+  for (const name of engineNames()) if (!existsSync(file('engines', name)) && existsSync(join(engineDir(name), 'workflow.yaml'))) cpSync(engineDir(name), file('engines', name), { recursive: true });
   const project = JSON.parse(readFileSync(file('projects', 'p', 'project.json'), 'utf8'));
   writeFileSync(file('projects', 'p', 'project.json'), JSON.stringify({ ...project, 'execution-state-engine': ENGINE }));
   const v = fakeVm(f.env);
@@ -137,7 +138,7 @@ test('ASS-349 AC3: precedence — a paused project\'s busy VM is kept as ASS-297
   assert.ok(l.f.lines.includes('vm p abc-3-a: stopped (ABC-3 A at build; p is paused)'), l.f.lines.join('\n'));
 
   const r = lifecycle({ A: [at('qa'), 'Running'] });
-  const engine = r.file('engines', ENGINE, 'state-engine.json'), json = JSON.parse(readFileSync(engine, 'utf8'));
+  const engine = r.file('engines', ENGINE, 'workflow.yaml'), json = readEngine(engine);
   json.steps.find(s => s.id === 'qa').vm = 'released';
   writeFileSync(engine, JSON.stringify(json));
   r.assign([['ABC-3', 'A']]);

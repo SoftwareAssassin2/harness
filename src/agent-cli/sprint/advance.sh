@@ -94,7 +94,7 @@ lock_on 8 "$(readlink -f "$old").lock" sprint:advance "${JSON_LOCK_TIMEOUT:-30}"
 # { "<engine>": [<its is-done step ids>] }, for "finished": every engine the
 # project sees, its own over engines/'s (engine_files, ASS-276).
 mapfile -t engine_list < <(engine_files "$project")
-done_steps="$(jq -n 'reduce inputs as $e ({}; .[input_filename | split("/") | .[-2]] = [$e.steps[]? | select(.["is-done"] == true) | .id])' /dev/null "${engine_list[@]}" 2>/dev/null || echo '{}')"
+done_steps="$(engines_by_name ${engine_list[@]+"${engine_list[@]}"} 2>/dev/null | jq -c 'map_values([.steps[]? | select(.["is-done"] == true) | .id])' 2>/dev/null || echo '{}')"
 engine="$(jq -r '.["execution-state-engine"] // ""' "$config")"
 finished='def finished: [.variations // [] | .[] | select(.["is-deleted"] | not)] as $live
   | ($live | length > 0) and all($live[]; .["harness-status"].state as $s | any($done[.["harness-status"]["state-engine"] // $engine][]?; . == $s));'

@@ -42,6 +42,16 @@ export function rankSprint(tickets, { engine }) {
   return tickets.toSorted(by(t => (t['fast-track'] === true ? 0 : 1), manual, jira, t => (t.type === 'bug' ? 0 : 1), t => (depended.has(t.key) ? 0 : 1), progress, t => -(t.points ?? 0), number));
 }
 
+// planningFirst(list, atPlanning) — ASS-531, the focus-on-planning switch: `list` (in rank order) with the entries
+// `atPlanning` holds for (variations at a planning step: plan.js atPlanningStep) ahead of all the rest, each group in
+// its own order — so within each the usual ranking applies. A copy; stable. Called only while the switch is on: off,
+// control's order is rankSprint's, untouched.
+export function planningFirst(list, atPlanning) {
+  const first = [], rest = [];
+  for (const entry of list) (atPlanning(entry) ? first : rest).push(entry);
+  return [...first, ...rest];
+}
+
 // rankBacklog(tickets) — the backlog in refinement order. A ticket with a
 // manual-backlog-priority (the operator's, ASS-100; never the sprint's
 // manual-priority) takes that place, 1-based; the rest fill the places left

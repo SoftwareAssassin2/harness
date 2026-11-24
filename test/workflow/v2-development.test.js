@@ -26,19 +26,19 @@ import { validateStateEngine } from '../../src/workflow/validate.js';
 import { working, sameShared, inOrder, engineDir, engineNames, EXAMPLE_ENGINES } from '../support/engine-walk.js';
 import { fixture } from '../agent-cli/harness-fixture.js';
 import { humanGate } from '../../src/tui/ticket.js';
+import { readEngine } from '../../src/workflow/engine-file.js';
 
 const ROOT = join(import.meta.dirname, '..', '..');
-const engines = Object.fromEntries(engineNames().filter(d => existsSync(join(engineDir(d), 'state-engine.json')))
-  .map(d => [d, JSON.parse(readFileSync(join(engineDir(d), 'state-engine.json'), 'utf8'))]));
-// v2-build is grouped-build as it was before ASS-249 added CI Checks to the
-// grouped one alone (v2 engines unchanged): grouped-build without that step,
-// Automated Testing's exit 0 to Code Review again, the sequences closed up;
-// nor its Await Sequential Merge (ASS-335, grouped-build's
+const engines = Object.fromEntries(engineNames().filter(d => existsSync(join(engineDir(d), 'workflow.yaml')))
+  .map(d => [d, readEngine(join(engineDir(d), 'workflow.yaml'))]));
+// v2-build is grouped-build (whose CI Checks, ASS-249's, ASS-552 removed again;
+// v2-build never had it) without its Await Sequential Merge (ASS-335, grouped-build's
 // alone too): Generate Solution's finished turn to the refresh again; nor its
 // Check Numbered Files (ASS-385, grouped-build's alone): the refresh straight on to Automated Testing.
 const groupedBuild = (() => {
   const g = structuredClone(engines['grouped-build']);
-  for (const [id, to] of [['ci-checks', 'code-review'], ['await-dependencies', 'refresh-before-testing'], ['check-numbered-files', 'automated-testing']]) {
+  delete g['removed-steps-move-to'];   // ASS-552: CI Checks' successor, which v2-build never had
+  for (const [id, to] of [['await-dependencies', 'refresh-before-testing'], ['check-numbered-files', 'automated-testing']]) {
     const at = g.steps.find(s => s.id === id).sequence;
     g.steps = g.steps.filter(s => s.id !== id).map(s => ({ ...s, ...(s.sequence > at ? { sequence: s.sequence - 1 } : {}) }));
     for (const s of g.steps) for (const e of s['exit-events'] ?? []) if (e['move-to-state'] === id) e['move-to-state'] = to;
@@ -168,6 +168,8 @@ function walk(top, given = {}) {
 
 // The steps v2-plan's run visits before its done, every fact the passing one (ASS-112).
 const PLAN = ['enrich-ac', 'root-cause-analysis', 'review-root-cause-analysis', 'write-execution-plan', 'write-test-plan', 'enrich-automated-test-data', 'review-plan'];
+// ASS-556: once Review Plan approves, Choose Where to Work and Record Where to Work, then done.
+const WORK = ['choose-work-mode', 'record-work-mode'];
 // The steps v2-build's run visits before its done, every fact the passing one (ASS-113).
 const BUILD = ['refresh-repositories', 'generate-automated-tests', 'generate-solution', 'refresh-before-testing', 'automated-testing', 'code-review', 'security-review'];
 // The steps v2-test's run visits before its done, every fact the passing one, its sub-engines' runs nested (ASS-114).
@@ -179,7 +181,7 @@ const REVIEW = ['explain-the-change', 'risk-assessment', 'human-review', 'token-
 // The steps v2-release's run visits before its done, every fact the passing one (ASS-117).
 const RELEASE = ['merge-pull-request', 'update-workspace', 'request-restart', 'await-restart'];
 // The trail of a walk from Committed to Done, `setup`, `plan`, `build`, `test`, `document`, `review` and `release` the steps v2-setup's, v2-plan's, v2-build's, v2-test's, v2-document's, v2-review's and v2-release's runs visit before their done.
-const trailThrough = (setup, plan = PLAN, build = BUILD, tested = TEST, document = DOCUMENT, review = REVIEW, release = RELEASE) => ['committed', ...GROUPS.flatMap(g => [g, ...({ setup, plan, build, test: tested, document, review, release }[g] ?? ['pass-through']).map(s => s.includes('/') ? s : `v2-${g}:${s}`), `v2-${g}:done`]), 'done']
+const trailThrough = (setup, plan = [...PLAN, ...WORK], build = BUILD, tested = TEST, document = DOCUMENT, review = REVIEW, release = RELEASE) => ['committed', ...GROUPS.flatMap(g => [g, ...({ setup, plan, build, test: tested, document, review, release }[g] ?? ['pass-through']).map(s => s.includes('/') ? s : `v2-${g}:${s}`), `v2-${g}:done`]), 'done']
   .map(p => p.includes(':') ? p.replace(':', '/') : p.includes('/') ? p : `${TOP}/${p}`);
 
 test('AC2: a ticket goes from Committed to Done through every group in order, each group\'s run reaching its done — a set-up VM (ASS-111) leaving Setup at Check Setup Complete', () => {
@@ -300,7 +302,7 @@ test('ASS-112 AC2 (pair 1): Root Cause Analysis — root-cause-analysis.md writt
   assert.deepEqual(nextState(step, engine, facts(false), thrice), { to: 'blocked', exit: step['exit-events'][1], reason: 'max-visits' });
   assert.ok(asked.length && asked.every(a => a === 'root-cause-analysis.md turn-start'), asked.join(' | '));
   assert.deepEqual(walk(TOP, { fileUpdated: () => false }).slice(-7), [...PLANNING, ...Array(3).fill('v2-plan/root-cause-analysis'), 'v2-plan/blocked', `${TOP}/blocked`]);
-  assert.deepEqual(walk(TOP), trailThrough(['check-setup-complete'], PLAN));
+  assert.deepEqual(walk(TOP), trailThrough(['check-setup-complete'], [...PLAN, ...WORK]));
 });
 
 const thrice = (to, from) => from.map(f => ({ 'from-state': f, 'to-state': to }));
@@ -340,7 +342,7 @@ test('ASS-112 AC2 (pair 2): Write Execution Plan — execution-plan.md written t
   assert.ok(asked.length && asked.every(a => a === 'execution-plan.md turn-start'), asked.join(' | '));
   const unwritten = walk(TOP, { fileUpdated: file => file !== 'execution-plan.md' });
   assert.deepEqual(unwritten.slice(-5), [...Array(3).fill('v2-plan/write-execution-plan'), 'v2-plan/blocked', `${TOP}/blocked`]);
-  assert.deepEqual(walk(TOP), trailThrough(['check-setup-complete'], PLAN));
+  assert.deepEqual(walk(TOP), trailThrough(['check-setup-complete'], [...PLAN, ...WORK]));
 });
 
 test('ASS-112 AC1 (pair 3): v2-plan\'s next steps are grouped-plan\'s Write Test Plan and Enrich Automated Test Data, field for field — prompts, max-visits 3 then Blocked, run in the VM, planning flag and exits — Enrich Automated Test Data\'s finished turn going to Review Plan since step 7 (so the step is grouped-plan\'s exactly); validate.js accepts them', () => {
@@ -374,7 +376,7 @@ test('ASS-112 AC2 (pair 3): Enrich Automated Test Data — its turn done goes on
   assert.equal(nextState(step, engine, { turnComplete: false }), null);
   const into = stepOf(engine, 'write-test-plan'), written = { turnComplete: true, fileUpdated: () => true };
   assert.deepEqual(nextState(into, engine, written, thrice('enrich-automated-test-data', ['write-test-plan', 'write-test-plan', 'write-test-plan'])), { to: 'blocked', exit: into['exit-events'][0], reason: 'max-visits' });
-  assert.deepEqual(walk(TOP), trailThrough(['check-setup-complete'], PLAN));
+  assert.deepEqual(walk(TOP), trailThrough(['check-setup-complete'], [...PLAN, ...WORK]));
 });
 
 test('ASS-112 AC1 (step 7): Review Plan is grouped-plan\'s — the review-plan-grouped prompt (ASS-231), max-visits 3 then Blocked, run in the VM, planning flag and exits — and, Plan\'s last step, Pass Through is gone: v2-plan is grouped-plan exactly, which validate.js accepts', () => {
@@ -394,7 +396,7 @@ const planReview = approved => at => ({ 'is-approved': at === 'review-plan' ? ap
 test('ASS-112 AC2 (step 7): Review Plan — approved goes to done; not approved back to Write Execution Plan; no verdict (or the turn not done) matches no exit; always rejected, Write Execution Plan\'s fourth entry ends Plan at Blocked and the ticket at the top level\'s Blocked', () => {
   const engine = engines['v2-plan'], step = stepOf(engine, 'review-plan');
   const verdict = approved => ({ turnComplete: true, structuredOutput: { 'is-approved': approved } });
-  assert.deepEqual(nextState(step, engine, verdict(true)), { to: 'done', exit: step['exit-events'][0], reason: 'exit' });
+  assert.deepEqual(nextState(step, engine, verdict(true)), { to: 'choose-work-mode', exit: step['exit-events'][0], reason: 'exit' });   // ASS-556
   assert.deepEqual(nextState(step, engine, verdict(false)), { to: 'write-execution-plan', exit: step['exit-events'][1], reason: 'exit' });
   assert.equal(nextState(step, engine, { turnComplete: true, structuredOutput: {} }), null);
   assert.equal(nextState(step, engine, { ...verdict(true), turnComplete: false }), null);
@@ -411,9 +413,9 @@ test('ASS-112 AC4: the whole Plan group, no gates, ends at the right done step f
   // A verdict that is `false` the first time the step gives one, then true.
   const onceRejected = id => { let seen = 0; return at => ({ 'is-approved': at !== id || seen++ > 0 }); };
   const [eac, rca, rrca, wep, wtp, eatd, rp] = PLAN;
-  assert.deepEqual(ended({}), plan([...PLAN, 'done']).concat(`${TOP}/build`));
-  assert.deepEqual(ended({ structuredOutput: onceRejected(rrca) }), plan([eac, rca, rrca, rca, rrca, wep, wtp, eatd, rp, 'done']).concat(`${TOP}/build`));
-  assert.deepEqual(ended({ structuredOutput: onceRejected(rp) }), plan([...PLAN, wep, wtp, eatd, rp, 'done']).concat(`${TOP}/build`));
+  assert.deepEqual(ended({}), plan([...PLAN, ...WORK, 'done']).concat(`${TOP}/build`));
+  assert.deepEqual(ended({ structuredOutput: onceRejected(rrca) }), plan([eac, rca, rrca, rca, rrca, wep, wtp, eatd, rp, ...WORK, 'done']).concat(`${TOP}/build`));
+  assert.deepEqual(ended({ structuredOutput: onceRejected(rp) }), plan([...PLAN, wep, wtp, eatd, rp, ...WORK, 'done']).concat(`${TOP}/build`));
   assert.deepEqual(ended({ structuredOutput: planReview(false) }), plan([...PLAN, wep, wtp, eatd, rp, wep, wtp, eatd, rp, 'blocked']).concat(`${TOP}/blocked`));
   assert.deepEqual(ended({ structuredOutput: at => ({ 'is-approved': at !== rrca }) }), plan([eac, ...Array(3).fill([rca, rrca]).flat(), 'blocked']).concat(`${TOP}/blocked`));
   assert.deepEqual(ended({ fileUpdated: file => file !== 'test-plan.md' }), plan([eac, rca, rrca, wep, wtp, wtp, wtp, 'blocked']).concat(`${TOP}/blocked`));
@@ -1125,13 +1127,14 @@ test('ASS-117 AC4: the whole Release group, no gates, ends at the right done ste
   assert.deepEqual(walk(TOP), trailThrough(['check-setup-complete']));
 });
 
-test('ASS-197: Merge Pull Request merges in its turn — merge-request:merge-in-turn with the full tests (npm test), on the host, asked every minute: exit 0 merged on to Update the Harness; exit 0 waiting (behind another ticket, or its own gate running) stays; exit 2 (red) to Back to Build, which sends the ticket into Build at Generate Solution; any other exit to Blocked — v2 alone, the grouped engines unchanged', () => {
+test('ASS-197 (ASS-560): Merge Pull Request merges the ticket\'s pull requests in their order — merge-request:merge-in-turn with the full tests (npm test), on the host, asked every minute, its output recorded: exit 0 merged on to Update the Harness; exit 0 waiting (its own gate running) stays; exit 2 (red) to Back to Build, which sends the ticket into Build at Generate Solution; base-moved (main moved under the gate) back into the step; any other exit to Blocked — v2 alone, the grouped engines unchanged', () => {
   const engine = engines['v2-release'], step = stepOf(engine, 'merge-pull-request');
-  assert.deepEqual([step.action, step['max-visits'], step['on-max-visits'], step['run-location']],
-    [{ type: 'script', command: './agent.sh merge-request:merge-in-turn {project} {ticket} {variation} npm test', mode: 'timer', 'timer-minutes': 1 }, 3, 'blocked', undefined]);
+  assert.deepEqual([step.action, step['max-visits'], step['on-max-visits'], step['run-location'], step['record-script-output']],
+    [{ type: 'script', command: './agent.sh merge-request:merge-in-turn {project} {ticket} {variation} npm test', mode: 'timer', 'timer-minutes': 1 }, 5, 'blocked', undefined, true]);
   assert.equal(nextState(step, engine, { exitCode: 0, scriptOutput: { merged: true } }).to, 'update-workspace');
-  assert.equal(nextState(step, engine, { exitCode: 0, scriptOutput: { waiting: true, behind: 'ASS-1' } }), null);
+  assert.equal(nextState(step, engine, { exitCode: 0, scriptOutput: { waiting: true, running: true } }), null);
   assert.equal(nextState(step, engine, { exitCode: 2 }).to, 'rebuild');
+  assert.equal(nextState(step, engine, { exitCode: 0, scriptOutput: { waiting: true, 'base-moved': true } }).to, 'merge-pull-request');
   assert.equal(nextState(step, engine, { exitCode: 1 }).to, 'blocked');
   assert.equal(stepOf(engine, 'rebuild')['is-done'], true);
   const release = stepOf(engines[TOP], 'release');
@@ -1142,6 +1145,26 @@ test('ASS-197: Merge Pull Request merges in its turn — merge-request:merge-in-
   assert.equal(trail.at(-1), `${TOP}/blocked`);                                                  // red every time: Build's visits run out
   for (const name of ['v2-release', TOP]) assert.deepEqual(validateStateEngine(engines[name], ROOT, name, EXAMPLE_ENGINES), [], name);
   assert.equal(stepOf(engines['grouped-release-harness'], 'merge-pull-request').action.command, './agent.sh merge-request:merge {project} {ticket} {variation}');
+});
+
+// ASS-560 AC2: main moving under the gate again and again (other tickets merging first) is bounded: each base move is a
+// visit back into Merge Pull Request, the timer's own polls (no exit) none, so max-visits (5) sends the fifth move to
+// the group's Blocked — and Release on to the ticket's Blocked, the recorded output's ai-feedback saying why.
+test('ASS-560 AC2: repeated base moves count toward Merge Pull Request\'s max-visits and end in Blocked, its recorded output naming the reason', () => {
+  const engine = engines['v2-release'], step = stepOf(engine, 'merge-pull-request');
+  const moved = { exitCode: 0, scriptOutput: { waiting: true, 'base-moved': true, 'ai-feedback-short': 'merge gate: main moved while it ran (another ticket merged first); rebasing and testing again' } };
+  const changes = [];
+  for (let i = 1; i < step['max-visits']; i++) {
+    const next = nextState(step, engine, moved, changes);
+    assert.deepEqual([next.to, next.reason], ['merge-pull-request', 'exit'], `move ${i}`);
+    changes.push({ 'from-state': 'merge-pull-request', 'to-state': next.to, cause: 'timer' });
+  }
+  assert.equal(visitsInto(changes, 'merge-pull-request'), step['max-visits']);
+  const last = nextState(step, engine, moved, changes);
+  assert.deepEqual([last.to, last.reason], ['blocked', 'max-visits']);
+  assert.equal(nextState(stepOf(engines[TOP], 'release'), engines[TOP], { subEngineDone: true, subEngineState: 'blocked', structuredOutput: moved.scriptOutput }).to, 'blocked');
+  // The run's recorded output (record-script-output) is what Release's exit hands the ticket as its ai-feedback (steps.js).
+  assert.equal(step['record-script-output'], true);
 });
 
 // Every engine a top-level engine runs, itself included.
@@ -1195,7 +1218,7 @@ test('ASS-81: in harness-development-v2, Generate Solution and every step after 
   }
   const merge = stepIn('release', 'merge-pull-request');
   assert.equal(merge.action.command, './agent.sh merge-request:merge-in-turn {project} {ticket} {variation} npm test');   // merge-request:merge, in its turn (ASS-197)
-  assert.deepEqual(merge['exit-events'].map(e => e['move-to-state']), ['update-workspace', 'rebuild', 'blocked']);
+  assert.deepEqual(merge['exit-events'].map(e => e['move-to-state']), ['merge-pull-request', 'update-workspace', 'rebuild', 'blocked']);   // ASS-560: main moved (base-moved), back into itself
 });
 
 // ASS-149 AC1: the health check v2 runs is check-health plus the golden-image check, first; the flat engines keep check-health.

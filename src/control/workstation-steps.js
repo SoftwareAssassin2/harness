@@ -18,8 +18,9 @@
 // (workstations.js keep → tendSteps), a lease per variation in
 // memory.workstationSteps (`${project}/${KEY}/${variation}` → { project,
 // key, variation, state, ws, visit (the step it holds a machine for), want
-// (the step that last asked), wantedAt, step (its name, for a safety-net
-// commit's message), used, completed (AC9: the step's agent turn ended without
+// (the step that last asked), wantedAt, wantStep (that step's name), step (the
+// name of the step it holds a machine for, for a safety-net commit's message;
+// ASS-549), used, completed (AC9: the step's agent turn ended without
 // error, or its script exited 0: stepCompleted, usingMachine), scripts (the
 // step's scripts running there), dispatching, until, failures, why }):
 //
@@ -106,20 +107,38 @@
 // releasing one's. A step waiting for its VM to be made or started says so on
 // its Health as waiting for its VM (workstations.js VM_HEALTH), never its
 // workstation: a planning step never uses one (ASS-469).
+//
+// ASS-529: a remote machine takes several of its project's tickets at once,
+// as many seats as its own memory and CPU allow (remote-seats.js). A
+// step claims a machine beside other tickets' steps there — it is "free" for
+// it while the machine is usable, the variation holds no step there yet, and
+// the steps there (any holder, a seat-holder's or not) are fewer than its seats
+// (one, as before, until it reads roomier) — and workstation:claim gives it a folder of its
+// own on the machine (a slot: the shared root, <home>/harness, while no other
+// step holds it, else <home>/harness/slots/<n>; workstation-variation.bash),
+// so one ticket's steps never touch another's checkout. The lease records the
+// slot, and the step's end releases that slot alone (workstation:release
+// --slot <n>). A step with no seat kind (workstation mode's planning) takes
+// any such machine no seat-holder's step waits for. Unless the project opts into
+// running its tests side by side (dev-environments ticket-isolation separate;
+// the default is one-at-a-time), a step that runs
+// tests or CI checks (machine-steps.js runsTests) waits while another
+// ticket's such step holds the same machine, its Health saying so.
 import { runsInVm } from './vm.js';
+import { claimsWorkstation, runsTests } from './machine-steps.js';
 import { stepOf, engineSteps } from './engine.js';
 import { enginesFor } from './state.js';
+import { isolationOf } from './dev-environments.js';
 import { backoffDelay, held } from './backoff.js';
-import { loadWorkstations, workstationUsable, loginExpired } from './workstation-connection.js';
-import { loadSeats, seatOf, seatCapacity, isRemoteSeat } from './seat-kinds.js';
-import { slotKind } from './plan.js';
+import { loadWorkstations, workstationUsable, loginExpired, holdersOf, holderOf } from './workstation-connection.js';
+import { loadSeats, seatOf, seatCapacity, isRemoteSeat, remoteSeats, onMacTarget, onSubstrateTarget } from './seat-kinds.js';
+import { poolOf } from './plan.js';
+import { isRemoteWorktree } from './run-targets.js';
 import { statusIn } from './engine.js';
 import { loadEnds, pendEnd, endDone, vmGone, recover } from './step-ends.js';
 
 const PHASE = 'workstation';
 export const CLAIM_GRACE = 2 * 60_000;
-// A host script that works in the variation's machine (its repositories): it needs one held for its step.
-const MACHINE_SCRIPT = /(^|\s)(\.\/)?agent\.sh vm:(refresh-repositories|test-repos|run|demo)\b/;
 // WORKSTATION_HEALTH, PUSH_HEALTH, MASTER_HEALTH — what every long Health written here begins with, so only its own is cleared.
 export const WORKSTATION_HEALTH = 'Waiting for its workstation:';
 export const PUSH_HEALTH = 'Could not push its committed work:';
@@ -131,8 +150,9 @@ export const STRAY_HEALTH = 'Commits of a stray local branch were set aside:';
 // usesWorkstations(project) — its tickets run on its workstations (workstation or vm+workstation mode, ASS-431).
 export const usesWorkstations = project => ['workstation', 'vm+workstation'].includes(project?.devEnvironments?.mode) && (project.devEnvironments.workstations?.length ?? 0) > 0;
 
-// machineWork(step) — the step's work runs on its variation's machine.
-export const machineWork = step => runsInVm(step) || (step?.action?.type === 'script' && MACHINE_SCRIPT.test(step.action.command ?? ''));
+// machineWork(step) — the step's work runs on its variation's machine: a run-location vm step, or a host script that
+// works in it and claims it for its step (ASS-527: declared once, machine-steps.js WORKSTATION_CLAIMS).
+export const machineWork = step => runsInVm(step) || claimsWorkstation(step);
 
 const same = (a, b) => String(a ?? '').toUpperCase() === String(b ?? '').toUpperCase();
 const keyOf = (projectId, key, name) => `${projectId}/${String(key).toUpperCase()}/${name}`;
@@ -145,6 +165,8 @@ export const leasesOf = ctx => (ctx.memory.workstationSteps ??= new Map());
 // one for this step, and is false once it holds it.
 export function stepWaits(ctx, state, project, ticket, variation, step, who) {
   if (!usesWorkstations(project) || !ticket || !variation || variation['is-deleted'] || !machineWork(step)) return false;
+  if (onMacTarget(project, ticket.key, variation.name)) return false;   // ASS-540: on a Mac run target its step needs no machine
+  if (onSubstrateTarget(project, ticket.key, variation.name)) return false;   // ASS-535: its step runs in its sandbox (sandboxes.js sandboxWaits)
   const leases = leasesOf(ctx), k = keyOf(project.id, ticket.key, variation.name), visit = visitOf(variation), now = ctx.now().getTime();
   let l = leases.get(k);
   if (!l) {
@@ -152,7 +174,13 @@ export function stepWaits(ctx, state, project, ticket, variation, step, who) {
     leases.set(k, l);
   }
   if (l.want !== visit && !(l.visit === visit && l.state !== 'wanted')) ctx.log(PHASE, `${who}: its step wants a machine; ${l.state === 'held' || l.state === 'vm' ? 'its last step\'s is given back first' : 'one is readied for it by its seat'}`);
-  Object.assign(l, { want: visit, wantedAt: now, who, step: step.name ?? step.id });
+  // ASS-549: the asking step's name is kept as wantStep, and becomes the lease's `step` only once a machine is taken
+  // for it (claim, readyVm): `step` names the step the machine is held for, which its end's safety-net commit is
+  // named after. Set here, the next step asking before the last one's end — the tick moving the ticket on before
+  // the workstation job ends the step, as a loaded Mac's slow passes order them — named Generate Solution's leftovers
+  // "CI Checks: what the step left uncommitted" (tick-workstation AC1/AC2/AC3/AC8).
+  Object.assign(l, { want: visit, wantedAt: now, who, wantStep: step.name ?? step.id, tests: runsTests(step) });   // ASS-529 AC3: tests
+  if (l.state === 'wanted') l.step = l.wantStep;
   if (l.visit !== visit) return true;
   if (l.state === 'held') return variation.workstation?.name !== l.ws;   // the claim recorded on the variation, as this tick reads it
   if (l.state === 'vm') return Boolean(variation.workstation);
@@ -213,7 +241,7 @@ function placeOf(state, project, seats, l, v) {
     return { vm: 'it holds a VM seat' };
   }
   const status = v ? statusIn(project.engine, v, project.engines ?? state.engines) : null;
-  if (status && slotKind(status.step, status) === 'progress') return { wait: true };
+  if (status && poolOf(status.step, status) === 'progress') return { wait: true };
   return mode === 'vm+workstation' ? { vm: 'a planning step runs on its VM' } : { any: true };
 }
 
@@ -225,14 +253,15 @@ const freeWorkstationSeat = (project, seats) => seatCapacity(project).workstatio
 const seatHolderWaits = (ctx, project, seats, id) => [...leasesOf(ctx).values()]
   .find(x => x.project === project.id && x.state === 'wanted' && isRemoteSeat(seatOf(seats, x.key, x.variation)) && seatOf(seats, x.key, x.variation).workstation === id);
 
-// whyNot(settings, entries, home) — { why, busy, usable, transient }: why no workstation can take a step now (each
+// whyNot(settings, entries, shared) — { why, busy, usable, transient }: why no workstation can take a step now (each
 // named), whether one is held by another variation, and whether all that keeps one is its start or its setup.
-function whyNot(settings, entries) {
+function whyNot(settings, entries, shared = null) {
   const why = [];
   let busy = false, transient = false;
   for (const w of settings.workstations) {
-    const e = entries[w.id];
-    if (e?.holder) { busy = true; why.push(`${w.id} is held by ${e.holder.ticket} ${e.holder.variation}`); continue; }
+    const e = entries[w.id], hs = holdersOf(e);
+    // ASS-529: a machine takes as many tickets' steps at once as its seats (`shared(id)`; one without), each in its own folder.
+    if (hs.length >= (shared ? shared(w.id) : 1)) { busy = true; why.push(`${w.id} is held by ${hs.map(h => `${h.ticket} ${h.variation}`).join(', ')}`); continue; }
     if (loginExpired(e)) { why.push(`${w.id}'s gcloud login needs reauthentication`); continue; }
     if (e?.connected === true && e.setup?.ok === false) { why.push(`${w.id}'s setup failed: ${e.setup.error ?? 'see the control log'}`); continue; }
     transient = true;
@@ -301,13 +330,27 @@ async function claim(ctx, state, project, settings, dir, l, who, t, v) {
     return;
   }
   const ids = place.ws ? [place.ws] : settings.workstations.map(w => w.id).filter(id => !seatHolderWaits(ctx, project, seats, id));
-  const ready = ids.filter(id => !entries[id]?.holder && workstationUsable(entries[id]));
+  // ASS-529 AC1, AC2: a step claims a machine beside the other tickets' steps there, a folder of its own (a slot:
+  // workstation:claim), while those steps are fewer than the machine's seats (remote-seats.js: one, as before, until it
+  // reads roomier) — a holder that is no seat-holder (one from before a restart, a planning step) counted too.
+  const ready = ids.filter(id => workstationUsable(entries[id]) && !holderOf(entries[id], l.key, l.variation) && holdersOf(entries[id]).length < remoteSeats(project, id));
+  // ASS-529 AC3: a project whose tests cannot be kept apart runs its test and CI steps one at a time per machine.
+  const testing = place.ws ? testsOn(leasesOf(ctx).values(), project, l, place.ws) : null;
+  if (testing) {
+    const why = `${place.ws} runs ${testing.key} ${testing.variation}'s tests now, and ${project.id} runs its tests one at a time per machine (dev-environments ticket-isolation one-at-a-time, the default; 'separate' runs them side by side)`;
+    if (l.why !== why) ctx.log(PHASE, `${l.who ?? who}: waits: ${why}`);
+    l.why = why;
+    return;
+  }
   if (ready.length) {
     try {
-      const out = JSON.parse(await ctx.cli(['workstation:claim', project.id, t.key, v.name, '--workstation', ready[0]]));
-      Object.assign(l, { state: 'held', ws: out.name, visit: l.want, used: false, completed: false, failures: 0, until: 0, why: null });
+      // ASS-553: a seat on workstation-worktree / cloud-vm-worktree claims the machine in the variation's own worktree
+      // folder there (<home>/harness/worktrees/<KEY>[.<var>], kept between its steps) instead of a shared slot.
+      const worktree = isRemoteWorktree(seatOf(seats, l.key, l.variation)?.target);
+      const out = JSON.parse(await ctx.cli(['workstation:claim', project.id, t.key, v.name, '--workstation', ready[0], ...(worktree ? ['--worktree'] : [])]));
+      Object.assign(l, { state: 'held', ws: out.name, slot: out.slot ?? 0, visit: l.want, step: l.wantStep ?? l.step, used: false, completed: false, failures: 0, until: 0, why: null });
       const moved = (out.unclean?.length ? `; not checked out: ${out.unclean.map(u => `${u.repository} (${u.why})`).join(', ')}` : '') + (out.discarded?.length ? `; discarded what an unfinished step left uncommitted: ${out.discarded.map(d => `${d.repository} (${d.files.join(', ')})`).join('; ')}` : '');
-      ctx.log(PHASE, `${project.id} ${out.name}: claimed for ${l.who ?? who}: its repositories on ${who}'s branches${moved}`);
+      ctx.log(PHASE, `${project.id} ${out.name}: claimed for ${l.who ?? who}${out.worktree ? ` (its worktree ${out.folder}, its own between its steps)` : out.slot ? ` (its folder ${out.folder ?? `slot ${out.slot}`}, beside the other tickets there)` : ''}: its repositories on ${who}'s branches${moved}`);
       await setAside(ctx, project, out, who, `${project.id} ${out.name}'s claim for ${who}`);
       return;
     } catch (error) {
@@ -324,12 +367,20 @@ async function claim(ctx, state, project, settings, dir, l, who, t, v) {
       }
     }
   }
-  const not = whyNot({ workstations: settings.workstations.filter(w => ids.includes(w.id)) }, loadWorkstations(dir));
+  const not = whyNot({ workstations: settings.workstations.filter(w => ids.includes(w.id)) }, loadWorkstations(dir), id => remoteSeats(project, id));
   const why = place.ws
     ? `its seat's workstation ${place.ws} is not free for its step: ${not.why}`
     : `no workstation of ${project.id}'s is free for its step: ${not.why || 'each is waited for by its seat-holders\' steps'}`;
   if (l.why !== why) ctx.log(PHASE, `${l.who ?? who}: waits: ${why}`);
   l.why = why;
+}
+
+// testsOn(leases, project, l, id) — ASS-529 AC3: in a project that has not opted into running its tests side by side
+// (dev-environments ticket-isolation one-at-a-time, the default; not 'separate'), the lease of another ticket whose test or CI step (machine-steps.js runsTests) holds
+// machine `id` now, when lease `l`'s step runs tests too — its step then waits; else null.
+export function testsOn(leases, project, l, id) {
+  if (!l.tests || isolationOf(project.devEnvironments) === 'separate') return null;
+  return [...leases].find(x => x !== l && x.project === project.id && x.ws === id && x.tests && ['held', 'releasing'].includes(x.state)) ?? null;
 }
 
 // missingWhy(message, id, wait) — ASS-473: a Health's why for a claim that failed for images missing on workstation
@@ -354,7 +405,7 @@ async function readyVm(ctx, project, dir, l, who, v) {
     }
     if (!ctx.memory.vmsUp?.has(v.vm.name)) { l.why = `${v.vm.name} is starting`; return; }
     const out = await ctx.cli(['vm:step-start', project.id, l.key, v.name]);
-    Object.assign(l, { state: 'vm', vm: v.vm.name, visit: l.want, used: false, completed: false, failures: 0, until: 0, why: null, ws: null });
+    Object.assign(l, { state: 'vm', vm: v.vm.name, visit: l.want, step: l.wantStep ?? l.step, used: false, completed: false, failures: 0, until: 0, why: null, ws: null });
     pendEnd(ctx, dir, { key: l.key, variation: l.variation, vm: v.vm.name, step: l.step, completed: false });
     ctx.log(PHASE, `${l.who ?? who}: runs on its VM ${v.vm.name}, its repositories moved to its branches`);
     let summary = null;
@@ -385,7 +436,7 @@ async function end(ctx, project, dir, l, who, t, v, was) {
     ctx.memory.warned.delete(`vm-end/${project.id}/${l.vm}`);
   }
   try {
-    const out = JSON.parse(await ctx.cli(onVm ? ['vm:step-end', project.id, l.key, l.variation, ...completed] : ['workstation:release', project.id, l.ws, '--force', ...completed]));
+    const out = JSON.parse(await ctx.cli(onVm ? ['vm:step-end', project.id, l.key, l.variation, ...completed] : ['workstation:release', project.id, l.ws, '--force', ...completed, ...(l.slot ? ['--slot', String(l.slot)] : [])]));
     l.failures = 0; l.until = 0;
     if (onVm) { endDone(ctx, dir, l.key, l.variation); l.vm = null; }
     await reported(ctx, project, out, onVm ? `${who}: its step${l.completed ? '' : ' (not completed)'} ended on its VM` : `${project.id} ${l.ws}: released by ${who}${l.completed ? '' : ' (its step not completed)'}`, who, t, v);
@@ -494,14 +545,13 @@ async function lost(ctx, project, dir, l, who, t) {
 // released once its workstation's connection is open.
 async function releaseStale(ctx, project, settings, dir, state) {
   const entries = loadWorkstations(dir), leases = [...leasesOf(ctx).values()];
-  for (const w of settings.workstations) {
-    const h = entries[w.id]?.holder;
-    if (!h || !entries[w.id]?.connected) continue;
+  for (const w of settings.workstations) for (const h of holdersOf(entries[w.id])) {   // ASS-529: each of its holders
+    if (!entries[w.id]?.connected) continue;
     if (leases.some(l => l.project === project.id && same(l.key, h.ticket) && l.variation === h.variation && l.ws === w.id)) continue;
     if (state.assignments.some(a => a.project === project.id && same(a['work-item'], h.ticket) && a.variation === h.variation && onMachine(state, a))) continue;
-    const old = h.folder && !/\/harness$/.test(h.folder);
+    const old = h.folder && !/\/harness(\/slots\/\d+)?$/.test(h.folder);
     await ctx.attempt(PHASE, `${project.id} ${w.id}`, async () => {
-      const out = JSON.parse(await ctx.cli(['workstation:release', project.id, w.id, '--force']));
+      const out = JSON.parse(await ctx.cli(['workstation:release', project.id, w.id, '--force', ...(h.slot ? ['--slot', String(h.slot)] : [])]));
       const t = state.projects.find(p => p.id === project.id)?.tickets?.find(x => same(x.key, h.ticket)), v = t?.variations?.find(x => x.name === h.variation && !x['is-deleted']);
       await reported(ctx, project, out, `${project.id} ${w.id}: released: ${h.ticket} ${h.variation} held it with no step running (${old ? `a holder from before ASS-468: its folder ${h.folder} removed` : 'a claim from before control restarted'})`, `${h.ticket} ${h.variation}`, t, v);
     });
@@ -525,7 +575,7 @@ export function workstationWants(ctx, state, project, entries = {}) {
   }
   for (const w of project.devEnvironments?.workstations ?? []) {
     if (!waiting.length) break;
-    if (wants.has(w.id) || entries[w.id]?.holder) continue;
+    if (wants.has(w.id) || holdersOf(entries[w.id]).length >= remoteSeats(project, w.id)) continue;
     wants.set(w.id, waiting.shift());
   }
   return wants;

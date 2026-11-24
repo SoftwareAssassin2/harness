@@ -10,6 +10,7 @@ import {
 } from '../../src/control/engine.js';
 import * as control from '../../src/control/engine.js';
 import { levelChanges } from '../../src/control/moves.js';
+import { readEngine } from '../../src/workflow/engine-file.js';
 
 const updated = { 'file-updated': { file: 'plan.md', since: 'turn-start' } };
 const engine = {
@@ -56,7 +57,7 @@ test('stepOf finds a step in steps or in any *-steps / *-trigger list, else unde
 });
 
 test('the smoke test against the real example-development engine', () => {
-  const real = JSON.parse(readFileSync(join(engineDir('example-development'), 'state-engine.json'), 'utf8'));
+  const real = readEngine(join(engineDir('example-development'), 'workflow.yaml'));
   assert.equal(stepOf(real, 'generate-solution').action.type, 'prompt');
   assert.equal(pairedStatus(real, 'generate-solution'), 'In Progress');
 });
@@ -393,7 +394,7 @@ test('nextState: the move out of a step with restarts-visit-count counts its tar
 // resolution of Blocked for Human does — else the counts it was blocked with send it
 // straight back to Blocked (ASS-303: build 5/5, test 3/3). The clear is marked on the
 // change it makes (cause "fix-landed"), so the moves after it count afresh too.
-const v2 = () => JSON.parse(readFileSync(join(engineDir('harness-development-v2'), 'state-engine.json'), 'utf8'));
+const v2 = () => readEngine(join(engineDir('harness-development-v2'), 'workflow.yaml'));
 // ASS-303's shape: Build entered 5 times and Test 3 times, both at their max-visits, then Blocked.
 const exhausted = [change('plan', 'build'), change('build', 'test'), change('test', 'build'), change('build', 'test'),
   change('test', 'build'), change('build', 'test'), change('test', 'build'), change('build', 'blocked'),
@@ -524,7 +525,7 @@ test('nextState: a ticket reopened from Done moves on without hitting max-visits
 });
 
 test('ASS-125\'s real history (harness-development-v2, its third run): Setup\'s run done moves it on to Plan, not to Blocked (ASS-130)', () => {
-  const v2 = JSON.parse(readFileSync(join(import.meta.dirname, '../../engines/harness-development-v2/state-engine.json'), 'utf8'));
+  const v2 = readEngine(join(import.meta.dirname, '../../engines/harness-development-v2/workflow.yaml'));
   const history = JSON.parse(readFileSync(join(import.meta.dirname, 'fixtures/ass-125-state-changes.json'), 'utf8')).slice(0, -1);   // before its move to Blocked for Human
   assert.equal(visitsInto(history, 'plan'), 2);   // two real passes, six changes into it
   const done = { subEngineDone: true, subEngineState: 'done' };
@@ -601,7 +602,7 @@ test('engineSteps picks an engine\'s steps, or one of its *-steps / *-trigger li
 });
 
 test('the real self-healing engine: its analysis checked independently and classified before a ticket; a fix that needs the operator, or an environment issue, goes to them; any other makes its ticket sprint work at Self Healing, pauses its tickets, and runs on the ticket (self-healing-fix), the harness restarting only on a fix made; the On Hold pairing for the blocked states', () => {
-  const real = name => JSON.parse(readFileSync(join(engineDir(name), 'state-engine.json'), 'utf8'));
+  const real = name => readEngine(join(engineDir(name), 'workflow.yaml'));
   const healing = real('self-healing');
   // analyze, then an independent check of it, before any ticket is written
   const after = (id, output) => nextState(stepOf(healing, id), healing, { turnComplete: true, structuredOutput: { 'needs-fix': true, 'can-continue-without-fix': false, ...output } })?.to;
@@ -662,7 +663,7 @@ test('the real self-healing engine: its analysis checked independently and class
 // ASS-144 Q2: a backlog ticket sits in its refinement engine. The waiting
 // points are human steps it rests at, Ready its done step; Estimate's
 // fallback goes back to Groom; nothing marks, requests or ends a run.
-const realEngine = name => JSON.parse(readFileSync(join(engineDir(name), 'state-engine.json'), 'utf8'));
+const realEngine = name => readEngine(join(engineDir(name), 'workflow.yaml'));
 const inSequence = engine => engine.steps.toSorted((a, b) => a.sequence - b.sequence).map(s => s.id);
 // hasInOrder(engine, ids) — its steps, by sequence, hold `ids` in that order, others between them allowed (ASS-258: an engine may gain a step).
 const hasInOrder = (engine, ids) => assert.ok(inOrder(inSequence(engine), ids), inSequence(engine).join(' '));
@@ -823,7 +824,7 @@ test('ASS-388 AC2: withoutNoOpRounds drops each no-op round, back to and includi
 });
 
 test('ASS-388 AC2/AC3: nextState counts no visit for a no-op round — the check sends the merge request on to Address Merge Request Feedback after any number of them — while rounds that changed something still spend its max-visits', () => {
-  const engine = JSON.parse(readFileSync(join(engineDir('grouped-merge'), 'state-engine.json'), 'utf8'));
+  const engine = readEngine(join(engineDir('grouped-merge'), 'workflow.yaml'));
   const check = stepOf(engine, 'check'), round = stepOf(engine, 'check-feedback-round');
   const needs = { exitCode: 0, scriptOutput: { 'needs-attention': true, reasons: ['build-failed'], 'auto-merge': false, merged: false } };
   const noOp = () => [change('check', 'address-merge-request-feedback'), change('address-merge-request-feedback', 'check-feedback-round'), change('check-feedback-round', 'check', { cause: 'no-op-round' })];

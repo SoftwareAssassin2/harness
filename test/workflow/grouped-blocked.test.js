@@ -20,11 +20,12 @@ import { firstStepId } from '../../src/control/moves.js';
 import { problemOf, runValues, blockHistory } from '../../src/control/facts.js';
 import { validateStateEngine } from '../../src/workflow/validate.js';
 import { inOrder, engineDir, engineNames, EXAMPLE_ENGINES } from '../support/engine-walk.js';
+import { readEngine } from '../../src/workflow/engine-file.js';
 
 const ROOT = join(import.meta.dirname, '..', '..');
 const FIX_MR = 'https://gitlab.com/example/api/-/merge_requests/41';
-const engines = Object.fromEntries(engineNames().filter(d => existsSync(join(engineDir(d), 'state-engine.json')))
-  .map(d => [d, JSON.parse(readFileSync(join(engineDir(d), 'state-engine.json'), 'utf8'))]));
+const engines = Object.fromEntries(engineNames().filter(d => existsSync(join(engineDir(d), 'workflow.yaml')))
+  .map(d => [d, readEngine(join(engineDir(d), 'workflow.yaml'))]));
 const BLOCKED = ['grouped-blocked'];
 const TOPS = { 'grouped-blocked': ['example-development-grouped', 'harness-development-grouped'] };
 
@@ -875,7 +876,8 @@ test('ASS-392 AC2: Repair Image is a confined host prompt step — not the VM, n
 test('ASS-423 AC4: Troubleshoot and Classify say a ticket\'s merged merge requests are still its own code; Generate Solution builds the new merge request an own-branch fix plans, never a merged branch; the flat engines\' prompts unchanged', () => {
   for (const p of ['troubleshoot-block-grouped', 'troubleshoot-block-on-host-grouped']) assert.match(promptText(p), /The ticket's merge requests are its own code whether or not they have merged/, p);
   assert.match(promptText('classify-issue-grouped'), /The ticket's merged merge requests are still its own code: a defect in a file any of its merge requests added or changed is own-branch: true whether or not they have merged/);
-  assert.match(promptJson('classify-issue-grouped').output.properties['own-branch'].description, /merged merge requests count too \(ASS-423\)/);
+  assert.match(promptJson('classify-issue-grouped').output.properties['own-branch'].description, /merged merge requests count too;/);
+  assert.match(promptJson('classify-issue-grouped')['output-tickets']['own-branch'], /ASS-423/, 'ASS-547: the ticket is cited in the maintainer-only field, not the schema sent to the agent');
   const build = promptText('generate-solution-grouped');
   assert.match(build, /Own-branch fix: an "## Own-branch fix" section/);
   assert.match(build, /Never reopen a Merged or Closed merge request or push to its branch/);

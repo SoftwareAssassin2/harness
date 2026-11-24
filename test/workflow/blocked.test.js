@@ -7,9 +7,10 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { engineDir } from '../support/engine-walk.js';
 import { inOrder } from '../support/engine-walk.js';
+import { readEngine } from '../../src/workflow/engine-file.js';
 
-const read = path => JSON.parse(readFileSync(new URL(`../../${path}`, import.meta.url), 'utf8'));
-const blocked = read('engines/blocked/state-engine.json');
+const read = path => readEngine(new URL(`../../${path}`, import.meta.url).pathname);
+const blocked = read('engines/blocked/workflow.yaml');
 const step = id => blocked.steps.find(s => s.id === id);
 const to = (id, condition) => step(id)['exit-events'].find(e => JSON.stringify(e.condition) === JSON.stringify(condition))?.['move-to-state'];
 
@@ -27,7 +28,7 @@ test('the blocked engine troubleshoots, creates the fix ticket, records the wait
 
 test('in both development engines, a fix closed unmerged sends the ticket round Blocked again — three visits hand it to a human; a landed fix returns it', () => {
   for (const engine of ['example-development', 'harness-development']) {
-    const b = JSON.parse(readFileSync(join(engineDir(engine), 'state-engine.json'), 'utf8')).steps.find(s => s.id === 'blocked');
+    const b = readEngine(join(engineDir(engine), 'workflow.yaml')).steps.find(s => s.id === 'blocked');
     assert.deepEqual([b['max-visits'], b['on-max-visits']], [3, 'blocked-for-human'], engine);
     assert.deepEqual(b['exit-events'][0], { condition: { all: [{ 'is-done': true }, { 'structured-output': { landed: false } }] }, 'move-to-state': 'blocked' }, engine);
     assert.deepEqual(b['exit-events'][1], { condition: { 'is-done': true }, 'follow-return-to-state': true }, engine);

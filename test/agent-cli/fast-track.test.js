@@ -10,6 +10,7 @@ import { join } from 'node:path';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { fixture, run } from './harness-fixture.js';
 import { runValues } from '../../src/control/facts.js';
+import { readEngine } from '../../src/workflow/engine-file.js';
 
 const OFF_BOARD = join(import.meta.dirname, '..', '..', 'off-board.sh');
 const ROOT = join(import.meta.dirname, '..', '..');
@@ -22,7 +23,7 @@ async function offBoard() {
   f.env.OFF_BOARD_DIR = join(f.dir, 'off-board');
   const edit = (path, change) => { const file = join(f.dir, ...path); const json = JSON.parse(readFileSync(file, 'utf8')); change(json); writeFileSync(file, JSON.stringify(json, null, 4)); };
   edit(['projects', 'p', 'project.json'], p => p['work-sources'].push({ name: 'Harness', type: 'off-board', folder: 'p', 'key-prefix': 'HD' }));
-  edit(['engines', 'example-development', 'state-engine.json'], e => {
+  edit(['engines', 'example-development', 'workflow.yaml'], e => {
     e.steps.unshift({ id: 'committed', sequence: 0, 'paired-ticket-system-status': 'Committed', action: { type: 'none' } });
     e.steps.unshift({ id: 'backlog', sequence: 0, 'paired-ticket-system-status': 'Backlog', action: { type: 'none' } });
   });
@@ -67,7 +68,7 @@ test('ASS-83 AC5: a failed join (no sprint tracking work) writes nothing to the 
 
 test('ASS-306 AC1/AC2: ticket:fast-track marks a Backlog off-board fix ticket and joins it to the active sprint at committed with fast-track: true — the command and placeholders the grouped-blocked step runs', async () => {
   const f = await offBoard();
-  const grouped = JSON.parse(readFileSync(join(ROOT, 'engines', 'grouped-blocked', 'state-engine.json'), 'utf8'));
+  const grouped = readEngine(join(ROOT, 'engines', 'grouped-blocked', 'workflow.yaml'));
   const step = grouped.steps.find(s => s.id === 'fast-track-fix');
   assert.ok(step, 'engines/grouped-blocked has a fast-track-fix step');
   // {ticket} resolves to the key create-fix-ticket returned, {work-item} to the blocked ticket.

@@ -39,7 +39,7 @@ test('example-github-release merges the example GitHub project\'s pull request i
   const v2Merge = stepOf(engine('v2-release'), 'merge-pull-request');
   sameShared(engine('example-github-release'), engine('v2-release'), { as: s => (s.id !== 'merge-pull-request' ? s : {
     ...s, action: { ...s.action, command: s.action.command.replace(/ \.\/system\.sh test$/, ' npm test') },
-    'exit-events': s['exit-events'].map((e, i) => (i === 0 ? { ...e, 'move-to-state': v2Merge['exit-events'][0]['move-to-state'] } : e)),
+    'exit-events': s['exit-events'].map((e, i) => (i === 1 ? { ...e, 'move-to-state': v2Merge['exit-events'][1]['move-to-state'] } : e)),   // ASS-560: 0 is base-moved
   }) });
 });
 

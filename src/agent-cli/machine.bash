@@ -37,7 +37,13 @@
 # runs a step on the workstation when it is free. ASS-481: a third, a cloud
 # VM (machine-cloud-vm.bash), named cloud-vm:<project>:<id>:<folder> alike
 # from the claim's `workstation` (its kind cloud-vm) or vm { kind: cloud-vm,
-# … }; machine_remote says a machine is one of the two remote kinds. A
+# … }; machine_remote says a machine is one of the two remote kinds. ASS-535: a
+# fourth, a Substrate sandbox (machine-substrate.bash), named
+# substrate:<project>:<machine>:<actor> from the variation's `sandbox` { name,
+# project, machine } while its run target is a substrate one
+# (local-substrate, workstation-substrate, cloud-vm-substrate): HARNESS_RUN_TARGET
+# when set (control's, for a script step), else its recorded `run-target`
+# (code:hand-over's). A
 # backend's functions are named by its kind, a - made _ (cloud_vm_run). A new one is a machine-<kind>.bash defining <kind>_run,
 # <kind>_stop_marked, <kind>_copy_in, <kind>_copy_out, <kind>_status,
 # <kind>_start and <kind>_stop as lima_* do, sourced here and named in
@@ -53,12 +59,16 @@ here_machine="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
 source "$here_machine/machine-lima.bash"
 source "$here_machine/machine-workstation.bash"
 source "$here_machine/machine-cloud-vm.bash"
+source "$here_machine/machine-substrate.bash"
 
-machine_backends="lima workstation cloud-vm"
+machine_backends="lima workstation cloud-vm substrate"
 
 # shellcheck disable=SC2016
-machine_of='(if (.workstation.name // "") != "" and .workstation.project and .workstation.folder then .workstation + { kind: (.workstation.kind // "workstation") } else .vm // {} end) as $m | if ($m.name // "") == "" then "" elif ($m.kind // "lima") == "lima" then $m.name
-  elif ($m.kind | IN("workstation", "cloud-vm")) and $m.project and $m.folder then "\($m.kind):\($m.project):\($m.name):\($m.folder)" else "\($m.kind):\($m.name)" end'
+machine_of='(($ENV.HARNESS_RUN_TARGET // "" | if . == "" then null else . end) // .["run-target"].target // "") as $target
+  | if ($target | IN("local-substrate", "workstation-substrate", "cloud-vm-substrate")) and (.sandbox.name // "") != "" and .sandbox.project and .sandbox.machine
+    then "substrate:\(.sandbox.project):\(.sandbox.machine):\(.sandbox.name)" else
+  (if (.workstation.name // "") != "" and .workstation.project and .workstation.folder then .workstation + { kind: (.workstation.kind // "workstation") } else .vm // {} end) as $m | if ($m.name // "") == "" then "" elif ($m.kind // "lima") == "lima" then $m.name
+  elif ($m.kind | IN("workstation", "cloud-vm")) and $m.project and $m.folder then "\($m.kind):\($m.project):\($m.name):\($m.folder)" else "\($m.kind):\($m.name)" end end'
 
 # machine_remote <machine> — ASS-481: it is a remote machine of the project's pool (a workstation's or a cloud VM's,
 # workstation:… or cloud-vm:…), reached over its one connection.

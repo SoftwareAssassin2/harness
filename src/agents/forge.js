@@ -1,6 +1,6 @@
 // The forge a repository url is on (GitHub or GitLab, including a self-hosted
 // GitLab) and the account a project's VM token pushes as (ASS-307). The
-// control box in the dashboard's footer shows the provider, the repository or
+// dashboard's footer (its first and third lines since ASS-566; its control box before) shows the provider, the repository or
 // group (as a link) and the account, so the operator sees where a project's
 // code goes and spots a wrong or broken token (ASS-298).
 //

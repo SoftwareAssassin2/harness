@@ -72,17 +72,32 @@ set -euo pipefail
 # never touched, but named as kept, for vm:reclaim once its variation ends.
 # Each build's label carries a generation id of its own (ASS-291: a uuid), which
 # tells generations apart: built-at has whole seconds, which two builds may share.
+# ASS-534: a project declaring a Substrate sandbox (sandbox/services.yaml,
+# sandbox-image.bash) has its sandbox images rebuilt last, the golden lock let go
+# first (a VM may be cloned from the new image meanwhile): substrate:build-image
+# for every declared architecture, which builds only those whose inputs
+# changed — also when the VM image is current and nothing else is built. One
+# that fails fails the run, saying so; the VM image stays as built.
 # GOLDEN_IMAGE_SHARED overrides the shared steps' folder, for tests.
-source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/golden.bash"
+source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../substrate/sandbox-image.bash"
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../vm-credentials.bash"
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../vm.bash"   # lock_vms
 
 [[ $# -eq 1 || ( $# -eq 3 && "$2" == --fix && -n "$3" ) ]] || { echo "usage: vm:build-golden <project> [--fix <what it fixed>]" >&2; exit 1; }
 project="$1" fix="${3-}"
-golden_definition vm:build-golden "$project"
+sandbox_definition vm:build-golden "$project"
 golden="golden-$project" build="golden-$project-build"
 lock_on 7 "$projects/$project/golden-build.lock" vm:build-golden 1 2>/dev/null \
   || { echo "vm:build-golden: $golden is being built already ($projects/$project/golden-build.lock is held); not starting another" >&2; exit 1; }
+# sandbox_images — the project's sandbox images brought up to date (ASS-534), after the golden lock is let go.
+sandbox_images() {
+  [[ "$declared" == true ]] || return 0
+  exec 7>&-
+  local built
+  echo "vm:build-golden: building sandbox-$project's images ($architectures) where their inputs changed; logs: $projects/$project/sandbox-image-build-<arch>.log"
+  built="$("$agent" substrate:build-image "$project")" || { echo "vm:build-golden: sandbox-$project's image build failed (above)" >&2; exit 1; }
+  jq -r --arg p "$project" '.[] | "vm:build-golden: sandbox-\($p) (\(.arch)): \(if .built then "built in \(.seconds)s" else "current; nothing built" end), \(.ref)"' <<<"$built"
+}
 # ASS-466: the arm64 variants the project declares (registry:arm64-build)
 # brought up to date first, so the images step bakes them in (a VM's pull of
 # such an image through zot gets the arm64 one) and the hash counts them
@@ -97,6 +112,7 @@ fi
 label="$(golden_label "$project")"
 if [[ -f "$label" && "$(jq -r .hash "$label")" == "$hash" ]]; then
   echo "vm:build-golden: $golden is current (inputs ${hash:0:12}); nothing built"
+  sandbox_images
   exit 0
 fi
 
@@ -192,3 +208,4 @@ fi
 summary="built $golden in $((seconds / 60))m $((seconds % 60))s; $(awk -v k="$kib" 'BEGIN { printf "%.2f GiB", k / 1048576 }') on disk; inputs ${hash:0:12}"
 echo "$summary" >> "$log"
 echo "vm:build-golden: $summary"
+sandbox_images

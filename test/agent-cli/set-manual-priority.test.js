@@ -60,7 +60,7 @@ function ranking() {
   const dir = mkdtempSync(join(tmpdir(), 'mp-'));
   const engines = join(dir, 'engines');
   mkdirSync(join(engines, 'e'), { recursive: true });
-  writeFileSync(join(engines, 'e', 'state-engine.json'), JSON.stringify({ steps: [{ id: 's1', sequence: 1 }, { id: 's5', sequence: 5 }] }));
+  writeFileSync(join(engines, 'e', 'workflow.yaml'), JSON.stringify({ steps: [{ id: 's1', sequence: 1 }, { id: 's5', sequence: 5 }] }));
   mkdirSync(join(dir, 'p', 'sprints', 'sprint-10'), { recursive: true });
   writeFileSync(join(dir, 'p', 'project.json'), JSON.stringify({ name: 'P', 'execution-state-engine': 'e' }));
   writeFileSync(join(dir, 'p', 'sprints.json'), JSON.stringify({ list: [{ number: 10, 'is-active': true }] }));

@@ -7,7 +7,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { join } from 'node:path';
-import { readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { controlFixture } from './control-fixture.js';
 import { superviseRegistries } from '../../src/control/registry.js';
@@ -93,6 +93,25 @@ test('ASS-466: a project declaring arm64-images also gets registry:arm64-build e
   assert.ok(r.f.lines.some(l => l.startsWith('error registry p registry:arm64-build: ') && l.includes('the linux/arm64 build failed')), r.f.lines.join('\n'));
   r.later(30 * 60e3); await r.pass();
   assert.equal(maintenance().length, 6);
+});
+
+test('ASS-534, ASS-535: a project with a sandbox declared, a sandbox image built and a Substrate cluster also gets substrate:deliver-image every 30 minutes; without any of the three, none', async t => {
+  const r = await registry(t, { fail: args => args[0] === 'substrate:deliver-image' && 'substrate:deliver-image: sandbox-p (amd64) could not be loaded into ada-dev\'s cluster' });
+  const dir = join(r.f.dir, 'projects', 'p'), file = join(dir, 'project.json');
+  await r.zotUp();
+  const delivers = () => r.calls.filter(c => c === 'substrate:deliver-image p').length;
+  await r.pass();
+  writeFileSync(file, JSON.stringify({ ...JSON.parse(readFileSync(file, 'utf8')), 'dev-environments': { mode: 'workstation', workstations: [{ id: 'ada-dev', 'gcp-project': 'g', region: 'r', cluster: 'c', config: 'x' }], substrate: { clusters: [{ machine: 'ada-dev' }] } } }));
+  r.later(30 * 60e3); await r.pass();
+  mkdirSync(join(dir, 'sandbox'), { recursive: true });
+  writeFileSync(join(dir, 'sandbox', 'services.yaml'), 'architectures: [amd64]\nservices: []\n');
+  r.later(30 * 60e3); await r.pass();
+  assert.equal(delivers(), 0);                                                   // no image built yet
+  writeFileSync(join(dir, 'sandbox-image-amd64.json'), '{}');
+  r.later(30 * 60e3); await r.pass();
+  assert.equal(delivers(), 1);
+  assert.deepEqual(r.calls.filter(c => /^(registry|substrate):/.test(c)).slice(-3), ['registry:refresh-credentials p', 'registry:sweep p', 'substrate:deliver-image p']);
+  assert.ok(r.f.lines.some(l => l.startsWith('error registry p substrate:deliver-image: ') && l.includes('could not be loaded')), r.f.lines.join('\n'));
 });
 
 test('a failed credential refresh (gcloud logged out) is logged, and the sweep still runs', async t => {

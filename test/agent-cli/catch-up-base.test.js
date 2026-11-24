@@ -38,14 +38,14 @@ function setup({ output = BEHIND, adds = { 'src/feature.js': 'mine\n' }, lands =
   const env = { ...l.env, PATH: `${forge.path.split(':')[0]}:${l.env.PATH}`, NUMBERED_FILES_RETRY_SLEEPS: '0 0' };
   const at = (...rest) => join(l.f.dir, ...rest);
   const write = (file, json) => { mkdirSync(join(file, '..'), { recursive: true }); writeFileSync(file, JSON.stringify(json)); };
-  write(at('engines', 'dev', 'state-engine.json'), { steps: [
+  write(at('engines', 'dev', 'workflow.yaml'), { steps: [
     { id: 'blocked', sequence: 0, 'follow-return-to-state': true, action: { type: 'state-engine', engine: 'grouped-blocked' }, 'exit-events': [{ condition: { 'is-done': true }, 'follow-return-to-state': true }] },
     { id: 'committed', sequence: 1, action: { type: 'none' } },
     { id: 'build', sequence: 2, 'return-to-state': 'build', action: { type: 'state-engine', engine: 'sub-build' }, 'exit-events': [{ condition: { 'is-done': true }, 'move-to-state': 'check' }] },
     { id: 'check', sequence: 3, action: { type: 'script', command: './agent.sh automated-tests:verify-success {project} {ticket} {variation}' }, 'exit-events': [{ condition: { 'exit-code': 0 }, 'move-to-state': 'done' }] },
     { id: 'done', sequence: 4, 'is-done': true, action: { type: 'none' } },
   ] });
-  write(at('engines', 'sub-build', 'state-engine.json'), { steps: [
+  write(at('engines', 'sub-build', 'workflow.yaml'), { steps: [
     { id: 'generate-solution', sequence: 1, action: { type: 'prompt', prompt: 'generate-solution-grouped' } },
     { id: 'done', sequence: 2, 'is-done': true, action: { type: 'none' } },
   ] });

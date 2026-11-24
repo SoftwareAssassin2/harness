@@ -1,0 +1,186 @@
+steps:
+  - id: refresh-repositories
+    sequence: 1
+    name: Refresh the Reference Repositories
+    run-targets: [local-substrate, workstation-substrate, cloud-vm-substrate, local-vm, workstation, cloud-vm, workstation-worktree, cloud-vm-worktree]
+    description: "Bring the repositories the ticket does not change up to their default branch, so the work is built against current upstream. A VM it cannot reach (exit 125, 255, any) or a fetch failing as a network does (a timeout, a reset, a 5xx) is tried 3 times in the command; still failing, the step waits (exit 2, its waiting-exit-code: polled every 5 minutes, no visit or failure counted, the variation's feedback saying what it can't reach) for up to 30 minutes since it was entered, then ends Build at Blocked (exit 3, its feedback naming the failing call and its last error); no running VM (exit 1) blocks at once. Any other exit matches none: tried again (ASS-396)"
+    record-script-output: true
+    action:
+      type: script
+      command: ./agent.sh vm:refresh-repositories {project} {ticket} {variation}
+      mode: timer
+      timer-minutes: 5
+      waiting-exit-code: 2
+    exit-events:
+      - condition:
+          exit-code: 0
+        move-to-state: generate-automated-tests
+      - condition:
+          exit-code: 1
+        move-to-state: blocked
+      - condition:
+          exit-code: 3
+        move-to-state: blocked
+  - id: generate-automated-tests
+    sequence: 2
+    name: Generate Automated Tests
+    description: Generating the tests
+    max-visits: 3
+    on-max-visits: blocked
+    action:
+      type: prompt
+      prompt: generate-automated-tests-grouped
+      agent-count: 1
+      run-in-dev-container: false
+      model: claude-opus-5-5
+    exit-events:
+      - condition:
+          all:
+            - turn-complete: true
+            - script-succeeds: ./agent.sh automated-tests:verify-exist-and-runnable {project} {ticket} {variation}
+        move-to-state: generate-solution
+      - condition:
+          all:
+            - turn-complete: true
+            - not:
+                script-succeeds: ./agent.sh automated-tests:verify-exist-and-runnable {project} {ticket} {variation}
+        move-to-state: generate-automated-tests
+    run-location: vm
+  - id: generate-solution
+    sequence: 3
+    name: Generate Solution
+    description: Generating the solution
+    max-visits: 5
+    on-max-visits: blocked
+    action:
+      type: prompt
+      prompt: generate-solution-grouped
+      agent-count: 1
+      run-in-dev-container: true
+      model: claude-opus-5-5
+    exit-events:
+      - condition:
+          turn-complete: true
+        move-to-state: refresh-before-testing
+    run-location: vm
+  - id: refresh-before-testing
+    sequence: 4
+    name: Refresh the Reference Repositories Before Testing
+    run-targets: [local-substrate, workstation-substrate, cloud-vm-substrate, local-vm, workstation, cloud-vm, workstation-worktree, cloud-vm-worktree]
+    description: "Bring the repositories the ticket does not change up to their default branch again, so the tests run against current upstream. A VM it cannot reach (exit 125, 255, any) or a fetch failing as a network does (a timeout, a reset, a 5xx) is tried 3 times in the command; still failing, the step waits (exit 2, its waiting-exit-code: polled every 5 minutes, no visit or failure counted, the variation's feedback saying what it can't reach) for up to 30 minutes since it was entered, then ends Build at Blocked (exit 3, its feedback naming the failing call and its last error); no running VM (exit 1) blocks at once. Any other exit matches none: tried again (ASS-396)"
+    record-script-output: true
+    action:
+      type: script
+      command: ./agent.sh vm:refresh-repositories {project} {ticket} {variation}
+      mode: timer
+      timer-minutes: 5
+      waiting-exit-code: 2
+    exit-events:
+      - condition:
+          exit-code: 0
+        move-to-state: automated-testing
+      - condition:
+          exit-code: 1
+        move-to-state: blocked
+      - condition:
+          exit-code: 3
+        move-to-state: blocked
+  - id: automated-testing
+    sequence: 5
+    name: Automated Testing
+    description: Run automated tests
+    max-visits: 3
+    on-max-visits: blocked
+    action:
+      type: script
+      command: ./agent.sh automated-tests:verify-success {project} {ticket} {variation}
+    exit-events:
+      - condition:
+          exit-code: 0
+        move-to-state: code-review
+      - condition:
+          exit-code: 3
+        move-to-state: blocked
+      - condition:
+          exit-code: 4
+        move-to-state: generate-automated-tests
+      - condition:
+          not:
+            exit-code: 0
+        move-to-state: generate-solution
+    run-location: vm
+  - id: code-review
+    sequence: 6
+    name: Code Review
+    description: Reviewing the solution
+    max-visits: 3
+    on-max-visits: blocked
+    action:
+      type: prompt
+      prompt: code-review-grouped
+      agent-count: 1
+      run-in-dev-container: false
+      model: claude-sonnet-5
+    exit-events:
+      - condition:
+          all:
+            - turn-complete: true
+            - structured-output:
+                is-approved: true
+        move-to-state: security-review
+      - condition:
+          all:
+            - turn-complete: true
+            - structured-output:
+                is-approved: false
+        move-to-state: generate-solution
+    run-location: vm
+    worktree: true
+  - id: security-review
+    sequence: 7
+    name: Security Review
+    description: Security review
+    max-visits: 3
+    on-max-visits: blocked
+    action:
+      type: prompt
+      prompt: security-review-grouped
+      agent-count: 1
+      run-in-dev-container: false
+      model: claude-sonnet-5
+    exit-events:
+      - condition:
+          all:
+            - turn-complete: true
+            - structured-output:
+                is-approved: true
+        move-to-state: done
+      - condition:
+          all:
+            - turn-complete: true
+            - structured-output:
+                is-approved: false
+        move-to-state: generate-solution
+    run-location: vm
+    worktree: true
+  - id: done
+    name: Done
+    description: The group is finished; its parent step moves on
+    is-done: true
+    action:
+      type: none
+    sequence: 8
+  - id: blocked
+    name: Blocked
+    description: A step failed or looped too many times; the parent step sends the ticket to Blocked, which returns it to the start of this group
+    is-done: true
+    action:
+      type: none
+    sequence: 9
+  - id: blocked-for-human
+    name: Blocked for Human
+    description: "From Merge the Awaited (ASS-365): an awaited merge request's approvals have not come within approval-wait-days; and from Await Sequential Merge's exit 6 (ASS-523): a dependency needing the operator. The parent step sends the ticket to Blocked for Human"
+    is-done: true
+    action:
+      type: none
+    sequence: 10

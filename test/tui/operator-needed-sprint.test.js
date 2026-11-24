@@ -7,6 +7,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { initialState, handleKey, render } from '../../src/tui/app.js';
+import { readEngine } from '../../src/workflow/engine-file.js';
 
 const strip = s => s.replace(/\x1b\[[0-9;]*m|\x1b\]8;;[^\x1b]*\x1b\\/g, '');
 const wide = { columns: 200, rows: 44, now: new Date('2026-10-01T16:04:00Z') };
@@ -99,7 +100,7 @@ test('ASS-430 AC3: Operator Needed Tickets above 0 is filled with the engine\'s 
   assert.match(strip(zero), /│ +0 +│/);
   assert.equal(fill(zero), undefined);                                                                  // 0: unfilled
   // The harness's own engine: its Blocked for Human's color, whatever it is.
-  const engine = JSON.parse(readFileSync(new URL('../../engines/harness-development-grouped/state-engine.json', import.meta.url), 'utf8'));
+  const engine = readEngine(new URL('../../engines/harness-development-grouped/workflow.yaml', import.meta.url));
   const color = engine.steps.find(s => s.name === 'Blocked for Human').color;
   const real = render(initialState({ projects: [{ id: 'p', name: 'P', stateEngine: 'e', sprint: sprintOf(blocked), backlog: [] }], workflows: [{ ...engine, name: 'e' }], assignments: [{ project: 'p', 'agent-name': 'Daredevil', 'work-item': 'A-0', variation: null }] }), wide)[7];
   assert.ok(fill(real)?.startsWith(`48;2;${[1, 3, 5].map(i => parseInt(color.slice(i, i + 2), 16)).join(';')};`), JSON.stringify(real));

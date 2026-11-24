@@ -1,4 +1,4 @@
-// Reading a state engine (engines/<name>/state-engine.json) for control: its
+// Reading a state engine (engines/<name>/workflow.yaml, read by src/workflow/engine-file.js) for control: its
 // steps, whether a step's exit conditions hold
 // against the facts control has gathered, and where a ticket variation goes
 // next, and which steps only wait on a person (waitsOnHuman,
@@ -21,6 +21,24 @@ export const switchOff = (engines, entries = []) => (!entries.length ? engines :
 
 // stepOf(engine, id) — the step with that id in any of the engine's lists, or undefined.
 export const stepOf = (engine, id) => allSteps(engine).find(s => s.id === id);
+
+// REMOVED_STEPS — the engine-level map of a step taken out of the engine's
+// `steps` to the step a ticket or run still at it goes on to (ASS-552:
+// grouped-build's CI Checks, removed, to Code Review — where its success
+// exit led). Not named *-steps, so it is no step list (isStepList).
+export const REMOVED_STEPS = 'removed-steps-move-to';
+
+// removedStepMovesTo(engines, name, id) — where a run of engine `name` (as
+// engineSteps names it: its `steps` alone, never a side list) still at step
+// `id`, which that engine no longer has, goes on to: its REMOVED_STEPS entry,
+// when that names a step the engine has; undefined otherwise (the step is
+// simply gone, ASS-236).
+export function removedStepMovesTo(engines, name, id) {
+  const [engine, key = 'steps'] = name.split('/');
+  if (key !== 'steps') return undefined;
+  const to = engines?.[engine]?.[REMOVED_STEPS]?.[id];
+  return typeof to === 'string' && !stepOf(engines[engine], id) && stepOf(engines[engine], to) ? to : undefined;
+}
 
 // engineSteps(engines, name) — `engines` maps engine names to their JSON; `name`
 // is "<engine>" for its `steps` or "<engine>/<key>" for one of its `*-steps` /
@@ -360,7 +378,11 @@ export const isHeld = (ticket, variation) => ticket?.['is-paused'] === true || v
 // engine's step of that id (engineSteps; undefined when not known); `state`
 // and `step` the top level's, its high-level state; `detail` and
 // `detailStep` the deepest's, its detailed step; `planned`, whether it has
-// finished planning and only waits to leave it (finishedPlanning, ASS-362).
+// finished planning and only waits to leave it (finishedPlanning, ASS-362);
+// `entryStep` (ASS-527), when the deepest step runs a sub-engine whose run has
+// not started yet, the step that run will start at (its engine's lowest
+// sequence, walked down through steps that run a sub-engine themselves), so
+// plan.js knows whether it will use the machine; otherwise undefined.
 // Without a harness-status, chain [] and the rest undefined (planned false).
 export function statusOf(engines, engineName, variation) {
   const chain = [];
@@ -369,7 +391,23 @@ export function statusOf(engines, engineName, variation) {
     chain.push({ 'state-engine': name, state: at.state, step: name == null ? undefined : stepOf(engineSteps(engines, name), at.state) });
   }
   const top = chain[0], deep = chain.at(-1);
-  return { chain, state: top?.state, step: top?.step, detail: deep?.state, detailStep: deep?.step, planned: finishedPlanning(engines, chain, variation) };
+  return { chain, state: top?.state, step: top?.step, detail: deep?.state, detailStep: deep?.step, planned: finishedPlanning(engines, chain, variation), ...entryField(engines, deep?.step) };
+}
+
+// entryField(engines, step) — { entryStep } when the step has one (entryOf), else {} (statusOf's shape unchanged for any other step).
+const entryField = (engines, step) => { const entryStep = entryOf(engines, step); return entryStep ? { entryStep } : {}; };
+
+// entryOf(engines, step) — ASS-527: for a step that runs a sub-engine, the step its run starts at (the sub-engine's
+// lowest sequence; again for one that runs a sub-engine too, at most a few levels); undefined for any other step or
+// an engine not given.
+function entryOf(engines, step) {
+  let at;
+  for (let s = step, depth = 0; s?.action?.type === 'state-engine' && depth < 5; depth++) {
+    at = engineSteps(engines, s.action.engine)?.steps.toSorted((a, b) => a.sequence - b.sequence)[0];
+    if (!at) return undefined;
+    s = at;
+  }
+  return at;
 }
 
 // finishedPlanning(engines, chain, variation) — the status `chain` (statusOf's,
@@ -476,8 +514,9 @@ export function waitsOnHuman(engine, variation, engines) {
   return step != null && humanWaits(chain, variation);
 }
 
-// humanWaits(chain, variation) — waitsOnHuman over a status chain (statusOf's) of the variation.
-function humanWaits(chain, variation) {
+// humanWaits(chain, variation) — waitsOnHuman over a status chain (statusOf's) of the variation. (Exported for plan.js
+// slotKind, ASS-527: a variation waiting on a human holds no seat.)
+export function humanWaits(chain, variation) {
   const last = variation?.['state-changes']?.at(-1), path = changePath(last);
   const gates = variation?.['gate-when-leaving-state'] ?? [];
   return chain.some((l, i) => isActive(l.step) && (l.step?.action?.type === 'human'

@@ -45,8 +45,10 @@ const steps = [
 function sprint(tickets, limits) {
   const f = controlFixture();
   const sprintFile = join(f.dir, 'projects', 'p', 'sprints', 'sprint-10', 'sprint.json');
-  edit(join(f.dir, 'engines', 'example-development', 'state-engine.json'), e => { e.steps = steps; });
-  edit(join(f.dir, 'harness.json'), h => Object.assign(h, { 'max-tickets-in-progress': null, 'max-tickets-in-planning': null }, limits));
+  edit(join(f.dir, 'engines', 'example-development', 'workflow.yaml'), e => { e.steps = steps; });
+  const { seats = Infinity, ...harness } = limits ?? {};
+  f.seats(seats);   // ASS-528: the seats on the Mac, one pool
+  edit(join(f.dir, 'harness.json'), h => Object.assign(h, harness));
   edit(sprintFile, s => {
     s.features = tickets.map(([key, state, rank, fast]) => ({ key, 'manual-priority': rank, ...(fast ? { 'fast-track': true } : {}), variations: [{ name: 'A', 'harness-status': hs(state), 'state-changes': [] }] }));
   });
@@ -62,7 +64,7 @@ function sprint(tickets, limits) {
 }
 
 test('ASS-83 AC3: a fast-tracked ticket with a seat free takes it; nothing is paused', async () => {
-  const f = sprint([['T-1', 'plan', 1], ['F-1', 'committed', null, true]], { 'max-tickets-in-planning': 2 });
+  const f = sprint([['T-1', 'plan', 1], ['F-1', 'committed', null, true]], { seats: 2 });
   await f.cycle();
   await f.cycle();
   assert.equal(f.state('F-1'), 'plan');
@@ -71,7 +73,7 @@ test('ASS-83 AC3: a fast-tracked ticket with a seat free takes it; nothing is pa
 });
 
 test('ASS-83 AC3, AC4: one fast-tracked ticket waiting for a planning seat pauses exactly the lowest-ranked ticket in planning, logged; it takes the seat, and the paused one resumes once it is done', async () => {
-  const f = sprint([['T-1', 'plan', 1], ['T-2', 'plan', 2], ['F-1', 'committed', null, true]], { 'max-tickets-in-planning': 2 });
+  const f = sprint([['T-1', 'plan', 1], ['T-2', 'plan', 2], ['F-1', 'committed', null, true]], { seats: 2 });
   await f.cycle();                                                      // F-1 waits: no planning seat
   assert.equal(f.state('F-1'), 'committed');
   await f.cycle();                                                      // T-2 paused for it; F-1 moves in
@@ -89,15 +91,15 @@ test('ASS-83 AC3, AC4: one fast-tracked ticket waiting for a planning seat pause
 });
 
 test('ASS-83 AC3: two fast-tracked tickets waiting pause exactly two, the lowest-ranked first, and both take the seats', async () => {
-  const f = sprint([['T-1', 'plan', 1], ['T-2', 'plan', 2], ['T-3', 'plan', 3], ['F-1', 'committed', null, true], ['F-2', 'committed', null, true]], { 'max-tickets-in-planning': 3 });
+  const f = sprint([['T-1', 'plan', 1], ['T-2', 'plan', 2], ['T-3', 'plan', 3], ['F-1', 'committed', null, true], ['F-2', 'committed', null, true]], { seats: 3 });
   for (let i = 0; i < 4; i++) await f.cycle();
   assert.deepEqual(['T-1', 'T-2', 'T-3'].map(f.paused), [[false, null], [true, 'F-2'], [true, 'F-1']]);
   assert.deepEqual([f.state('F-1'), f.state('F-2')], ['plan', 'plan']);
   assert.equal(f.logged(/^fast-track paused/).length, 2);
 });
 
-test('ASS-83 AC3: a fast-tracked ticket waiting for an in-progress seat pauses the lowest-ranked ticket in progress, not one in planning; it resumes once the fast-tracked one is done', async () => {
-  const f = sprint([['T-1', 'review', 1], ['T-2', 'plan', 2], ['F-1', 'prepare', null, true]], { 'max-tickets-in-progress': 1, 'max-tickets-in-planning': 2 });
+test('ASS-83 AC3, ASS-528: a fast-tracked ticket waiting for an in-progress seat pauses the lowest-ranked seat holder — one pool, so one in planning too; it resumes once the fast-tracked one is done', async () => {
+  const f = sprint([['T-1', 'review', 1], ['T-2', 'plan', 2], ['F-1', 'prepare', null, true]], { seats: 2 });
   // F-1's planning group is done: it waits for an in-progress seat to move on to build (ASS-126).
   edit(join(f.dir, 'assignments.json'), a => {
     a['transient-state-engines'] = [{ id: 'run-1', project: 'p', 'state-engine': 'test', state: 'done', 'is-done': true, 'structured-output': null, parent: { 'work-item': 'F-1', variation: 'A', 'state-engine': 'example-development', state: 'prepare' } }];
@@ -106,16 +108,16 @@ test('ASS-83 AC3: a fast-tracked ticket waiting for an in-progress seat pauses t
   await f.cycle();
   assert.equal(f.state('F-1'), 'prepare');
   await f.cycle();
-  assert.deepEqual([f.paused('T-1'), f.paused('T-2')], [[true, 'F-1'], [false, null]]);
+  assert.deepEqual([f.paused('T-1'), f.paused('T-2')], [[false, null], [true, 'F-1']]);
   assert.equal(f.state('F-1'), 'review');
-  assert.deepEqual(f.logged(/^fast-track paused/), ['fast-track paused T-1 to free a seat for fast-tracked F-1 (T-1 A held an in-progress seat)']);
+  assert.deepEqual(f.logged(/^fast-track paused/), ['fast-track paused T-2 to free a seat for fast-tracked F-1 (T-2 A held a planning seat)']);
   f.edit(s => { s.features.find(t => t.key === 'F-1').variations[0]['harness-status'] = hs('done'); });
   await f.cycle();
-  assert.deepEqual(f.paused('T-1'), [false, null]);
+  assert.deepEqual(f.paused('T-2'), [false, null]);
 });
 
 test('ASS-83 AC3: control never pre-empts a fast-tracked ticket, and never resumes a ticket the operator paused', async () => {
-  const f = sprint([['F-1', 'plan', null, true], ['F-2', 'committed', null, true], ['T-1', 'plan', 1]], { 'max-tickets-in-planning': 1 });
+  const f = sprint([['F-1', 'plan', null, true], ['F-2', 'committed', null, true], ['T-1', 'plan', 1]], { seats: 1 });
   f.edit(s => { s.features.find(t => t.key === 'T-1').variations[0]['is-paused'] = true; });   // the operator's
   for (let i = 0; i < 3; i++) await f.cycle();
   assert.deepEqual([f.paused('F-1'), f.paused('T-1')], [[false, null], [true, null]]);
@@ -148,7 +150,7 @@ const working = f => f.assignments().assignments.map(a => a['work-item']).toSort
 
 for (const [cap, limits] of [['harness.json\'s', { 'max-agents': 2 }], ['the project\'s own', {}]]) {
   test(`ASS-83 AC3: a fast-tracked ticket waiting for an agent seat (${cap} max-agents full) pauses exactly the lowest-ranked ticket with an agent, which is shut down; the fast-tracked one gets the agent; the paused one resumes once it is done`, async () => {
-    const f = sprint([['T-1', 'plan', 1], ['T-2', 'plan', 2]], { 'max-tickets-in-planning': 5, 'agent-graceful-shut-down-delay-in-seconds': 0, ...limits });
+    const f = sprint([['T-1', 'plan', 1], ['T-2', 'plan', 2]], { seats: 5, 'agent-graceful-shut-down-delay-in-seconds': 0, ...limits });
     if (!limits['max-agents']) edit(join(f.dir, 'projects', 'p', 'project.json'), p => { p['max-agents'] = 2; });
     await agentsHeld(f, async () => {
       await turn(f);
@@ -176,7 +178,7 @@ for (const [cap, limits] of [['harness.json\'s', { 'max-agents': 2 }], ['the pro
 }
 
 test('ASS-83 AC3: a fast-tracked ticket whose sub-engine run waits for an agent seat (the v2 engines\' shape) pre-empts the same way; its run gets the agent', async () => {
-  const f = sprint([['T-1', 'plan', 1], ['T-2', 'plan', 2]], { 'max-tickets-in-planning': 5, 'max-agents': 2, 'agent-graceful-shut-down-delay-in-seconds': 0 });
+  const f = sprint([['T-1', 'plan', 1], ['T-2', 'plan', 2]], { seats: 5, 'max-agents': 2, 'agent-graceful-shut-down-delay-in-seconds': 0 });
   await agentsHeld(f, async () => {
     await turn(f);
     f.edit(s => { s.features.push({ key: 'F-1', 'fast-track': true, variations: [{ name: 'A', 'harness-status': { ...hs('prepare'), 'sub-status': { state: 'test', 'state-engine': 'test' } }, 'state-changes': [] }] }); });
@@ -190,12 +192,12 @@ test('ASS-83 AC3: a fast-tracked ticket whose sub-engine run waits for an agent 
   });
 });
 
-test('ASS-83 AC3: a project\'s own planning cap, full below harness.json\'s, is pre-empted the same way', async () => {
-  const f = sprint([['T-1', 'plan', 1], ['T-2', 'plan', 2], ['F-1', 'committed', null, true]], { 'max-tickets-in-planning': 9 });
-  edit(join(f.dir, 'projects', 'p', 'project.json'), p => { p['max-tickets-in-planning'] = 2; });
+test('ASS-528: one pool — a fast-tracked ticket waiting at Committed for a seat pre-empts the lowest-ranked ticket in progress the same way', async () => {
+  const f = sprint([['T-1', 'review', 1], ['T-2', 'review', 2], ['F-1', 'committed', null, true]], { seats: 2 });
   await f.cycle();
   await f.cycle();
   assert.deepEqual([f.paused('T-1'), f.paused('T-2'), f.state('F-1')], [[false, null], [true, 'F-1'], 'plan']);
+  assert.deepEqual(f.logged(/^fast-track paused/), ['fast-track paused T-2 to free a seat for fast-tracked F-1 (T-2 A held an in-progress seat)']);
 });
 
 // ASS-151: a human step's fast-tracked exit — the v2 Review group's Human
@@ -204,14 +206,14 @@ test('ASS-83 AC3: a project\'s own planning cap, full below harness.json\'s, is 
 // with cause "fast-track"; any other ticket waits there for a human.
 const sign = to => [{ condition: { 'human-review': 'Approved' }, 'move-to-state': to }, { condition: { 'fast-tracked': true }, 'move-to-state': to }];
 function humanSteps(fast) {
-  const f = sprint([['T-1', 'prepare', 1, fast], ['T-2', 'sign-off', 2, fast]], { 'max-tickets-in-progress': 5, 'max-tickets-in-planning': 5 });
-  edit(join(f.dir, 'engines', 'example-development', 'state-engine.json'), e => { e.steps.push({ id: 'sign-off', sequence: 10, action: { type: 'human' }, 'exit-events': sign('done') }); });
+  const f = sprint([['T-1', 'prepare', 1, fast], ['T-2', 'sign-off', 2, fast]], { seats: 10 });
+  edit(join(f.dir, 'engines', 'example-development', 'workflow.yaml'), e => { e.steps.push({ id: 'sign-off', sequence: 10, action: { type: 'human' }, 'exit-events': sign('done') }); });
   mkdirSync(join(f.dir, 'engines', 'gate'));
-  writeFileSync(join(f.dir, 'engines', 'gate', 'state-engine.json'), JSON.stringify({ steps: [
+  writeFileSync(join(f.dir, 'engines', 'gate', 'workflow.yaml'), JSON.stringify({ steps: [
     { id: 'human-review', sequence: 1, action: { type: 'human' }, 'exit-events': sign('done') },
     { id: 'done', sequence: 2, 'is-done': true, action: { type: 'none' } },
   ] }));
-  edit(join(f.dir, 'engines', 'example-development', 'state-engine.json'), e => { e.steps.find(s => s.id === 'prepare').action.engine = 'gate'; });
+  edit(join(f.dir, 'engines', 'example-development', 'workflow.yaml'), e => { e.steps.find(s => s.id === 'prepare').action.engine = 'gate'; });
   f.edit(s => { s.features[0].variations[0]['harness-status']['sub-status'] = { state: 'human-review', 'state-engine': 'gate' }; });
   edit(join(f.dir, 'assignments.json'), a => {
     a['transient-state-engines'] = [{ id: 'run-1', project: 'p', 'state-engine': 'gate', state: 'human-review', 'is-done': false, 'structured-output': null, parent: { 'work-item': 'T-1', variation: 'A', 'state-engine': 'example-development', state: 'prepare' } }];

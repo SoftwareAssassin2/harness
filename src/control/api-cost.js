@@ -1,7 +1,7 @@
 // The Anthropic API cost check (ASS-153), a phase beside the Claude usage
 // check (usage.js): what an API organization has spent this UTC month — what
 // Hindsight's API key (ASS-62), and any other, costs — for the dashboard's
-// models box.
+// footer (its third line since ASS-566; the models box before).
 import { isHarnessProject } from './harness-project.js';
 import { backgroundCheck, settled } from './background-checks.js';
 
@@ -21,7 +21,7 @@ import { backgroundCheck, settled } from './background-checks.js';
 // API_COST_EVERY later.
 // ASS-497: each due org's reading and its recording run as a background job
 // the tick does not await (background-checks.js), at most one per org; the
-// models box shows the last one recorded. Returns at once, with a promise of
+// dashboard's footer shows the last one recorded. Returns at once, with a promise of
 // the jobs it started.
 const API_COST_EVERY = 60 * 60e3;
 export function checkApiCost(ctx, state) {

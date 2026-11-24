@@ -4,6 +4,11 @@
 # {resize: [cols, rows]}, {mark: name} (the output so far, kept under that
 # name), {children: name} (the command's child pids, kept under that name)
 # or {file: name, path} (the file's text then, or null, kept under that name).
+# ASS-545: {until: {output: text} | {file: path[, mine: true]} | {children: n}, within: ms} waits for that event — the
+# text in the output so far, the file there and not empty (with mine, holding the command's own pid), at least n child
+# processes — rather than a fixed time a loaded Mac
+# outlasts; `within` (default 90000, LOADED_MS) is a hang guard only: past it the steps go on, and the test's own
+# assertions fail.
 # Prints {pid, marks, children, files, output, status}: status is the exit code, or null
 # if it was still running `timeout` ms after the last step (then killed).
 import json, os, pty, select, signal, struct, subprocess, sys, time, fcntl, termios
@@ -36,9 +41,25 @@ def pump(ms):
             if done: status = os.waitstatus_to_exitcode(code)
         if status is not None and not ready: return
 
+def kids():
+    return [int(p) for p in subprocess.run(['pgrep', '-P', str(pid)], capture_output=True, text=True).stdout.split()]
+
+def happened(event):
+    if 'output' in event: return event['output'] in out.decode('utf8', 'replace')
+    if 'file' in event:
+        try:
+            with open(event['file']) as f: text = f.read()
+        except OSError: return False
+        return text.strip() == str(pid) if event.get('mine') else text != ''
+    if 'children' in event: return len(kids()) >= event['children']
+    raise ValueError(f'unknown until: {event}')
+
 marks, children, files = {}, {}, {}
 for step in spec['steps']:
     if 'wait' in step: pump(step['wait'])
+    elif 'until' in step:
+        end = time.time() + step.get('within', 90000) / 1000
+        while not happened(step['until']) and time.time() < end and status is None: pump(50)
     elif 'send' in step:
         try: os.write(fd, step['send'].encode())
         except OSError: pass   # it has ended
@@ -50,8 +71,7 @@ for step in spec['steps']:
         except (OSError, ProcessLookupError): pass
     elif 'mark' in step: marks[step['mark']] = out.decode('utf8', 'replace')
     elif 'children' in step:
-        found = subprocess.run(['pgrep', '-P', str(pid)], capture_output=True, text=True).stdout.split()
-        children[step['children']] = [int(p) for p in found]
+        children[step['children']] = kids()
     elif 'file' in step:
         try:
             with open(step['path']) as f: files[step['file']] = f.read()

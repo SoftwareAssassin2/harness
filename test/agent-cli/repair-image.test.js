@@ -189,7 +189,7 @@ test('ASS-392 AC4: vm:image-recheck re-runs the blocked step\'s check on the VM 
   for (const [variation, code] of [['A', 0], ['Z', 3]]) {
     const s = await setup();
     await s.agent('vm:create', 'p', 'ABC-3', 'A');
-    const engine = (name, steps) => { mkdirSync(s.at('engines', name), { recursive: true }); writeFileSync(s.at('engines', name, 'state-engine.json'), JSON.stringify({ steps })); };
+    const engine = (name, steps) => { mkdirSync(s.at('engines', name), { recursive: true }); writeFileSync(s.at('engines', name, 'workflow.yaml'), JSON.stringify({ steps })); };
     engine('dev', [
       { id: 'blocked', sequence: 0, 'follow-return-to-state': true, action: { type: 'state-engine', engine: 'grouped-blocked' }, 'exit-events': [{ condition: { 'is-done': true }, 'follow-return-to-state': true }] },
       { id: 'committed', sequence: 1, action: { type: 'none' } },

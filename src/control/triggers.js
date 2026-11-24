@@ -3,7 +3,7 @@
 // state changes; the ticket health check is removed, endTicketHealthRuns.)
 // At most one run of each kind goes at a time per
 // project — per ticket for gap resolution and appeal (plan.js
-// triggerAllowed); such runs count toward max-agents, never max-tickets-in-progress.
+// triggerAllowed); such runs count toward max-agents, never a seat (ASS-528: the seat budget).
 import { pairedStatus, waitsOnHuman, stepOf, isHumanStep, isDoneStep, isHeld, isManual, answersGap, pairedByAnother } from './engine.js';
 import { triggerAllowed } from './plan.js';
 import { firstStepId, isPaused, BACKGROUND, backgroundOff, weeklyHeld, found, moveTicket, endRun } from './moves.js';

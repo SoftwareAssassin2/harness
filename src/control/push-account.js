@@ -3,7 +3,7 @@
 // repositories' forge pushes as (ctx.pushAccount — see src/agents/forge.js).
 // The reading (or the reason it cannot be told) is recorded by
 // project:set-push-account in data/projects/<p>/push-account.json, for the
-// control box in the dashboard's footer.
+// dashboard's footer (its first line since ASS-566; its control box before).
 //
 // A project with no repositories (or none whose url parses) is skipped: no
 // provider, so no push account to look up. A project whose VM credentials

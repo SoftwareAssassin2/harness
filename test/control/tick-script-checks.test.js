@@ -16,7 +16,7 @@ import { until } from '../support/until.js';
 
 const edit = (file, change) => { const json = JSON.parse(readFileSync(file, 'utf8')); change(json); writeFileSync(file, JSON.stringify(json)); };
 const sprint = f => join(f.dir, 'projects', 'p', 'sprints', 'sprint-10', 'sprint.json');
-const engineFile = f => join(f.dir, 'engines', 'example-development', 'state-engine.json');
+const engineFile = f => join(f.dir, 'engines', 'example-development', 'workflow.yaml');
 const state = (f, key = 'ABC-3') => f.sprint().features.find(t => t.key === key).variations[0]['harness-status'].state;
 const alive = pid => { try { process.kill(pid, 0); return true; } catch { return false; } };
 
@@ -115,7 +115,10 @@ test('ASS-493 AC2: a script step\'s exits wait for their check, its script not r
 
 test('ASS-493 AC4: a check past its timeout is killed, its process group with it, logged as an error, and counts as not succeeded', async () => {
   const f = fixture();
+  // ASS-550: the 300 ms limit (the behaviour under test) runs from the check's start (its first line), not its spawn:
+  // at load ~130 the limit struck before sh had run a line, and the start this waits for never came.
   f.ctx.checkTimeoutMs = 300;
+  f.ctx.checkTimeoutArmed = () => until(() => f.starts().length === 1);
   try {
     await tick(f.ctx);
     await until(() => f.starts().length === 1);

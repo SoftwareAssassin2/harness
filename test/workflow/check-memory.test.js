@@ -6,9 +6,10 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { loadEngines, walk, engineDir } from '../support/engine-walk.js';
+import { readEngine } from '../../src/workflow/engine-file.js';
 
 const ROOT = join(import.meta.dirname, '..', '..');
-const engine = name => JSON.parse(readFileSync(join(engineDir(name), 'state-engine.json'), 'utf8'));
+const engine = name => readEngine(join(engineDir(name), 'workflow.yaml'));
 
 test('AC6: the grouped and v2 engines run check-memory daily; the flat engines have no memory cleanup', () => {
   for (const name of ['harness-development-v2', 'harness-development-grouped', 'example-development-grouped']) {

@@ -99,7 +99,7 @@ test('ASS-395 AC2: while held, a step that sets up a VM waits, never run, said o
   const c = checking();
   c.f.ctx.env.CREDENTIALS_CHECK_DISABLED = '1';                  // the record as written stands
   writeFileSync(c.record, JSON.stringify({ since: '2026-11-12T11:00:00Z', problems: [{ credential: 'the gh login (github.com)', problem: 'gh is not authenticated on github.com', fix: 'gh auth login --hostname github.com' }] }));
-  edit(join(c.f.dir, 'engines', 'example-development', 'state-engine.json'), e => {
+  edit(join(c.f.dir, 'engines', 'example-development', 'workflow.yaml'), e => {
     e.steps.find(s => s.id === 'build').action.command = './agent.sh vm:create {project} {ticket} {variation}';
   });
   edit(join(c.f.dir, 'projects', 'p', 'sprints', 'sprint-10', 'sprint.json'), s => {

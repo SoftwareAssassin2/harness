@@ -11,7 +11,7 @@ import { controlFixture } from './control-fixture.js';
 import { tick } from '../../src/control/tick.js';
 
 const edit = (file, change) => { const data = JSON.parse(readFileSync(file, 'utf8')); change(data); writeFileSync(file, JSON.stringify(data, null, 4)); };
-const engineFile = f => join(f.dir, 'engines', 'example-development', 'state-engine.json');
+const engineFile = f => join(f.dir, 'engines', 'example-development', 'workflow.yaml');
 const step = { id: 'x', sequence: 1, action: { type: 'state-engine', engine: 'investigate-gap' }, 'exit-events': [{ condition: { 'is-done': true } }] };
 
 // The fixture with every background trigger due on p's engine — check-health
@@ -23,7 +23,8 @@ function background() {
     Object.assign(e, { 'check-health-interval-seconds': 300, 'check-variation-appeal-interval-seconds': 600 });
     e['check-variation-appeal-steps'] = [{ ...step, id: 'check-variation-appeal' }];
   });
-  edit(join(f.dir, 'harness.json'), h => { h['harness-project'] = 'p'; h['max-tickets-in-planning'] = 2; });   // A and B both in planning (ASS-126: a planning step takes a slot)
+  edit(join(f.dir, 'harness.json'), h => { h['harness-project'] = 'p'; });
+  f.seats(3);   // A and B both in planning (ASS-126: a planning step takes a seat; ASS-528: one pool)
   edit(join(f.dir, 'projects', 'p', 'sprints', 'sprint-10', 'sprint.json'), s => { s.features[0].variations.push({ name: 'B', 'harness-status': { state: 'plan', 'state-engine': 'example-development' }, 'state-changes': [{ 'from-state': 'committed', 'to-state': 'plan', 'agent-dispatch-log': [] }] }); });
   let clock = f.ctx.started.getTime();
   f.ctx.now = () => new Date(clock);

@@ -357,7 +357,7 @@ reconcile_vms() {
     | $m[0] | with_entries(.key as $n | .value = (($old[$n] // ($r[$n] + { "last-accessed": .value.accessed }))
       + { state: (if $blind and $old[$n].state then $old[$n].state else $l[$n].status end), "disk-bytes": .value.bytes }))'
   local ends="$projects/$project/step-ends.json"; [[ -f "$ends" ]] || ends=/dev/null   # ASS-480: none: $pe[0] is null
-  jq -n --slurpfile vms "$file" --slurpfile s "$sprint" --slurpfile pe "$ends" --slurpfile m <(printf '%s' "$measured") --argjson golden "$golden" --argjson build "$build" --arg current "$current_at" --slurpfile e <(engine_files "$project" | { mapfile -t list; jq -n 'reduce inputs as $e ({}; .[input_filename | split("/") | .[-2]] = ($e.steps // []))' /dev/null "${list[@]}"; }) \
+  jq -n --slurpfile vms "$file" --slurpfile s "$sprint" --slurpfile pe "$ends" --slurpfile m <(printf '%s' "$measured") --argjson golden "$golden" --argjson build "$build" --arg current "$current_at" --slurpfile e <(engine_files "$project" | { mapfile -t list; engines_by_name ${list[@]+"${list[@]}"} | jq -c 'map_values(.steps // [])'; }) \
     --arg p "$project" --argjson limit "$limit" '
     $s[0] as $sprint | $e[0] as $engines | [($pe[0].ends // {})[] | .vm // empty] as $pending
     | def use($v): [$v["harness-status"] | recurse(.["sub-status"] // empty) | select(.state != null) | . as $l

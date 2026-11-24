@@ -1,12 +1,17 @@
 // ASS-469: a project's in-progress seats come in two kinds, VM seats and
 // workstation seats (operator decision, 2026-11-15: "there is a
-// VM-seat-count and a workstation-seat-count"). project.json's
-// max-tickets-in-progress keeps its meaning as the project's VM seats; each
-// workstation of its dev-environments is exactly one workstation seat (AC9,
-// operator 2026-11-16: no `seats` setting). vm mode has VM seats alone; workstation
+// VM-seat-count and a workstation-seat-count"). ASS-528: the project's VM
+// seats — its seats on the Mac — are the seat budget's (seat-budget.js: its
+// seat-budget.json `seats`, from the Mac's memory and CPU and its share; no
+// limit while there is none), no longer project.json's
+// max-tickets-in-progress, and planning takes them too (one pool); each
+// workstation of its dev-environments was exactly one workstation seat (AC9,
+// operator 2026-11-16: no `seats` setting) — ASS-529: each remote machine now
+// has as many seats as its own memory and CPU allow (remote-seats.js, its
+// remote-seats.json: remoteSeats here), several of the project's tickets on
+// it at once, each in a folder of its own there. vm mode has VM seats alone; workstation
 // mode workstation seats alone; vm+workstation both. The project's
-// in-progress capacity (what plan.js planFor grants, under harness.json's
-// max-tickets-in-progress across projects as before) is its VM seats plus the
+// capacity (what plan.js planFor grants) is its VM seats plus the
 // number of its workstations that can be used: a workstation whose gcloud
 // login lapsed, whose setup failed, or whose last connect failed
 // (unreachable, or it would not start) has its seats lost while that lasts
@@ -17,17 +22,20 @@
 // Which variation holds which seat is control's live data,
 // data/projects/<p>/seats.json (seats.js writes it each tick, atomically):
 // { seats: [{ key, variation, kind: 'vm' } | { key, variation, kind:
-// 'workstation', workstation: <id> }, each with since] }. Planning seats have
-// no kinds (planning steps run on VMs).
+// 'workstation', workstation: <id> }, each with since], planning: [{ key,
+// variation, since }] } — ASS-528: the planning seat holders too, so the
+// planner keeps everyone seated ahead of the rest in its one pool (a planning
+// seat is a VM seat on the Mac, in workstation mode a remote one).
 //
 // ASS-481: a workstation seat is one kind of remote seat; a cloud VM of the
-// project's dev-environments (its pool, after its workstations) is exactly
-// one remote seat too, of kind 'cloud-vm' ({ key, variation, kind:
+// project's dev-environments (its pool, after its workstations) is a remote
+// seat too (one before ASS-529; as many as it carries since), of kind 'cloud-vm' ({ key, variation, kind:
 // 'cloud-vm', workstation: <its id>, since }), treated as a workstation seat
 // in every rule here: preferred over VM seats, lost while its VM can't be
 // used (lostWhy: also a start or SSH wait that timed out), filled again once
 // it can; free remote seats filled in the pool's order — workstations
-// first, then cloud VMs. Its own idle stop (60 minutes) keeps its seat as a
+// first, then cloud VMs (ASS-529: a machine is filled up to its seats before
+// the next is used, so the others stay idle and stop themselves). Its own idle stop (60 minutes) keeps its seat as a
 // stopped workstation's does. This file is pure — the planner, the
 // workstation job and the dashboard all read seats through it, so they agree.
 import { join } from 'node:path';
@@ -41,14 +49,15 @@ export const REMOTE_SEAT_KINDS = new Set(['workstation', 'cloud-vm']);
 export const isRemoteSeat = s => REMOTE_SEAT_KINDS.has(s?.kind);
 // remoteSeatKind(remote) — the seat kind of a remote of seatCapacity's workstations: 'cloud-vm' for a cloud VM.
 const remoteSeatKind = w => (w?.kind === 'cloud-vm' ? 'cloud-vm' : 'workstation');
-const MODES_WITH_VMS = new Set(['vm', 'vm+workstation']), MODES_WITH_WORKSTATIONS = new Set(['workstation', 'vm+workstation']);
+export const MODES_WITH_VMS = new Set(['vm', 'vm+workstation']), MODES_WITH_WORKSTATIONS = new Set(['workstation', 'vm+workstation']);
 
-// loadSeats(projectDir, read) — its seats.json's records, [] without one; one caught half-written reads as [] (the next tick writes it whole).
-// `read`: readJson, or loadState's readJsonCached (ASS-495).
-export function loadSeats(projectDir, read = readJson) {
+// loadSeats(projectDir, read, list) — its seats.json's records, [] without one; one caught half-written reads as []
+// (the next tick writes it whole). `read`: readJson, or loadState's readJsonCached (ASS-495). `list`: 'seats' (the
+// in-progress seats), or 'planning' (ASS-528: the planning seat holders).
+export function loadSeats(projectDir, read = readJson, list = 'seats') {
   try {
     const file = join(projectDir, SEATS_FILE);
-    return existsSync(file) ? read(file)?.seats ?? [] : [];
+    return existsSync(file) ? read(file)?.[list] ?? [] : [];
   } catch { return []; }
 }
 
@@ -73,40 +82,79 @@ export function lostWhy(entry) {
 // back by itself once the cause is gone.
 export const unreachable = entry => Boolean(entry?.['last-error']) && entry.connected !== true && !loginExpired(entry) && entry.setup?.ok !== false;
 
-// seatCapacity(project) — { mode, vm (its VM seats: project.json's max-tickets-in-progress, Infinity for none, 0 in
-// workstation mode), workstations: [{ id, seats (always 1, AC9), lost (lostWhy, or null), kind ('cloud-vm' for a cloud VM,
+// macSeats(project) — ASS-528: the seats it may hold on the Mac now, its seat budget's (seat-budget.js, its
+// seat-budget.json loaded as project.seatBudget): Infinity while it has none (no reading of the Mac, or none yet).
+export const macSeats = project => {
+  const seats = project?.seatBudget?.seats;
+  return typeof seats === 'number' && Number.isFinite(seats) ? Math.max(0, seats) : Infinity;
+};
+
+// remoteSeats(project, id) — ASS-529: the seats remote machine `id` may hold now, its remote-seats.json's (remote-seats.js:
+// as many tickets as its own memory and CPU allow), 1 while it has none (no reading phase yet: one each, as before).
+export const remoteSeats = (project, id) => {
+  const seats = project?.remoteBudget?.[id]?.seats;
+  return typeof seats === 'number' && Number.isFinite(seats) ? Math.max(0, seats) : 1;
+};
+
+// seatCapacity(project) — { mode, vm (its VM seats: ASS-528 the seat budget's, macSeats — Infinity for none; 0 in
+// workstation mode), workstations: [{ id, seats (ASS-529: remoteSeats, from its own memory and CPU; was always 1, AC9), lost (lostWhy, or null), kind ('cloud-vm' for a cloud VM,
 // ASS-481; none for a workstation) }] in the pool's order, workstations then cloud VMs ([] in vm
-// mode), total (the VM seats and one per workstation not lost) }. `project` is loadState's (or the dashboard's alike): json,
-// devEnvironments ({ mode, workstations }, null while wrong — read as vm mode) and workstations (the live data).
+// mode), remote (how many of those are not lost), total (the VM seats and one per workstation not lost) }. `project` is
+// loadState's (or the dashboard's alike): seatBudget, devEnvironments ({ mode, workstations }, null while wrong — read
+// as vm mode) and workstations (the live data).
 export function seatCapacity(project) {
   const mode = project?.devEnvironments?.mode ?? 'vm';
-  const limit = project?.json?.['max-tickets-in-progress'];
-  const vm = MODES_WITH_VMS.has(mode) ? limit ?? Infinity : 0;
-  const workstations = MODES_WITH_WORKSTATIONS.has(mode) ? (project.devEnvironments.workstations ?? []).map(w => ({ id: w.id, seats: 1, lost: lostWhy(project.workstations?.[w.id]), ...(w.kind === 'cloud-vm' ? { kind: 'cloud-vm' } : {}) })) : [];
-  return { mode, vm, workstations, total: vm + workstations.reduce((sum, w) => sum + (w.lost ? 0 : w.seats), 0) };
+  const vm = MODES_WITH_VMS.has(mode) ? macSeats(project) : 0;
+  // ASS-553 AC7: a machine not up within remote-boot-wait-seconds of a step being placed on it is lost too while that
+  // lasts (seats.js bootWaits: project.bootWaitOver).
+  // ASS-564: a machine where Claude Code's sandbox can't run keeps its seats for the worktree targets too (its worktree
+  // agents run unsandboxed: dispatch.js agentSandbox), so nothing here asks about the sandbox (ASS-555's noSandbox gone).
+  const workstations = MODES_WITH_WORKSTATIONS.has(mode) ? (project.devEnvironments.workstations ?? []).map(w => ({ id: w.id, seats: remoteSeats(project, w.id), lost: lostWhy(project.workstations?.[w.id]) ?? project.bootWaitOver?.[w.id] ?? null, ...(w.kind === 'cloud-vm' ? { kind: 'cloud-vm' } : {}) })) : [];
+  const remote = workstations.reduce((sum, w) => sum + (w.lost ? 0 : w.seats), 0);
+  // ASS-540: the remote seats by kind, so a step's run targets can ask for a workstation's or a cloud VM's.
+  const byKind = { workstation: 0, 'cloud-vm': 0 };
+  for (const w of workstations) if (!w.lost) byKind[w.kind === 'cloud-vm' ? 'cloud-vm' : 'workstation'] += w.seats;
+  return { mode, vm, workstations, remote, byKind, total: vm + remote };
 }
 
-// seatLimits(project) — its project.json limits as the planner counts them (plan.js planFor): max-tickets-in-progress
-// its whole in-progress capacity (seatCapacity's total; null for no limit), the rest as they are.
-export function seatLimits(project) {
-  const json = project?.json ?? {};
-  if ((project?.devEnvironments?.mode ?? 'vm') === 'vm') return json;
-  const { total } = seatCapacity(project);
-  return { ...json, 'max-tickets-in-progress': Number.isFinite(total) ? total : null };
-}
-
-// seatedIn(project) — (ticket, variation) → whether it holds a recorded in-progress seat (the planner keeps those
-// seated first: a seat once held is not taken by a higher-ranked ticket, plan.js planDispatch's `seated`).
+// seatedIn(project) — (ticket, variation) → its recorded seat (seats.json: an in-progress seat record, or ASS-528 a
+// planning one, { key, variation, pool: 'planning', since }), or false: the planner keeps those seated first (a seat
+// once held is not taken by a higher-ranked ticket, plan.js planDispatch's `seated`).
+// ASS-540: or a Mac target's record (seats.json's `local` list: { key, variation, target, since }), as { …, pool:
+// 'local' } — no seat, but a local-workspace holder keeps the workspace ahead of the rest.
 export function seatedIn(project) {
-  const records = project?.seats ?? [];
-  if (!records.length) return () => false;
-  return (ticket, variation) => Boolean(seatOf(records, ticket.key, variation.name));
+  const records = project?.seats ?? [], planning = project?.planningSeats ?? [], local = project?.localSeats ?? [];
+  if (!records.length && !planning.length && !local.length) return () => false;
+  return (ticket, variation) => {
+    const seat = seatOf(records, ticket.key, variation.name);
+    if (seat) return seat;
+    const p = seatOf(planning, ticket.key, variation.name);
+    if (p) return { ...p, pool: 'planning' };
+    const l = seatOf(local, ticket.key, variation.name);
+    return l ? { ...l, pool: 'local' } : false;
+  };
 }
+
+// targetOf(project, key, variation) — ASS-540: the run target the variation holds now, as this tick's seats say: its
+// seat record's (seats.json `target`, or by its kind), its planning record's, or its Mac target (`local`); null with none.
+export function targetOf(project, key, variation) {
+  const seat = seatOf(project?.seats ?? [], key, variation) ?? seatOf(project?.planningSeats ?? [], key, variation);
+  if (seat) return seat.target ?? (seat.kind ? ({ vm: 'local-vm', workstation: 'workstation', 'cloud-vm': 'cloud-vm' })[seat.kind] : null) ?? null;
+  return seatOf(project?.localSeats ?? [], key, variation)?.target ?? null;
+}
+// onMacTarget(project, key, variation) — the variation runs on local-worktree or local-workspace now.
+export const onMacTarget = (project, key, variation) => ['local-worktree', 'local-workspace'].includes(targetOf(project, key, variation));
+// onRemoteWorktree(project, key, variation) — ASS-553: the variation runs on workstation-worktree or cloud-vm-worktree
+// now: its steps claim its seat's machine in a folder of its own kept for it (workstation:claim --worktree).
+export const onRemoteWorktree = (project, key, variation) => ['workstation-worktree', 'cloud-vm-worktree'].includes(targetOf(project, key, variation));
+// onSubstrateTarget(project, key, variation) — ASS-535: the variation runs on a substrate run target now (its step in its
+// Substrate sandbox, sandboxes.js), not in its VM nor on a workstation's or cloud VM's folder.
+export const onSubstrateTarget = (project, key, variation) => ['local-substrate', 'workstation-substrate', 'cloud-vm-substrate'].includes(targetOf(project, key, variation));
 
 // keepSeats(records, capacity) — of last tick's `records`, { kept, lost, unseated } (AC5; seats.js runs it before
 // the planner, so those taken out hold nothing it keeps seated): `lost` ([{ key, variation, workstation, why }]) each
 // whose workstation is lost or no longer listed, or whose kind the mode no longer has; `unseated` ([record]) each over
-// its kind's count (VM seats lowered by hand; never two on one workstation), the latest seated first; `kept` the rest.
+// its kind's count (VM seats lowered; a remote machine's seats never fall below those it holds, remote-seats.js), the latest seated first; `kept` the rest.
 export function keepSeats(records = [], capacity) {
   const ws = new Map(capacity.workstations.map(w => [w.id, w])), lost = [];
   let kept = [];
@@ -137,31 +185,77 @@ export function keepSeats(records = [], capacity) {
 // 3. AC2: each reserved variation with no seat takes a free workstation seat, else a free VM seat; with neither (the
 //    planner and these counts briefly apart) it waits for the next tick.
 // (keepSeats' rules are applied again first, so a record over a count or on a lost workstation is never kept.)
-export function placeSeats({ records = [], reserved = [], capacity, midStep = () => false, now = new Date().toISOString() }) {
+export function placeSeats({ records = [], reserved = [], capacity, midStep = () => false, now = new Date().toISOString(), targetFor = () => null }) {
   const rank = new Map(reserved.map((r, i) => [`${String(r.key).toUpperCase()} ${r.variation}`, i]));
   const rankOf = s => rank.get(`${String(s.key).toUpperCase()} ${s.variation}`) ?? Infinity;
   const left = [], moved = [], seated = [];
   let { kept } = keepSeats(records, capacity);
   kept = kept.filter(s => (rank.has(`${String(s.key).toUpperCase()} ${s.variation}`) ? true : (left.push(s), false)));
-  const used = id => kept.filter(s => isRemoteSeat(s) && s.workstation === id).length;
-  const freeWs = () => capacity.workstations.find(w => !w.lost && used(w.id) < w.seats);
-  for (const s of kept.filter(x => x.kind === 'vm').toSorted((a, b) => rankOf(a) - rankOf(b))) {
-    const w = freeWs();
-    if (!w) break;
+  const freeWs = (kind, prefer) => freeMachine(capacity, kept, kind, prefer) ?? undefined;
+  // ASS-553: the worktree targets on a workstation or a cloud VM take that machine's seat, as its plain target does.
+  const targetKind = t => (t === 'local-vm' || t === 'local-substrate' ? 'vm' : t === 'workstation' || t === 'workstation-substrate' || t === 'workstation-worktree' ? 'workstation' : t === 'cloud-vm' || t === 'cloud-vm-substrate' || t === 'cloud-vm-worktree' ? 'cloud-vm' : null);
+  // ASS-540: one whose planned target (targetFor: plan.js targets) is a seat of another kind than its record's moves
+  // to it between its steps (never mid-step), when one is free; else it keeps its seat.
+  for (const s of kept.toSorted((a, b) => rankOf(a) - rankOf(b))) {
+    const plan = targetFor(s.key, s.variation), kind = targetKind(plan?.target);
+    if (!kind) continue;
+    if (kind === s.kind) { s.target = plan.target; continue; }
     if (midStep(s.key, s.variation)) continue;
-    Object.assign(s, { kind: remoteSeatKind(w), workstation: w.id, since: now });
+    if (kind === 'vm') {
+      if (kept.filter(x => x.kind === 'vm').length >= capacity.vm) continue;
+      Object.assign(s, { kind: 'vm', since: now, target: plan.target });
+      delete s.workstation;
+      moved.push({ key: s.key, variation: s.variation, workstation: null, kind: 'vm' });
+      continue;
+    }
+    const w = freeWs(kind, plan.machine);
+    if (!w) continue;
+    Object.assign(s, { kind: remoteSeatKind(w), workstation: w.id, since: now, target: plan.target });
+    moved.push({ key: s.key, variation: s.variation, workstation: w.id, ...(w.kind === 'cloud-vm' ? { kind: 'cloud-vm' } : {}) });
+  }
+  for (const s of kept.filter(x => x.kind === 'vm').toSorted((a, b) => rankOf(a) - rankOf(b))) {
+    const plan = targetFor(s.key, s.variation);
+    // ASS-540: only toward a remote target its step ranks ahead of the local VM (with none planned, as before).
+    const remoteFirst = plan?.candidates ? plan.candidates.findIndex(t => ['workstation', 'cloud-vm'].includes(targetKind(t))) : 0;
+    if (remoteFirst < 0 || (plan?.candidates && remoteFirst > plan.candidates.indexOf(plan.target))) continue;
+    const kind = plan?.candidates ? targetKind(plan.candidates[remoteFirst]) : undefined;
+    const w = freeWs(kind);
+    if (!w) continue;
+    if (midStep(s.key, s.variation)) continue;
+    Object.assign(s, { kind: remoteSeatKind(w), workstation: w.id, since: now, ...(plan?.candidates ? { target: plan.candidates[remoteFirst] } : {}) });
     moved.push({ key: s.key, variation: s.variation, workstation: w.id, ...(w.kind === 'cloud-vm' ? { kind: 'cloud-vm' } : {}) });
   }
   for (const r of reserved) {
     if (seatOf(kept, r.key, r.variation)) continue;
-    const w = freeWs();
-    const record = w ? { key: r.key, variation: r.variation, kind: remoteSeatKind(w), workstation: w.id, since: now }
-      : kept.filter(s => s.kind === 'vm').length < capacity.vm ? { key: r.key, variation: r.variation, kind: 'vm', since: now } : null;
+    // ASS-540: its planned target's kind of seat; that one taken meanwhile (a move above), the next of its candidates
+    // with a free seat, in order — as the planner counted it, one seat of the pool.
+    const plan = targetFor(r.key, r.variation);
+    const order = plan?.target ? [plan.target, ...(plan.candidates ?? []).filter(t => t !== plan.target)] : [null];
+    let record = null;
+    for (const t of order) {
+      const kind = targetKind(t);
+      if (t && !kind) continue;   // a Mac target: no seat
+      const w = kind === 'vm' ? null : freeWs(kind ?? undefined, t === plan?.target ? plan?.machine : undefined);
+      const vmFree = kept.filter(s => s.kind === 'vm').length < capacity.vm;
+      record = w ? { key: r.key, variation: r.variation, kind: remoteSeatKind(w), workstation: w.id, since: now }
+        : (kind == null || kind === 'vm') && vmFree ? { key: r.key, variation: r.variation, kind: 'vm', since: now } : null;
+      if (record) { if (t) record.target = t; break; }
+    }
     if (!record) continue;
     kept.push(record);
     seated.push(record);
   }
-  return { records: kept.toSorted((a, b) => rankOf(a) - rankOf(b)).map(({ key, variation, kind, workstation, since }) => ({ key, variation, kind, ...(REMOTE_SEAT_KINDS.has(kind) ? { workstation } : {}), since })), left, moved, seated };
+  return { records: kept.toSorted((a, b) => rankOf(a) - rankOf(b)).map(({ key, variation, kind, workstation, since, target }) => ({ key, variation, kind, ...(REMOTE_SEAT_KINDS.has(kind) ? { workstation } : {}), ...(target ? { target } : {}), since })), left, moved, seated };
+}
+
+// freeMachine(capacity, records, kind, prefer) — the first usable remote machine of seatCapacity's `capacity` with a seat
+// free by `records` (seat records: those on it counted) — of `kind`, 'workstation' or 'cloud-vm', when given (ASS-540)
+// — or null. ASS-553: `prefer`, the machine the planner picked by pool choice (most-room: plan.js `machine`), when it
+// still has one. placeSeats places by it; ASS-572: plan.js seatsOf names the next ticket's machine by it.
+export function freeMachine(capacity, records = [], kind, prefer) {
+  const used = id => records.filter(s => isRemoteSeat(s) && s.workstation === id).length;
+  const ok = w => !w.lost && used(w.id) < w.seats && (!kind || remoteSeatKind(w) === kind);
+  return (prefer && capacity.workstations.find(w => w.id === prefer && ok(w))) || capacity.workstations.find(ok) || null;
 }
 
 // seatWords(record) — a seat in words for the logs: "a VM seat", "a workstation seat on <id>", "a cloud VM seat on <id>" (ASS-481).

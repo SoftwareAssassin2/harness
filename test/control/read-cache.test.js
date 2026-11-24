@@ -123,7 +123,7 @@ test('ASS-495 AC1, AC3, AC5: loadState\'s derived pieces are kept while their in
   assert.ok(four.projects[0].tickets.some(t => t.key === 'ABC-40'));
   // The engine merge and switchOff: engines/'s engine changed (take-screenshots given a way past it), then
   // switched-off-steps in p's project.json, then the engine changed again.
-  edit(join(f.dir, 'engines', 'test', 'state-engine.json'), e => { e.steps[1]['exit-events'] = [{ condition: { always: true }, 'move-to-state': 'done' }]; });
+  edit(join(f.dir, 'engines', 'test', 'workflow.yaml'), e => { e.steps[1]['exit-events'] = [{ condition: { always: true }, 'move-to-state': 'done' }]; });
   const five = loadState(p);
   assert.deepEqual(five.engines.test.steps[1]['exit-events'][0]['move-to-state'], 'done');
   assert.equal(five.projects[0].engines.test, five.engines.test);
@@ -132,7 +132,7 @@ test('ASS-495 AC1, AC3, AC5: loadState\'s derived pieces are kept while their in
   assert.deepEqual(six.projects[0].switchedOffErrors, []);
   assert.equal(six.projects[0].engines.test.steps.find(s => s.id === 'take-screenshots')['is-active'], false);
   assert.equal(six.projects[1].engines.test.steps.find(s => s.id === 'take-screenshots')['is-active'], undefined);
-  edit(join(f.dir, 'engines', 'test', 'state-engine.json'), e => { e.steps[0].name = 'Renamed'; });
+  edit(join(f.dir, 'engines', 'test', 'workflow.yaml'), e => { e.steps[0].name = 'Renamed'; });
   const seven = loadState(p);
   assert.equal(seven.engines.test.steps[0].name, 'Renamed');
   assert.equal(seven.projects[0].engines.test.steps[0].name, 'Renamed');

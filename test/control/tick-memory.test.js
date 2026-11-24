@@ -84,7 +84,7 @@ test('AC2: an agent in its ticket\'s VM gets its project\'s bank at host.lima.in
   const h = await fakeHindsight();
   t.after(h.close);
   const f = memoryFixture(h.port);
-  edit(join(f.dir, 'engines', 'example-development', 'state-engine.json'), e => { e.steps = e.steps.map(s => (s.id === 'plan' ? { ...s, 'run-location': 'vm' } : s)); });
+  edit(join(f.dir, 'engines', 'example-development', 'workflow.yaml'), e => { e.steps = e.steps.map(s => (s.id === 'plan' ? { ...s, 'run-location': 'vm' } : s)); });
   edit(join(f.dir, 'projects', 'p', 'sprints', 'sprint-10', 'sprint.json'), s => { s.features[0].variations[0].vm = { name: 'abc-3-a', ip: '192.168.64.9' }; });
   const lima = fakeVm(f.env);
   f.ctx.env = lima.env;

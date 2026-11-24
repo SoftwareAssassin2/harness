@@ -10,7 +10,7 @@ import { reviewLines, splitProposalLines, ticketScreenshots, ticketDocuments } f
 import { stateOf, enginesOf } from '../status.js';
 import { scrollBox, scrollLast } from '../table.js';
 import { visible, wrap } from '../text.js';
-import { ticketLines, overlapsOf, workedByHand, vmHeld, refinementHistory, humanGate, gateLines, stateCounts, statesColumn, pendingChange, quickLines, stripLines, needsYou, defaultTab, gateWaits, tabWidth, panelWidth, ticketTabs, tabsOf, RETURN_STEPS, blockedOf, blockedLines, gateTab, tabNumber, choiceCommand } from '../ticket.js';
+import { ticketLines, overlapsOf, workedByHand, vmHeld, refinementHistory, humanGate, gateLines, stateCounts, statesColumn, pendingChange, quickLines, stripLines, needsYou, defaultTab, gateWaits, tabWidth, panelWidth, ticketTabs, tabsOf, RETURN_STEPS, commitLines, criteriaLines, blockedOf, blockedLines, gateTab, tabNumber, choiceCommand } from '../ticket.js';
 import { featureOn } from '../features.js';
 import { below, headerLines, platform } from './frame.js';
 import { chatBox, viewLog } from './log.js';
@@ -48,7 +48,7 @@ export function editAnswer(state, key) {
 // question and the first choice selected, on the tab openTicket picks;
 // closing it clears the ticket and its chat.
 export const OPENED_TICKET = {
-  ticketScroll: 0, ticketMergesScroll: 0, ticketStatesScroll: null, ticketHistoryScroll: 0, ticketQuestionsScroll: 0, ticketActionsScroll: null,
+  ticketScroll: 0, ticketMergesScroll: 0, ticketCommitsScroll: 0, ticketCriteriaScroll: 0, ticketStatesScroll: null, ticketHistoryScroll: 0, ticketQuestionsScroll: 0, ticketActionsScroll: null,
   ticketBlockedScroll: 0, ticketBlockedChoice: 0,   // the Blocked tab (ASS-439): its scroll, from its top, and its choice
   ticketQuestionSelected: 0, ticketChoice: 0, ticketTab: 'chat', ticketMessage: '', message: '',
 };
@@ -132,6 +132,7 @@ function sprintTicketParts(state) {
   const recorded = gate && review?.state === gate.step.id ? review : null;
   return {
     back, t, steps, gate, demo: plan?.demo === true ? plan : null,
+    variations: same.map(x => x.variation.name),   // the Commits tab's order (ASS-558): the one on show first, in ticketView
     blocked: blockedInfo, blockedChoices: onBlocked ? gate?.choices ?? [] : [], blockedRecorded: onBlocked ? recorded : null,
     review: reviewing ? width => reviewLines(state.projects[state.project]?.reviews?.[t.key], { variation: t.variation.name, mrs: t.variation['merge-request'], demo: plan, width }) : null,
     status: statusText(t, steps),
@@ -142,7 +143,10 @@ function sprintTicketParts(state) {
     // A gate-when-leaving-state entry, "<engine>/<step>": that engine's step's name.
     gateName: entry => stepOf(engineSteps(engines, entry.slice(0, entry.lastIndexOf('/'))), entry.slice(entry.lastIndexOf('/') + 1))?.name ?? entry,
     prompted: id => steps.find(s => s.id === id)?.action?.type === 'prompt',
-    agents: ticketAgents(liveAssignments(state), t).map(a => a['agent-name']),
+    // ASS-564: an agent running without Claude Code's sandbox (its session's sandbox.json) is marked "(unsandboxed)",
+    // and Details says why (unsandboxedOf).
+    agents: ticketAgents(liveAssignments(state), t).map(a => `${a['agent-name']}${state.sandboxed?.[a['agent-name']]?.sandboxed === false ? ' (unsandboxed)' : ''}`),
+    unsandboxed: unsandboxedOf(state, ticketAgents(liveAssignments(state), t)),
     current: stateOf(t.variation),
     counts: stateCounts(t.variation, steps),
     recorded: onBlocked ? null : recorded,
@@ -168,6 +172,16 @@ const handBack = (state, t) => (workedByHand(t) ? [{ decision: 'Hand back to con
 // Release its VM (ASS-427 AC7), offered on a variation whose VM the operator
 // holds running: vm:hold off, its step's rules applying to it again.
 const releaseVm = (state, t) => (vmHeld(t.variation) ? [{ decision: 'Release its VM (stop holding it running)', decide: ['vm:hold', state.projects[state.project].id, t.key, t.variation.name, 'off'] }] : []);
+
+// ASS-556: the operator's override of where the variation is built (ticket:set-work-mode): to the other mode — full
+// from a worktree, else a worktree — asked first; the `w` key asks it of a sprint variation (the Actions tab's hint
+// says so; kept off its list, whose order the operator knows by heart).
+export function workModeChoice(state, t) {
+  if (!t?.variation?.name || state.ticket?.backlog) return [];
+  const to = t.variation['work-mode']?.mode === 'worktree' ? 'full' : 'worktree';
+  const words = to === 'full' ? 'on a full machine' : 'in a worktree';
+  return [{ decision: `Build ${words}`, confirm: `Build ${t.shownKey ?? t.key} ${t.variation.name} ${words}?`, decide: ['ticket:set-work-mode', state.projects[state.project].id, t.key, t.variation.name, to] }];
+}
 
 // Delete ticket (ASS-104): ticket:delete, a soft delete, offered on a ticket
 // — sprint or backlog, Jira's or off-board — unless its work has merged (a
@@ -249,6 +263,10 @@ function backlogTicketParts(state) {
 //   Details: every field of the ticket (ticketLines);
 //   Merge requests (ASS-437): the variation's branch and worktree and its
 //     merge requests, opened, planned or closed unopened (ticketLines' merges);
+//   Commits (ASS-558): every commit of the ticket, each variation's, across its
+//     repositories, with when its list was last refreshed (commitLines);
+//   Acceptance criteria (ASS-559): each criterion's dev and testing status and
+//     where the evidence is (criteriaLines);
 //   History: its states (statesColumn — a sprint ticket's execution-engine
 //     steps with their visits and dispatches, stateCounts, its quarantine
 //     states after; a backlog ticket's refinement steps), the one it stands on
@@ -264,6 +282,12 @@ function backlogTicketParts(state) {
 // tab's, the History tab's states, the Questions tab's) and the state field
 // keeping its place; `panel` the ticket, choices and gate for recording one. A
 // ticket no longer on its screen's list gets the message alone, in one box.
+// unsandboxedOf(state, assignments) — ASS-564: of the ticket's running agents, each one running without Claude Code's
+// sandbox (state.sandboxed, from its session's sandbox.json): "<agent> on <machine>: <why>", for Details' Sandbox field.
+function unsandboxedOf(state, assignments) {
+  return assignments.map(a => [a['agent-name'], state.sandboxed?.[a['agent-name']]]).filter(([, s]) => s?.sandboxed === false)
+    .map(([name, s]) => `${name}${s.machine ? ` on ${s.machine}` : ''}: Claude Code's sandbox unavailable (${s.why ?? 'no reason recorded'}) — running unsandboxed`);
+}
 // runningOn(state, t) — what ticket `t`'s running agents have spent so far
 // (ASS-270), { ticket, variation }: every variation's and the one on show's,
 // each agent's from its session's usage.json (state.usage, read every second
@@ -329,7 +353,7 @@ function ticketView(state, size) {
       status: parts.status, stepName: parts.stepName, gateName: parts.gateName, prompted: parts.prompted, agents: parts.agents,
       columns: tab === 'history' ? width - statesWidth - 3 : text, steps, chatSpend: spend, spendLimit: spendLimit(t, state.projects[state.project]?.spendLimit ?? null), refinement: parts.refinement,
       running: running.variation, ticketRunning: running.ticket,
-      overlaps: parts.overlaps,
+      overlaps: parts.overlaps, unsandboxed: parts.unsandboxed,
     });
     if (tab === 'details') panes = [{ lines: details, scroll: state.ticketScroll }];
     else if (tab === 'merges') panes = [{ lines: merges, scroll: state.ticketMergesScroll ?? 0 }];
@@ -341,6 +365,21 @@ function ticketView(state, size) {
       ];
       paged = { field: 'ticketStatesScroll', content: height - 1 };
     }
+  } else if (tab === 'commits') {
+    // The Commits tab (ASS-558): the commit lists ticket:refresh-commits keeps in the work folder (load.js loadCommits),
+    // the variation on show first, then the ticket's other live ones; scrolled by ↑/↓ and paged by PgUp/PgDn.
+    const name = t.variation?.name;
+    const order = [...(name ? [name] : []), ...(parts.variations ?? []).filter(v => v !== name)];
+    const lines = commitLines(state.projects[state.project]?.commits?.[t.key] ?? {}, { order, width: text, now: now || new Date() });
+    panes = [{ lines, scroll: state.ticketCommitsScroll ?? 0 }];
+    paged = { field: 'ticketCommitsScroll', content: height };
+  } else if (tab === 'criteria') {
+    // The Acceptance criteria tab (ASS-559): the variation on show's criteria and statuses, and its evidence files
+    // (loadReviews' `evidence`, the work folder's listing); scrolled by ↑/↓ and paged by PgUp/PgDn.
+    const evidence = state.projects[state.project]?.reviews?.[t.key]?.evidence ?? {};
+    const lines = criteriaLines(t.variation, { width: text, evidence });
+    panes = [{ lines, scroll: state.ticketCriteriaScroll ?? 0 }];
+    paged = { field: 'ticketCriteriaScroll', content: height };
   } else if (tab === 'questions') {
     const asked = ticketQuestions(state);
     const chosen = asked[state.ticketQuestionSelected];
@@ -455,7 +494,7 @@ function demoLines(plan, run, width) {
 const ANSWER_HINT = 'type   tab next field   enter saves   esc cancels';
 // What the keys do on each of a ticket screen's tabs (ASS-184 AC3).
 const TICKET_HINTS = {
-  actions: '↑/↓ choose   enter records the choice   PgUp/PgDn scroll', details: '↑/↓ scroll the details', merges: '↑/↓ scroll the merge requests', history: '↑/↓ entry by entry   PgUp/PgDn scroll the states',
+  actions: '↑/↓ choose   enter records the choice   PgUp/PgDn scroll   w worktree or full', details: '↑/↓ scroll the details', merges: '↑/↓ scroll the merge requests', commits: '↑/↓ scroll the commits   PgUp/PgDn page', criteria: '↑/↓ scroll the acceptance criteria   PgUp/PgDn page', history: '↑/↓ entry by entry   PgUp/PgDn scroll the states',
   questions: '↑/↓ choose a question   enter answers it   PgUp/PgDn scroll', chat: 'type a message, enter sends it   ←/→ move the cursor   ↑/↓ scroll the chat',
 };
 // The Blocked tab's (ASS-439 AC2): at Blocked for Human its ways out are chosen; at Blocked it only scrolls.
@@ -499,7 +538,7 @@ export function openRequested(state, { project, key }) {
 }
 
 // A key on the ticket screen: escape returns to the dashboard or the backlog;
-// tab opens the next tab (shownTabs), shift-tab the one before, and 1–6 (1–5
+// tab opens the next tab (shownTabs), shift-tab the one before, and 1–7 (1–6
 // without Chat, ASS-262; one more with Blocked, ASS-439) a tab by its number (ASS-184 AC3: not while typing — the chat's keys are in
 // viewTicketChat, the forms' their own). ↑/↓ do the open tab's job: on
 // Actions they move the choice, and enter asks for it to be recorded as
@@ -509,11 +548,11 @@ export function openRequested(state, { project, key }) {
 // Questions they choose one, the tab scrolling to keep it in view, and enter
 // opens the answer form (editAnswer) on it. On Blocked (ASS-439) at Blocked for Human they move
 // its choice and enter records it as on Actions; at Blocked they scroll it.
-// On Details and Merge requests they scroll, and on
+// On Details, Merge requests, Commits (ASS-558) and Acceptance criteria (ASS-559) they scroll, and on
 // History step entry by entry (ASS-145), no further than its lines go.
 // PgUp/PgDn page the open tab's `paged` pane (ASS-185 AC3) — nothing on
-// Details, Merge requests or Chat.
-const TICKET_SCROLLS = { details: 'ticketScroll', merges: 'ticketMergesScroll', history: 'ticketHistoryScroll', blocked: 'ticketBlockedScroll' };
+// Details, Merge requests or Chat; Commits pages too (ASS-558), and Acceptance criteria (ASS-559).
+const TICKET_SCROLLS = { details: 'ticketScroll', merges: 'ticketMergesScroll', commits: 'ticketCommitsScroll', criteria: 'ticketCriteriaScroll', history: 'ticketHistoryScroll', blocked: 'ticketBlockedScroll' };
 // The choice selected on the tab open: the Blocked tab's among its own (ASS-439 AC4), else the Actions tab's.
 const chosen = (state, panel) => (state.ticketTab === 'blocked' ? panel?.blockedChoices?.[state.ticketBlockedChoice] : panel?.choices[state.ticketChoice]);
 // deselected(state, panel, choice, gate) — once a gate's `choice` is recorded, nothing left selected (ASS-131): the
@@ -536,6 +575,11 @@ export function viewTicket(state, key, size) {
   const ids = tabs.map(([id]) => id);
   if (key.name === 'tab') return { ...state, ticketTab: ids[(ids.indexOf(state.ticketTab) + (key.shift ? -1 : 1) + ids.length) % ids.length] };
   if (/^[1-9]$/.test(key.sequence ?? '') && Number(key.sequence) <= ids.length && !key.ctrl) return { ...state, ticketTab: ids[Number(key.sequence) - 1] };
+  // ASS-556: w asks to build the variation the other way (workModeChoice), not on a past day.
+  if (key.sequence === 'w' && !key.ctrl && !state.day) {
+    const [choice] = workModeChoice(state, panel.t);
+    return choice ? { ...state, ticketConfirm: { decision: choice.confirm, decide: choice.decide, closes: false }, ticketMessage: '' } : state;
+  }
   const onActions = state.ticketTab === 'actions';
   // The Blocked tab's ways out are chosen as the Actions tab's choices are (ASS-439 AC4): the same keys, confirmation and record.
   const choosing = state.ticketTab === 'blocked' && panel.blockedChoices.length > 0;

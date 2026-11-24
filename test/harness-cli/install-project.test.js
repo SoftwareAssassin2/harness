@@ -42,13 +42,13 @@ function setup({ project = {} } = {}) {
   });
   write(at('from', 'projects', 'p', 'golden-image', 'template.yaml'), 'video: none\n');
   write(at('from', 'projects', 'p', 'merge-request-considerations.md'), '# Considerations\n');
-  write(at('from', 'projects', 'p', 'engines', 'test', 'state-engine.json'), { steps: [{ id: 'own', sequence: 1, 'is-done': null, action: { type: 'none' } }] });
+  write(at('from', 'projects', 'p', 'engines', 'test', 'workflow.yaml'), { steps: [{ id: 'own', sequence: 1, 'is-done': null, action: { type: 'none' } }] });
   const step = (id, engine) => ({ id, sequence: 1, 'is-done': null, action: { type: 'state-engine', engine } });
   for (const side of ['from', 'to']) {
-    write(at(side, 'engines', 'dev', 'state-engine.json'), { steps: [step('build', 'build')] });
-    write(at(side, 'engines', 'build', 'state-engine.json'), { steps: [step('test', 'test')] });
+    write(at(side, 'engines', 'dev', 'workflow.yaml'), { steps: [step('build', 'build')] });
+    write(at(side, 'engines', 'build', 'workflow.yaml'), { steps: [step('test', 'test')] });
   }
-  write(at('to', 'engines', 'test', 'state-engine.json'), { steps: [{ id: 'shared', sequence: 1, 'is-done': null, action: { type: 'none' } }] });
+  write(at('to', 'engines', 'test', 'workflow.yaml'), { steps: [{ id: 'shared', sequence: 1, 'is-done': null, action: { type: 'none' } }] });
   write(at('from', 'home', '.harness', 'vm-credentials.json'), {
     p: { gitlab: { 'keychain-service': 'GitLab PAT (Acme)', host: 'gitlab.com' }, git: { 'user-name': 'Some One', 'user-email': 'someone@acme.example' } },
   });
@@ -130,11 +130,11 @@ test('AC1: it prints the remaining setup steps from the manifest and the placeho
 test('AC6: the bundle\'s engines are unpacked into data/projects/<project>/engines/ and every engine the project uses resolves, its own first', () => {
   const s = setup();
   assert.equal(s.install(s.bundle, '--project-root', s.at('work', 'acme'), '--lima-home', s.at('lima')).status, 0);
-  assert.deepEqual(json(s.at('to', 'projects', 'p', 'engines', 'test', 'state-engine.json')).steps[0].id, 'own');
+  assert.deepEqual(json(s.at('to', 'projects', 'p', 'engines', 'test', 'workflow.yaml')).steps[0].id, 'own');
   const resolve = engine => execFileSync('bash', ['-c', `source "${join(ROOT, 'src', 'agent-cli', 'engine.bash')}" && engine_path "$1" p`, '-', engine], { env: s.env, encoding: 'utf8' }).trim();
-  assert.equal(resolve('dev'), s.at('to', 'engines', 'dev', 'state-engine.json'));
-  assert.equal(resolve('build'), s.at('to', 'engines', 'build', 'state-engine.json'));
-  assert.equal(resolve('test'), s.at('to', 'projects', 'p', 'engines', 'test', 'state-engine.json'));
+  assert.equal(resolve('dev'), s.at('to', 'engines', 'dev', 'workflow.yaml'));
+  assert.equal(resolve('build'), s.at('to', 'engines', 'build', 'workflow.yaml'));
+  assert.equal(resolve('test'), s.at('to', 'projects', 'p', 'engines', 'test', 'workflow.yaml'));
 });
 
 test('without a vm-credentials.json it makes one holding the project, backing nothing up', () => {
@@ -163,7 +163,7 @@ test('--force reinstalls over an installed project, replacing its golden image a
   const s = setup();
   assert.equal(s.install(s.bundle, '--project-root', s.at('work', 'acme'), '--lima-home', s.at('lima')).status, 0);
   write(s.at('to', 'projects', 'p', 'golden-image', 'stale.sh'), 'old\n');
-  write(s.at('to', 'projects', 'p', 'engines', 'stale', 'state-engine.json'), '{}');
+  write(s.at('to', 'projects', 'p', 'engines', 'stale', 'workflow.yaml'), '{}');
   write(s.at('to', 'projects', 'p', 'backlog.json'), '{"tickets":[]}\n');
   const r = s.install(s.bundle, '--project-root', s.at('work', 'acme'), '--lima-home', s.at('lima'), '--force');
   assert.equal(r.status, 0, r.stderr);
@@ -237,7 +237,7 @@ test('AC2: it fails, changing nothing, when a state engine is neither in the bun
   rmSync(s.at('to', 'engines', 'build'), { recursive: true });
   fails(s, [s.bundle, ...root(s)], /state engine build/);
   const t = setup();
-  fails(t, [repack(t, d => rmSync(join(d, 'engines'), { recursive: true })), ...root(t)], /engines\/test\/state-engine\.json/);
+  fails(t, [repack(t, d => rmSync(join(d, 'engines'), { recursive: true })), ...root(t)], /engines\/test\/workflow\.yaml/);
 });
 
 test('AC2: it fails, changing nothing, for a project root that is missing or not a git checkout', () => {
@@ -277,4 +277,40 @@ test('ASS-407 AC3: a jira work source without api-email and api-token adds a las
   const u = t.install(t.bundle, '--project-root', t.at('work', 'acme'), '--lima-home', t.at('lima'));
   assert.equal(u.status, 0, u.stderr);
   assert.ok(!u.stdout.includes('api-token'), u.stdout);
+});
+
+// ASS-524 AC3: an engine is its workflow.yaml; a bundle made before ASS-524 carries state-engine.json.
+test('ASS-524 AC3: a bundle made before ASS-524 (engines/<name>/state-engine.json) installs as workflow.yaml, the same engine', () => {
+  const s = setup();
+  const engine = { steps: [{ id: 'own', sequence: 1, 'is-done': null, action: { type: 'none' } }] };
+  const old = repack(s, d => {
+    rmSync(join(d, 'engines', 'test', 'workflow.yaml'));
+    writeFileSync(join(d, 'engines', 'test', 'state-engine.json'), JSON.stringify(engine, null, 2));
+    const manifest = JSON.parse(readFileSync(join(d, 'manifest.json'), 'utf8'));
+    manifest.files = manifest.files.map(f => f.replace('workflow.yaml', 'state-engine.json'));
+    writeFileSync(join(d, 'manifest.json'), JSON.stringify(manifest));
+  });
+  const r = s.install(old, '--project-root', s.at('work', 'acme'), '--lima-home', s.at('lima'));
+  assert.equal(r.status, 0, r.stderr);
+  const own = s.at('to', 'projects', 'p', 'engines', 'test');
+  assert.deepEqual(readdirSync(own), ['workflow.yaml']);
+  assert.match(readFileSync(join(own, 'workflow.yaml'), 'utf8'), /^steps:\n  - id: own\n/);   // YAML, not the JSON copied
+  const shown = spawnSync(join(ROOT, 'agent.sh'), ['engine:show', 'p', 'test'], { env: s.env, encoding: 'utf8' });
+  assert.deepEqual(JSON.parse(shown.stdout), engine);
+});
+
+test('ASS-524 AC3: an older bundle whose engine does not convert fails the install, changing nothing', () => {
+  const s = setup();
+  const broken = repack(s, d => {
+    rmSync(join(d, 'engines', 'test', 'workflow.yaml'));
+    writeFileSync(join(d, 'engines', 'test', 'state-engine.json'), '{ "steps": [');
+    const manifest = JSON.parse(readFileSync(join(d, 'manifest.json'), 'utf8'));
+    manifest.files = manifest.files.map(f => f.replace('workflow.yaml', 'state-engine.json'));
+    writeFileSync(join(d, 'manifest.json'), JSON.stringify(manifest));
+  });
+  const before = snapshot(s.at('to'));
+  const r = s.install(broken, '--project-root', s.at('work', 'acme'), '--lima-home', s.at('lima'));
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /could not be converted to workflow\.yaml.*is not JSON.*; nothing changed/s);
+  assert.deepEqual(snapshot(s.at('to')), before);
 });

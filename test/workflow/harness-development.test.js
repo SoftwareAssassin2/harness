@@ -6,10 +6,11 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { working, inOrder, engineDir } from '../support/engine-walk.js';
+import { readEngine } from '../../src/workflow/engine-file.js';
 
-const read = path => JSON.parse(readFileSync(new URL(`../../${path}`, import.meta.url), 'utf8'));
-const harness = read('engines/harness-development/state-engine.json');
-const example = JSON.parse(readFileSync(join(engineDir('example-development'), 'state-engine.json'), 'utf8'));   // the example project's own (ASS-277)
+const read = path => readEngine(new URL(`../../${path}`, import.meta.url).pathname);
+const harness = read('engines/harness-development/workflow.yaml');
+const example = readEngine(join(engineDir('example-development'), 'workflow.yaml'));   // the example project's own (ASS-277)
 const step = id => harness.steps.find(s => s.id === id);
 const REVIEW_LOOP = ['take-out-of-draft-mode', 'team-code-review', 'address-merge-request-feedback', 'ensure-auto-merge', 'qa-testing'];
 const HEALTH = ['check-health-steps', 'check-health-interval-seconds'];
@@ -23,7 +24,9 @@ test('harness-development is example\'s flow up to the variation choice, with no
     if (REVIEW_LOOP.includes(theirs.id)) { assert.equal(ours, undefined, theirs.id); continue; }
     if (!ours || theirs.id === 'variation-selection') continue;   // the variation choice: on to the harness's own merge
     // Paired with the harness's own four off-board statuses (the last test here), not example's Jira ones.
-    const { 'paired-ticket-system-status': _, ...works } = working(ours), { 'paired-ticket-system-status': __, ...reference } = working(theirs);
+    // ASS-554: the worktree flag (where a step runs, not what it does) is left out too — the example project's own engine
+    // is a test fixture that runs everywhere on VMs.
+    const { 'paired-ticket-system-status': _, worktree: ___, ...works } = working(ours), { 'paired-ticket-system-status': __, worktree: ____, ...reference } = working(theirs);
     assert.deepEqual(works, reference, theirs.id);
   }
   assert.ok(inOrder(harness.steps.map(s => s.id), ['committed', 'enrich-ac', 'review-plan', 'generate-solution', 'code-review', 'local-testing', 'risk-assessment', 'variation-selection', ...TAIL]));

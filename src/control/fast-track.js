@@ -6,13 +6,15 @@
 // where they rank above everything (rank.js rankSprint) and pre-empt running
 // work for a seat.
 //
-// A seat is one of the three pools that can hold a ticket back, each capped
-// by harness.json and the project's own project.json: a planning or an
-// in-progress ticket slot (max-tickets-in-planning, -in-progress; ASS-126,
-// plan.js), or an agent (max-agents). A fast-tracked variation waits for a
+// A seat is one of the pools that can hold a ticket back: a planning or an
+// in-progress ticket seat (ASS-126, plan.js; ASS-528: one pool, its seats the
+// seat budget's and the project's remote machines', so a fast-tracked ticket
+// waiting for either may pause the lowest-ranked holder of either), or an
+// agent (max-agents, harness.json's and the project's own). A fast-tracked variation waits for a
 // slot when control would move it but none of the kind it needs is free — at
 // the queue (committed) for a planning one, or a move into a step that takes
-// a slot it does not hold (moves.js mayMove) — and for an agent when its
+// a slot it does not hold (moves.js mayMove) — or, ASS-527, waits at its step
+// for one (planFor's `waiting`, read here each tick) — and for an agent when its
 // step, or its run's (dispatch.js), would get one but max-agents is full.
 // steps.js and dispatch.js record each wait in ctx.memory.seats as they meet
 // it (waitsForSeat), afresh every tick. Before the next tick's steps,
@@ -40,7 +42,7 @@
 // the sprint while control runs, and each one in the backlog but not the
 // sprint — its join failed — once while it stays there.
 import { statusIn, isManual, isHeld } from './engine.js';
-import { planFor, slotKind } from './plan.js';
+import { planFor, poolOf } from './plan.js';
 import { rankSprint } from './rank.js';
 
 const PHASE = 'fast-track';
@@ -69,7 +71,7 @@ export function preemptions({ tickets, engine, engines, holders, waiting }) {
   const wants = (key, kind) => (kind === 'agents' ? Object.keys(SEAT).some(k => needs(key, k)) : needs(key, kind));
   const preempted = tickets.flatMap(t => (t.variations ?? []).filter(v => !isManual(t) && !v['is-deleted'] && v['is-paused'] === true && v['paused-for-fast-track'] != null).map(v => {
     const status = statusIn(engine, v, engines);
-    return { key: t.key, variation: v.name, for: v['paused-for-fast-track'], kind: v['preempted-seat'] ?? slotKind(status.step, status) };
+    return { key: t.key, variation: v.name, for: v['paused-for-fast-track'], kind: v['preempted-seat'] ?? poolOf(status.step, status) };
   }));
   const resume = preempted.filter(p => !wants(p.for, p.kind));
   const kept = preempted.filter(p => !resume.includes(p));
@@ -91,10 +93,11 @@ export async function fastTrack(ctx, state) {
   for (const project of state.projects) {
     note(ctx, project);
     if (!project.engine || !project.sprint) continue;
-    const planned = planFor(state, project);
+    const planned = planFor(state, project), tickets = rankSprint(project.tickets, { engine: project.engine });
+    const seats = onePool(tickets, [...planned.inPlanning, ...planned.reserved]);   // ASS-528: one pool
     const { pause, resume } = preemptions({
-      tickets: rankSprint(project.tickets, { engine: project.engine }), engine: project.engine, engines: project.engines ?? state.engines,
-      holders: { planning: planned.inPlanning, progress: planned.reserved, agents: working(state, project) }, waiting: waits.filter(w => w.project === project.id),
+      tickets, engine: project.engine, engines: project.engines ?? state.engines,
+      holders: { planning: seats, progress: seats, agents: working(state, project) }, waiting: [...waits.filter(w => w.project === project.id), ...waitingAtStep(state, project, planned)],
     });
     for (const r of resume) await ctx.attempt(PHASE, `${r.key} ${r.variation}`, async () => {
       await ctx.cli(['ticket:set-preempted', project.id, r.key, r.variation, '-']);
@@ -102,9 +105,28 @@ export async function fastTrack(ctx, state) {
     });
     for (const p of pause) await ctx.attempt(PHASE, `${p.key} ${p.variation}`, async () => {
       await ctx.cli(['ticket:set-preempted', project.id, p.key, p.variation, p.for, p.kind]);
-      ctx.log(PHASE, `paused ${p.key} to free a seat for fast-tracked ${p.for} (${p.key} ${p.variation} held ${SEAT[p.kind]})`);
+      // ASS-528: one pool, so the seat it held is said by its own pool, planning or in progress.
+      const held = p.kind === 'agents' ? 'agents' : planned.inPlanning.some(h => h.key === p.key && h.variation === p.variation) ? 'planning' : 'progress';
+      ctx.log(PHASE, `paused ${p.key} to free a seat for fast-tracked ${p.for} (${p.key} ${p.variation} held ${SEAT[held]})`);
     });
   }
+}
+
+// onePool(tickets, holders) — ASS-528: the seat holders of both pools as one, in rank order (`tickets` ranked).
+function onePool(tickets, holders) {
+  const at = new Map(tickets.flatMap((t, i) => (t.variations ?? []).map((v, j) => [`${t.key} ${v.name}`, i * 1000 + j])));
+  return holders.toSorted((a, b) => (at.get(`${a.key} ${a.variation}`) ?? Infinity) - (at.get(`${b.key} ${b.variation}`) ?? Infinity));
+}
+
+// waitingAtStep(state, project, planned) — ASS-527: the fast-tracked variations waiting at their step for a seat
+// (planFor's `waiting`: moved in without one, at a step that uses its machine), each { key, variation, kind (its pool) }.
+function waitingAtStep(state, project, planned) {
+  return planned.waiting.flatMap(w => {
+    const t = project.tickets.find(x => x.key === w.key), v = t?.variations?.find(x => x.name === w.variation);
+    if (!fast(t) || !v) return [];
+    const status = statusIn(project.engine, v, project.engines ?? state.engines), kind = poolOf(status.step, status);
+    return kind ? [{ project: project.id, key: w.key, variation: w.variation, kind }] : [];
+  });
 }
 
 // working(state, project) — the project's sprint variations, not held (isHeld), with

@@ -17,6 +17,7 @@ import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fixture, AGENT } from './harness-fixture.js';
 import { fakeWorkstation } from '../support/fake-workstation.js';
+import { LOADED_MS } from '../support/until.js';
 import { workstationUsable } from '../../src/control/workstation-connection.js';
 
 const run = promisify(execFile);
@@ -593,7 +594,9 @@ const runtimeOf = s => join(s.w.runtime(ID), `harness-${process.getuid()}`);
 const watchers = async s => (await run('pgrep', ['-f', `restart-watcher.sh ${runtimeOf(s)} `]).catch(() => ({ stdout: '' }))).stdout.split('\n').filter(Boolean).map(Number);
 const pidFile = s => (existsSync(join(runtimeOf(s), 'restart-watcher.pid')) ? readFileSync(join(runtimeOf(s), 'restart-watcher.pid'), 'utf8').trim().split(' ') : null);
 const gone = pid => { try { process.kill(pid, 0); return false; } catch { return true; } };
-const waitFor = async (check, ms = 5000) => { for (const end = Date.now() + ms; Date.now() < end; await new Promise(r => setTimeout(r, 25))) if (await check()) return true; return check(); };
+// ASS-545: the default is LOADED_MS, a hang guard only (a check that comes true returns at once), not 5 s.
+const waitFor = async (check, ms = LOADED_MS) => { for (const end = Date.now() + ms; Date.now() < end; await new Promise(r => setTimeout(r, 25))) if (await check()) return true; return check(); };
+const WATCHER_WAIT = 600;   // ASS-545: the watcher's seconds between checks in the "at once" tests, far past LOADED_MS
 const WATCHER = join(import.meta.dirname, '..', '..', 'src', 'agent-cli', 'workstation', 'on-workstation', 'restart-watcher.sh');
 // warm(s) — the installed agent.sh and its wrapper run once, at a forwarder nothing listens on: macOS checks a newly
 // written executable on its first run, which under load takes seconds (a Linux VM has no such check), and the 2 s
@@ -680,7 +683,9 @@ test('ASS-504 AC6: setup\'s version changes with the restart watcher; a watcher 
 
 test('ASS-504 AC2: when the metadata server\'s preempted flag turns TRUE, the watcher calls agent.sh machine:restart-imminent with the runtime folder\'s token at once, and once', async () => {
   const fwd = await forwarder(), m = await metadata();
-  const s = setup({ forwarder: fwd.port, env: { HARNESS_WS_METADATA_URL: m.url } });
+  // ASS-545: the watcher's waits are 600 s (HARNESS_WS_WATCHER_SECONDS), far past waitFor's LOADED_MS hang guard, so
+  // "at once" is told apart from "at its next check" by the guard, not by a 2 s limit a loaded Mac outlasted.
+  const s = setup({ forwarder: fwd.port, env: { HARNESS_WS_METADATA_URL: m.url, HARNESS_WS_WATCHER_SECONDS: String(WATCHER_WAIT) } });
   await s.cli('workstation:connect', 'p', ID);
   await s.cli('workstation:setup', 'p', ID);
   writeFileSync(join(runtimeOf(s), 'agent-token'), 'tok504\n');
@@ -689,10 +694,8 @@ test('ASS-504 AC2: when the metadata server\'s preempted flag turns TRUE, the wa
   assert.ok(await waitFor(() => m.waiting.length > 0), 'it waits on the flag');
   assert.ok(m.asked.every(a => a.flavor === 'Google'));
   assert.deepEqual(fwd.bodies, []);
-  const at = Date.now();
   m.set('TRUE');
-  assert.ok(await waitFor(() => fwd.bodies.length > 0, 2000), 'the Mac told within 2 s');
-  assert.ok(Date.now() - at < 2000, `${Date.now() - at} ms`);
+  assert.ok(await waitFor(() => fwd.bodies.length > 0), 'the Mac told at once, not at the watcher\'s next check');
   assert.deepEqual(fwd.bodies, [{ url: '/run', body: { token: 'tok504', argv: ['machine:restart-imminent'] } }]);
   assert.ok(existsSync(join(runtimeOf(s), 'restart-watcher.fired')));
   // The shutdown that follows tells it nothing more.
@@ -706,16 +709,15 @@ test('ASS-504 AC2: when the metadata server\'s preempted flag turns TRUE, the wa
 
 test('ASS-504 AC3, AC5: with no metadata server the watcher says so as a note, nothing alarming, and SIGTERM (a shutdown) tells the Mac at once; SIGHUP too, once a boot', async () => {
   const fwd = await forwarder();
-  const s = setup({ forwarder: fwd.port });
+  // ASS-545: its naps are 600 s (as above), so a signal handled only once a nap ends fails at waitFor's hang guard.
+  const s = setup({ forwarder: fwd.port, env: { HARNESS_WS_WATCHER_SECONDS: String(WATCHER_WAIT) } });
   await s.cli('workstation:connect', 'p', ID);
   await s.cli('workstation:setup', 'p', ID);
   writeFileSync(join(runtimeOf(s), 'agent-token'), 'tok504\n');
   await warm(s);
   const [pid] = pidFile(s);
-  const at = Date.now();
   process.kill(Number(pid), 'SIGTERM');
-  assert.ok(await waitFor(() => fwd.bodies.length > 0, 2000), 'the Mac told within 2 s');
-  assert.ok(Date.now() - at < 2000);
+  assert.ok(await waitFor(() => fwd.bodies.length > 0), 'the Mac told at once, not when its nap ends');
   assert.deepEqual(fwd.bodies.map(b => b.body.argv), [['machine:restart-imminent']]);
   assert.ok(await waitFor(() => gone(Number(pid))));
   assert.equal(pidFile(s), null, 'its pid file removed as it ends');
@@ -734,6 +736,169 @@ test('ASS-504 AC3, AC5: with no metadata server the watcher says so as a note, n
   await s.cli('workstation:setup', 'p', ID);
   [again] = pidFile(s);
   process.kill(Number(again), 'SIGHUP');
-  assert.ok(await waitFor(() => fwd.bodies.length === 2, 2000));
+  assert.ok(await waitFor(() => fwd.bodies.length === 2));
   assert.match(readFileSync(s.at('harness', 'restart-watcher.log'), 'utf8'), /restart imminent \(shutdown signal SIGHUP\)/);
+});
+
+test('ASS-555 AC2: setup probes Claude Code\'s sandbox — bubblewrap and socat on PATH, bwrap able to make one — records it as setup.sandbox and never fails setup for it', async () => {
+  const s = setup();
+  const sys = s.w.system(ID);
+  const tool = (name, body) => writeFileSync(join(sys, name), `#!/bin/bash\n${body}\n`, { mode: 0o755 });
+  // ASS-563: no passwordless sudo, so nothing can be installed for it.
+  tool('sudo', 'echo "sudo: a password is required" >&2; exit 1');
+  for (const t of ['bwrap', 'socat']) rmSync(join(sys, t));
+  writeFileSync(join(dirname(sys), 'path'), await bareImage(['jq', 'readlink']));
+  await s.cli('workstation:connect', 'p', ID);
+  await s.cli('workstation:setup', 'p', ID);
+  assert.equal(s.entry().setup.ok, true, 'a machine without it is still set up: its other targets use it');
+  assert.equal(s.entry().setup.error, null);
+  assert.equal(s.entry().setup.sandbox.ok, false);
+  assert.match(s.entry().setup.sandbox.why, /^bubblewrap socat not installed \(Claude Code's sandbox needs bubblewrap and socat\): bubblewrap socat: not installed, and there is no passwordless sudo/);
+  tool('socat', 'exit 0');
+  tool('bwrap', 'echo "bwrap: setting up uid map: Permission denied" >&2; exit 1');
+  await s.cli('workstation:setup', 'p', ID);
+  assert.equal(s.entry().setup.ok, true);
+  assert.deepEqual(s.entry().setup.sandbox, { ok: false, why: 'bwrap could not make a sandbox: bwrap: setting up uid map: Permission denied' }, 'no AppArmor restriction here: nothing to load');
+  tool('bwrap', '[[ " $* " == *" --unshare-all "* && " $* " == *" -- true "* ]] && exit 0; exit 9');
+  await s.cli('workstation:setup', 'p', ID);
+  assert.deepEqual(s.entry().setup.sandbox, { ok: true });
+});
+
+// ASS-563: a machine as the project's cloud VM was found (Ubuntu 24.04): no bwrap, no socat, and AppArmor restricting
+// unprivileged user namespaces. Standing in: sudo (refused while <work>/no-sudo exists), apt-get (its package lists
+// stale until `update`: -s install names nothing; then bubblewrap, socat and a library socat needs), dpkg (puts bwrap
+// and socat on PATH), apparmor_parser (marks the profile loaded, unless <work>/parser-refuses), and bwrap, which makes
+// a sandbox only once a profile is loaded (the sysctl's file, HARNESS_WS_USERNS_RESTRICT, says 1). A `sysctl` logs any
+// call, which must never come. Everything each is asked goes to <work>/log.
+async function sandboxMachine({ ubuntuProfile = true } = {}) {
+  const work = mkdtempSync(join(tmpdir(), 'wssbx-'));
+  const log = join(work, 'log'), restrict = join(work, 'restrict'), extra = join(work, 'extra-profiles'), loaded = join(work, 'loaded');
+  writeFileSync(restrict, '1\n');
+  mkdirSync(extra);
+  if (ubuntuProfile) writeFileSync(join(extra, 'bwrap-userns-restrict'), 'abi <abi/4.0>,\nprofile bwrap /usr/bin/bwrap { userns, }\n');
+  const s = setup({ env: { HARNESS_WS_USERNS_RESTRICT: restrict, HARNESS_WS_APPARMOR_EXTRA: extra } });
+  const sys = s.w.system(ID);
+  const tool = (name, body) => writeFileSync(join(sys, name), `#!/bin/bash\n${body}\n`, { mode: 0o755 });
+  for (const t of ['bwrap', 'socat']) rmSync(join(sys, t));
+  writeFileSync(join(dirname(sys), 'path'), await bareImage(['jq', 'readlink']));
+  tool('sudo', `[ "$1" = -n ] && shift\n[ -e ${join(work, 'no-sudo')} ] && { echo "sudo: a password is required" >&2; exit 1; }\n[ "$1" = true ] && exit 0\necho "sudo $*" >> ${log}\nexec "$@"`);
+  tool('apt-get', `echo "apt-get $*" >> ${log}\ncase "$1" in\n  update) : > ${join(work, 'updated')} ;;\n  -s) [ -e ${join(work, 'updated')} ] || { echo "E: Unable to locate package bubblewrap" >&2; exit 100; }; echo "NOTE: This is only a simulation!"; for p in libwrap0 bubblewrap socat; do echo "Inst $p (1.0 Ubuntu:24.04/noble [amd64])"; done ;;\n  download) shift; for p; do echo deb > "\${p}_1.0_amd64.deb"; done ;;\nesac`);
+  const bwrap = `#!/bin/bash\n[ -e ${loaded} ] && exit 0\necho "bwrap: setting up uid map: Permission denied" >&2; exit 1\n`;
+  writeFileSync(join(work, 'bwrap'), bwrap, { mode: 0o755 });
+  writeFileSync(join(work, 'socat'), '#!/bin/bash\nexit 0\n', { mode: 0o755 });
+  tool('dpkg', `echo "dpkg $* DEBIAN_FRONTEND=$DEBIAN_FRONTEND" >> ${log}\ncp ${join(work, 'bwrap')} ${join(work, 'socat')} ${sys}/`);
+  tool('apparmor_parser', `echo "apparmor_parser $*" >> ${log}\n[ -e ${join(work, 'parser-refuses')} ] && { echo "apparmor_parser: Unable to replace \\"bwrap\\".  Permission denied; attempted to load a profile while confined?" >&2; exit 1; }\n: > ${loaded}`);
+  tool('sysctl', `echo "sysctl $*" >> ${log}`);
+  await s.cli('workstation:connect', 'p', ID);
+  const calls = () => (existsSync(log) ? readFileSync(log, 'utf8').trim().split('\n').filter(Boolean) : []);
+  const fresh = () => writeFileSync(log, '');
+  return { s, sys, work, log, restrict, extra, loaded, calls, fresh, debs: s.at('harness', 'tools', 'debs', 'sandbox') };
+}
+
+test('ASS-563 AC1: without bwrap and socat setup installs both from packages kept under ~/harness/tools/debs/sandbox (with the dependencies the machine lacks), saying so in did; a rerun with them there changes nothing; after a restart they come from the kept packages', async () => {
+  const m = await sandboxMachine();
+  const out = JSON.parse((await m.s.cli('workstation:setup', 'p', ID)).stdout);
+  assert.equal(out.setup.ok, true, out.setup.error);
+  assert.deepEqual(out.setup.sandbox, { ok: true });
+  assert.ok(out.setup.did.includes(`installed bubblewrap socat for Claude Code's sandbox (sudo dpkg -i, the packages kept in ${m.debs})`), out.setup.did.join('\n'));
+  assert.deepEqual(readdirSync(m.debs).sort(), ['bubblewrap_1.0_amd64.deb', 'libwrap0_1.0_amd64.deb', 'socat_1.0_amd64.deb']);
+  const debs = ['bubblewrap', 'libwrap0', 'socat'].map(p => join(m.debs, `${p}_1.0_amd64.deb`)).join(' ');
+  assert.deepEqual(m.calls().filter(c => !c.startsWith('apparmor_parser') && !c.startsWith('sudo apparmor_parser')), [
+    'apt-get -s install --no-install-recommends bubblewrap socat', 'sudo apt-get update -qq', 'apt-get update -qq',
+    'apt-get -s install --no-install-recommends bubblewrap socat', 'apt-get download libwrap0 bubblewrap socat',
+    `sudo env DEBIAN_FRONTEND=noninteractive dpkg -i ${debs}`, `dpkg -i ${debs} DEBIAN_FRONTEND=noninteractive`]);
+  assert.ok(m.s.at('harness', 'tools', 'debs', 'sandbox').startsWith(m.s.home), 'kept under $HOME');
+
+  // A rerun with both there: nothing installed, nothing loaded, nothing said.
+  m.fresh();
+  const again = JSON.parse((await m.s.cli('workstation:setup', 'p', ID)).stdout);
+  assert.deepEqual(m.calls(), []);
+  assert.deepEqual(again.setup.did, []);
+  assert.deepEqual(again.setup.failed, []);
+  assert.deepEqual(again.setup.sandbox, { ok: true });
+
+  // A restart: both gone again (only /home survives), and the profile with them; installed from the kept packages, nothing downloaded.
+  for (const t of ['bwrap', 'socat']) rmSync(join(m.sys, t));
+  rmSync(m.loaded);
+  m.fresh();
+  const after = JSON.parse((await m.s.cli('workstation:setup', 'p', ID)).stdout);
+  assert.deepEqual(after.setup.sandbox, { ok: true });
+  assert.deepEqual(m.calls().filter(c => /dpkg|apt-get/.test(c)), [`sudo env DEBIAN_FRONTEND=noninteractive dpkg -i ${debs}`, `dpkg -i ${debs} DEBIAN_FRONTEND=noninteractive`]);
+});
+
+test('ASS-563 AC2: with apparmor_restrict_unprivileged_userns at 1 setup loads Ubuntu\'s own bwrap-userns-restrict when the apparmor package ships it, else a minimal profile allowing bwrap user namespaces; re-applied after every start; the sysctl never changed', async () => {
+  const m = await sandboxMachine();
+  const ubuntu = join(m.extra, 'bwrap-userns-restrict');
+  const out = JSON.parse((await m.s.cli('workstation:setup', 'p', ID)).stdout);
+  assert.deepEqual(out.setup.sandbox, { ok: true });
+  assert.deepEqual(m.calls().filter(c => /apparmor/.test(c)), [`sudo apparmor_parser -r ${ubuntu}`, `apparmor_parser -r ${ubuntu}`]);
+  assert.ok(out.setup.did.includes(`loaded bwrap's AppArmor profile (${ubuntu}) allowing it user namespaces (apparmor_restrict_unprivileged_userns is 1)`), out.setup.did.join('\n'));
+  // A rerun: bwrap makes its sandbox, nothing loaded again.
+  m.fresh();
+  assert.deepEqual(JSON.parse((await m.s.cli('workstation:setup', 'p', ID)).stdout).setup.did, []);
+  assert.deepEqual(m.calls(), []);
+  // A start drops the kernel's profiles: the next setup loads it again.
+  rmSync(m.loaded);
+  const restarted = JSON.parse((await m.s.cli('workstation:setup', 'p', ID)).stdout);
+  assert.deepEqual(restarted.setup.sandbox, { ok: true });
+  assert.deepEqual(m.calls().filter(c => /^apparmor_parser/.test(c)), [`apparmor_parser -r ${ubuntu}`]);
+
+  // No Ubuntu profile shipped: the minimal one, written under ~/harness/tools/apparmor, for bwrap's own path.
+  rmSync(ubuntu);
+  rmSync(m.loaded);
+  m.fresh();
+  const minimal = JSON.parse((await m.s.cli('workstation:setup', 'p', ID)).stdout);
+  const file = m.s.at('harness', 'tools', 'apparmor', 'bwrap');
+  assert.deepEqual(minimal.setup.sandbox, { ok: true });
+  assert.deepEqual(m.calls().filter(c => /^apparmor_parser/.test(c)), [`apparmor_parser -r ${file}`]);
+  const bwrapPath = (await run('bash', ['-c', `readlink -f ${join(m.sys, 'bwrap')}`])).stdout.trim();
+  assert.equal(readFileSync(file, 'utf8'), `abi <abi/4.0>,\ninclude <tunables/global>\n\nprofile bwrap ${bwrapPath} flags=(unconfined) {\n  userns,\n}\n`);
+
+  // The sysctl is read, never written.
+  assert.equal(readFileSync(m.restrict, 'utf8'), '1\n');
+  assert.ok(!readFileSync(m.log, 'utf8').includes('sysctl'));
+  assert.ok(!m.s.w.sudoCalls(ID).some(c => /sysctl/.test(c)));
+});
+
+test('ASS-563 AC3: an install without passwordless sudo, or apparmor_parser refusing the profile, is said in setup.sandbox.why and in failed (marked sandbox), and setup stays ok for the other targets', async () => {
+  const m = await sandboxMachine();
+  writeFileSync(join(m.work, 'no-sudo'), '');
+  let r = await m.s.result('workstation:setup', 'p', ID);
+  assert.equal(r.code, 0, r.err);
+  let e = m.s.entry().setup;
+  assert.equal(e.ok, true);
+  assert.equal(e.error, null, 'not a setup failure');
+  assert.deepEqual(e.failed, [{ what: 'bubblewrap socat', why: 'not installed, and there is no passwordless sudo to install them for Claude Code\'s sandbox', sandbox: true }]);
+  assert.equal(e.sandbox.ok, false);
+  assert.match(e.sandbox.why, /no passwordless sudo to install them/);
+  assert.match(r.err, /workstation setup: bubblewrap socat: not installed, and there is no passwordless sudo/);
+
+  // Installed, but the profile refused (as inside a container that can't load AppArmor policy): Ubuntu's, then the minimal one.
+  rmSync(join(m.work, 'no-sudo'));
+  writeFileSync(join(m.work, 'parser-refuses'), '');
+  r = await m.s.result('workstation:setup', 'p', ID);
+  assert.equal(r.code, 0, r.err);
+  e = m.s.entry().setup;
+  assert.equal(e.ok, true);
+  assert.equal(e.error, null);
+  assert.deepEqual(e.failed.map(f => [f.what, f.sandbox]), [["bwrap's AppArmor profile", true]]);
+  assert.match(e.failed[0].why, /bwrap-userns-restrict: apparmor_parser refused it: apparmor_parser: Unable to replace "bwrap"\.  Permission denied; .*tools\/apparmor\/bwrap: apparmor_parser refused it/);
+  assert.equal(e.sandbox.ok, false);
+  assert.match(e.sandbox.why, /^bwrap could not make a sandbox: bwrap: setting up uid map: Permission denied \(bwrap's AppArmor profile: .*apparmor_parser refused it/);
+
+  // With no passwordless sudo the profile can't be loaded either: said so.
+  writeFileSync(join(m.work, 'no-sudo'), '');
+  await m.s.cli('workstation:setup', 'p', ID);
+  e = m.s.entry().setup;
+  assert.equal(e.ok, true);
+  assert.match(e.sandbox.why, /no passwordless sudo to load a profile allowing bwrap user namespaces/);
+
+  // A real failure besides: setup fails as before, its error naming that alone.
+  m.s.w.mark(ID, 'docker-broken');
+  r = await m.s.result('workstation:setup', 'p', ID);
+  assert.equal(r.code, 1);
+  e = m.s.entry().setup;
+  assert.equal(e.ok, false);
+  assert.match(e.error, /^docker: /);
+  assert.doesNotMatch(e.error, /AppArmor/);
 });

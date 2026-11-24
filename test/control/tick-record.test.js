@@ -14,7 +14,7 @@ const edit = (file, change) => { const json = JSON.parse(readFileSync(file, 'utf
 
 test('tick: the local-testing step records its test run\'s verdict on the variation, with a timestamp, then moves it on', async () => {
   const f = controlFixture();
-  edit(join(f.dir, 'engines', 'example-development', 'state-engine.json'), e => { e.steps = e.steps.map(s => (s.id === 'local-testing' ? { ...s, 'record-output-as': 'local-testing' } : s)); });
+  edit(join(f.dir, 'engines', 'example-development', 'workflow.yaml'), e => { e.steps = e.steps.map(s => (s.id === 'local-testing' ? { ...s, 'record-output-as': 'local-testing' } : s)); });
   edit(join(f.dir, 'projects', 'p', 'sprints', 'sprint-10', 'sprint.json'), s => { s.features[0].variations[0]['harness-status'] = hs('local-testing'); s.features[0]['ticket-system-status'] = 'In Progress'; s.features[0].variations[0]['local-testing'] = { 'number-of-relevant-automated-tests': 2 }; });
   process.env.FAKE_OUTPUT = '{"is-approved":true,"summary":"every criterion passed"}';
   try {
@@ -38,7 +38,7 @@ test('tick: the local-testing step records its test run\'s verdict on the variat
 // ASS-107: Blocked keeps every run of its sub-engine — what it found, what it tried, where it ended, where the ticket came from — for the next stay to learn from.
 test('tick: a step with append-output-to adds its run\'s output, where the run ended and where the ticket came from, to the variation\'s list, then moves it on', async () => {
   const f = controlFixture();
-  edit(join(f.dir, 'engines', 'example-development', 'state-engine.json'), e => { e.steps = e.steps.map(s => (s.id === 'local-testing' ? { ...s, 'append-output-to': 'blocks' } : s)); });
+  edit(join(f.dir, 'engines', 'example-development', 'workflow.yaml'), e => { e.steps = e.steps.map(s => (s.id === 'local-testing' ? { ...s, 'append-output-to': 'blocks' } : s)); });
   edit(join(f.dir, 'projects', 'p', 'sprints', 'sprint-10', 'sprint.json'), s => {
     const v = s.features[0].variations[0];
     v['harness-status'] = hs('local-testing'); s.features[0]['ticket-system-status'] = 'In Progress';
@@ -87,7 +87,7 @@ test('tick: a run working for a ticket whose earlier Blocked runs were kept is d
 // ASS-235: whether a run's output was kept lives on the ticket (the entry carries the run's id), not in control's memory — a restarted control, its memory fresh, keeps it no second time; a new run keeps its own.
 test('tick: a run whose output was recorded and appended is not kept again after a restart (fresh memory); a new run of the step keeps its own', async () => {
   const f = controlFixture();
-  edit(join(f.dir, 'engines', 'example-development', 'state-engine.json'), e => { e.steps = e.steps.map(s => (s.id === 'local-testing' ? { ...s, 'record-output-as': 'local-testing', 'append-output-to': 'blocks' } : s)); });
+  edit(join(f.dir, 'engines', 'example-development', 'workflow.yaml'), e => { e.steps = e.steps.map(s => (s.id === 'local-testing' ? { ...s, 'record-output-as': 'local-testing', 'append-output-to': 'blocks' } : s)); });
   edit(join(f.dir, 'projects', 'p', 'sprints', 'sprint-10', 'sprint.json'), s => {
     Object.assign(s.features[0].variations[0], { 'harness-status': hs('local-testing'), 'gate-when-leaving-state': ['example-development/local-testing'],
       'state-changes': [{ 'from-state': 'committed', 'to-state': 'local-testing', timestamp: '2026-10-11T10:00:00Z', 'agent-dispatch-log': [], 'work-is-done': false }] });

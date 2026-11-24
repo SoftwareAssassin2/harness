@@ -34,8 +34,19 @@
 // the call's exit is sent (AC4): an agent reads its own writes there as soon
 // as agent.sh returns. A copy that fails is said on the call's stderr, the
 // exit code the command's own.
+//
+// ASS-536: a Substrate sandbox's agents reach it the same way, at
+// http://host.docker.internal:<port> from the Mac's cluster, or at its
+// cluster's harness-mac Service from a workstation's or cloud VM's (the
+// machine's relay onto its connection's reverse forward), each through an
+// egress rule of the sandbox's own (substrate/sandbox.bash), with a token
+// substrate:sandbox-up issued it and bound, here, under the sandbox's machine
+// name (substrate:<project>:<machine>:<actor>); substrate:sandbox-delete
+// revokes it. Its /mnt/ticket is a copy too (ASS-535), so after each call for
+// such a binding the copy is brought up to date (substrate:sandbox-sync-ticket)
+// before the exit is sent, as a workstation's is.
 import http from 'node:http';
-import { spawn } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { readFileSync } from 'node:fs';
 import { createHash, timingSafeEqual } from 'node:crypto';
@@ -43,7 +54,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { flattenSprint } from './rank.js';
 import { syncTicketCopy } from './machine-workstation.js';
-import { remoteName } from './machine.js';
+import { remoteName, onSandbox } from './machine.js';
 import { dataDir } from '../data-folder.js';
 
 const ALLOW = JSON.parse(readFileSync(join(import.meta.dirname, 'forwarder-allowlist.json'), 'utf8'));
@@ -122,8 +133,8 @@ function isFastTracked(projects, binding) {
 // SIGTERMed. Rejects when the port cannot be bound.
 // ASS-509: the commands that bring a ticket branch's base in before they run (automated-tests:verify-success,
 // ci-checks:verify: rebase or merge, then push) do so only when told CATCH_UP_BASE=1. Through the forwarder that
-// is control's own run of the step — the grouped Build's Automated Testing and CI Checks are vm steps, so their
-// command comes here too — told apart from an agent's call by there being no agent of the variation at work: while
+// is control's own run of the step — the grouped Build's Automated Testing is a vm step, so its command comes
+// here too (CI Checks was one until ASS-552 removed it; ci-checks:verify run by hand is told the same way) — told apart from an agent's call by there being no agent of the variation at work: while
 // Generate Solution or Address Merge Request Feedback runs, the call stays read-only (no push of the agent's
 // unpushed commits, no pipeline started, no approval reset beneath it). Every other call never has it.
 const CATCH_UP = new Set(['automated-tests:verify-success', 'ci-checks:verify']);
@@ -165,6 +176,14 @@ export function startForwarder({ root, env = process.env, port, log = () => {} }
       child.on('error', error => res.end(`${JSON.stringify({ e: Buffer.from(`${error.message}\n`).toString('base64'), exit: 127 })}\n`));
       const exit = (code, signal) => `${JSON.stringify({ exit: code ?? (signal === 'SIGKILL' ? 137 : 143) })}\n`;
       child.on('close', (code, signal) => {
+        // ASS-536: a sandbox's ticket copy, through its command server.
+        if (onSandbox(a.vm)) {
+          execFile(join(root, 'agent.sh'), ['substrate:sandbox-sync-ticket', a.binding.project, a.binding.ticket, a.binding.variation], { env, timeout: 120_000 }, (error, _out, stderr) => {
+            if (error) { log('forwarder', `SYNC ${a.vm} failed: ${(stderr || error.message).trim()}`); send('e')(Buffer.from(`agent.sh: the ticket folder's copy in the sandbox could not be brought up to date: ${(stderr || error.message).trim()}\n`)); }
+            res.end(exit(code, signal));
+          });
+          return;
+        }
         // ASS-481: a cloud VM's machine (cloud-vm:…) has its ticket copy as a workstation's has.
         if (!remoteName(a.vm)) { res.end(exit(code, signal)); return; }
         syncTicketCopy(remoteName(a.vm), a.binding['ticket-folder'], { env })

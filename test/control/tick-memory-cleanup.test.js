@@ -14,7 +14,7 @@ const edit = (file, change) => { const json = JSON.parse(readFileSync(file, 'utf
 
 function cleanupFixture({ background = true } = {}) {
   const f = controlFixture();
-  edit(join(f.dir, 'engines', 'example-development', 'state-engine.json'), e => {
+  edit(join(f.dir, 'engines', 'example-development', 'workflow.yaml'), e => {
     e['check-memory-interval-seconds'] = 600;
     e['check-memory-steps'] = [{ id: 'check-memory', sequence: 1, action: { type: 'state-engine', engine: 'investigate-gap' }, 'exit-events': [{ condition: { 'is-done': true } }] }];
   });

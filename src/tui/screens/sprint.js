@@ -3,12 +3,15 @@ import { progressBar, stateColor } from '../progress.js';
 import { runsBefore } from '../since.js';
 import { boxTable, lastStart, tableLayout } from '../table.js';
 import { link, visible, clip } from '../text.js';
-import { workedByHand, tokenSpend, testCounts } from '../ticket.js';
+import { workedByHand, tokenSpend } from '../ticket.js';
+import { placeOf, machineCell, runsCell } from '../places.js';
 import { below, headerLines, platform } from './frame.js';
-import { usesWorkstations, workstationsOf, cloudVmsOf } from '../../control/dev-environments.js';
-import { NONE, agentLines, liveAssignments, ticketMarks, sprintMark, markDot, GLYPHS, move, green, red, gold, gray, sprintTickets, statusCell, ticketAgents, chatSpend, seatPlan, runsScript } from './shared.js';
+import { QUEUE_KEY } from './queue.js';
+import { cloudVmsOf } from '../../control/dev-environments.js';
+import { NONE, agentLines, liveAssignments, ticketMarks, sprintMark, markDot, GLYPHS, move, red, gold, gray, sprintTickets, statusCell, ticketAgents, chatSpend, seatPlan, runsScript, since } from './shared.js';
+import { planningFocusOn } from '../../control/planning-focus-file.js';
 import { openTicket } from './ticket.js';
-import { slotKind } from '../../control/plan.js';
+import { poolOf } from '../../control/plan.js';
 import { enginesOf } from '../status.js';
 
 // ASS-437: no Build or MR column — a ticket's branch, worktree and merge requests are on its screen's Merge
@@ -18,21 +21,30 @@ import { enginesOf } from '../status.js';
 // header starts with the same four-cell indent: centered (boxTable) over the rest of the column, over the text.
 // ASS-488: no Assignee column — its width goes to the others through tableLayout; the assignee stays the
 // waited-on "(<first name>)" suffix (waitingWho), the UNASSIGNED mark and the ticket screen's.
+// ASS-559: no Dev or Testing column — each acceptance criterion's dev and testing status (and the automated tests'
+// count Dev carried) are on the ticket screen's Acceptance criteria tab — and in their place Machine and Runs in
+// (places.js): the machine the variation's current step is on and how it runs there, in place of the seat column's
+// 💺 ⛅ 🌐 📦 marks and ASS-535's "· sandbox on <machine>" after the title.
 const PRIORITY_CELLS = 3;
 const PRIORITY_CAP = 999;
-const TABLE_HEADERS = [`${' '.repeat(PRIORITY_CELLS + 1)}Ticket`, 'Status', 'Points', 'Dev', 'Testing', 'Total Token Spend', 'Agents'];
+// ASS-559: "Spend" (was "Total Token Spend", the ticket screen's field's name) leaves the two new columns room in 120.
+const TABLE_HEADERS = [`${' '.repeat(PRIORITY_CELLS + 1)}Ticket`, 'Status', 'Points', 'Machine', 'Runs in', 'Spend', 'Agents'];
 // The Ticket column is the most important one (ASS-207): it keeps at least the
 // key and TITLE_CHARS characters of title, Agents giving up its width to leave
-// room first (Health did before it, until ASS-437 took that column) — then Status (ASS-326), re-wrapping its lines narrower
+// room first (Health did before it, until ASS-437 took that column) — then Machine and Runs in (ASS-559: the id under
+// its label, the short label, then cut with an ellipsis), then Status (ASS-326), re-wrapping its lines narrower
 // (statusCell) rather than letting the grid run off the screen. Declared after
 // TABLE_HEADERS, which SHRINK reads.
 const TITLE_CHARS = 24;
-const SHRINK = ['Agents', 'Status'].map(h => TABLE_HEADERS.indexOf(h));
+const SHRINK = ['Agents', 'Machine', 'Runs in', 'Status'].map(h => TABLE_HEADERS.indexOf(h));
+// ASS-559: Machine and Runs in shrink first only as far as "GCP workstation" (the id then under it) and "hibernated"
+// still read whole (tableLayout's floors); past that Status gives up width, and only then are they cut.
+const FLOORS = { [TABLE_HEADERS.indexOf('Machine')]: 'GCP workstation'.length, [TABLE_HEADERS.indexOf('Runs in')]: 'hibernated'.length };
 // The Ticket column's floor: over the rows, the width of the key/icon prefix
 // plus TITLE_CHARS title characters (or the whole title if shorter), and one
 // more for the ellipsis when the title is cut. Measured off the already-built
 // Ticket cell's first line and its title, so the prefix (the priority's three
-// cells and a blank, ASS-454, the five one-cell icon columns, the two-cell 🤖/💻 (ASS-456) and the two-cell seat, PAUSED or UNASSIGNED, the linked key: see
+// cells and a blank, ASS-454, the five one-cell icon columns, the two-cell 🤖/💻 (ASS-456; ASS-559: no seat column after it), PAUSED or UNASSIGNED, the linked key: see
 // ticketRows) is not re-derived. A held row's cell is two lines (ASS-360): its
 // "↳ AWAITING" line (ASS-364; was WAITING ON), never cut, floors the column at its own width alone, so
 // it widens the column only when wider than the first line's floor; so does a
@@ -101,13 +113,13 @@ function layout(state, { columns = 0, rows = Infinity, now = 0 }) {
   const { tickets, steps, done } = sprintTickets(state);
   const seats = seatPlan(state);
   const { rows: grid, place } = withEmptySeats(tickets, seats);
-  const bottom = below(state) + Math.max(1, platform(state, columns, now).length);
-  const settings = state.projects[state.project]?.devEnvironments;
-  const remote = usesWorkstations(settings?.mode);
-  const key = iconKey(columns, Boolean(remote && workstationsOf(settings).length), Boolean(remote && cloudVmsOf(settings).length));
+  // ASS-573: and the blank line render (app.js) keeps between the key and the footer's status lines.
+  const status = platform(state, columns, now).length;
+  const bottom = below(state) + Math.max(1, status) + (status ? 1 : 0);
+  const key = iconKey(columns);
   const free = rows - headerLines(state, columns, now).length - bottom - 5 - key.length;
-  const cells = ticketRows(grid, liveAssignments(state), steps, state.projects[state.project]?.collaborations, ticketMarks(state, tickets), seats, t => runsScript(state, t));
-  const fit = { columns, stretch: 0, min: ticketFloor(cells, grid), shrink: SHRINK };
+  const cells = ticketRows(grid, liveAssignments(state), steps, state.projects[state.project]?.collaborations, ticketMarks(state, tickets), placesOf(state, seats), t => runsScript(state, t));
+  const fit = { columns, stretch: 0, min: ticketFloor(cells, grid), shrink: SHRINK, floors: FLOORS };
   const ticketGrid = { rows: tableLayout(TABLE_HEADERS, cells, fit).cells, bodyHeight: free - 4 };
   const [selected, scroll] = gridAt(state, ticketGrid, grid, done, steps);
   const selectable = tickets.length > 0;   // ASS-451: empty seat rows alone — nothing to select
@@ -123,7 +135,7 @@ function layout(state, { columns = 0, rows = Infinity, now = 0 }) {
 // green under the last Done row (its step is-done), when other rows follow, labelled
 // "in progress ↓ · ↑ done" like the blue one (ASS-371); solid blue, labelled,
 // over the first planning-pool row below the last in-progress-pool one
-// (slotKind; rows in neither pool — done, blocked, queued — are skipped).
+// (poolOf; rows in neither pool — done, blocked, queued — are skipped).
 // Every other line between rows stays dashed. Each label reads "<section below> ↓ · ↑
 // <section above>", each side's name followed by its row count (ASS-426, boundaries).
 const DONE_LINE = { color: '32', below: 'in progress', above: 'done' };
@@ -143,7 +155,7 @@ const isQa = t => (t.status?.chain ?? [{ step: t.step }]).some(l => l.step?.['is
 // before that ticket row that belong below the line (every one under the green and purple lines; the planning ones
 // under the blue line, the in-progress ones staying above it). No `place`: the ticket rows are the grid's.
 function boundaries(tickets, place = i => i) {
-  const kinds = tickets.map(t => slotKind(t.step, t.status));
+  const kinds = tickets.map(t => poolOf(t.step, t.status));
   const doneEnd = tickets.findLastIndex(t => t.step?.['is-done'] === true) + 1;
   const qaEnd = tickets.findLastIndex(isQa) + 1;
   const progress = kinds.lastIndexOf('progress');
@@ -168,7 +180,7 @@ const isEmptySeat = row => row?.emptySeat != null;
 // withEmptySeats(tickets, seats) — { rows, place }: `rows`, the grid's rows, the tickets (sprintTickets' order)
 // with each free seat's { emptySeat: kind } among them: the in-progress ones right after the last row holding an
 // in-progress seat (seats.progress), or with none at the start of the in-progress section — the first
-// in-progress-pool row (slotKind) under the done and QA rows, else the first planning-pool row there, else just
+// in-progress-pool row (poolOf) under the done and QA rows, else the first planning-pool row there, else just
 // under them; the planning ones right after the last row holding a planning seat (seats.planning) and never above
 // the in-progress ones, or with none at the start of the planning section — the first planning-pool row at or
 // after the in-progress ones, else just after the last in-progress-pool row and them. Every ticket row keeps its
@@ -177,7 +189,7 @@ const isEmptySeat = row => row?.emptySeat != null;
 export function withEmptySeats(tickets, { progress = [], planning = [], free = {} } = {}) {
   if (!free.progress && !free.planning) return { rows: tickets, place: i => i };
   const id = t => `${t.key} ${t.variation?.name}`;
-  const kinds = tickets.map(t => slotKind(t.step, t.status));
+  const kinds = tickets.map(t => poolOf(t.step, t.status));
   const top = Math.max(tickets.findLastIndex(t => t.step?.['is-done'] === true), tickets.findLastIndex(isQa)) + 1;
   const first = (kind, from) => kinds.findIndex((k, i) => i >= from && k === kind);
   const lastHolder = held => tickets.findLastIndex(t => held.includes(id(t)));
@@ -280,13 +292,24 @@ export const priorityPrefix = (priority, manual = false) => {
   const text = priority == null || priority === '' ? '' : (Number.isFinite(n) ? String(Math.min(n, PRIORITY_CAP)) : String(priority)).slice(0, PRIORITY_CELLS);
   return `${' '.repeat(PRIORITY_CELLS - text.length)}${text && manual ? byHand(text) : text} `;
 };
-// A variation holding a planning or in-progress seat (ASS-357): an emoji, two
-// cells wide (text.js visible counts it so), its column two blanks without.
+// An empty seat row's mark (ASS-451), dim. ASS-559: no ticket row is marked with a seat any more (💺 a VM or planning
+// seat, ASS-357; ⛅ a workstation's, ASS-469; 🌐 a cloud VM's, ASS-481; 📦 a Substrate sandbox, ASS-535): the Machine and
+// Runs in columns say where each runs.
 const SEAT = '💺';
-// ASS-469: a variation in progress holding a workstation seat (control's seats.json): ⛅, two cells too, in 💺's place.
-const WS_SEAT = '⛅';
-// ASS-481 AC6: a variation in progress holding a cloud VM seat: 🌐, two cells too, distinct from 💺 and ⛅.
-const CLOUD_SEAT = '🌐';
+
+// placesOf(state, seats) — "<key> <variation>" → where that sprint variation runs (places.js placeOf), from seatPlan's
+// `seats` (the planner's holders and targets, control's seats.json records) and the project's substrate.json checks
+// and cloud VMs; a ticket row's own sandbox record is read by placeOf. On a past day nobody is seated (seatPlan), so
+// only a parked sandbox's record would show: none either — a past day shows no live state.
+function placesOf(state, seats) {
+  const project = state.projects[state.project];
+  const cloudVms = new Set(cloudVmsOf(project?.devEnvironments).map(w => w.id));
+  return t => {
+    if (state.day) return null;
+    const id = `${t.key} ${t.variation.name}`;
+    return placeOf(t, { held: seats.holders.has(id) || seats.local.has(id), records: seats.records, planned: seats.targets.get(id) ?? null, live: project?.substrate ?? {}, cloudVms });
+  };
+}
 
 // The key under the ticket grid (ASS-259): the priority the rows start with
 // (ASS-454), in bright magenta when set by hand, then each of the rows' glyphs as they
@@ -299,18 +322,13 @@ const KEY = [
   [dim(GLYPHS.step), 'step'], [dim(GLYPHS.features), 'feature'], [dim(GLYPHS.bugs), 'bug'], [dim(GLYPHS.spikes), 'spike'],
   [dim(GLYPHS.hand), 'by hand'], [dim(GLYPHS.fast), 'fast-tracked'], [markDot(GLYPHS.mark, 'change'), 'requirements change'],
   [markDot(GLYPHS.mark, 'needed'), 'needs you'], [markDot(GLYPHS.mark, 'assumed'), 'assumption'], [GLYPHS.agent, 'agent working'], [GLYPHS.script, 'script running'],
-  [SEAT, 'holds a seat (planning or in progress)'],
   [PAUSED, 'paused'], [UNASSIGNED, 'reassigned away'], [gold('AWAITING'), 'a dependency not done yet'], // ASS-364: was WAITING ON
   [gold('AWAITING MERGE'), 'MRs to merge, in order'],
+  [QUEUE_KEY, 'seat queue'],   // ASS-566: the key that opens it (queue.js)
 ].map(([glyph, meaning]) => `${glyph}${dim(` ${meaning}`)}`);
-// ASS-469: ⛅'s entry, after 💺's, only for a project whose tickets run on GCP workstations (`workstations`).
-// ASS-481 AC6: 🌐's after it, only for a project whose tickets run on cloud VMs (`cloudVms`).
-const WS_KEY = `${WS_SEAT}${dim(' holds a workstation seat')}`;
-const CLOUD_KEY = `${CLOUD_SEAT}${dim(' holds a cloud VM seat')}`;
-function iconKey(columns, workstations = false, cloudVms = false) {
+function iconKey(columns) {
   const lines = [];
-  const entries = KEY.flatMap(e => (e.startsWith(SEAT) ? [e, ...(workstations ? [WS_KEY] : []), ...(cloudVms ? [CLOUD_KEY] : [])] : [e]));
-  for (const entry of entries) {
+  for (const entry of KEY) {
     const last = lines.at(-1);
     if (last != null && visible(last) + 2 + visible(entry) <= columns) lines[lines.length - 1] = `${last}  ${entry}`;
     else lines.push(entry);
@@ -322,7 +340,8 @@ function iconKey(columns, workstations = false, cloudVms = false) {
 // statusCell, wrapped at its column's width (ASS-326). The Ticket cell leads with a square in that step's
 // progress-bar color, the deepest step's own when it has one (`steps` set its shade). Points come from the ticket (no assignee since ASS-488); Agents
 // lists its assignments from assignments.json (no Health since ASS-437: ai-feedback-short is the ticket screen's);
-// Total Token Spend its tokenSpend, the ticket's chat's spend (ASS-35) on its first variation's row alone.
+// Machine and Runs in where its current step runs (ASS-559: `places`, placesOf — blank when it runs on no machine);
+// Spend (ASS-559: was Total Token Spend) its tokenSpend, the ticket's chat's spend (ASS-35) on its first variation's row alone.
 // The Ticket cell starts with the ticket's priority in three cells and a blank (ASS-454: priorityPrefix, bright
 // magenta when set by hand — no Priority column, no 🪪); its text starts after that and five one-cell columns (ASS-259), each its
 // glyph (GLYPHS: East Asian Width N, no emoji, bar c1's █, Ambiguous: one cell
@@ -338,11 +357,8 @@ function iconKey(columns, workstations = false, cloudVms = false) {
 // two-cell column (ASS-456; c6's one-cell ⚉ before it): 🤖 while one or more agents
 // work on the row's ticket and variation (its Agents; one 🤖 however many), else 💻
 // while a script step runs on it (`scripts`: runsScript, the progress bar's and S
-// floor's rule — not at its gate, not held, not on a past day), else two blanks; then a
-// two-cell column, 💺 when the variation holds a planning or in-progress seat
-// (ASS-357: `seats`, seatPlan's holders — the planner's, none on a past day),
-// ⛅ instead for an in-progress seat on a GCP workstation (ASS-469: seatPlan's
-// kinds, control's seats.json; 💺 then a VM seat), 🌐 for one on a cloud VM (ASS-481). A
+// floor's rule — not at its gate, not held, not on a past day), else two blanks; then a blank and the text (ASS-559:
+// the two-cell seat column after it, 💺 ⛅ 🌐 📦, is gone — the Machine and Runs in columns say where it runs). A
 // paused variation's (is-paused) text starts "PAUSED " in blue; a ticket
 // reassigned away from the operator's account (ASS-345: ticket:sync's
 // reassigned, to another person or to nobody) "UNASSIGNED " in red in its
@@ -350,28 +366,28 @@ function iconKey(columns, workstations = false, cloudVms = false) {
 // dependencies hold (its `hold`, ASS-355: control's own predicate), paused too
 // or not, gets a second line (ASS-360; before it, "AWAITING" took PAUSED's
 // place on the first): "↳ AWAITING <KEY> (<who>), <KEY>" in gold (ASS-364) (waitingOn, waitingWho),
-// indented by the priority, icon and seat columns so the ↳ starts under the key — none
+// indented by the priority and icon columns so the ↳ starts under the key — none
 // on an UNASSIGNED row; an unheld row's cell stays one line. A variation at a
 // step with shows-merge-train whose merge requests await one in another
 // repository (mergeTrains, ASS-363) gets one more line, after any AWAITING
 // one and indented as it is: "↳ AWAITING MERGE <repo> <key> → <repo> <key>"
 // (awaitingMerge). iconKey says what each means, under the grid.
-// An empty seat row (ASS-451, withEmptySeats) is one line: blanks where the priority and icon columns are, a dim 💺
-// in the seat column, then "empty seat" in dim gray; every other cell blank.
-function ticketRows(tickets, assignments, steps, collaborations = {}, marks = { needed: new Set() }, { holders = new Set(), kinds = new Map() } = {}, scripts = () => false) {
-  const seatMark = id => (!holders.has(id) ? '  ' : kinds.get(id) === 'workstation' ? WS_SEAT : kinds.get(id) === 'cloud-vm' ? CLOUD_SEAT : SEAT);
+// An empty seat row (ASS-451, withEmptySeats) is one line: blanks where the priority and five icon columns are, a dim 💺
+// in the 🤖/💻 column, then "empty seat" in dim gray, starting where the tickets' text does; every other cell blank.
+function ticketRows(tickets, assignments, steps, collaborations = {}, marks = { needed: new Set() }, places = () => null, scripts = () => false) {
   return tickets.map(t => {
-    if (isEmptySeat(t)) return [`${priorityPrefix(null)}${' '.repeat(5)}  ${dim(SEAT)} ${dim(gray(EMPTY_SEAT))}`, ...TABLE_HEADERS.slice(1).map(() => '')];
+    if (isEmptySeat(t)) return [`${priorityPrefix(null)}${' '.repeat(5)}${dim(SEAT)} ${dim(gray(EMPTY_SEAT))}`, ...TABLE_HEADERS.slice(1).map(() => '')];
     // One line per assignment to this ticket and this row's variation (or to no
     // variation in particular).
     const agents = ticketAgents(assignments, t);
+    const place = places(t);   // ASS-559: where it runs (Machine, Runs in)
     const name = `${t.shownKey}: ${t.title}`;
     const icons = [
       t.step ? `${stateColor({ sequence: t.step.sequence, color: t.color }, steps)}${GLYPHS.step}\x1b[0m` : '',
       GLYPHS[t.kind] ?? '', workedByHand(t) ? GLYPHS.hand : '', t['fast-track'] === true ? GLYPHS.fast : '', sprintMark(marks, t),
     ];
     const working = agents.length ? GLYPHS.agent : scripts(t) ? GLYPHS.script : '  ';
-    const lead = `${priorityPrefix(t['manual-priority'] ?? t.priority, t['manual-priority'] != null)}${icons.map(icon => icon || ' ').join('')}${working}${seatMark(`${t.key} ${t.variation.name}`)} `;
+    const lead = `${priorityPrefix(t['manual-priority'] ?? t.priority, t['manual-priority'] != null)}${icons.map(icon => icon || ' ').join('')}${working} `;
     const held = t.reassigned ? `${UNASSIGNED} ` : t.variation['is-paused'] === true ? `${PAUSED} ` : '';
     const line = `${lead}${held}${t.url ? link(name, t.url) : name}`;
     const waits = !t.reassigned && t.hold?.waits?.length ? t.hold.waits : null;
@@ -381,30 +397,12 @@ function ticketRows(tickets, assignments, steps, collaborations = {}, marks = { 
       under.length ? [line, ...under] : line,
       statusCell(t, steps),
       String(t.points ?? NONE),
-      ...variationCells(t.variation),
+      machineCell(place),
+      runsCell(place),
       tokenSpend(t.variation, t.variation === t.variations?.[0] ? chatSpend(collaborations, t.key) : 0) ?? NONE,
       agentLines(agents),
     ];
   });
-}
-
-// A variation's Dev and Testing cells: a circle per acceptance criterion, Dev
-// with "x/y automated tests" beneath when both counts are known (testCounts).
-// (ASS-437: the Build and MR cells went to the ticket screen's Merge requests tab.)
-function variationCells(v) {
-  const criteria = v['acceptance-criteria'];
-  // One circle per criterion: green Passed, red Failed, gray otherwise.
-  const circles = field =>
-    (criteria?.length ? criteria.map(c => ({ Passed: green, Failed: red }[c[field]] ?? gray)('●')).join(' ') : NONE);
-  const tests = testCounts(v['local-testing']);
-  const dev = [
-    criteria?.length && circles('dev-status'),
-    tests && `${tests[0]}/${tests[1]} automated tests`,
-  ].filter(Boolean);
-  return [
-    dev.length ? dev : NONE,
-    circles('testing-status'),
-  ];
 }
 
 export function view(state, size) {
@@ -431,14 +429,42 @@ export function view(state, size) {
     scripts: list.filter(t => runsScript(state, t)).length }));
   return [
     ...progressBar(segments, { steps, columns }),
-    '',
+    focusLine(state.projects[state.project], columns, size.now ?? Date.now()),   // ASS-531: in the blank line under the bar
     ...table.slice(0, room),
     ...key,
   ];
 }
 
-// Its keys: ↑/↓ move the grid's selection, enter opens the selected ticket's screen.
+// ASS-531: the key that flips the project's focus on planning (project:set-planning-focus), listed in the ? menu
+// (app.js menuEntries) while the sprint screen is up.
+export const PLANNING_FOCUS_KEY = 'P';
+
+// focusLine(project, columns, now) — ASS-531: the focus-on-planning switch's state, one line under the progress bar
+// (the blank line there before): on, in gold, who turned it on and how long ago; off, a dim reminder of its key.
+export function focusLine(project, columns = Infinity, now = Date.now()) {
+  if (!project) return '';
+  if (!planningFocusOn(project)) return clip(dim(`${PLANNING_FOCUS_KEY} focus on planning: off`), columns);
+  const { by, at } = project.planningFocus;
+  const who = [by && `by ${by}`, Date.parse(at) <= now && `${since(at, now)} ago`].filter(Boolean).join(', ');
+  return clip(gold(`FOCUS ON PLANNING${who ? ` (${who})` : ''}: tickets at planning steps get seats and agents first · ${PLANNING_FOCUS_KEY} turns it off`), columns);
+}
+
+// flipPlanningFocus(state) — ASS-531: P on the sprint screen: the selected project's switch flipped on screen at once,
+// and `planningFocusRun`, the agent.sh argv main.js runs (project:set-planning-focus) — the file is the truth once it
+// has run (reloaded then). Not on a past day: the switch is today's.
+export function flipPlanningFocus(state) {
+  const project = state.projects[state.project];
+  if (!project || state.day) return state;
+  const on = !planningFocusOn(project);
+  const projects = state.projects.map((p, i) => (i === state.project ? { ...p, planningFocus: { ...(p.planningFocus ?? {}), on } } : p));
+  return { ...state, projects, planningFocusRun: ['project:set-planning-focus', project.id, on ? 'on' : 'off'] };
+}
+
+// Its keys: ↑/↓ move the grid's selection, enter opens the selected ticket's screen, P flips the focus on planning (ASS-531),
+// q opens the seat queue over the screen (ASS-566, queue.js; app.js closes it on q or esc).
 export function onKey(state, key, size, { step, sideways }) {
+  if (key.sequence === PLANNING_FOCUS_KEY && !key.ctrl && state.screen === 's') return flipPlanningFocus(state);
+  if (key.sequence === QUEUE_KEY && !key.ctrl && state.screen === 's') return { ...state, queueOpen: true };
   if (key.name === 'return' && state.screen === 's' && state.focus === 'tickets') {
     const { grid, selected } = layout(state, size);
     const ticket = selected == null || isEmptySeat(grid[selected]) ? null : grid[selected];

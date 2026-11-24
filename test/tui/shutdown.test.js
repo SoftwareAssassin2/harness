@@ -6,6 +6,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, chmodS
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { shutDown, ender, stillNamed, vmStopper, goldenBuilds } from '../../src/tui/shutdown.js';
+import { within, LOADED_MS } from '../support/until.js';
 
 // A child that exits when stopped, after `ms` — or never, with ms null.
 const child = (name, pid, ms) => {
@@ -36,14 +37,28 @@ test('shutDown kills a child that has not exited in time, and still sweeps the a
 });
 
 // ASS-193: a control asking for a restart (exit 75) has the dashboard exit with 75 only once everything else has stopped.
+// ASS-549: the other control stops when the test lets it (a promise the test resolves), not on a 30 ms timer the
+// test raced with a 15 ms one — on a loaded Mac the 15 ms timer could fire after the 30 ms one. The downloader is
+// let go first and given its turns to settle, so the check that nothing exited yet proves ender waits for EVERY child.
 test('ender shuts down once, waiting for every child, then exits with the first code asked for', async () => {
-  const other = child('control', 10, 30), downloader = child('downloader', 11, 5);
+  const held = (name, pid) => {
+    let done;
+    const c = { name, pid, stopped: false, exited: new Promise(resolve => { done = resolve; }) };
+    c.stop = () => { c.stopped = true; };
+    c.letGo = () => done();
+    return c;
+  };
+  const other = held('control', 10), downloader = held('downloader', 11);
   const exits = [];
-  const end = ender({ children: [other, downloader], agentPids: () => [], timeoutMs: 1000, alive: () => false, kill: () => {}, log: () => {} }, code => exits.push([code, other.stopped, downloader.stopped]));
+  const end = ender({ children: [other, downloader], agentPids: () => [], timeoutMs: LOADED_MS * 10, alive: () => false, kill: () => {}, log: () => {} }, code => exits.push([code, other.stopped, downloader.stopped]));
   const first = end(75), second = end(75);
   assert.equal(first, second);                                                // a second control's 75: the same shut-down
-  await new Promise(resolve => setTimeout(resolve, 15));
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual([other.stopped, downloader.stopped], [true, true]);        // both asked to stop
+  downloader.letGo();
+  for (let i = 0; i < 20; i++) await new Promise(resolve => setImmediate(resolve));
   assert.deepEqual(exits, []);                                                // the other control still stopping
+  other.letGo();
   await first;
   assert.deepEqual(exits, [[75, true, true]]);
   await end(0);
@@ -65,14 +80,15 @@ test('stillNamed counts the running controls a restart request names, so the das
 
 // ASS-417: a quit stops the harness's VMs; a restart leaves them. limactl is
 // a stub on PATH: instances are folders under $LIMA_HOME holding `status`
-// (and `stuck`: a graceful stop that never ends); every call is logged with
+// (and `stuck`: a graceful stop that never ends — ASS-545: it sleeps 600 s, far past the tests' hang guard, so a
+// test waiting on it fails at the guard, whatever the machine's speed); every call is logged with
 // the LIMA_HOME it ran under.
 const STUB = `#!/bin/bash
 echo "$LIMA_HOME $*" >> "$STUB_LOG"
 case "$1" in
   list) for d in "$LIMA_HOME"/*/; do [[ -d "$d" ]] && printf '%s\\t%s\\n' "$(basename "$d")" "$(cat "$d/status")"; done ;;
   stop) if [[ "$2" == -f ]]; then echo Stopped > "$LIMA_HOME/$3/status"
-        else [[ -f "$LIMA_HOME/$2/stuck" ]] && exec sleep 30; echo Stopped > "$LIMA_HOME/$2/status"; fi ;;
+        else [[ -f "$LIMA_HOME/$2/stuck" ]] && exec sleep 600; echo Stopped > "$LIMA_HOME/$2/status"; fi ;;
 esac
 exit 0
 `;
@@ -129,9 +145,9 @@ test('ASS-417 AC2/AC5: a restart (exit 75) stops no VM, and interrupts no golden
 
 test('ASS-417 AC1/AC5: a VM not stopped within the time limit is force-stopped (limactl stop -f)', async () => {
   const l = lima({ slow: 'stuck', quick: 'Running' }), said = [];
-  const started = Date.now();
-  await quitWith(l, { timeoutMs: 1500, said })(0);
-  assert.ok(Date.now() - started < 8000);
+  // ASS-545: within() is a hang guard only (LOADED_MS, 90 s: well above the 1.5 s limit plus a loaded Mac's
+  // limactl calls, well below the stuck stop's 600 s), in place of an 8 s limit.
+  assert.notEqual(await within(quitWith(l, { timeoutMs: 1500, said })(0)), `still running after ${LOADED_MS}ms`, 'the force-stop did not wait for the stuck stop');
   assert.ok(l.calls().includes(`${l.home} stop -f slow`), l.calls().join('\n'));
   assert.ok(!l.calls().includes(`${l.home} stop -f quick`));
   assert.deepEqual([l.status('slow'), l.status('quick')], ['Stopped', 'Stopped']);
@@ -144,11 +160,10 @@ test('ASS-417 AC3/AC5: Q pressed again while the VMs stop force-stops the rest a
   let end;
   end = ender({
     children: [], agentPids: () => [], alive: () => false, kill: () => {}, log: text => said.push(text),
-    vms: vmStopper({ env: l.env, timeoutMs: 60000, log: text => said.push(text), counted: n => { if (n === 2) setTimeout(() => end.force(), 200); } }),
+    vms: vmStopper({ env: l.env, timeoutMs: 600_000, log: text => said.push(text), counted: n => { if (n === 2) setTimeout(() => end.force(), 200); } }),
   }, code => exits.push(code));
-  const started = Date.now();
-  await end(0);
-  assert.ok(Date.now() - started < 5000, 'not the 60 s limit');
+  // ASS-545: a hang guard only (LOADED_MS, 90 s), in place of a 5 s limit; the limit is 10 minutes, far past it.
+  assert.notEqual(await within(end(0)), `still running after ${LOADED_MS}ms`, 'not the 10-minute limit');
   assert.deepEqual(exits, [0]);
   assert.deepEqual([l.status('a'), l.status('b')], ['Stopped', 'Stopped']);
   assert.deepEqual(said.slice(1).sort(), ['VM a force-stopped (Q pressed again)', 'VM b force-stopped (Q pressed again)']);

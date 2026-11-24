@@ -14,9 +14,10 @@ set -euo pipefail
 # both its arguments are `-`, a plan with no weekly cap — `auth-method` and
 # `org` claude auth status's authMethod and orgName (ASS-221: an api_key login
 # bills to that org's API key, not a subscription) — `as-of` now. The
-# dashboard shows it at the foot of the models box. A plain overwrite: `-`
+# dashboard shows it on the footer's first and third lines (ASS-566; at the foot of the models box before). A plain overwrite: `-`
 # leaves that field null, and keeping the last reading when a read fails is
-# control's to do, by passing it back. Fails, writing nothing, unless each
+# control's to do: a failed read is recorded with project:set-claude-usage-failure
+# (ASS-571), which keeps the figures; this overwrite, a good reading, clears it. Fails, writing nothing, unless each
 # percent is a number from 0 to 100, each time ISO 8601 UTC
 # (YYYY-MM-DDTHH:MM:SS[.fff]Z) and the project has a project.json.
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../json-file.bash"

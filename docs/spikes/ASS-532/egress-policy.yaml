@@ -1,0 +1,35 @@
+# ASS-532 spike: a ticket sandbox's egress policy (kubectl ate create
+# egress-policy <actor> -a harness-tickets -f). Anything not listed is denied.
+rules:
+# The model API and GitLab stand-ins, in cleartext so the gateway can inject
+# (an https rule injects too, but re-originates TLS and checks the upstream's
+# certificate, which a self-signed in-cluster echo fails).
+- http:
+    hostnames: ["echo.spike-echo.svc.cluster.local"]
+    ports: { numbers: [80] }
+    effects:
+      replaceHeaders:
+      - { header: x-api-key, credentialUri: "ate-secret://k8s.io/default/spike-creds/anthropic/key" }
+      - { header: PRIVATE-TOKEN, credentialUri: "ate-secret://k8s.io/default/spike-creds/gitlab/token" }
+      - { header: Authorization, prefix: "Basic ", credentialUri: "ate-secret://k8s.io/default/spike-creds/gitlab/basic" }
+# The same server over MITM https (to see what the gateway does with a
+# self-signed upstream).
+- https:
+    hostnames: ["echo.spike-echo.svc.cluster.local"]
+    ports: { numbers: [443] }
+    effects:
+      replaceHeaders:
+      - { header: x-api-key, credentialUri: "ate-secret://k8s.io/default/spike-creds/anthropic/key" }
+# Passthrough TLS (no inspection): the long-lived connection for the hibernate test.
+- tls_passthrough:
+    hostnames: ["echo.spike-echo.svc"]
+    ports: { numbers: [443] }
+# The Mac's forwarder, through Docker Desktop's host alias.
+- http:
+    hostnames: ["host.docker.internal"]
+    ports: { numbers: [18099] }
+# A public HTTPS host through MITM (no credential): shows the gateway's
+# re-originated TLS to a real upstream, and the actor trusting the gateway CA.
+- https:
+    hostnames: ["example.com"]
+    ports: { numbers: [443] }

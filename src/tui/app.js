@@ -7,10 +7,11 @@ import { boxRow } from './boxes.js';
 import { memoryOpened, confirmMemory } from './memory.js';
 import { featureOn } from './features.js';
 import { visible, clip, from, pad, markWords } from './text.js';
-import { PAUSABLE, updatedOf, headerLines, platform, holding } from './screens/frame.js';
+import { PAUSABLE, updatedOf, headerLines, platform, holding, withLoopCount } from './screens/frame.js';
 import { viewLog } from './screens/log.js';
 import { refining, projectAssignments, clamp, written, center, gray, MARK_LEGEND } from './screens/shared.js';
 import * as sprint from './screens/sprint.js';
+import { planningFocusOn } from '../control/planning-focus-file.js';
 import * as sprintFlow from './screens/sprint-flow.js';
 import * as backlog from './screens/backlog.js';
 import * as backlogFlow from './screens/backlog-flow.js';
@@ -25,13 +26,15 @@ import * as chat from './screens/chat.js';
 import * as memory from './screens/memory.js';
 import * as ticket from './screens/ticket.js';
 import * as performance from './screens/performance.js';
+import * as network from './screens/network.js';
+import { QUEUE_KEY, queueBox } from './screens/queue.js';
 
 // Screen keys, in menu order (ASS-23): each list beside its flow — s and S
 // the sprint and its flow (ASS-103), b and B the backlog and its flow. The
 // project and options screens, never built, are gone (ASS-262).
 const SCREENS = {
   s: 'sprint', S: 'sprint flow', b: 'backlog', B: 'backlog flow', c: 'control', f: 'sub-flows',
-  m: 'merge requests', r: 'repos', u: 'updates', U: 'MRs ready for approval', a: 'agents', x: 'chat', h: 'memory', p: 'performance',   // U: the open merge requests by ticket, to paste (ASS-366), only those ready for approval (ASS-367); p: each developer's performance, the operator's row highlighted (ASS-411)
+  m: 'merge requests', r: 'repos', u: 'updates', U: 'MRs ready for approval', a: 'agents', x: 'chat', h: 'memory', p: 'performance', n: 'compute network',   // n: every machine's CPU, RAM and disk (ASS-557); U: the open merge requests by ticket, to paste (ASS-366), only those ready for approval (ASS-367); p: each developer's performance, the operator's row highlighted (ASS-411)
   A: 'agents for all projects',   // every project's agents (ASS-188), beside a (ASS-246), apart from the rest in the menu
 };
 // The screen key a keypress names: its sequence, so S is told from s; its name when it has none.
@@ -44,7 +47,7 @@ const shown = (state, k) => Object.hasOwn(SCREENS, k) && (!FLAGGED[k] || feature
 // Each screen's module (ASS-201) by its key: view(state, size), its body's lines,
 // and onKey(state, key, size, { step, sideways }), the next state or undefined
 // to fall through to the screen keys.
-const SCREEN_MODULES = { s: sprint, S: sprintFlow, b: backlog, B: backlogFlow, c: control, f: subflows, m: mergeRequests, r: repos, u: updates, U: openMrs, a: agents, x: chat, h: memory, p: performance, A: agents };
+const SCREEN_MODULES = { s: sprint, S: sprintFlow, b: backlog, B: backlogFlow, c: control, f: subflows, m: mergeRequests, r: repos, u: updates, U: openMrs, a: agents, x: chat, h: memory, p: performance, n: network, A: agents };
 
 // Which of the selected project's agents a screen key counts in the menu:
 // agents refining the backlog beside b; the other agents on tickets beside s,
@@ -65,6 +68,10 @@ function menuEntries(state) {
     ...Object.entries(SCREENS).filter(([k]) => k !== 'A' && shown(state, k)).map(([k, label]) => [k, label, COUNTED[k] ? `🤖x${projectAssignments(state).filter(a => COUNTED[k](state, a)).length}` : '']),
     ['', '', ''], ['A', SCREENS.A, ''],
     ...(PAUSABLE.has(state.screen) ? [['space', `${mine ? 'release' : 'pause'} ${name}`, ''], ['!', `${everyone ? 'release' : 'pause'} every project`, '']] : []),
+    // ASS-531: the sprint screen's P, the focus on planning switched on or off for the selected project.
+    ...(state.screen === 's' && state.ticket == null && state.projects[state.project] ? [[sprint.PLANNING_FOCUS_KEY, `focus on planning ${planningFocusOn(state.projects[state.project]) ? 'off' : 'on'}`, '']] : []),
+    // ASS-566: the sprint screen's q, the seat queue drawn over it (queue.js).
+    ...(state.screen === 's' && state.ticket == null ? [[QUEUE_KEY, 'seat queue', '']] : []),
     ['/', `${state.menuHidden ? 'show' : 'hide'} project menu`, ''], ['Q', 'quit', ''],
   ];
 }
@@ -133,8 +140,8 @@ const pastDays = project => Object.keys(project?.days ?? {})
 // Human Review rejection goes back to being chosen — { reason, at } (ASS-228) — or null; gatesDraft: the states it
 // is being gated on leaving — { ids checked, at (the step the cursor is on) } — or null.
 // Across its tabs (ASS-184, see ticketView): ticketTab, the tab open (TABS);
-// ticketScroll, ticketMergesScroll, ticketHistoryScroll and ticketQuestionsScroll, the first line
-// shown of the details, the merge requests (ASS-437), the history and the questions, each its tab's own;
+// ticketScroll, ticketMergesScroll, ticketCommitsScroll, ticketHistoryScroll and ticketQuestionsScroll, the first line
+// shown of the details, the merge requests (ASS-437), the commits (ASS-558), the history and the questions, each its tab's own;
 // ticketStatesScroll, the states' beside the history — null for the state it
 // is in to be centred; ticketQuestionSelected, the question
 // enter answers; ticketChoice, the human action selected; ticketBlockedScroll and
@@ -183,7 +190,7 @@ const pastDays = project => Object.keys(project?.days ?? {})
 // pressed, so main.js is shutting everything down (see src/tui/shutdown.js);
 // restart: a control asked for a restart, so it then exits with 75 (see
 // controlExited). controls: each control the dashboard has running, by
-// project — { pid, startTime } — which the footer's control box is built
+// project — { pid, startTime } — which the footer's first line (its control box until ASS-566) is built
 // from (ASS-310; see controlStarted). controlsDown: each control that has
 // ended on its own, by project — { code, line (the one it logged before its
 // exit line), and ASS-460's restart: see controlExited }; controlCrashes, the
@@ -191,7 +198,8 @@ const pastDays = project => Object.keys(project?.days ?? {})
 // waits to read (controlWaiting, ASS-457); controlRestart, the project whose
 // down control the operator asked to start (R on the control screen), which
 // main.js starts and clears.
-// menuOpen: the ? menu (ASS-183) is drawn over the screen.
+// menuOpen: the ? menu (ASS-183) is drawn over the screen. queueOpen: the seat queue (ASS-566, q on the sprint
+// screen) is drawn over it.
 // chats: chats.json's chats (ASS-33), every project's; chatsRunning: the ids
 // whose agent runs; chatsWritten: when each one's log was last written (ms),
 // by id — both from main.js; chatSelected, chatScroll: the chat list's
@@ -220,7 +228,7 @@ export const initialState = ({ projects = [], workflows = [], assignments = [], 
   updatesSince: null, updatesForm: null, updatesScroll: 0, updatesMessage: '', openMrsScroll: 0,
   analytics: {}, performanceLoad: null, performanceSpan: null, performanceForm: null, performanceScroll: 0, performanceMessage: '',
   ticket: null, ...ticket.OPENED_TICKET, priorityDraft: null, reasonDraft: null, returnDraft: null, gatesDraft: null, decide: null, decideCloses: false, demoRun: null, demos: {},
-  backlogSelected: 0, backlogScroll: 0, subflowStart: 0, subflowScroll: 0, agentSelected: 0, agentScroll: 0, agentsGrid, agentsTable: false, agentPage: 0, agentTile: 0, sessionWritten: {}, sessionTails: {}, pending: {}, agent: null, agentLog: null, agentLogScroll: null, agentDraft: {}, agentCursor: {}, agentTyping: false, keyTail: null, agentPrompt: null, agentMessage: '', agentEvents: false, quitting: false, restart: false, controls, draining: {}, controlsDown: {}, controlCrashes: {}, dataWaiting: {}, controlRestart: null, menuOpen: false,
+  backlogSelected: 0, backlogScroll: 0, subflowStart: 0, subflowScroll: 0, agentSelected: 0, agentScroll: 0, agentsGrid, agentsTable: false, agentPage: 0, agentTile: 0, sessionWritten: {}, sessionTails: {}, pending: {}, agent: null, agentLog: null, agentLogScroll: null, agentDraft: {}, agentCursor: {}, agentTyping: false, keyTail: null, agentPrompt: null, agentMessage: '', agentEvents: false, quitting: false, restart: false, controls, loopCounts: {}, draining: {}, controlsDown: {}, controlCrashes: {}, dataWaiting: {}, controlRestart: null, menuOpen: false, queueOpen: false,
   chats, chatsRunning, chatsWritten, chatSelected: 0, chatScroll: 0, chat: null, chatLog: null, chatLogScroll: null, chatDraft: '', chatCursor: 0, chatMessage: '', chatEvents: false, chatSend: null, chatDelete: null, chatConfirm: null,
   memories: {}, memorySelected: 0, memoryScroll: 0, memoryConfirm: null, memoryDelete: null, memoryLoad: null, memoryMessage: '',
   ticketConfirm: null, ticketChatOpen: null, ticketChatLog: null, ticketChatScroll: null, ticketChatDraft: '', ticketChatCursor: 0, ticketChatMessage: '', ticketChatSend: null,
@@ -260,6 +268,8 @@ export function handleKey(state, key, size = {}) {
     if (key.sequence === '?' || key.name === 'escape') return { ...state, menuOpen: false };
     return !key.ctrl && menuEntries(state).some(([k]) => k === menuKey(key)) ? handleKey({ ...state, menuOpen: false }, key, size) : state;
   }
+  // ASS-566: the seat queue open: q or esc closes it; any other key does nothing.
+  if (state.queueOpen) return key.sequence === QUEUE_KEY || key.name === 'escape' ? { ...state, queueOpen: false } : state;
   if (state.draft != null) return ticket.editAnswer(state, key);
   if (state.updatesForm) return updates.editUpdates(state, key);
   if (state.performanceForm) return performance.editSpan(state, key);   // ASS-411: the from/to dates' form
@@ -356,13 +366,24 @@ export const drawColumns = columns => Math.max(1, (columns || 1) - 1);
 // last, none wider than `columns`. main.js passes drawColumns(stdout.columns).
 export function render(state, { columns, rows, now }) {
   const header = headerLines(state, columns, now);
-  const footer = [...platform(state, columns, now), center(legend(state), columns),
+  const bottom = [center(legend(state), columns),
     ...(updatedOf(state) ? [center(gray(`last updated: ${written(updatedOf(state), now)}`), columns)] : [])];
-  const space = Math.max(0, rows - footer.length);
-  const lines = [...header, ...body(state, { columns, rows, now })].slice(0, space);
+  // ASS-526: the loop counter at the right end of the bottom line (frame.js withLoopCount).
+  const status = platform(state, columns, now);
+  const footer = [...status, ...bottom.slice(0, -1), withLoopCount(bottom.at(-1), state, columns)];
+  // ASS-573: on the sprint screen one blank line is always kept between its legend and the footer's status lines (its
+  // ticket table fills its room, so its legend ran into them); other screens keep their own spacing.
+  // On a screen too short for both, the gap goes first (the sprint screen sizes for it: sprint.js layout).
+  const sprintGap = state.screen === 's' && state.ticket == null && status.length ? 1 : 0;
+  // ASS-572: `height`, the lines the screen's body has (the compute network screen cuts its cards to it).
+  const drawnLines = [...header, ...body(state, { columns, rows, now, height: Math.max(0, rows - footer.length - sprintGap - header.length) })];
+  const gap = sprintGap && drawnLines.length <= rows - footer.length - 1 ? 1 : 0;
+  const space = Math.max(0, rows - footer.length - gap);
+  const lines = drawnLines.slice(0, space);
   // On a screen too short for the footer, its top is cut off.
-  const screen = [...lines, ...Array(space - lines.length).fill(''), ...footer].slice(-rows);
-  return (state.menuOpen ? over(screen, menuBox(state, columns)) : screen).map(line => clip(line, columns));
+  const screen = [...lines, ...Array(space + gap - lines.length).fill(''), ...footer].slice(-rows);
+  const drawn = state.menuOpen ? over(screen, menuBox(state, columns)) : state.queueOpen ? over(screen, queueBox(state, columns, rows)) : screen;   // ASS-566: the seat queue
+  return drawn.map(line => clip(line, columns));
 }
 
 // over(lines, box) — the box (centered lines, as boxRow draws them) drawn over
@@ -378,10 +399,19 @@ function over(lines, box) {
 
 // controlStarted(state, id, { pid, startTime }) — project id's control is
 // running, as main.js started it: its process id and when it started, which
-// the footer's control box shows (ASS-310, screens/frame.js platform). The
+// the footer's first line shows (ASS-310, ASS-566, screens/frame.js platform). The
 // dashboard is control's supervisor, so it knows both without project.json.
 export function controlStarted(state, id, { pid, startTime }) {
   return { ...state, controls: { ...state.controls, [id]: { pid, startTime } } };
+}
+
+// loopCountsRead(state, counts) — each project's control's finished loops, as
+// main.js reads them each second (load.js loadLoopCounts, ASS-526: the
+// bottom-right counter, frame.js withLoopCount), by project id; a project with
+// no count read keeps the one it had. The very same state when nothing changed.
+export function loopCountsRead(state, counts) {
+  const next = { ...state.loopCounts, ...Object.fromEntries(Object.entries(counts).filter(([, n]) => Number.isInteger(n))) };
+  return Object.keys(next).every(id => next[id] === state.loopCounts?.[id]) ? state : { ...state, loopCounts: next };
 }
 
 // controlExited(state, id, code, waiting, now) — project id's control has ended
@@ -448,7 +478,7 @@ export function controlBack(state, id, pid) {
 // controlWaiting(state, id, text) — ASS-457/458: a line of project id's
 // control saying it waits for its data ("data waiting: cannot read …",
 // src/control/tick.js waitForData) records what it cannot read and since when
-// (dataWaiting, by project), for the header and the control box; "data
+// (dataWaiting, by project), for the header and the footer's first line; "data
 // recovered: …" clears it. Any other line changes nothing.
 export function controlWaiting(state, id, text, at = new Date()) {
   const waiting = text.match(/^\S+ data waiting: (cannot read .*?); control skips/)?.[1];

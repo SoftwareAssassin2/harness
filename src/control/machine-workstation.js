@@ -17,7 +17,10 @@ import { controlPath, sshArgv } from './workstation-connection.js';
 
 // What a session runs first (machine-workstation.bash's wsm_enter): into the
 // workdir, HARNESS_VM_ROOT the folder, the harness's env sourced, then argv.
-const ENTER = 'd="$1" f="$2"; shift 2; cd "$d" || exit 1; export HARNESS_VM_ROOT="$f"; [ -r "$HOME/harness/env" ] && . "$HOME/harness/env"; exec "$@"';
+// ASS-529: then the folder's slot.env when it has one (workstation:claim's: a slot n's own forwarder token file; with
+// ticket-isolation separate, the ticket's own COMPOSE_PROJECT_NAME and port offset too). Slot 0 of a project that has
+// not opted in has none, so its sessions are exactly as before.
+const ENTER = 'd="$1" f="$2"; shift 2; cd "$d" || exit 1; export HARNESS_VM_ROOT="$f"; [ -r "$HOME/harness/env" ] && . "$HOME/harness/env"; [ -r "$f/slot.env" ] && { set -a; . "$f/slot.env"; set +a; }; exec "$@"';
 // The marker's wrapper, machine-lima.js's: a TERM passed on, stdin passed on, the exit code the process's own.
 const WRAP = 'trap \'kill -TERM "$c" 2>/dev/null\' TERM; "$@" <&0 & c=$!; while :; do wait "$c"; s=$?; kill -0 "$c" 2>/dev/null || exit "$s"; done';
 

@@ -4,17 +4,23 @@
 // its dependencies hold (dependencies.js awaitsDependencies, ASS-355), and
 // every run under it, is left where it is: no move, script, sub-engine run or
 // VM wait, at any step but a done or a person's one.
-import { stepOf, engineSteps, nextState, pairedStatus, isManual, isDoneStep, isActive, answersGap, pairedByAnother, ownBranchFix, awaitsDependency, clearCause, rearmAfterPush, REARM_AFTER_PUSH, resumeAt, resumeSubAt, whyNotResume, statusIn, mergesAwaited } from './engine.js';
+import { stepOf, engineSteps, removedStepMovesTo, nextState, pairedStatus, isManual, isDoneStep, isActive, answersGap, pairedByAnother, ownBranchFix, awaitsDependency, clearCause, rearmAfterPush, REARM_AFTER_PUSH, resumeAt, resumeSubAt, whyNotResume, statusIn, mergesAwaited } from './engine.js';
 import { enginesFor } from './state.js';
-import { rankSprint, rankBacklog } from './rank.js';
-import { planFor, slotKind } from './plan.js';
+import { rankBacklog } from './rank.js';
+import { planFor, poolOf, sprintOrder } from './plan.js';
+import { trackMachineScript } from './machine-steps.js';
+import { noteReleases } from './seats.js';
 import { waitsForSeat } from './fast-track.js';
 import { fillArgs } from './placeholders.js';
 import { ticketFacts, ticketValues, runValues, parseOutput, cameFrom, sandboxRefusedFeedback } from './facts.js';
 import { heldByChecks } from './checks.js';
-import { firstStepId, levelChanges, contextOf, ticketPath, found, moveTicket, moveRun, endRun, isPaused, mayMove, gated, SKIPPED, NO_CHOICE, TIMER } from './moves.js';
+import { firstStepId, levelChanges, contextOf, ticketPath, found, moveTicket, moveRun, endRun, isPaused, mayMove, gated, SKIPPED, STACK_SKIPPED, NO_CHOICE, TIMER } from './moves.js';
+import { skipsForStack, workModeNews } from './work-mode.js';
 import { failed, waiting, held as heldFor, ticketKey, runKey, cleared, BLOCK_AFTER, FAILED_STARTS } from './backoff.js';
 import { runsInVm, vmOf } from './vm.js';
+import { runsOnMachine, readyTarget, heldElsewhere } from './run-target-places.js';
+import { onMacTarget, onSubstrateTarget, targetOf } from './seat-kinds.js';
+import { sandboxWaits, syncSandboxTicket, machineWork } from './sandboxes.js';
 import { machineOf } from './machine.js';
 import { awaitsVm, NEVER_UP, neverUp, vmUpCeilingMs } from './vm-lifecycle.js';
 import { awaitsDependencies } from './dependencies.js';
@@ -93,6 +99,8 @@ function diskWaits(ctx, state, step, who) {
 // with it, so it holds no seat while it waits (plan.js).
 async function memoryWaits(ctx, state, project, step, who, held = null) {
   if (!startsVm(step.action?.command)) return false;
+  // ASS-551: on a substrate target vm:create makes no VM (its sandbox instead): the seat budget counts a sandbox's use.
+  if (held && onSubstrateTarget(project, held.key, held.variation)) return false;
   // ASS-435: a variation whose machine is, or is to be, a workstation's takes none of the Mac's memory.
   const variation = held && project.tickets.find(t => t.key === held.key)?.variations?.find(v => v.name === held.variation);
   if (variation && !needsMacMemory(ctx, state, project, variation)) return false;
@@ -127,7 +135,9 @@ async function runScriptStep(ctx, step, values, who, variation, env) {
   let argv, vm;
   try {
     argv = fillArgs(step.action.command, values);
-    if (runsInVm(step)) vm = vmOf(variation, who);
+    // ASS-540: a vm step whose run target is on the Mac (scriptEnv's HARNESS_RUN_TARGET) runs on the host, not in its VM.
+    // ASS-535: one on a substrate target, in its Substrate sandbox (vmOf given the target).
+    if (runsInVm(step) && !['local-worktree', 'local-workspace'].includes(env?.HARNESS_RUN_TARGET)) vm = vmOf(variation, who, env?.HARNESS_RUN_TARGET);
   } catch (error) { ctx.log(PHASE, `${who}: ${error.message}`); return { exitCode: 1 }; }
   // ASS-494: started untimed — a script step runs in the background (startScript), and timing never wraps work not
   // awaited in turn; the tick's wait for it is timed as scriptExit. Nothing timed (ctx.cli, ctx.timedHere…) may be
@@ -142,10 +152,37 @@ async function runScriptStep(ctx, step, values, who, variation, env) {
 // (ASS-365, engine.js mergesAwaited: merge-request:await-dependencies then
 // merges the awaited merge requests early, exit 5); undefined otherwise — no
 // variation (a trigger's run), or no such step — so every other command runs
-// as it always has.
-function scriptEnv(state, project, variation) {
+// as it always has. ASS-540: HARNESS_RUN_TARGET=<target> while the variation runs on a Mac run target (local-worktree,
+// local-workspace: seat-kinds.js targetOf, given its ticket `key`) — code.bash vm_of then names no machine, so its
+// command works on the Mac's worktree or workspace. ASS-535: so too on a substrate run target — code.bash vm_of (machine.bash
+// $machine_of) then names its sandbox.
+function scriptEnv(state, project, variation, key) {
   if (!project || !variation) return undefined;
-  return mergesAwaited(statusIn(project.engine, variation, enginesFor(state, project.id))) ? { MERGES_AWAITED: '1' } : undefined;
+  const env = { ...(mergesAwaited(statusIn(project.engine, variation, enginesFor(state, project.id))) ? { MERGES_AWAITED: '1' } : {}), ...(key != null && (onMacTarget(project, key, variation.name) || onSubstrateTarget(project, key, variation.name)) ? { HARNESS_RUN_TARGET: targetOf(project, key, variation.name) } : {}) };
+  return Object.keys(env).length ? env : undefined;
+}
+
+// handedOver(ctx, project, ticket, variation, held, who) — ASS-540: the variation's branch handed over to its run
+// target before its script starts (run-target-places.js readyTarget); false, the step held a while (backoff.js) and
+// the failure logged, when that fails.
+async function handedOver(ctx, project, ticket, variation, held, who) {
+  try { await readyTarget(ctx, project, ticket, variation); return true; } catch (error) {
+    const { until } = failed(ctx.memory, held, ctx.now().getTime(), error.message);
+    ctx.log(PHASE, `${who}: could not hand its branch over to its run target: ${error.message}; tried again in ${Math.round((until - ctx.now().getTime()) / 1000)}s`);
+    return false;
+  }
+}
+
+// ticketCopied(ctx, project, ticket, variation, step, held, who) — ASS-535: on a substrate target, the sandbox's
+// /mnt/ticket brought up to date before a script of a step that works there starts (sandboxes.js syncSandboxTicket);
+// false, the step held a while (backoff.js) and the failure logged, when that fails.
+async function ticketCopied(ctx, project, ticket, variation, step, held, who) {
+  if (!runsInVm(step) || !onSubstrateTarget(project, ticket.key, variation.name)) return true;
+  try { await syncSandboxTicket(ctx, project, ticket, variation, `substrate:${variation.sandbox?.project}:${variation.sandbox?.machine}:${variation.sandbox?.name}`); return true; } catch (error) {
+    const { until } = failed(ctx.memory, held, ctx.now().getTime(), error.message);
+    ctx.log(PHASE, `${who}: could not bring its sandbox's ticket copy up to date: ${error.message}; tried again in ${Math.round((until - ctx.now().getTime()) / 1000)}s`);
+    return false;
+  }
 }
 
 // passedOutput(step, output) — what a state-engine step hands the run it
@@ -253,6 +290,7 @@ export function agentNeedsWork(planned, step, ticket, variation) {
 // waitsForSeatAt(state, project, ticket, variation) — the variation is at a step that takes a seat
 // and holds none (plan.js planFor `waiting`; ASS-522: as one Blocked moved back without a seat):
 // it starts no sub-engine run, script or run step until it is seated, in rank order.
+// (ASS-540: a step that can run on none of the project's run targets is `waiting` too, never started.)
 const waitsForSeatAt = (state, project, ticket, variation) => planFor(state, project).waiting.some(w => w.key === ticket.key && w.variation === variation.name);
 
 // One variation's step, moved on while an exit holds (see the module comment)
@@ -275,7 +313,7 @@ async function runVariation(ctx, state, project, key, name) {
     // ASS-522: `seatless` (Blocked's done run following its return-to step) moves without the seat check; it waits for its seat at the target.
     const move = async (next, cause, startAt, seatless) => {
       if (next?.to == null) return false;
-      if (!backlog && !seatless && !mayMove(ctx, PHASE, state, project, variation, who, next.to)) { waitsForSeat(ctx.memory, project, ticket, variation, slotKind(stepOf(engine, next.to))); return false; }
+      if (!backlog && !seatless && !mayMove(ctx, PHASE, state, project, variation, who, next.to)) { waitsForSeat(ctx.memory, project, ticket, variation, poolOf(stepOf(engine, next.to))); return false; }
       return moveTicket(ctx, PHASE, project, ticket, variation, next.to, next.reason === 'max-visits' ? 'max-visits' : undefined, startAt ?? (next.reason === 'exit' ? next.exit['start-sub-engine-at'] : undefined), cause);
     };
     // Held by what it depends on (ASS-195, ASS-355): held at this step, whatever it is but a done or a person's one —
@@ -287,11 +325,18 @@ async function runVariation(ctx, state, project, key, name) {
       ctx.log(PHASE, `${who}: switched off, skipped (→ ${switchedOff(step).to})`);
       continue;
     }
+    if (!backlog) logWorkMode(ctx, who, variation);   // ASS-556: its work mode's latest change, once
+    // ASS-556: a step needing the running stack, the variation built in a worktree: passed as a switched-off one is, recorded as skipped.
+    if (!backlog && skipsForStack(step, variation)) {
+      if (!await move(switchedOff(step), STACK_SKIPPED)) return;
+      ctx.log(PHASE, `${who}: needs the running stack, built in a worktree: skipped (→ ${switchedOff(step).to})`);
+      continue;
+    }
     const vmWait = awaitsVm(ctx, state, project, variation, who);
     if (vmWait === NEVER_UP) await neverUp(ctx, PHASE, at, variation.vm.name, vmUpCeilingMs(state));   // ASS-387: its start pending past the ceiling: Blocked
     if (vmWait) return;   // its VM still starting (ASS-133), or its start still queued or to be tried again (ASS-387, ASS-464)
     // ASS-493: its script-succeeds checks kept for this visit's reading of the exits (checks.js), till one is done.
-    const facts = ticketFacts(ctx, project, ticket, variation, undefined, runsInVm(step) ? machineOf(variation) : undefined, `${project.id}/${who}/${(variation['state-changes'] ?? []).length}`);
+    const facts = ticketFacts(ctx, project, ticket, variation, undefined, runsOnMachine(project, ticket.key, variation.name, step) ? machineOf(variation) : undefined, `${project.id}/${who}/${(variation['state-changes'] ?? []).length}`);
     const changes = levelChanges(variation);
     switch (step.action?.type) {
       case 'none': {
@@ -319,12 +364,16 @@ async function runVariation(ctx, state, project, key, name) {
         let wait = 0;
         if (!scriptRunning(ctx, running, visit)) {
           if (!backlog && waitsForSeatAt(state, project, ticket, variation)) return;   // ASS-522: no seat yet, no script
+          if (!backlog && machineWork(step) && heldElsewhere(project, ticket.key, variation.name, planFor(state, project))) return;   // ASS-565, ASS-567: not yet placed where the planner puts it: placed next tick
           if (waiting(ctx.memory, held, ctx.now().getTime()) || (!timer && heldAtGate(variation))) return;
           if (diskWaits(ctx, state, step, who) || setupWaits(ctx, project, step, who)) return;
           if (await memoryWaits(ctx, state, project, step, who, backlog ? null : { key: ticket.key, variation: variation.name, state: stateId })) return;   // ASS-398, ASS-404
           if (!backlog && stepWaits(ctx, state, project, ticket, variation, step, who)) return;   // ASS-468: a workstation (or its VM) claimed for the step first
+          if (!backlog && sandboxWaits(ctx, state, project, ticket, variation, step, who, held)) return;   // ASS-535: its Substrate sandbox up first (ASS-537: a failure the step's)
           if (!scriptDue(ctx, who, running, visit, step, ctx.now().getTime())) return;
-          startScript(ctx, running, visit, usingMachine(ctx, project.id, ticket.key, variation.name, step, runScriptStep(ctx, step, values, who, variation, backlog ? undefined : scriptEnv(state, project, variation))), who);
+          if (!backlog && !await handedOver(ctx, project, ticket, variation, held, who)) { ctx.memory.ran.delete(visit); return; }   // ASS-540 (ASS-567: not run, so tried again this visit)
+          if (!backlog && !await ticketCopied(ctx, project, ticket, variation, step, held, who)) { ctx.memory.ran.delete(visit); return; }   // ASS-535 (ASS-567: likewise)
+          startScript(ctx, running, visit, trackMachineScript(ctx, project.id, ticket.key, variation.name, step, usingMachine(ctx, project.id, ticket.key, variation.name, step, runScriptStep(ctx, step, values, who, variation, backlog ? undefined : scriptEnv(state, project, variation, ticket.key)))), who);   // ASS-527 AC2: its VM kept while it runs
           wait = ctx.scriptWait ?? SCRIPT_WAIT;
         }
         const exited = await ctx.timedHere('scriptExit', () => scriptExit(ctx, running, wait));   // ASS-494
@@ -351,11 +400,16 @@ async function runVariation(ctx, state, project, key, name) {
           // starting from the sub-status's output when it brings one (ASS-124).
           const parent = { 'work-item': key, variation: name, 'state-engine': project.engineName, state: stateId };
           const sub = variation['harness-status']['sub-status'];
-          const entered = sub?.['state-engine'] === step.action.engine ? sub.state : undefined;
+          // ASS-552: a sub-status at a step since removed from the sub-engine (its run gone with it) starts
+          // the run where the engine's removed-steps-move-to says, the ticket moved on there too.
+          const recorded = sub?.['state-engine'] === step.action.engine ? sub.state : undefined;
+          const replaced = recorded === undefined ? undefined : removedStepMovesTo(enginesFor(state, project.id), step.action.engine, recorded);
+          const entered = replaced ?? recorded;
           const start = entered ?? firstStepId(enginesFor(state, project.id)[step.action.engine]);
           await ctx.cli(['transient-state-engine:create', project.id, step.action.engine, start, JSON.stringify(parent), ...(entered && sub.output ? [JSON.stringify(sub.output)] : [])]);
           if (!entered) await ctx.cli(['ticket:change-sub-state', project.id, key, name, step.action.engine, '-', start]);
-          ctx.log(PHASE, `${who}: started a ${step.action.engine} run${entered ? ` at ${start}` : ''}`);
+          if (replaced) await ctx.cli(['ticket:change-sub-state', project.id, key, name, step.action.engine, recorded, replaced]);
+          ctx.log(PHASE, `${who}: started a ${step.action.engine} run${entered ? ` at ${start}` : ''}${replaced ? ` (its ${recorded} was removed from ${step.action.engine})` : ''}`);
           return;
         }
         if (!run['is-done']) return;
@@ -430,8 +484,16 @@ async function runTransient(ctx, state, id) {
     const engine = engineSteps(enginesFor(state, run.project), run['state-engine']);
     const step = stepOf(engine, run.state);
     const who = `run ${run['state-engine']} ${run.id.slice(0, 8)} ${run.state}`;
-    // Its step gone from its engine (renamed, or its list removed): nothing will ever move it, so it ends (ASS-236).
-    if (!step) { await endRun(ctx, PHASE, run, `its step ${run.state} no longer exists`); return; }
+    // Its step gone from its engine (renamed, or its list removed): nothing will ever move it, so it ends (ASS-236) —
+    // unless the engine says where a run at that removed step goes on to (ASS-552: removed-steps-move-to,
+    // grouped-build's CI Checks to Code Review): moved there, so a ticket that was at it is not stranded.
+    if (!step) {
+      const to = removedStepMovesTo(enginesFor(state, run.project), run['state-engine'], run.state);
+      if (to === undefined) { await endRun(ctx, PHASE, run, `its step ${run.state} no longer exists`); return; }
+      if (!await moveRun(ctx, PHASE, run, to, undefined, `its step ${run.state} was removed from ${run['state-engine']}`)) return;
+      ctx.log(PHASE, `${who}: its step was removed from ${run['state-engine']}; moves on to ${to}`);
+      continue;
+    }
     // A ticket step's own run (no trigger; its parent names the step) whose
     // ticket has left that step — moved by a human, a gap fixed, a run left
     // behind — has nothing to do, finished or not.
@@ -453,10 +515,17 @@ async function runTransient(ctx, state, id) {
       ctx.log(PHASE, `${context.workItem ?? '-'} ${context.variation ?? '-'} ${run['state-engine']}/${step.id}: switched off, skipped (→ ${next.to})`);
       continue;
     }
+    // ASS-556: a step needing the running stack in a run of a ticket built in a worktree: passed alike, recorded as skipped.
+    if (ticket && variation && !backlog && skipsForStack(step, variation)) {
+      const next = switchedOff(step);
+      if (next.to == null || !await moveRun(ctx, PHASE, run, next.to, undefined, undefined, STACK_SKIPPED)) return;
+      ctx.log(PHASE, `${context.workItem} ${context.variation} ${run['state-engine']}/${step.id}: needs the running stack, built in a worktree: skipped (→ ${next.to})`);
+      continue;
+    }
     const vmWait = awaitsVm(ctx, state, project, variation, who);
     if (vmWait === NEVER_UP) await neverUp(ctx, PHASE, place, variation.vm.name, vmUpCeilingMs(state));   // ASS-387
     if (vmWait) return;   // its ticket's VM still starting (ASS-133), or its start still queued or to be tried again (ASS-387, ASS-464)
-    const facts = { ...(ticket && variation ? ticketFacts(ctx, project, ticket, variation, undefined, runsInVm(step) ? machineOf(variation) : undefined, `${run.id}/${run.state}/${(run['state-changes'] ?? []).length}`) : {}), structuredOutput: run['structured-output'], agentNeedsWork: true };
+    const facts = { ...(ticket && variation ? ticketFacts(ctx, project, ticket, variation, undefined, runsOnMachine(project, ticket.key, variation.name, step) ? machineOf(variation) : undefined, `${run.id}/${run.state}/${(run['state-changes'] ?? []).length}`) : {}), structuredOutput: run['structured-output'], agentNeedsWork: true };
     // Its steps' visits are the run's own (ASS-66): counted over its moves, none from an earlier run or its parent.
     const changes = run['state-changes'] ?? [];
     const settle = async (next, output, cause) => {
@@ -481,10 +550,14 @@ async function runTransient(ctx, state, id) {
           if (waiting(ctx.memory, held, ctx.now().getTime()) || (!timer && variation && at && heldAtGate(variation, run['state-engine'], run.state, at.path.length + 1))) return;
           if (diskWaits(ctx, state, step, who) || setupWaits(ctx, project, step, who)) return;
           if (await memoryWaits(ctx, state, project, step, who, ticket && variation && !backlog ? { key: ticket.key, variation: variation.name, state: variation['harness-status']?.state } : null)) return;   // ASS-398, ASS-404
+          if (ticket && variation && !backlog && machineWork(step) && heldElsewhere(project, ticket.key, variation.name, planFor(state, project))) return;   // ASS-567: not yet placed where the planner puts it: placed next tick
           if (ticket && variation && !backlog && stepWaits(ctx, state, project, ticket, variation, step, who)) return;   // ASS-468
+          if (ticket && variation && !backlog && sandboxWaits(ctx, state, project, ticket, variation, step, who, held)) return;   // ASS-535 (ASS-537: a failure the step's)
           if (!scriptDue(ctx, who, running, visit, step, ctx.now().getTime())) return;
-          const scriptRun = runScriptStep(ctx, step, values, who, variation, ticket && variation && !backlog ? scriptEnv(state, project, variation) : undefined);
-          startScript(ctx, running, visit, ticket && variation && !backlog ? usingMachine(ctx, project.id, ticket.key, variation.name, step, scriptRun) : scriptRun, who);
+          if (ticket && variation && !backlog && !await handedOver(ctx, project, ticket, variation, held, who)) { ctx.memory.ran.delete(visit); return; }   // ASS-540 (ASS-567: not run, so tried again this visit)
+          if (ticket && variation && !backlog && !await ticketCopied(ctx, project, ticket, variation, step, held, who)) { ctx.memory.ran.delete(visit); return; }   // ASS-535 (ASS-567: likewise)
+          const scriptRun = runScriptStep(ctx, step, values, who, variation, ticket && variation && !backlog ? scriptEnv(state, project, variation, ticket.key) : undefined);
+          startScript(ctx, running, visit, ticket && variation && !backlog ? trackMachineScript(ctx, project.id, ticket.key, variation.name, step, usingMachine(ctx, project.id, ticket.key, variation.name, step, scriptRun)) : scriptRun, who);   // ASS-527 AC2
           wait = ctx.scriptWait ?? SCRIPT_WAIT;
         }
         const exited = await ctx.timedHere('scriptExit', () => scriptExit(ctx, running, wait));   // ASS-494
@@ -541,6 +614,14 @@ async function runTransient(ctx, state, id) {
 
 const warnOnce = (ctx, key, text) => { if (!ctx.memory.warned.has(key)) { ctx.memory.warned.add(key); ctx.log(PHASE, text); } };
 
+// logWorkMode(ctx, who, variation) — ASS-556: the variation's latest work-mode change (chosen, forced, set by the
+// operator, escalated: work-mode.js workModeNews) logged once per control, whoever wrote it — an agent's
+// ticket:escalate-work-mode from a VM or sandbox too.
+function logWorkMode(ctx, who, variation) {
+  const news = workModeNews(variation);
+  if (news) warnOnce(ctx, `work-mode/${who.split(' ').slice(0, 2).join(' ')}/${news.key}`, `${who}: ${news.text}`);
+}
+
 // runSteps(ctx, state) — every sprint variation and run not paused (moves.js
 // isPaused: a pause stops every move but self-healing's own, so the ticket
 // system is left alone too), not deleted, and without a gap
@@ -555,7 +636,8 @@ const warnOnce = (ctx, key, text) => { if (!ctx.memory.warned.has(key)) { ctx.me
 // output once that is done (the run then removed; its output kept on the variation first
 // when the step has record-output-as, and its ai-feedback, when it has one, after the
 // move); a `human` step by what the human recorded;
-// `prompt` steps rest here. The variations go in rank order (rankSprint),
+// `prompt` steps rest here. The variations go in rank order (rankSprint; ASS-531: plan.js sprintOrder, those at a
+// planning step first while the project's focus on planning is on),
 // so a free slot goes to the highest-ranked that can move into it; a move
 // into a step whose slot the variation neither holds nor can take waits
 // (moves.js mayMove, ASS-126), a done run kept for the next try. A move the
@@ -670,8 +752,8 @@ export async function runSteps(ctx, state) {
   state = ctx.load();
   for (const project of state.projects) {
     if (!project.engine || !project.sprint) continue;
-    // In rank order, so the highest-ranked takes a slot first (ASS-126).
-    for (const ticket of rankSprint(project.tickets, { engine: project.engine })) for (const v of ticket.variations ?? []) {
+    // In rank order, so the highest-ranked takes a slot first (ASS-126) — ASS-531: planning first while the focus is on.
+    for (const { ticket, variation: v } of sprintOrder(state, project)) {
       if (v['is-deleted'] || isPaused(state, project.id, ticket.key, v.name)) continue;
       const stateId = v['harness-status']?.state, paired = pairedStatus(project.engine, stateId), status = ticket['ticket-system-status'];
       if (paired != null && status != null && status !== paired && !answersGap(project.engine, v, status, enginesFor(state, project.id)) && !pairedByAnother(project.engine, ticket, v, status)) { warnOnce(ctx, `gap/${project.id}/${ticket.key}/${v.name}/${stateId}`, `${ticket.key} ${v.name} ${stateId}: the ticket system says ${status}, the step pairs ${paired}; left to gap resolution`); continue; }
@@ -692,4 +774,5 @@ export async function runSteps(ctx, state) {
     if (isPaused(state, run.project, workItem, variation, run.id)) continue;
     await ctx.attempt(PHASE, `run ${run.id.slice(0, 8)}`, () => ctx.timedHere('runTransient', () => runTransient(ctx, ctx.load(), run.id)));
   }
+  noteReleases(ctx, ctx.load());   // ASS-527 AC1: a seat given up by a move made here, logged in the same tick
 }

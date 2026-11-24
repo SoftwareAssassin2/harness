@@ -24,17 +24,27 @@ const doneRun = (key, id = `run-${key}`) => ({ id, project: 'p', 'state-engine':
 // (unblock: done at once), its is-done exit following the return-to step (as
 // grouped-blocked's does); a sprint of ABC-1 A at blocked, come from `from`,
 // its Blocked run done; `holders` (default ABC-2 at build, holding the one
-// in-progress seat) after it; and harness.json's `limits`.
-function blockedReturn({ from = 'build', holders = [at('ABC-2', 'build')], limits = {} } = {}) {
+// in-progress seat) after it; and harness.json's `limits`; `seats` on the Mac (ASS-528; the fixture's one by default).
+function blockedReturn({ from = 'build', holders = [at('ABC-2', 'build')], limits = {}, seats } = {}) {
   const f = controlFixture();
-  const engine = join(f.dir, 'engines', 'example-development', 'state-engine.json');
+  const engine = join(f.dir, 'engines', 'example-development', 'workflow.yaml');
   edit(engine, e => Object.assign(e.steps.find(s => s.id === 'blocked'), {
     action: { type: 'state-engine', engine: 'unblock' },
     'follow-return-to-state': true, 'exit-events': [{ condition: { 'is-done': true }, 'follow-return-to-state': true }],
   }));
+  // ASS-527: a seat only at a step that uses its machine — build made an in-machine script (machine-steps.js), its run
+  // stood in for here: logged as the fixture's real script is, exit 0.
+  edit(engine, e => { e.steps.find(s => s.id === 'build').action.command = './agent.sh ci-checks:verify {project} {ticket} {variation}'; });
+  const real = f.ctx.script;
+  f.ctx.script = async (argv, vm, env) => {
+    if (argv[1] !== 'ci-checks:verify') return real(argv, vm, env);
+    f.ctx.log('script', argv.join(' '));
+    return { exitCode: 0, stdout: '' };
+  };
   mkdirSync(join(f.dir, 'engines', 'unblock'), { recursive: true });
-  writeFileSync(join(f.dir, 'engines', 'unblock', 'state-engine.json'), JSON.stringify({ steps: [{ id: 'done', sequence: 1, 'is-done': true, action: { type: 'none' } }] }));
+  writeFileSync(join(f.dir, 'engines', 'unblock', 'workflow.yaml'), JSON.stringify({ steps: [{ id: 'done', sequence: 1, 'is-done': true, action: { type: 'none' } }] }));
   edit(join(f.dir, 'harness.json'), h => Object.assign(h, limits));
+  if (seats != null) f.seats(seats);
   const sprintFile = join(f.dir, 'projects', 'p', 'sprints', 'sprint-10', 'sprint.json');
   const into = from === 'plan' ? [was('committed', 'plan')] : from === 'build' ? [was('plan', 'build')] : [was('plan', 'build'), was('build', 'local-testing')];
   edit(sprintFile, s => { s.features = [at('ABC-1', 'blocked', [...into, was(from, 'blocked')]), ...holders]; });
@@ -52,7 +62,7 @@ function blockedReturn({ from = 'build', holders = [at('ABC-2', 'build')], limit
   };
 }
 
-const script = (f, key) => f.calls(new RegExp(`^script \\./agent\\.sh ticket:set-paused p ${key} A false$`));
+const script = (f, key) => f.calls(new RegExp(`^script \\./agent\\.sh ci-checks:verify p ${key} A$`));
 const runsOf = (f, key) => f.assignments()['transient-state-engines'].filter(r => r.parent?.['work-item'] === key);
 const agentsOn = (f, key) => f.assignments().assignments.filter(a => a['work-item'] === key);
 const moved = (f, key, to) => f.inSprint(key).variations[0]['state-changes'].find(c => c['from-state'] === 'blocked' && c['to-state'] === to && !c['sub-state-change']);
@@ -124,8 +134,8 @@ test('ASS-522 T3: Blocked run done with a free seat — moves to build and its s
   assert.equal(f.calls(/waits for an in-progress slot/).length, 0, log);
 });
 
-test('ASS-522 T4: Blocked run done, plan target with 0 planning seats — at plan the same tick, waiting, no agent, no "waits for a planning slot" line', async () => {
-  const f = blockedReturn({ from: 'plan', holders: [], limits: { 'max-tickets-in-planning': 0 } });
+test('ASS-522 T4: Blocked run done, plan target with no seat (ASS-528: none on the Mac) — at plan the same tick, waiting, no agent, no "waits for a planning slot" line', async () => {
+  const f = blockedReturn({ from: 'plan', holders: [], seats: 0 });
   try {
     await f.ticks();
     const log = f.lines.join('\n');

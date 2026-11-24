@@ -1,5 +1,5 @@
 // ASS-216: Day Spend and Sprint Spend — tiles after Delivered Points until
-// ASS-430 moved them into the footer's models box, under the models — and the
+// ASS-430 moved them into the footer's models box, under the models; ASS-566 to the footer's third line — and the
 // sprint day selector — counting UTC days since ASS-294, whatever this
 // computer's zone (Eastern here, so 00:00Z is 20:00 EDT the day before).
 process.env.TZ = 'America/New_York';
@@ -27,12 +27,10 @@ const project = { id: 'p', name: 'P', stateEngine: 'e', sprint, backlog, collabo
 // An agent on A-1, so no warning takes the tiles' room (ASS-59).
 const agents = [{ project: 'p', 'agent-name': 'Daredevil', 'work-item': 'A-1', variation: 'A', model: 'opus-5' }];
 const state = initialState({ projects: [project], workflows: [{ name: 'e', steps }], assignments: agents });
-// The models box's lines (ASS-430: the spend under the models), each "│ text │" as its text.
-const modelsBox = (s, size = { columns: 260, rows: 44, now }) => {
-  const out = lines(s, size);
-  const top = out.findLastIndex(l => /┌/.test(l));
-  const at = out[top + 1].lastIndexOf('│ models');
-  return out.slice(top + 1, out.findLastIndex(l => /└/.test(l))).map(l => l.slice(at).replace(/^│ (.*?) *│$/, '$1'));
+// The spend on the footer's third line (ASS-566; the models box's before, ASS-430): [day spend, sprint spend].
+const spend = (s, size = { columns: 260, rows: 44, now }) => {
+  const line = lines(s, size).find(l => l.includes('day spend: '));
+  return [line.match(/day spend: \$[\d.]+/)[0], line.match(/sprint spend: \$[\d.]+/)[0]];
 };
 const now = new Date('2026-09-30T15:00:00Z');   // Sep 30, 11:00 EDT
 
@@ -48,22 +46,23 @@ test('ASS-430 AC1: the header shows Operator Needed Tickets, Delivered Tickets a
   assert.ok(!out.slice(0, 11).some(l => /Day Spend|Sprint Spend|\$\d/.test(l)), out.slice(0, 11).join('\n'));
 });
 
-test('ASS-430 AC2 (was ASS-216 AC4/AC5): the models box shows Day Spend and Sprint Spend under the models and their agent counts, in dollars to the cent: the UTC day\'s and the sprint\'s dispatches and chat turns', () => {
+test('ASS-430 AC2 (was ASS-216 AC4/AC5), ASS-566: the footer shows day spend and sprint spend, in dollars to the cent: the UTC day\'s and the sprint\'s dispatches and chat turns; the agents per model are the n screen\'s', () => {
   // Day: 2 + 0.25 (backlog) + 32.01 (a turn after UTC midnight); Sprint: that, 1, 16 and 8 — not the 4 before its start.
-  assert.deepEqual(modelsBox(state).slice(0, 4), ['models', 'opus-5 🤖x1', 'Day Spend: $34.26', 'Sprint Spend: $59.26']);
+  assert.deepEqual(spend(state), ['day spend: $34.26', 'sprint spend: $59.26']);
+  assert.ok(lines({ ...state, screen: 'n' }, { columns: 260, rows: 44, now }).some(l => l.startsWith('agents: opus-5 🤖x1')));
   // A past day on show: that day's snapshot, seen at its end (shownAt) — Sep 29's 1 and 16; the sprint through it, 1 + 16 + 8.
   const past = { ...state, day: '2026-09-29', projects: [{ ...project, days: { '2026-09-29': sprint } }] };
-  assert.deepEqual(modelsBox(past).slice(2, 4), ['Day Spend: $17.00', 'Sprint Spend: $25.00']);
-  // No agents: right under the title; no sprint: the sprint's spend is $0.
+  assert.deepEqual(spend(past), ['day spend: $17.00', 'sprint spend: $25.00']);
+  // No sprint: the sprint's spend is $0.
   const idle = initialState({ projects: [{ ...project, sprint: null, backlog: [], collaborations: {} }], workflows: [{ name: 'e', steps }] });
-  assert.deepEqual(modelsBox(idle).slice(0, 3), ['models', 'Day Spend: $0.00', 'Sprint Spend: $0.00']);
+  assert.deepEqual(spend(idle), ['day spend: $0.00', 'sprint spend: $0.00']);
 });
 
-test('ASS-430 AC2: at 80 columns the spend lines show whole and the models box fits the screen', () => {
+test('ASS-430 AC2, ASS-566: at 80 columns the spend shows whole and the footer fits the screen', () => {
   const size = { columns: 80, rows: 44, now };
-  assert.deepEqual(modelsBox(state, size).slice(2, 4), ['Day Spend: $34.26', 'Sprint Spend: $59.26']);
+  assert.deepEqual(spend(state, size), ['day spend: $34.26', 'sprint spend: $59.26']);
   const out = lines(state, size);
-  assert.ok(out.slice(out.findLastIndex(l => /┌/.test(l))).every(l => visible(l) <= 80), out.join('\n'));
+  assert.ok(out.every(l => visible(l) <= 80), out.join('\n'));
 });
 
 test('ASS-216 AC7: on a screen too narrow for every tile, they drop from the right — Delivered Points first', () => {
@@ -86,7 +85,7 @@ test('ASS-294 (was ASS-216 AC6): the sprint day selector counts UTC days — 22:
 test('ASS-271 AC3: the project\'s chat-screen turns (chatSpend, its chat-spend.json) count in Day Spend and Sprint Spend', () => {
   const chatSpend = { turns: [{ timestamp: '2026-09-30T14:00:00Z', chat: 'c', billing: 'api', 'cost-usd': 1, estimate: true }] };
   const withChats = initialState({ projects: [{ ...project, chatSpend }], workflows: [{ name: 'e', steps }], assignments: agents });
-  assert.deepEqual(modelsBox(withChats).slice(2, 4), ['Day Spend: $35.26', 'Sprint Spend: $60.26']);
+  assert.deepEqual(spend(withChats), ['day spend: $35.26', 'sprint spend: $60.26']);
 });
 
 test('ASS-269 AC3: the project\'s memory spend (its Hindsight\'s Claude calls, memory-spend.json) counts in Day Spend and Sprint Spend, which show the total alone', () => {
@@ -96,5 +95,5 @@ test('ASS-269 AC3: the project\'s memory spend (its Hindsight\'s Claude calls, m
   ];
   const s = { ...state, projects: [{ ...project, memorySpend }] };
   assert.ok(!lines(s, { columns: 300, rows: 44, now }).some(l => l.includes('memory')));   // the total alone, no memory part named
-  assert.deepEqual(modelsBox(s).slice(2, 4), ['Day Spend: $34.66', 'Sprint Spend: $59.76']);
+  assert.deepEqual(spend(s), ['day spend: $34.66', 'sprint spend: $59.76']);
 });

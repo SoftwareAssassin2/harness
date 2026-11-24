@@ -16,6 +16,7 @@ import { operatorNeeded } from '../../src/tui/screens/shared.js';
 import { neededTickets, entered, readSeen } from '../../src/notify/detect.js';
 import { describe, fallback, promptOf, askClaude, MODEL } from '../../src/notify/describe.js';
 import { operatorNeededNotifier, notification, openCommand, GHOSTTY, loginEnvs, SPEND_ID } from '../../src/notify/notifier.js';
+import { within } from '../support/until.js';
 
 const ROOT = join(import.meta.dirname, '..', '..');
 const steps = [
@@ -182,11 +183,11 @@ console.log(JSON.stringify({ type: 'result', result: 'Answer it.', total_cost_us
 
 test('ASS-383 AC3: a claude that hangs is killed at the timeout, and one that fails is no answer', async () => {
   const bin = mkdtempSync(join(tmpdir(), 'claude-bin-')), log = join(bin, 'log');
-  stub(bin, 'claude', log, 'setTimeout(() => {}, 60000);');
+  stub(bin, 'claude', log, 'setTimeout(() => {}, 600000);');
   const env = { ...process.env, PATH: `${bin}:/usr/bin:/bin` };
-  const at = Date.now();
-  assert.deepEqual(await askClaude({ prompt: 'p', env, timeoutMs: 300 }), { ok: false, text: '', usd: 0, billing: null, priced: false });
-  assert.ok(Date.now() - at < 5000);
+  // ASS-545: the claude hangs 10 minutes; within() is a hang guard only (LOADED_MS, 90 s — far above the 0.3 s timeout
+  // on a loaded Mac, far below the hang), in place of a 5 s limit: a claude not killed at the timeout fails it.
+  assert.deepEqual(await within(askClaude({ prompt: 'p', env, timeoutMs: 300 })), { ok: false, text: '', usd: 0, billing: null, priced: false });
   stub(bin, 'claude', log, 'process.exit(1);');
   assert.equal((await askClaude({ prompt: 'p', env })).ok, false);
   assert.equal((await askClaude({ prompt: 'p', env: { ...env, PATH: '/nonexistent' } })).ok, false);

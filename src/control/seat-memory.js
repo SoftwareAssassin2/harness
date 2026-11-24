@@ -38,10 +38,9 @@
 // reading of the Mac's memory (none, or HOST_MEMORY_DISABLED) nothing is refused.
 import { existsSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { planFor, slotKind } from './plan.js';
+import { planFor, poolOf, sprintOrder } from './plan.js';
 import { vmNeed, gib, freeBytes, memoryVerdict, reading as hostReading } from './host-memory.js';
 import { vmUse, vmUpCeilingMs } from './vm-lifecycle.js';
-import { rankSprint } from './rank.js';
 import { statusIn, stepOf } from './engine.js';
 import { needsMacMemory } from './workstation-machines.js';
 
@@ -113,10 +112,10 @@ function fits(m, reading, need) {
 // VM, its VM runs, the memory is not read, or the VM fits (then held back as
 // starting) — else { need, free, verdict }, the refusal remembered for this tick's Health.
 export function memoryShortForSeat(ctx, state, project, variation, to) {
-  const m = ctx.memory.seatMemory, step = stepOf(project.engine, to), kind = slotKind(step);
+  const m = ctx.memory.seatMemory, step = stepOf(project.engine, to), kind = poolOf(step);   // ASS-527: the pool it enters
   if (!m?.reading || kind == null || step?.vm !== 'running') return null;
   const status = statusIn(project.engine, variation, project.engines ?? state.engines);
-  if (slotKind(status.step, status) === kind || vmRunning(ctx, m.reading, variation)) return null;
+  if (poolOf(status.step, status) === kind || vmRunning(ctx, m.reading, variation)) return null;
   if (!needsMacMemory(ctx, state, project, variation)) return null;   // ASS-435: its machine is (or will be) a workstation's
   const need = m.needs.get(project.id);
   if (!need) return null;
@@ -163,7 +162,7 @@ export async function seatMemory(ctx, state) {
       refused = false;
       const plan = planFor(state, project), holders = holdersOf(project, plan);
       if (reading && need) {
-        walk: for (const t of rankSprint(project.tickets, { engine: project.engine })) for (const v of t.variations ?? []) {
+        walk: for (const { ticket: t, variation: v } of sprintOrder(state, project)) {   // ASS-531: planning first while the focus is on
           const k = keyOf(project.id, t.key, v.name);
           if (!holders.has(k) || was(k) || m.starting.has(k) || !needsVm(state, project, v) || vmRunning(ctx, reading, v) || !needsMacMemory(ctx, state, project, v)) continue;   // ASS-435: none for a workstation
           const verdict = fits(m, reading, need);

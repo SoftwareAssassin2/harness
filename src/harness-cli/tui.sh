@@ -31,6 +31,10 @@ interactive() {
   [[ "${HARNESS_FORCE_INTERACTIVE:-}" == 1 ]] || [[ -t 0 && -t 1 ]]
 }
 
+# ASS-524: the npm dependencies (node-modules.bash), installed on a fresh clone's first start, before /install, whose commands read engines.
+source "$dir/node-modules.bash"
+ensure_node_modules "$root" || exit 1
+
 if [[ "${HARNESS_SKIP_INSTALL:-}" != 1 ]] && ! installed && interactive; then
   if ! command -v "$claude_bin" >/dev/null 2>&1; then
     echo "No project is installed, and Claude Code ($claude_bin) isn't installed to run /install." >&2

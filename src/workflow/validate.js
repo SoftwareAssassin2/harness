@@ -1,4 +1,6 @@
-// Validates an engines/<workflow>/state-engine.json. Returns a list of
+// Validates an engines/<workflow>/workflow.yaml (ASS-524: a state-engine.json
+// before; validateEngineFile reads one, naming the line a malformed file fails
+// at, engine-file.js). Returns a list of
 // human-readable errors; empty = valid. Engine-wide settings consumed where
 // they are read (e.g. check-health-interval-seconds, triggers.js); ASS-450:
 // keys the harness no longer reads (obsolete.js) are ignored, never an error,
@@ -11,6 +13,23 @@ import { repositoryName, EACH } from '../control/repositories.js';
 import { stepOf } from '../control/engine.js';
 import { dataDir } from '../data-folder.js';
 import { withoutObsolete } from './obsolete.js';
+import { commandOf, unknownScriptCommand } from '../control/machine-steps.js';
+import { engineFileIn, readEngine as readEngineFile } from './engine-file.js';
+import { stepRunTargetErrors } from '../control/run-targets.js';
+import { stepWorkModeErrors } from '../control/work-mode.js';
+
+// readEngine(file) — engine-file.js's, kept while the file is unchanged (its
+// mtime and size): validation reads the same sub-engines again and again
+// (stepsOf, reaches, refinementEngine), and YAML parses slower than JSON did.
+const parsedEngines = new Map();
+function readEngine(file) {
+  const { mtimeMs, size } = statSync(file);
+  const kept = parsedEngines.get(file);
+  if (kept?.mtimeMs === mtimeMs && kept.size === size) return kept.engine;
+  const engine = readEngineFile(file);
+  parsedEngines.set(file, { mtimeMs, size, engine });
+  return engine;
+}
 
 const ACTION_TYPES = new Set(['script', 'prompt', 'state-engine', 'human', 'none']);
 const LEGACY_ACTION_FIELDS = ['script-to-execute', 'prompt-to-execute', 'workflow-to-execute', 'prompt-mode', 'prompt-timer-minutes'];
@@ -53,11 +72,21 @@ export function switchedOffStepErrors(entry, engines) {
   return switchOffErrors(s, firstsOf(engine)).map(e => `${at}: ${e}`);
 }
 
-// engineFile(root, name, own) — engine `name`'s state-engine.json: in `own`,
+// engineFile(root, name, own) — engine `name`'s workflow.yaml: in `own`,
 // a project's own engines folder (data/projects/<project>/engines, ASS-276),
 // over engines/'s of the same name, as control's loadState reads them.
-const engineFile = (root, name, own) => (own && existsSync(join(own, name, 'state-engine.json'))
-  ? join(own, name, 'state-engine.json') : join(root ?? '', 'engines', name, 'state-engine.json'));
+const engineFile = (root, name, own) => (own && existsSync(engineFileIn(own, name))
+  ? engineFileIn(own, name) : engineFileIn(join(root ?? '', 'engines'), name));
+
+// validateEngineFile(file, root, name, own) — validateStateEngine of the engine
+// in `file` (a workflow.yaml); a file that does not read is one error,
+// "<file>:<line>:<column>: <reason>" (ASS-524 AC4: engine-file.js parseEngine),
+// as a bad state-engine.json's JSON.parse error named it before.
+export function validateEngineFile(file, root, name, own) {
+  let engine;
+  try { engine = readEngine(file); } catch (error) { return [error.message]; }
+  return validateStateEngine(engine, root, name, own);
+}
 
 // validateStateEngine(engine, root, name, own) — `name` the engine's folder
 // under engines/ (or `own`), which says whose repositories its steps may name
@@ -87,6 +116,13 @@ export function validateStateEngine(engine, root, name, own) {
   const joinAt = engine['ready-tickets-join-sprint-at'];
   if (joinAt !== undefined && (typeof joinAt !== 'string' || !byId.has(joinAt)))
     errors.push(`ready-tickets-join-sprint-at points at unknown step "${joinAt}"`);
+  // removed-steps-move-to (ASS-552): a removed step's id → the step a ticket still at it goes on to; the removed one no step, the other a known one.
+  const removed = engine['removed-steps-move-to'];
+  if (removed !== undefined && (removed === null || typeof removed !== 'object' || Array.isArray(removed))) errors.push('removed-steps-move-to is not a map of <removed step>: <step>');
+  else for (const [gone, to] of Object.entries(removed ?? {})) {
+    if (byId.has(gone)) errors.push(`removed-steps-move-to names "${gone}", which is still a step`);
+    if (typeof to !== 'string' || !byId.has(to)) errors.push(`removed-steps-move-to moves "${gone}" to unknown step "${to}"`);
+  }
 
   for (const s of all) {
     const at = `step "${s.id}"`;
@@ -102,6 +138,12 @@ export function validateStateEngine(engine, root, name, own) {
     if (s['run-location'] !== undefined && s['run-location'] !== 'host' && s['run-location'] !== 'vm') errors.push(`${at} run-location "${s['run-location']}" is not host or vm`);
     if (s['run-location'] === 'vm') checkVmStep(s, at, root, errors);
     if (s['run-in-repository'] !== undefined) checkRepository(s, at, root, name, errors);
+    // run-targets (ASS-540, run-targets.js): one run target or a list, only on a machine-using step; never a substrate
+    // target for a command that needs Docker, nor a Mac target for one that works only in a machine. Each error names
+    // the engine's file, the step and the reason.
+    for (const e of stepRunTargetErrors(s)) errors.push(`${name ? `${engineFile(root, name, own).replace(`${root ?? ''}/`, '')}: ` : ''}${at} ${e}`);
+    // stack (ASS-556, work-mode.js): required, on a step needing the running app stack — skipped in worktree mode; never on a worktree step.
+    for (const e of stepWorkModeErrors(s)) errors.push(`${name ? `${engineFile(root, name, own).replace(`${root ?? ''}/`, '')}: ` : ''}${at} ${e}`);
     // vm (ASS-75): the variation's VM runs at the step, or is kept there stopped; missing, it is not needed (src/control/vm-lifecycle.js, vm.bash);
     // released (ASS-325), it is deleted there at once, its disk back to the project's VM disk budget.
     if (s.vm !== undefined && s.vm !== 'running' && s.vm !== 'stopped' && s.vm !== 'released') errors.push(`${at} vm "${s.vm}" is not running, stopped or released`);
@@ -235,7 +277,13 @@ function checkAction(s, at, root, errors, own) {
       if (supported.length && !supported.includes(a.model)) errors.push(`${at} model "${a.model}" is not in prompt "${a.prompt}"'s supported-models (${supported.join(', ')})`);
     }
   }
-  if (a.type === 'script') checkCommand(a.command, at, root, errors);
+  if (a.type === 'script') {
+    checkCommand(a.command, at, root, errors);
+    // ASS-527 AC4: whether a script step uses the ticket's machine (and so holds a seat) is declared once, in
+    // src/control/machine-steps.js SCRIPT_COMMANDS; a command it does not list is an error, so a new one is declared, not guessed.
+    const unknown = commandOf(a.command) && unknownScriptCommand(a.command);
+    if (unknown) errors.push(`${at} runs ${unknown}, which src/control/machine-steps.js SCRIPT_COMMANDS does not declare as in-machine or host`);
+  }
   if (a.type === 'state-engine') {
     if (typeof a.engine !== 'string') errors.push(`${at} state-engine action has no engine`);
     else if (!(own && existsSync(join(own, a.engine))) && !existsSync(join(root, 'engines', a.engine))) errors.push(`${at} has unknown state engine "${a.engine}"`);
@@ -260,7 +308,7 @@ function supportedModels(root, prompt) {
 // start-sub-engine-at (ASS-66): an exit entering a state-engine step names
 // the step its sub-engine starts at — so only beside a move-to-state into a
 // state-engine step, and naming one of that engine's `steps` (read from
-// engines/<engine>/state-engine.json, or `own`'s, once per engine through `subSteps`).
+// engines/<engine>/workflow.yaml, or `own`'s, once per engine through `subSteps`).
 function checkStartAt(exit, byId, at, root, subSteps, errors, own) {
   const start = exit['start-sub-engine-at'];
   if (start === undefined) return;
@@ -278,15 +326,15 @@ function checkStartAt(exit, byId, at, root, subSteps, errors, own) {
 function refinementEngine(root, name, own) {
   if (!name) return false;
   return [join(root ?? '', 'engines'), ...(own ? [own] : [])].filter(dir => existsSync(dir)).some(dir => readdirSync(dir).some(d => {
-    const file = join(dir, d, 'state-engine.json');
-    return existsSync(file) && (JSON.parse(readFileSync(file, 'utf8'))['backlog-refinement-steps'] ?? []).some(x => x.action?.engine === name);
+    const file = engineFileIn(dir, d);
+    return existsSync(file) && (readEngine(file)['backlog-refinement-steps'] ?? []).some(x => x.action?.engine === name);
   }));
 }
 
 function stepsOf(name, root, cache, own) {
   if (!cache.has(name)) {
     const file = engineFile(root, name, own);
-    cache.set(name, existsSync(file) ? JSON.parse(readFileSync(file, 'utf8')).steps ?? [] : null);
+    cache.set(name, existsSync(file) ? readEngine(file).steps ?? [] : null);
   }
   return cache.get(name);
 }
@@ -357,7 +405,7 @@ function reaches(from, name, root, own, seen = new Set()) {
   seen.add(from);
   const file = engineFile(root, from, own);
   if (!existsSync(file)) return false;
-  const lists = Object.entries(withoutObsolete(JSON.parse(readFileSync(file, 'utf8')))).filter(([key, list]) => /(^|-)(steps|trigger)$/.test(key) && Array.isArray(list)).flatMap(([, list]) => list);
+  const lists = Object.entries(withoutObsolete(readEngine(file))).filter(([key, list]) => /(^|-)(steps|trigger)$/.test(key) && Array.isArray(list)).flatMap(([, list]) => list);
   return lists.some(s => s.action?.type === 'state-engine' && reaches(s.action.engine, name, root, own, seen));
 }
 
@@ -372,7 +420,11 @@ function checkCondition(c, at, root, errors) {
   }
   if (key === 'not') return checkCondition(c.not, at, root, errors);
   if (!LEAVES.has(key)) return !errors.push(`${at} has unknown condition "${key}"`);
-  if (key === 'script-succeeds') checkCommand(c[key], at, root, errors);
+  if (key === 'script-succeeds') {
+    checkCommand(c[key], at, root, errors);
+    const unknown = commandOf(c[key]) && unknownScriptCommand(c[key]);   // ASS-527 AC4: a check's command is declared too
+    if (unknown) errors.push(`${at} checks ${unknown}, which src/control/machine-steps.js SCRIPT_COMMANDS does not declare as in-machine or host`);
+  }
   if (key === 'structured-ticket-variation-array-check') return checkArrayCheck(c[key], at, errors);
   return true;
 }

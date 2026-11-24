@@ -11,6 +11,7 @@ import { readdirSync, readFileSync, existsSync, cpSync } from 'node:fs';
 import { join } from 'node:path';
 import { stepOf, nextState } from '../../src/control/engine.js';
 import { firstStepId } from '../../src/control/moves.js';
+import { readEngine } from '../../src/workflow/engine-file.js';
 
 export const ROOT = join(import.meta.dirname, '..', '..');
 // The example project's own engines (ASS-277): a GitLab project's flat
@@ -23,11 +24,11 @@ export const ROOT = join(import.meta.dirname, '..', '..');
 // and read before engines/ for that project's work, as control reads them.
 export const EXAMPLE_ENGINES = join(import.meta.dirname, '..', 'fixtures', 'engines');
 
-const readEngines = dir => (!existsSync(dir) ? {} : Object.fromEntries(readdirSync(dir).filter(d => existsSync(join(dir, d, 'state-engine.json')))
-  .map(d => [d, JSON.parse(readFileSync(join(dir, d, 'state-engine.json'), 'utf8'))])));
+const readEngines = dir => (!existsSync(dir) ? {} : Object.fromEntries(readdirSync(dir).filter(d => existsSync(join(dir, d, 'workflow.yaml')))
+  .map(d => [d, readEngine(join(dir, d, 'workflow.yaml'))])));
 
-// loadEngines(root, own) — every engines/<name>/state-engine.json under root and
-// every <own>/<name>/state-engine.json, own's over root's, { [name]: its JSON };
+// loadEngines(root, own) — every engines/<name>/workflow.yaml under root and
+// every <own>/<name>/workflow.yaml, own's over root's, { [name]: its JSON };
 // own, for the harness's own root, the example project's (EXAMPLE_ENGINES).
 export function loadEngines(root = ROOT, own = root === ROOT ? EXAMPLE_ENGINES : undefined) {
   return { ...readEngines(join(root, 'engines')), ...(own ? readEngines(own) : {}) };

@@ -14,7 +14,7 @@ import { until } from '../support/until.js';
 
 const edit = (file, change) => { const json = JSON.parse(readFileSync(file, 'utf8')); change(json); writeFileSync(file, JSON.stringify(json)); };
 const sprint = f => join(f.dir, 'projects', 'p', 'sprints', 'sprint-10', 'sprint.json');
-const engineFile = f => join(f.dir, 'engines', 'example-development', 'state-engine.json');
+const engineFile = f => join(f.dir, 'engines', 'example-development', 'workflow.yaml');
 const state = f => f.variation()['harness-status'].state;
 
 // The control fixture with ABC-3 A at build (its script step) and ABC-4 A at
@@ -112,7 +112,7 @@ test('ASS-328 AC2: a ticket\'s script still running is not started again by late
 
 test('ASS-328 AC2: a run\'s script step still running is not started again, and the run stays at its step until its exit is read', async () => {
   const f = fixture();
-  edit(join(f.dir, 'engines', 'test', 'state-engine.json'), e => { e.steps[0].action = { type: 'script', command: './agent.sh ticket:set-paused {project} {ticket} {variation} false' }; e.steps[0]['exit-events'] = [{ condition: { 'exit-code': 0 }, 'move-to-state': 'take-screenshots' }]; });
+  edit(join(f.dir, 'engines', 'test', 'workflow.yaml'), e => { e.steps[0].action = { type: 'script', command: './agent.sh ticket:set-paused {project} {ticket} {variation} false' }; e.steps[0]['exit-events'] = [{ condition: { 'exit-code': 0 }, 'move-to-state': 'take-screenshots' }]; });
   edit(sprint(f), s => { s.features[0].variations[0]['harness-status'] = { state: 'local-testing', 'state-engine': 'example-development' }; });
   const run = () => f.assignments()['transient-state-engines'].find(r => r['state-engine'] === 'test');
   try {

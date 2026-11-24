@@ -50,8 +50,10 @@ function control(s, args = ['--tick-ms', '100'], env = {}) {
   return { child, lines, exit };
 }
 
-// Waits until control `pid` has the workstation connected, as its own.
-const connectedBy = async (s, pid, lines) => assert.ok(await until(() => s.entry().connected === true && s.entry()['control-pid'] === pid && existsSync(s.socket)), lines.join('\n'));
+// Waits until control `pid` has the workstation connected, as its own — and set up (ASS-545): its connect job ended,
+// which control's exit would otherwise wait for only so long (workstations.js disconnectWorkstations, 10 s) before
+// leaving the close to the job — on a loaded Mac setup outlasted that, and the exit logged "still closing" instead.
+const connectedBy = async (s, pid, lines) => assert.ok(await until(() => s.entry().connected === true && s.entry()['control-pid'] === pid && existsSync(s.socket) && s.entry().setup?.ok === true), lines.join('\n'));
 // Then, once it has exited: the connection closed and the live data saying so.
 async function closed(s, lines) {
   assert.ok(await until(() => !existsSync(s.socket) && s.entry().connected === false && s.entry()['control-pid'] === null), lines.join('\n'));
@@ -95,10 +97,21 @@ test('ASS-470 AC1: a restart (exit 75) closes the connection', async () => {
 });
 
 test('ASS-470 AC1: an uncaught exception (exit 70) closes the connection — one still being opened as it struck too', async () => {
-  const s = fixture();
-  const c = control(s, ['--tick-ms', '100'], { CONTROL_TEST_FAULT: 'uncaught' });
+  // ASS-545: the exception strikes when the test says (CONTROL_TEST_FAULT_WHEN's file), not after the first tick —
+  // where the connect stood then was the machine's speed. First once control owns the open connection: exit 70 closes
+  // it, logged.
+  let s = fixture(), when = join(s.home, 'strike');
+  let c = control(s, ['--tick-ms', '100'], { CONTROL_TEST_FAULT: 'uncaught', CONTROL_TEST_FAULT_WHEN: when });
+  await connectedBy(s, c.child.pid, c.lines);
+  writeFileSync(when, '');
   assert.deepEqual(await within(c.exit), { code: 70, signal: null });
-  assert.ok(s.w.gcloudCalls().some(call => call.argv[1] === 'ssh'), `it had begun connecting: ${c.lines.join('\n')}`);
+  await closed(s, c.lines);
+  // Then while the connect is still under way (its ssh begun): nothing is left open.
+  s = fixture(); when = join(s.home, 'strike');
+  c = control(s, ['--tick-ms', '100'], { CONTROL_TEST_FAULT: 'uncaught', CONTROL_TEST_FAULT_WHEN: when });
+  assert.ok(await until(() => s.w.gcloudCalls().some(call => call.argv[1] === 'ssh')), `it begins connecting: ${c.lines.join('\n')}`);
+  writeFileSync(when, '');
+  assert.deepEqual(await within(c.exit), { code: 70, signal: null });
   assert.ok(await until(() => !existsSync(s.socket) && s.entry()['control-pid'] == null && s.entry().connected !== true), c.lines.join('\n'));
 });
 

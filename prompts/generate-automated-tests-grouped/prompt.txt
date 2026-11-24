@@ -4,6 +4,8 @@ Variation {variation}'s brief: if {ticket-folder}/variation-brief-{variation}.md
 
 {where}
 
+{work-mode-rule}
+
 Never end your turn while a command you started is still running: run a long one (a full test suite, say) in the foreground with a timeout long enough for it, or, when it may outlast the tool's foreground limit, in the background, polling it until it exits — then write your results and finish.
 
 1. Write one test per behavior in the test plan's "Automated" list, never its one-off verification, using the project's existing test framework and conventions. Where an existing test or target already covers a behavior, record it instead of writing a new one. Write a new test only where the repo's own CI runs it (in a file its existing runner picks up); never hard-code an upstream commit SHA or a local path in it.

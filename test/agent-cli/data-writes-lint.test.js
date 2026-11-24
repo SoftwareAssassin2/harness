@@ -56,8 +56,24 @@ const ALLOWED = {
     '"$pidfile.$$"': 'runs on the machine: its pid file, written beside and renamed over',
   },
   'src/agent-cli/workstation.bash': { '"$log"': 'the workstation SSH master\'s own output log (ASS-433), one writer under the workstation\'s lock' },
-  'src/agent-cli/workstation-variation.bash': { '"$HARNESS_RUNTIME/agent-token"': 'runs on a GCP workstation (ASS-435): its runtime folder\'s forwarder token, as vm:start writes a VM\'s', '"$tmp/out"': 'a temp folder of its own (mktemp -d): step-trees.sh\'s output (ASS-468)' },
+  'src/agent-cli/workstation-variation.bash': { '"$HARNESS_RUNTIME/$1"': 'runs on a GCP workstation (ASS-435): its runtime folder\'s forwarder token (ASS-529: its slot\'s), as vm:start writes a VM\'s', '"$f/slot.env"': 'runs on a GCP workstation (ASS-529): a slot\'s environment in its folder there, not the harness\'s data', '"$tmp/out"': 'a temp folder of its own (mktemp -d): step-trees.sh\'s output (ASS-468)' },
   'src/agent-cli/registry/refresh-credentials.sh': { '"$file.$$"': 'temp beside, renamed over' },
+  'src/agent-cli/substrate/on-machine/substrate.sh': {   // ASS-533
+    '"$tmp"': 'runs on the cluster\'s machine: a temp file of its own (mktemp: the kind config, the kubeconfig, an image archive, the kit) renamed over its target or removed',
+    '"$log"': 'runs on the cluster\'s machine: ate-setup\'s own output log under ~/.harness/substrate/logs, one per run',
+    '"$S/clusters/$C/installed"': 'runs on the cluster\'s machine: the release installed, one writer under substrate:up\'s cluster lock',
+    '"$S/kit/$sha/ready"': 'runs on the cluster\'s machine: the installed kit\'s marker, made empty',
+    '"$S/logs/proxy-$P-$actor.log"': 'runs on the cluster\'s machine: a sandbox proxy\'s own output log under ~/.harness/substrate/logs (ASS-535)',
+    '"$(proxy_dir)/$actor.pid"': 'runs on the cluster\'s machine: a sandbox proxy\'s pid and port under ~/.harness/substrate/proxies, one writer per sandbox (ASS-535)',
+    '"$d/$set.json"': 'runs on the cluster\'s machine: one rule set of a sandbox\'s egress under ~/.harness/substrate/egress, each set its own file with one writer (ASS-536)',
+  },
+  'src/agent-cli/substrate/sandbox.bash': {   // ASS-536: as vm:start's
+    '"$R/usr/local/bin/agent.sh"': 'inside the sandbox, not the harness\'s data',
+    '"$R/run/harness/agent-token"': 'inside the sandbox, not the harness\'s data',
+    '"$R/run/harness/agent-url"': 'inside the sandbox, not the harness\'s data',
+  },
+  'src/agent-cli/substrate/deliver-image.sh': { '"$work/$arch.done"': 'a marker in its own temp folder (mktemp -d), removed with it (ASS-535)' },
+  'src/agent-cli/substrate.bash': { '"$b/$platform.sha256"': 'the kit\'s checksum beside its tarball, under the kit build\'s lock (~/.harness/substrate, not the harness\'s data)' },
   'src/agent-cli/registry/up.sh': {
     '"$1.$$"': 'temp beside, renamed over',
     '"$storage/zot.out"': 'zot\'s own output log',
@@ -97,7 +113,7 @@ const ALLOWED = {
     '"$3"': 'the run log, one start at a time (golden-build-start.lock)',
     '"$4"': 'the run exit code, one start at a time (golden-build-start.lock)',
   },
-  'src/agent-cli/merge-request/merge-in-turn.sh': { '"$log"': 'the merge gate\'s log, started by the one ask holding merge.lock (ASS-197)', '"$out"': 'a test run\'s output, a file of the gate\'s own temp folder (mktemp -d, ASS-394)' },
+  'src/agent-cli/merge-request/merge-in-turn.sh': { '"$log"': 'the merge gate\'s log, started by the one ask holding its variation\'s merge-gate lock (ASS-197, ASS-560)', '"$out"': 'a test run\'s output, a file of the gate\'s own temp folder (mktemp -d, ASS-394)' },
   'src/agent-cli/vm/test-repos.sh': { '"$log"': 'its test log', '"$out"': 'a scratch file of its own' },
   'src/agent-cli/vm/demo.sh': { '"$log"': 'a temp file inside the VM' },
   'src/agent-cli/vm/start.sh': {
@@ -113,6 +129,10 @@ const ALLOWED = {
   // ASS-392: a temp file beside the definition file, its mode then set, renamed over it (replace_file would reset the mode).
   'src/agent-cli/vm/golden-write.sh': { '"$tmp"': 'a temp file beside the target, renamed over it, its mode kept' },
   'src/agent-cli/vm/raise-golden-rebuilds.sh': { '"$body"': 'a temp file', '"$lines"': 'a temp file' },
+  'src/agent-cli/substrate/build-image.sh': {   // ASS-534
+    '"$log"': 'the sandbox image build\'s own output log, one writer under the build lock (as vm:build-golden\'s)',
+  },
+  'src/agent-cli/substrate/sandbox-image.bash': { '", $ARGV[0]) or exit 1; exit(flock($f, LOCK_EX | LOCK_NB) ? 1 : 0)\' "': 'perl\'s open mode in a lock probe, not a redirect' },
   'src/agent-cli/vm/golden.bash': { '", $ARGV[0]) or exit 1; exit(flock($f, LOCK_EX | LOCK_NB) ? 1 : 0)\' "': 'perl\'s open mode in a lock probe, not a redirect' },
   'src/agent-cli/vm/firewall.sh': { '/sbin/pfctl</string><string>-E</string><string>-a</string><string>com.apple/harness-vm</string><string>-f</string><string>$anchor</string></array>': 'XML text, not a redirect' },
   'src/agent-cli/registry/push.sh': { '/<repository>/<image>:<tag>': 'usage text, not a redirect' },

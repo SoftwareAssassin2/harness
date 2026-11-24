@@ -1,9 +1,11 @@
-// ASS-126: the ticket limits cap tickets in motion, not just agents. A ticket
-// moves into a planning step (but the queue) only holding or able to take a
-// planning slot (max-tickets-in-planning), into any other step an in-progress
-// one (max-tickets-in-progress) — through steps no agent works too, slots in
-// rank order; Blocked, a human's step and Done hold none. harness.json's
-// limits count every project's tickets; the project's own (project.json) its.
+// ASS-126: the seats cap tickets in motion, not just agents. A ticket moves
+// from the queue into planning, or from planning into progress, only able to
+// take a seat — through steps no agent works too, seats in rank order;
+// Blocked, a human's step and Done hold none. ASS-528: one pool of seats per
+// project for planning and building, its count the seat budget's
+// (seat-budget.json, written here as control's budget phase would; these tests
+// run the steps alone); max-tickets-in-progress and max-tickets-in-planning
+// are not read, and no project counts another's tickets.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { join } from 'node:path';
@@ -35,10 +37,11 @@ const steps = [
 // The control fixture on that engine, harness.json's limits `harness`, p's own
 // `own`, and its sprint `tickets`: [key, state, manual-priority] each — listed
 // in that order, ranked by the priority. state(key) is where it stands.
-function slots(tickets, { harness = {}, own = {} } = {}) {
+function slots(tickets, { harness = {}, own = {}, seats = null } = {}) {
   const f = controlFixture();
-  edit(join(f.dir, 'engines', 'example-development', 'state-engine.json'), e => { e.steps = steps; });
-  edit(join(f.dir, 'harness.json'), h => Object.assign(h, { 'max-tickets-in-progress': null, 'max-tickets-in-planning': null }, harness));
+  edit(join(f.dir, 'engines', 'example-development', 'workflow.yaml'), e => { e.steps = steps; });
+  edit(join(f.dir, 'harness.json'), h => Object.assign(h, harness));
+  if (seats != null) writeFileSync(join(f.dir, 'projects', 'p', 'seat-budget.json'), JSON.stringify({ seats }));
   edit(join(f.dir, 'projects', 'p', 'project.json'), p => Object.assign(p, own));
   edit(join(f.dir, 'projects', 'p', 'sprints', 'sprint-10', 'sprint.json'), s => {
     s.features = tickets.map(([key, state, rank]) => ({ key, 'manual-priority': rank, variations: [{ name: 'A', 'harness-status': hs(state), 'state-changes': [] }] }));
@@ -47,39 +50,42 @@ function slots(tickets, { harness = {}, own = {} } = {}) {
   return { ...f, state, steps: () => runSteps(f.ctx, f.ctx.load()) };
 }
 
-test('ASS-126 AC6: with a planning limit of 1 and two tickets at Committed only the higher-ranked moves, through the script step no agent works', async () => {
-  const f = slots([['T-2', 'committed', 2], ['T-1', 'committed', 1]], { harness: { 'max-tickets-in-planning': 1 } });
+test('ASS-126 AC6: with one seat and two tickets at Committed only the higher-ranked moves, through the script step no agent works', async () => {
+  const f = slots([['T-2', 'committed', 2], ['T-1', 'committed', 1]], { seats: 1 });
   await f.steps();
   assert.deepEqual([f.state('T-1'), f.state('T-2')], ['plan', 'committed']);
 });
 
-test('ASS-126 AC6: a planning step takes a planning slot, not an in-progress one — and a ticket enters progress only with an in-progress slot', async () => {
-  // In progress full: a ticket from the queue still goes into planning.
-  const f = slots([['T-1', 'review', 1], ['T-2', 'committed', 2]], { harness: { 'max-tickets-in-progress': 1, 'max-tickets-in-planning': 1 } });
+test('ASS-528 AC2: planning and building take one pool — a ticket enters planning only with a seat the ones at work leave, and progress only with one too', async () => {
+  // The one seat held in progress: a ticket from the queue waits; with two, it goes into planning.
+  const one = slots([['T-1', 'review', 1], ['T-2', 'committed', 2]], { seats: 1 });
+  await one.steps();
+  assert.deepEqual([one.state('T-1'), one.state('T-2')], ['review', 'committed']);
+  const f = slots([['T-1', 'review', 1], ['T-2', 'committed', 2]], { seats: 2 });
   await f.steps();
   assert.deepEqual([f.state('T-1'), f.state('T-2')], ['review', 'plan']);
   // …but not out of it, by a script step: it waits at approve, said once.
-  const g = slots([['T-1', 'review', 1], ['T-2', 'approve', 2]], { harness: { 'max-tickets-in-progress': 1 } });
+  const g = slots([['T-1', 'review', 1], ['T-2', 'approve', 2]], { seats: 1 });
   await g.steps();
   await g.steps();
   assert.deepEqual([g.state('T-1'), g.state('T-2')], ['review', 'approve']);
   assert.equal(g.lines.filter(l => /^steps T-2 A approve: waits for an in-progress slot to move to build$/.test(l)).length, 1, g.lines.join('\n'));
   // A ticket holding its slot moves on within it: never stalled by its own.
-  const h = slots([['T-1', 'build', 1], ['T-2', 'approve', 2]], { harness: { 'max-tickets-in-progress': 1 } });
+  const h = slots([['T-1', 'build', 1], ['T-2', 'approve', 2]], { seats: 1 });
   await h.steps();
   assert.deepEqual([h.state('T-1'), h.state('T-2')], ['review', 'approve']);
 });
 
 test('ASS-126 AC2: Blocked, Blocked for Human (here a human step) and Done hold no slot — the next ticket in rank order takes the freed one', async () => {
   for (const first of ['blocked', 'done']) {
-    const f = slots([['T-3', 'approve', 3], ['T-1', first, 1], ['T-2', 'approve', 2]], { harness: { 'max-tickets-in-progress': 1 } });
+    const f = slots([['T-3', 'approve', 3], ['T-1', first, 1], ['T-2', 'approve', 2]], { seats: 1 });
     await f.steps();
     assert.deepEqual([f.state('T-1'), f.state('T-2'), f.state('T-3')], [first, 'review', 'approve'], first);
   }
 });
 
 test('ASS-126 AC1: a ticket whose planning group\'s run is done waits for an in-progress slot before it moves on, its run kept', async () => {
-  const f = slots([['T-1', 'review', 1], ['T-2', 'prepare', 2]], { harness: { 'max-tickets-in-progress': 1 } });
+  const f = slots([['T-1', 'review', 1], ['T-2', 'prepare', 2]], { seats: 1 });
   edit(join(f.dir, 'assignments.json'), a => {
     a['transient-state-engines'] = [{ id: 'run-1', project: 'p', 'state-engine': 'test', state: 'done', 'is-done': true, 'structured-output': null, parent: { 'work-item': 'T-2', variation: 'A', 'state-engine': 'example-development', state: 'prepare' } }];
   });
@@ -93,17 +99,17 @@ test('ASS-126 AC1: a ticket whose planning group\'s run is done waits for an in-
   assert.equal(f.state('T-2'), 'review');
 });
 
-test('ASS-126 AC3: the project\'s own limits apply when harness.json\'s are higher; a project value of 0 means none', async () => {
-  const f = slots([['T-1', 'committed', 1], ['T-2', 'committed', 2]], { harness: { 'max-tickets-in-planning': 5 }, own: { 'max-tickets-in-planning': 1 } });
+test('ASS-528 AC1: max-tickets-in-planning and max-tickets-in-progress, harness.json\'s or project.json\'s, are not read; no seats at all holds the queue', async () => {
+  const f = slots([['T-1', 'committed', 1], ['T-2', 'committed', 2]], { harness: { 'max-tickets-in-planning': 1 }, own: { 'max-tickets-in-planning': 1, 'max-tickets-in-progress': 0 } });
   await f.steps();
-  assert.deepEqual([f.state('T-1'), f.state('T-2')], ['plan', 'committed']);
-  const g = slots([['T-1', 'committed', 1]], { harness: { 'max-tickets-in-planning': 5 }, own: { 'max-tickets-in-planning': 0 } });
+  assert.deepEqual([f.state('T-1'), f.state('T-2')], ['plan', 'plan']);
+  const g = slots([['T-1', 'committed', 1]], { seats: 0 });
   await g.steps();
   assert.equal(g.state('T-1'), 'committed');
 });
 
-test('ASS-126 AC3: harness.json\'s limits count every project\'s tickets in motion together', async () => {
-  const f = slots([['T-1', 'approve', 1]], { harness: { 'max-tickets-in-progress': 1 }, own: { 'max-tickets-in-progress': 3 } });
+test('ASS-528: machines are never shared — another project\'s tickets in motion take none of this project\'s seats', async () => {
+  const f = slots([['T-1', 'approve', 1]], { seats: 1 });
   // x: another project on the same engine, a ticket in progress.
   const at = (...rest) => join(f.dir, 'projects', 'x', ...rest);
   mkdirSync(at('sprints', 'sprint-1'), { recursive: true });
@@ -111,5 +117,5 @@ test('ASS-126 AC3: harness.json\'s limits count every project\'s tickets in moti
   writeFileSync(at('sprints.json'), JSON.stringify({ list: [{ number: 1, 'is-active': true }] }));
   writeFileSync(at('sprints', 'sprint-1', 'sprint.json'), JSON.stringify({ number: 1, features: [{ key: 'X-1', variations: [{ name: 'A', 'harness-status': hs('review'), 'state-changes': [] }] }], bugs: [], spikes: [] }));
   await f.steps();
-  assert.equal(f.state('T-1'), 'approve');
+  assert.equal(f.state('T-1'), 'review');
 });

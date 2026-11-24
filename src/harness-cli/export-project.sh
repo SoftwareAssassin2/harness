@@ -10,7 +10,8 @@ set -euo pipefail
 #   project.json                      the setup fields of data/projects/<project>/project.json
 #   vm-credentials.template.json      the project's ~/.harness/vm-credentials.json entry, as placeholders
 #   golden-image/…                    data/projects/<project>/golden-image/, when it has one
-#   engines/…                         data/projects/<project>/engines/, the project's own state engines (ASS-276), when it has them
+#   engines/…                         data/projects/<project>/engines/, the project's own state engines (ASS-276), when it has them,
+#                                     each <name>/workflow.yaml (ASS-524: one still only a state-engine.json fails the export)
 #   merge-request-area-of-interest.md   when it has one
 #   merge-request-considerations.md     when it has one
 #
@@ -96,9 +97,10 @@ set -euo pipefail
 #                         "execution-state-engine", "state-engines" and
 #                         "project-engines" in the manifest, project.json's
 #                         "execution-state-engine", and each bundled engine's
-#                         "engine": "<name>" (its action.engine in steps and
-#                         *-steps lists), the rest of each engine's text as it
-#                         was. It fails, writing nothing, when a shared engine
+#                         `engine: <name>` (its action.engine in steps and
+#                         *-steps lists), the rest of each engine's text —
+#                         comments included — as it was (ASS-524: in its
+#                         workflow.yaml, by engine-cli.js rename). It fails, writing nothing, when a shared engine
 #                         the project uses (one only in engines/) starts with
 #                         <from>- or names an engine being renamed, or when a new
 #                         name is already an engine's in engines/ or the bundle.
@@ -140,6 +142,14 @@ out="$out_dir/$(basename "$out")"
 stage="$(mktemp -d "${TMPDIR:-/tmp}/export-project.XXXXXX")"
 trap 'rm -rf "$stage" "$out.partial.$$"' EXIT
 
+# 0. ASS-524: a bundle carries each engine as its workflow.yaml; an own engine
+#    not yet migrated (only its state-engine.json) is not read by this harness,
+#    so the export stops, saying how to convert it.
+for f in "$source_dir"/engines/*/state-engine.json; do
+  [[ -f "$f" && ! -f "$(dirname "$f")/workflow.yaml" ]] || continue
+  fail "$f is not yet a workflow.yaml: convert $project's engines first, ./agent.sh engine:convert-to-yaml --project $project"
+done
+
 # 1. The state engines: the execution engine and every engine its steps and
 #    *-steps lists reach (as engine.bash's connected_engines walks them), each
 #    of which must be the project's own or in engines/ (engine_path).
@@ -153,7 +163,7 @@ while [[ ${#queue[@]} -gt 0 ]]; do
   while IFS= read -r next; do
     [[ -n "$next" && "$seen" != *" $next "* ]] || continue
     seen+="$next "; queue+=("$next")
-  done < <(jq -r '[(.steps // []), (to_entries[] | select(.key | endswith("-steps")) | .value)] | flatten | .[] | select(.action.type? == "state-engine") | .action.engine' "$file")
+  done < <(engine_json "$file" | jq -r '[(.steps // []), (to_entries[] | select(.key | endswith("-steps")) | .value)] | flatten | .[] | select(.action.type? == "state-engine") | .action.engine')
 done
 
 # 2. project.json's setup fields.
@@ -206,7 +216,7 @@ fi
 if [[ -n "$prefix" ]]; then
   from="${prefix%%=*}-" to="${prefix#*=}-"
   own_names=" " renames=()
-  for f in "$stage"/engines/*/state-engine.json; do
+  for f in "$stage"/engines/*/workflow.yaml; do
     [[ -f "$f" ]] || continue
     own="$(basename "$(dirname "$f")")"; own_names+="$own "
     [[ "$own" == "$from"* ]] && renames+=("$own")
@@ -215,19 +225,19 @@ if [[ -n "$prefix" ]]; then
     [[ "$own_names" != *" $used "* ]] || continue
     [[ "$used" != "$from"* ]] || fail "the shared engine $used starts with $from; only the project's own engines are renamed"
     for old in ${renames[@]+"${renames[@]}"}; do
-      jq -e --arg old "$old" '[(.steps // []), (to_entries[] | select(.key | endswith("-steps")) | .value)] | flatten | any(.action.engine? == $old)' \
-        "$(engine_path "$used" "$project")" >/dev/null && fail "the shared engine $used names $old, which would be renamed"
+      engine_json "$(engine_path "$used" "$project")" | jq -e --arg old "$old" '[(.steps // []), (to_entries[] | select(.key | endswith("-steps")) | .value)] | flatten | any(.action.engine? == $old)' \
+        >/dev/null && fail "the shared engine $used names $old, which would be renamed"
     done
   done
   for old in ${renames[@]+"${renames[@]}"}; do
     new="$to${old#"$from"}"
-    if [[ "$own_names" == *" $new "* || -f "$engines_dir/$new/state-engine.json" ]]; then fail "engine $old's new name $new is already an engine's"; fi
+    if [[ "$own_names" == *" $new "* || -f "$engines_dir/$new/workflow.yaml" ]]; then fail "engine $old's new name $new is already an engine's"; fi
   done
   for old in ${renames[@]+"${renames[@]}"}; do
     new="$to${old#"$from"}"
     mv "$stage/engines/$old" "$stage/engines/$new"
-    for f in "$stage"/engines/*/state-engine.json; do
-      OLD="$old" NEW="$new" perl -pi -e 's/("engine"\s*:\s*")\Q$ENV{OLD}\E(")/$1$ENV{NEW}$2/g' "$f"
+    for f in "$stage"/engines/*/workflow.yaml; do
+      node "$engine_cli" rename "$f" "$old" "$new" || fail "could not rename $old to $new in $f"
     done
     [[ "$engine" != "$old" ]] || engine="$new"
     for i in "${!engines[@]}"; do [[ "${engines[$i]}" != "$old" ]] || engines[$i]="$new"; done
@@ -241,7 +251,7 @@ commit="$(git -C "$root" rev-parse HEAD 2>/dev/null || true)"
 files="$(cd "$stage" && find . -type f | sed 's#^\./##' | LC_ALL=C sort | jq -R . | jq -sc .)"
 jq -n --arg project "$as" --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg commit "$commit" --arg engine "$engine" \
   --argjson engines "$(printf '%s\n' "${engines[@]}" | LC_ALL=C sort | jq -R . | jq -sc .)" --argjson files "$files" \
-  --argjson own "$(for f in "$stage"/engines/*/state-engine.json; do [[ ! -f "$f" ]] || basename "$(dirname "$f")"; done | LC_ALL=C sort | jq -R . | jq -sc .)" \
+  --argjson own "$(for f in "$stage"/engines/*/workflow.yaml; do [[ ! -f "$f" ]] || basename "$(dirname "$f")"; done | LC_ALL=C sort | jq -R . | jq -sc .)" \
   --slurpfile setup "$stage/project.json" --slurpfile source "$json" --slurpfile template "$stage/vm-credentials.template.json" '
   $setup[0] as $p | $template[0] as $t | $source[0] as $s |
   def run($step; $description; $command): {step: $step, description: $description, command: $command};
@@ -284,8 +294,9 @@ found() {
   [[ -z "$hit" ]] || fail "$hit holds $what"
 }
 found "a token-shaped string" -e "$tokens"
-found "an email address" --include='*.json' --include='*.md' -e "$emails"
-found "a machine path" --include='*.json' --include='*.md' -e "$paths"
+# ASS-524: an engine's workflow.yaml is scanned as its state-engine.json was.
+found "an email address" --include='*.json' --include='*.md' --include='workflow.yaml' -e "$emails"
+found "a machine path" --include='*.json' --include='*.md' --include='workflow.yaml' -e "$paths"
 # The project's own private values, matched as fixed strings (never printed).
 while IFS=$'\t' read -r what value; do
   [[ -n "$value" ]] || continue

@@ -6,7 +6,7 @@ import { stepOf, engineSteps, nextState } from './engine.js';
 import { enginesFor } from './state.js';
 import { ticketFacts, sandboxRefusedFeedback } from './facts.js';
 import { heldByChecks } from './checks.js';
-import { runsInVm } from './vm.js';
+import { runsOnMachine } from './run-target-places.js';
 import { machineOf } from './machine.js';
 import { found, contextOf, levelChanges, moveTicket, moveRun, isPaused, releaseWorkspace, firstStepId } from './moves.js';
 import { failed, recordKey, held, counted } from './backoff.js';
@@ -287,7 +287,7 @@ async function finishOne(ctx, state, live) {
   const place = placeOf(ctx, state, pen);
   // ASS-493: a script-succeeds check its exits ask runs in the background, kept for this turn (checks.js); while it
   // runs the turn stays unfinished, its agents live and its step where it is, and a later tick reads its answer.
-  const facts = { turnComplete: true, structuredOutput: penLive.result.structured_output, ...(place?.variation ? ticketFacts(ctx, place.project, place.ticket, place.variation, penLive.startedAt.getTime(), runsInVm(place.step) ? machineOf(place.variation) : undefined, `turn/${pen['agent-name']}/${penLive.startedAt.getTime()}`) : {}) };
+  const facts = { turnComplete: true, structuredOutput: penLive.result.structured_output, ...(place?.variation ? ticketFacts(ctx, place.project, place.ticket, place.variation, penLive.startedAt.getTime(), runsOnMachine(place.project, place.ticket?.key, place.variation.name, place.step) ? machineOf(place.variation) : undefined, `turn/${pen['agent-name']}/${penLive.startedAt.getTime()}`) : {}) };
   const next = place?.step ? nextState(place.step, place.engine, facts, place.changes) : null;
   if (heldByChecks(ctx, facts)) return;
   for (const l of lives) await endAgent(ctx, l);

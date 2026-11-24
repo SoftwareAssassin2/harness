@@ -17,7 +17,9 @@
 // too), or it has a free seat and a variation waits for an in-progress seat
 // or sits in a VM seat to move into it, or its seats are lost and tickets in
 // progress would take them (its connect tried again after the backoff). Only
-// with no seat-holders and nobody waiting does it disconnect and stop itself.
+// with no seat-holders and nobody waiting does it disconnect and stop itself
+// (ASS-529 AC5: with several tickets on it, only once none of them needs it —
+// no seat on it held, no holder's step to end).
 // A stopped workstation with work for its seats is so connected — started —
 // at once. While needed: connected
 // (workstation:connect, which starts a stopped workstation and waits for
@@ -43,7 +45,9 @@
 // workstation itself. ASS-481 AC4: a cloud VM of the pool (its kind
 // cloud-vm) is kept so alike — its connect starts or resumes it — and its
 // own idle stop (60 minutes) replaces the workstation's 30; control
-// never stops one either. Whenever control exits it closes the connections it
+// never stops one either. ASS-533: its idle check counts load as busy, so a
+// Substrate cluster on it has its node stopped (substrate:stop, its state
+// kept) just before the idle disconnect; setup starts it at the next connect. Whenever control exits it closes the connections it
 // owns, and at its start those a control no longer running left (ASS-470,
 // below: disconnectWorkstations, disconnectAtExit, closeLeftovers): its
 // agents are stopped with it, and a connection left open would keep the
@@ -106,10 +110,12 @@ import { join } from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import { backoffDelay, held } from './backoff.js';
 import { requiresReauthentication } from './state.js';
-import { loadWorkstations, expiredLogins, setUp } from './workstation-connection.js';
+import { loadWorkstations, expiredLogins, setUp, holdersOf } from './workstation-connection.js';
 import { tendSteps, workstationWants, WORKSTATION_HEALTH } from './workstation-steps.js';
 import { seatNeeds } from './seats.js';
-import { lostWhy, unreachable } from './seat-kinds.js';
+import { lostWhy, unreachable, isRemoteSeat } from './seat-kinds.js';
+import { USAGE_EVERY } from './remote-seats.js';
+import { entriesOf } from './substrate-config.js';
 
 const PHASE = 'workstation';
 export const KIND = 'workstation';
@@ -134,8 +140,8 @@ export function workstationNeeds(state, project, entries = {}, wants = new Map()
     else if (v['vm-hold'] && remote) needs.set(v.vm.name, `${t.key} ${v.name} held running for the operator`);
   }
   for (const w of project.devEnvironments?.workstations ?? []) {
-    const h = entries[w.id]?.holder;
-    if (h && !needs.has(w.id)) needs.set(w.id, `${h.ticket} ${h.variation}'s step to end`);
+    const hs = holdersOf(entries[w.id]);   // ASS-529: several tickets' steps on one machine
+    if (hs.length && !needs.has(w.id)) needs.set(w.id, `${hs.map(h => `${h.ticket} ${h.variation}`).join(', ')}'s step${hs.length > 1 ? 's' : ''} to end`);
   }
   return needs;
 }
@@ -172,6 +178,14 @@ async function keep(ctx, state, project, settings, needs, r) {
       s.idleSince ??= now;
       if (now - s.idleSince < idle) continue;
       await ctx.attempt(PHASE, what, async () => {
+        // ASS-533: a cloud VM's own idle check counts load as busy, and a Substrate cluster on it keeps its load up: its
+        // node is stopped first (state kept; workstation:setup starts it at the next connect), else the VM never stops.
+        if (w.kind === 'cloud-vm' && entriesOf(project).some(e => e.machine === w.id && e.kind === 'kind')) {
+          try {
+            const out = String(await ctx.cli(['substrate:stop', id, w.id])).trim().split('\n').pop();
+            if (JSON.parse(out).did?.length) ctx.log(PHASE, `${what}: stopped its Substrate cluster's node (its state kept) so it can stop itself when idle`);
+          } catch (error) { ctx.log('error', `${PHASE} ${what}: substrate:stop failed, so it may not stop itself while its cluster runs: ${error.message}`); }
+        }
         await ctx.cli(['workstation:disconnect', id, w.id]);
         ctx.log(PHASE, `${what}: disconnected: nothing on it has needed it for ${held(idle)}; it stops itself once idle${w.kind === 'cloud-vm' ? ' (a cloud VM: after 60 idle minutes; control never stops it)' : ''}`);
       });
@@ -186,7 +200,7 @@ async function keep(ctx, state, project, settings, needs, r) {
       let status;
       try { status = JSON.parse(await ctx.cli(['workstation:status', id, w.id, '--connection'])); } catch (error) { ctx.log('error', `${PHASE} ${what}: workstation:status failed: ${error.message}`); continue; }
       if (status.busy) continue;
-      if (status.connected) { await setup(ctx, id, w.id, dir, s, what); continue; }
+      if (status.connected) { await setup(ctx, id, w.id, dir, s, what); await measure(ctx, state, project, w, dir, s, what); continue; }
       s.up = false;
       dropped = true;
     }
@@ -203,12 +217,34 @@ async function keep(ctx, state, project, settings, needs, r) {
       s.need = need;
       if (lost) back(ctx, what, lost);
       await setup(ctx, id, w.id, dir, s, what);
+      await measure(ctx, state, project, w, dir, s, what);
     } catch (error) {
       connectFailed(ctx, dir, w, s, what, now, error, dropped ? 'its connection dropped and ' : '');
     }
     await gcloudFlag(ctx, project, settings, dir);
   }
   await tend(ctx, state, project, settings, dir);
+}
+
+// measure(ctx, state, project, w, dir, s, what) — ASS-529 AC1: the connected machine's memory and CPU read over its
+// connection (workstation:usage, recorded on its live data for remote-seats.js) — at most every USAGE_EVERY
+// (harness.json's remote-usage-interval-seconds), never every tick, and only while a ticket of the project holds a
+// seat on it or a step there (with none on it, it takes one ticket whatever it reads). A reading that fails is logged
+// once per outage, and the machine takes no new ticket meanwhile (remote-seats.js); one with no connection is not.
+async function measure(ctx, state, project, w, dir, s, what) {
+  const every = (state.harness?.['remote-usage-interval-seconds'] ?? USAGE_EVERY / 1000) * 1000, now = ctx.now().getTime();
+  const on = (project.seats ?? []).some(x => isRemoteSeat(x) && x.workstation === w.id) || holdersOf(loadWorkstations(dir)[w.id]).length > 0;
+  if (!on || now - (s.measuredAt ?? 0) < every) return;
+  s.measuredAt = now;
+  try {
+    await ctx.cli(['workstation:usage', project.id, w.id]);
+    if (s.usageFailed) ctx.log(PHASE, `${what}: its memory and CPU read again: it takes tickets by them again`);
+    s.usageFailed = false;
+  } catch (error) {
+    if (error.code === 255) return;   // no connection: not measured (not a failed reading)
+    if (!s.usageFailed) ctx.log('error', `${PHASE} ${what}: its memory and CPU could not be read; no new ticket on it until they can (those it holds keep running): ${loadWorkstations(dir)[w.id]?.usage?.error?.message ?? error.message}`);
+    s.usageFailed = true;
+  }
 }
 
 // connectFailed(ctx, dir, w, s, what, now, error, prefix) — a failed workstation:connect logged with the live data's

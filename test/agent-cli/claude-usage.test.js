@@ -75,3 +75,26 @@ test('project:set-claude-usage fails, writing nothing, on a bad project, a perce
     assert.equal(usage(dir), undefined, args.join(' '));
   }
 });
+
+test('ASS-571 AC2: project:set-claude-usage-failure records failure { why, at } keeping the last figures and as-of, its at kept while the cause stays; set-claude-usage clears it', async () => {
+  const dir = projects();
+  await cli(dir, 'project:set-claude-usage-failure', 'p', 'no token');                 // no reading yet: figures null, no as-of
+  assert.deepEqual({ ...usage(dir), failure: { ...usage(dir).failure, at: 'x' } }, { email: null, session: { percent: null, 'resets-at': null }, weekly: null, 'auth-method': null, org: null, failure: { why: 'no token', at: 'x' } });
+  await cli(dir, 'project:set-claude-usage', 'p', 'me@example.com', '7.5', '2026-10-15T13:00:00Z', '89', '2026-10-18T03:00:00Z', 'claude.ai', 'Fake Org');
+  const good = usage(dir);
+  assert.equal(good.failure, undefined);
+  writeFileSync(usageFile(dir), JSON.stringify({ ...good, 'as-of': '2026-10-15T10:00:00Z' }));
+  await cli(dir, 'project:set-claude-usage-failure', 'p', 'the token has expired', 'other@example.com', 'claude.ai', '-');
+  const failed = usage(dir);
+  assert.match(failed.failure.at, STAMP);
+  assert.deepEqual({ ...failed, failure: null }, { ...good, 'as-of': '2026-10-15T10:00:00Z', email: 'other@example.com', org: null, failure: null });
+  writeFileSync(usageFile(dir), JSON.stringify({ ...failed, failure: { ...failed.failure, at: '2026-10-15T11:00:00Z' } }));
+  await cli(dir, 'project:set-claude-usage-failure', 'p', 'the token has expired');
+  assert.equal(usage(dir).failure.at, '2026-10-15T11:00:00Z', 'the same cause keeps its first time');
+  assert.equal(usage(dir).email, 'other@example.com', 'no account given: kept');
+  await cli(dir, 'project:set-claude-usage-failure', 'p', 'the token was refused (401)');
+  assert.notEqual(usage(dir).failure.at, '2026-10-15T11:00:00Z');
+  for (const bad of [['p'], ['p', ''], ['p', 'why', 'a'], ['../p', 'why'], ['nope', 'why']]) {
+    await assert.rejects(cli(dir, 'project:set-claude-usage-failure', ...bad));
+  }
+});

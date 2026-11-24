@@ -56,11 +56,11 @@
             },
             "missing-repository": {
                 "type": "string",
-                "description": "Only when the cause is a repository the project does not list, which the work needs: its forge url (https://github.com/<owner>/<repo> or https://gitlab.com/<group>/<repo>); left out otherwise (ASS-121)"
+                "description": "Only when the cause is a repository the project does not list, which the work needs: its forge url (https://github.com/<owner>/<repo> or https://gitlab.com/<group>/<repo>); left out otherwise"
             },
             "failing-repository": {
                 "type": "string",
-                "description": "Only when the cause is in the product's own code: the forge url of the repository whose check fails (ASS-163); left out otherwise"
+                "description": "Only when the cause is in the product's own code: the forge url of the repository whose check fails; left out otherwise"
             },
             "failing-job": {
                 "type": "string",
@@ -72,23 +72,23 @@
             },
             "failing-file": {
                 "type": "string",
-                "description": "Only then: the file the failure is in, its path in the failing repository, :line where one fails (ASS-384: one the ticket's own branch adds or changes — or, ASS-423, one of its merge requests added or changed, merged or not — sends the ticket back to Generate Solution, not to the operator)"
+                "description": "Only then: the file the failure is in, its path in the failing repository, :line where one fails (one the ticket's own branch adds or changes — or one of its merge requests added or changed, merged or not — sends the ticket back to Generate Solution, not to the operator)"
             },
             "missing-change": {
                 "type": "string",
-                "description": "Only when nothing fails but the ticket's own work is incomplete (ASS-492): the change it still needs in one of the project's repositories, what the merge request must hold, in one line; left out otherwise"
+                "description": "Only when nothing fails but the ticket's own work is incomplete: the change it still needs in one of the project's repositories, what the merge request must hold, in one line; left out otherwise"
             },
             "missing-change-repository": {
                 "type": "string",
-                "description": "With missing-change only (ASS-492): the forge url of the repository it goes in; left out otherwise"
+                "description": "With missing-change only: the forge url of the repository it goes in; left out otherwise"
             },
             "branch-behind-base": {
                 "type": "string",
-                "description": "Only when the cause is the ticket's branch behind its base (ASS-509): the repository's forge url, the branch, how far behind origin/<base> it is, and what of the base explains the failure; Classify's behind-base, which Bring the Base In fixes; left out otherwise"
+                "description": "Only when the cause is the ticket's branch behind its base: the repository's forge url, the branch, how far behind origin/<base> it is, and what of the base explains the failure; Classify's behind-base, which Bring the Base In fixes; left out otherwise"
             },
             "numbered-file-taken": {
                 "type": "string",
-                "description": "Only when the cause is a numbered file the ticket adds whose number origin/<base> or an older open merge request took (ASS-509): the repository's forge url, the branch, the file and who took its number; Classify's numbered-file-taken, which Bring the Base In fixes; left out otherwise"
+                "description": "Only when the cause is a numbered file the ticket adds whose number origin/<base> or an older open merge request took: the repository's forge url, the branch, the file and who took its number; Classify's numbered-file-taken, which Bring the Base In fixes; left out otherwise"
             }
         },
         "required": [
@@ -97,5 +97,14 @@
             "root-cause",
             "evidence"
         ]
+    },
+    "output-tickets": {
+        "missing-repository": "ASS-121",
+        "failing-repository": "ASS-163",
+        "failing-file": "ASS-384; its merge requests ASS-423",
+        "missing-change": "ASS-492",
+        "missing-change-repository": "ASS-492",
+        "branch-behind-base": "ASS-509",
+        "numbered-file-taken": "ASS-509"
     }
 }

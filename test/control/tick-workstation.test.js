@@ -24,7 +24,7 @@ import { promisify } from 'node:util';
 import { createServer } from 'node:net';
 import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { controlFixture } from './control-fixture.js';
+import { controlFixture, macSeats } from './control-fixture.js';
 import { wsFixture, closeAll, edit, git, ID } from '../agent-cli/workstation-fixture.js';
 import { startForwarder } from '../../src/control/forwarder.js';
 import { tick } from '../../src/control/tick.js';
@@ -70,12 +70,13 @@ test('AC3, AC4: agent.sh on the workstation reaches the forwarder on its loopbac
 // committed → setup (the real grouped-setup: Check Setup Complete, Create VM, Mark Setup Complete) →
 // generate-solution (a prompt on the variation's machine) → ci-checks (a script there) → done; ABC-3 A's plan a
 // merge request in harness (change/ABC-3-1); p's Hindsight on `hindsight` (a port nothing answers on by default).
-async function tickFixture({ hindsight = 59111, mode = 'workstation' } = {}) {
+// ASS-549: `tickMs` — the clock moved on that much before each tick (0: the real clock alone).
+async function tickFixture({ hindsight = 59111, mode = 'workstation', tickMs = 0 } = {}) {
   const c = controlFixture();
   const at = (...rest) => join(c.dir, ...rest);
   cpSync(join(ROOT, 'engines', 'grouped-setup'), at('engines', 'grouped-setup'), { recursive: true });
   const s = wsFixture({ f: c, forwarder: await freePort(), mode });
-  edit(at('engines', 'example-development', 'state-engine.json'), e => {
+  edit(at('engines', 'example-development', 'workflow.yaml'), e => {
     e.steps = [
       ...e.steps.filter(x => ['blocked', 'backlog', 'committed'].includes(x.id)).map(x => (x.id === 'committed' ? { ...x, 'exit-events': [{ condition: { 'agent-needs-work': true }, 'move-to-state': 'setup' }] } : x)),
       { id: 'setup', sequence: 3, name: 'Setup', vm: 'running', 'is-planning-stage': true, 'paired-ticket-system-status': 'In Progress', 'max-visits': 3, 'on-max-visits': 'blocked', 'return-to-state': 'setup',
@@ -99,7 +100,10 @@ async function tickFixture({ hindsight = 59111, mode = 'workstation' } = {}) {
     await Promise.all([...(c.ctx.memory.workstations?.values() ?? [])].map(r => r.job));
     await Promise.all([...(c.ctx.memory.vms?.values() ?? [])].map(r => r.job));
   };
-  const ticks = async (n, done) => { for (let i = 0; i < n && !done(); i++) { await tick(c.ctx); await settle(); if (!done()) await new Promise(r => setTimeout(r, 100)); } return done(); };
+  let skew = 0;
+  const realNow = c.ctx.now;
+  c.ctx.now = () => new Date(realNow().getTime() + skew);
+  const ticks = async (n, done) => { for (let i = 0; i < n && !done(); i++) { skew += tickMs; await tick(c.ctx); await settle(); if (!done()) await new Promise(r => setTimeout(r, 100)); } return done(); };
   return { c, s, at, settle, ticks, state: () => c.variation()['harness-status'], log: () => c.lines.join('\n') };
 }
 
@@ -117,10 +121,17 @@ function heldByAnother(h) {
   return () => edit(h.at('assignments.json'), a => { a.assignments = a.assignments.filter(x => x['work-item'] !== 'ABC-9'); });
 }
 
-test('AC1, AC2, AC3, AC8: each step claims the workstation, its repositories on the ticket\'s branches, before its agent or script starts, and releases it at its end — committed work pushed, a completed step\'s leftovers committed on its branch, master back — so it is held by nothing between steps', { timeout: 300_000 }, async t => {
+// ASS-545: no timeout of its own — test/run.sh's 600 s per test is the hang guard; a fixed one a loaded Mac outlasts.
+// ASS-549: run twice — on the real clock, and with the clock a minute on before each tick, as a loaded Mac's slow
+// ticks see it. Then the workstation job checks the connection, setup and usage on every pass, so the tick moves the
+// ticket on to CI Checks, which asks for the machine, before the job has ended Generate Solution's step: its end runs
+// as CI Checks' ask gives the machine back. It failed 3 of 4 stress runs that way: Generate Solution's leftovers were
+// committed as "CI Checks: what the step left uncommitted" — the asking step overwrote the name of the step the
+// machine was held for (workstation-steps.js stepWaits, fixed).
+for (const [clock, tickMs] of [['', 0], [' (the clock a minute on each tick: the next step asks before the last one\'s end)', 60_000]]) test(`AC1, AC2, AC3, AC8: each step claims the workstation, its repositories on the ticket's branches, before its agent or script starts, and releases it at its end — committed work pushed, a completed step's leftovers committed on its branch, master back — so it is held by nothing between steps${clock}`, async t => {
   const hs = await fakeHindsight();
   t.after(hs.close);
-  const h = await tickFixture({ hindsight: hs.port });
+  const h = await tickFixture({ hindsight: hs.port, tickMs });
   const { c, s, ticks, state, log } = h;
   c.ctx.env.FAKE_HOLD = join(s.w.dir, 'hold');
   writeFileSync(c.ctx.env.FAKE_HOLD, '');
@@ -160,7 +171,7 @@ test('AC1, AC2, AC3, AC8: each step claims the workstation, its repositories on 
     assert.equal(c.variation().workstation, undefined);
     assert.equal(remote(s.origins.harness, 'refs/heads/change/ABC-3-1~1'), sha, 'pushed to its branch');
     assert.equal(git(s.origins.harness, 'show', 'change/ABC-3-1:test.txt'), 'a test', 'the test it left, committed there');
-    assert.match(git(s.origins.harness, 'log', '-1', '--format=%s', 'change/ABC-3-1'), /^ABC-3 A Generate Solution: what the step left uncommitted, committed by the harness/);
+    assert.match(git(s.origins.harness, 'log', '-1', '--format=%s', 'change/ABC-3-1'), /^ABC-3 A Generate Solution: what the step left uncommitted, committed by the harness/, log());   // ASS-545: the log
     const released = c.lines.findIndex(l => /^workstation p ada-dev: released by ABC-3 A: pushed harness change\/ABC-3-1 \(2\); its repositories back on master$/.test(l));
     assert.ok(c.lines.some(l => /^workstation warning: ABC-3 A: its step completed but left harness uncommitted on change\/ABC-3-1; committed and pushed by the harness \(test\.txt\)$/.test(l)), log());
     const again = c.lines.findIndex(l => /^workstation p ada-dev: claimed for ABC-3 A ci-checks/.test(l));
@@ -175,7 +186,8 @@ test('AC1, AC2, AC3, AC8: each step claims the workstation, its repositories on 
   } finally { c.ctx.stopAgents(); }
 });
 
-test('AC3: an agent killed mid-step (stop(): its marked process ended there) still ends its step cleanly — the workstation released, its trees clean on master', { timeout: 240_000 }, async () => {
+// ASS-545: no timeout of its own — test/run.sh's 600 s per test is the hang guard; a fixed one a loaded Mac outlasts.
+test('AC3: an agent killed mid-step (stop(): its marked process ended there) still ends its step cleanly — the workstation released, its trees clean on master', async () => {
   const h = await tickFixture();
   const { c, s, ticks, log } = h;
   atGenerateSolution(h);
@@ -198,7 +210,8 @@ test('AC3: an agent killed mid-step (stop(): its marked process ended there) sti
   } finally { c.ctx.stopAgents(); }
 });
 
-test('AC1, AC5, AC8: in workstation mode a step finding the workstation held by another waits, no agent sent, its Health saying why; it goes on once the holder\'s step has ended', { timeout: 240_000 }, async () => {
+// ASS-545: no timeout of its own — test/run.sh's 600 s per test is the hang guard; a fixed one a loaded Mac outlasts.
+test('AC1, AC5, AC8: in workstation mode a step finding the workstation held by another waits, no agent sent, its Health saying why; it goes on once the holder\'s step has ended', async () => {
   const h = await tickFixture();
   const { c, s, ticks, log } = h;
   atGenerateSolution(h);
@@ -225,7 +238,8 @@ test('AC1, AC5, AC8: in workstation mode a step finding the workstation held by 
 // ASS-469: the seats as control records them (seats.json).
 const seatsOf = h => { try { return JSON.parse(readFileSync(h.at('projects', 'p', 'seats.json'), 'utf8')).seats; } catch { return []; } };
 
-test('ASS-469 AC3, AC4, AC8: in vm+workstation mode a VM-seat holder\'s step runs on its VM, its repositories moved to its branches first, never on the workstation another seat-holder holds; once that one leaves, it moves into the workstation seat between its steps — not while its step runs — and its next step runs there', { timeout: 300_000 }, async () => {
+// ASS-545: no timeout of its own — test/run.sh's 600 s per test is the hang guard; a fixed one a loaded Mac outlasts.
+test('ASS-469 AC3, AC4, AC8: in vm+workstation mode a VM-seat holder\'s step runs on its VM, its repositories moved to its branches first, never on the workstation another seat-holder holds; once that one leaves, it moves into the workstation seat between its steps — not while its step runs — and its next step runs there', async () => {
   const h = await tickFixture({ mode: 'vm+workstation' });
   const { c, s, ticks, state, log } = h;
   // ABC-3 A's VM, its repositories clones of GitLab's, its ticket folder at /mnt/ticket.
@@ -237,8 +251,7 @@ test('ASS-469 AC3, AC4, AC8: in vm+workstation mode a VM-seat holder\'s step run
   c.ctx.env = { ...c.ctx.env, ...v.env, HOME: s.env.HOME, LIMA_HOME: v.instances, FAKE_HOLD: join(s.w.dir, 'hold') };
   writeFileSync(join(s.w.dir, 'hold'), '');
   // One VM seat and the workstation's one seat; ABC-9 B already in the workstation seat, at work there.
-  edit(h.at('harness.json'), x => { x['max-tickets-in-progress'] = 5; });
-  edit(h.at('projects', 'p', 'project.json'), p => { p['max-tickets-in-progress'] = 1; });
+  macSeats(c.ctx, 1);   // ASS-528: one VM seat, the seat budget's
   atGenerateSolution(h, { name: 'abc-3-a', ip: '192.168.64.9', 'created-at': '2026-11-15T00:00:00Z' });
   assert.equal((await s.result('workstation:connect', 'p', ID)).code, 0);
   const free = heldByAnother(h);
@@ -278,7 +291,8 @@ test('ASS-469 AC3, AC4, AC8: in vm+workstation mode a VM-seat holder\'s step run
   } finally { c.ctx.stopAgents(); }
 });
 
-test('ASS-473 AC2, AC4: a claim that fails for an image the workstation lacks and could not pull keeps the step waiting, no agent sent, its Health naming the image and the error; the workstation is given back, its seat kept; tried again after the backoff, it goes on once the image pulls', { timeout: 240_000 }, async () => {
+// ASS-545: no timeout of its own — test/run.sh's 600 s per test is the hang guard; a fixed one a loaded Mac outlasts.
+test('ASS-473 AC2, AC4: a claim that fails for an image the workstation lacks and could not pull keeps the step waiting, no agent sent, its Health naming the image and the error; the workstation is given back, its seat kept; tried again after the backoff, it goes on once the image pulls', async () => {
   const h = await tickFixture();
   const { c, s, at, ticks, log } = h;
   const TOKEN = 'ya29.service-account-token-TEST', AR = 'us-central1-docker.pkg.dev', image = `${AR}/example-project/containers/devcontainer:1.8.12`;

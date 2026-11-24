@@ -11,6 +11,7 @@ set -euo pipefail
 # /run/harness/env; any missing fails it, naming each, with no marker
 # written, so the ticket stays in Setup. Fails, naming why, too when the
 # variation has no VM, it is not running, or the marker cannot be written.
+# ASS-551: on a substrate run target its machine is its sandbox, marked alike.
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../vm.bash"
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../code.bash"
 
@@ -28,9 +29,14 @@ if [[ -n "$ws" ]]; then
   exit 0
 fi
 vm="$(running_vm vm:mark-setup-complete "$@")"
+# ASS-551: a Substrate sandbox (on a substrate run target, machine.bash $machine_of) is marked in it as a VM is, but
+# has no vm:credentials env file (its credentials are the egress gateway's, ASS-538): it proves its forwarder token
+# (substrate:sandbox-up's, ASS-536) instead.
+files="/run/harness/agent-url /run/harness/env"
+[[ "$vm" != substrate:* ]] || files="/run/harness/agent-url /run/harness/agent-token"
 missing="$(machine_run --workdir / "$vm" -- bash -c 'R="${HARNESS_VM_ROOT-}"
   command -v claude >/dev/null || echo "claude (command -v claude)"
-  for f in /run/harness/agent-url /run/harness/env; do [ -s "$R$f" ] || echo "$f"; done')" \
+  for f in $1; do [ -s "$R$f" ] || echo "$f"; done' - "$files" </dev/null)" \
   || { echo "vm:mark-setup-complete: could not probe $vm" >&2; exit 1; }
 [[ -z "$missing" ]] || { echo "vm:mark-setup-complete: $vm cannot run an agent: missing $(paste -sd, - <<< "$missing" | sed 's/,/, /g'); Setup stays incomplete" >&2; exit 1; }
 machine_run --workdir / "$vm" -- bash -c 'touch "${HARNESS_VM_ROOT-}$1"' - "$setup_marker" \

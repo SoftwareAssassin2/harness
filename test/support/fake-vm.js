@@ -16,7 +16,9 @@ export function fakeVm(base = process.env) {
   for (const d of [bin, vmBin, root, instances]) mkdirSync(d);
   symlinkSync(join(import.meta.dirname, 'fake-limactl.js'), join(bin, 'limactl'));
   const env = { ...base, PATH: `${bin}:${base.PATH}`, FAKE_LIMACTL_LOG: log, FAKE_VM_ROOT: root, FAKE_VM_BIN: vmBin, FAKE_LIMA_INSTANCES: instances };
-  const calls = () => (existsSync(log) ? readFileSync(log, 'utf8').trim().split('\n').map(l => JSON.parse(l)) : []);
+  // ASS-550: only whole lines — a test polling calls() while fake-limactl appends can find the log created and its
+  // line not yet written (on a loaded Mac: "Unexpected end of JSON input"); the last line counts once its \n is there.
+  const calls = () => (existsSync(log) ? readFileSync(log, 'utf8').split('\n').slice(0, -1).filter(Boolean).map(l => JSON.parse(l)) : []);
   const fake = folder => (name, body) => { writeFileSync(join(folder, name), `#!/usr/bin/env bash\n${body}\n`); chmodSync(join(folder, name), 0o755); };
   const instance = (name, status = 'Stopped', sshPort = '0') => {
     mkdirSync(join(instances, name), { recursive: true });

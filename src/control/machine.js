@@ -20,7 +20,11 @@
 // for a VM's root (machinePaths). ASS-481: a third, a cloud VM
 // (machine-cloud-vm.js), named cloud-vm:<project>:<id>:<folder> alike. A new one is
 // a module exporting what `lima` does (command, stopMarked, copyIn, copyOut,
-// statuses, status, stop), added to BACKENDS under its kind.
+// statuses, status, stop), added to BACKENDS under its kind. ASS-535: a
+// fourth, a Substrate sandbox (machine-substrate.js, which says the design
+// and the interface the later Substrate tickets build on), named
+// substrate:<project>:<machine>:<actor> from the variation's `sandbox` while
+// its run target is a substrate one.
 //
 // Lima-specific, outside the layer: building the golden image and creating,
 // cloning and deleting a VM (the bash vm:* commands), and limaHome, the
@@ -30,11 +34,28 @@ import { randomUUID } from 'node:crypto';
 import { lima } from './machine-lima.js';
 import { workstation, parts as workstationParts, wsPath } from './machine-workstation.js';
 import { cloudVm } from './machine-cloud-vm.js';
+import { substrate, parts as sandboxParts, sandboxMachine } from './machine-substrate.js';
 
-const BACKENDS = { lima, workstation, 'cloud-vm': cloudVm };
+const BACKENDS = { lima, workstation, 'cloud-vm': cloudVm, substrate };
+// ASS-535: the substrate run targets — a step on one runs in the variation's sandbox.
+export const SUBSTRATE_RUN_TARGETS = new Set(['local-substrate', 'workstation-substrate', 'cloud-vm-substrate']);
 // ASS-481: the remote kinds — a project's pool, its workstations and its cloud VMs — whose machine is
 // <kind>:<project>:<id>:<folder>, a folder on the remote reached over its one connection.
 export const REMOTE_KINDS = ['workstation', 'cloud-vm'];
+
+// ASS-565: the run target a variation was handed over to this tick (run-target-places.js readyTarget). The variation
+// control loaded is a deep-frozen parse (read.js deepFreeze, ASS-548's read cache), so readyTarget cannot write its
+// `run-target` onto it (that threw "Cannot add property run-target, object is not extensible" and held every step
+// moving onto or off a Mac or Substrate target). code:hand-over records it on disk, and the next load reads it; until
+// then it is kept here, by the loaded variation object itself: a WeakMap, so the note goes with that parse — a later
+// load of the rewritten sprint file is a new object, read from disk alone.
+const handedOver = new WeakMap();
+// noteRunTarget(variation, record) — `record` ({ target, at }) taken as the variation's run-target for as long as this
+// loaded object is in use.
+export const noteRunTarget = (variation, record) => { if (variation && typeof variation === 'object') handedOver.set(variation, record); };
+// runTargetOf(variation) — the variation's run-target ({ target, at }): the one noted this tick, else its loaded
+// `run-target`; null with neither. Every reader of a loaded variation's run-target in control goes through it.
+export const runTargetOf = variation => (variation && typeof variation === 'object' ? handedOver.get(variation) ?? variation['run-target'] ?? null : null);
 
 // machineOf(variation) — the variation's machine, as named above; undefined
 // when it has none (its Create VM step has not run). ASS-468: while one of
@@ -44,7 +65,12 @@ export const REMOTE_KINDS = ['workstation', 'cloud-vm'];
 // workstation when one is free.
 // ASS-481: a cloud VM's claim records kind cloud-vm on the variation's `workstation` (its vm, kind cloud-vm), and its
 // machine is cloud-vm:<project>:<id>:<folder> alike.
-export function machineOf(variation) {
+// ASS-535: while its run target is a substrate one — `target` when given (control's, from this tick's seats), else the
+// one it last ran on (its `run-target`, code:hand-over's) — its sandbox (machine-substrate.js sandboxMachine), when it
+// records one; a substrate target with none yet gives undefined (its sandbox is made first: sandboxes.js).
+export function machineOf(variation, target) {
+  const on = target ?? runTargetOf(variation)?.target;
+  if (SUBSTRATE_RUN_TARGETS.has(on)) return sandboxMachine(variation);
   const held = variation?.workstation?.name && variation.workstation.project && variation.workstation.folder ? { ...variation.workstation, kind: variation.workstation.kind ?? 'workstation' } : null;
   const { name, kind = 'lima', project, folder } = held ?? variation?.vm ?? {};
   if (!name) return undefined;
@@ -61,6 +87,13 @@ export function onWorkstation(machine) {
   try { return { ...workstationParts(machine.slice(kind.length + 1)), kind }; } catch { return null; }
 }
 
+// onSandbox(machine) — ASS-535: { project, machine, actor } when `machine` is a Substrate sandbox's
+// (substrate:<project>:<machine>:<actor>); else null.
+export function onSandbox(machine) {
+  if (!machine?.startsWith?.('substrate:')) return null;
+  try { return sandboxParts(machine.slice('substrate:'.length)); } catch { return null; }
+}
+
 // remoteName(machine) — a remote machine's name without its kind (<project>:<id>:<folder>), as its backend and
 // syncTicketCopy take it; null for any other.
 export const remoteName = machine => (onWorkstation(machine) ? machine.slice(machine.indexOf(':') + 1) : null);
@@ -71,6 +104,10 @@ export const remoteName = machine => (onWorkstation(machine) ? machine.slice(mac
 // is told where it is }. A VM's: /repos/ and /mnt/ticket (vm.js REPOS,
 // TICKET_FOLDER); a workstation's: its shared root's repos/ and ticket (ASS-468).
 export function machinePaths(machine) {
+  if (onSandbox(machine)) {
+    const { machine: host, actor } = onSandbox(machine);
+    return { repos: '/repos/', ticket: '/mnt/ticket', kind: 'sandbox', where: `in this ticket variation's own Substrate sandbox, ${actor}, on ${host === 'mac' ? 'the Mac' : host}: its repositories under /repos, checked out on this ticket variation's branches; commit your work on its branch before you finish (a sandbox has no Docker: steps that need it run on a full machine)` };
+  }
   const ws = onWorkstation(machine);
   if (!ws) return { repos: '/repos/', ticket: '/mnt/ticket', kind: 'VM', where: `in this ticket variation's own VM, ${machine}` };
   return { repos: `${wsPath(ws.folder, '/repos')}/`, ticket: wsPath(ws.folder, '/mnt/ticket'), kind: 'workstation', where: `on the ${ws.kind === 'cloud-vm' ? 'GCP cloud VM' : 'GCP workstation'} ${ws.id}, in its shared repositories under ${ws.folder}, checked out on this ticket variation's branches for this step: commit and push your work on its branch before you finish (what a step that does not finish leaves uncommitted is discarded; a commit on master is refused)` };

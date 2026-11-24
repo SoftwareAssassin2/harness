@@ -10,7 +10,10 @@
 //                                memory, memory.js (ASS-62), backed up
 //                                daily, memory-backup.js (ASS-148), its
 //                                Claude spend read, memory-spend.js (ASS-269)
-//   3. seats and memory          seats.js: each ticket in progress in a VM
+//   3. seats and memory          seat-budget.js: each project's Mac seats
+//                                from the Mac's memory and CPU budget and
+//                                its share of it (ASS-528);
+//                                seats.js: each ticket in progress in a VM
 //                                seat or a workstation seat, a free
 //                                workstation seat taken first (ASS-469);
 //                                seat-memory.js: a seat only when its
@@ -37,7 +40,9 @@
 //                                (triggers.js; ASS-450: the ticket health
 //                                sampling that ran here is removed)
 //   8. status nags + shutdowns   supervise.js
-//   9. dispatch                  dispatch.js
+//   9. dispatch                  dispatch.js; then each project's seat
+//                                queue written for the dashboard,
+//                                seat-queue.js (ASS-525)
 // A rate limit is held per (project, credential kind) (ASS-215): the tick runs
 // in full, and only the held kind's agents of that project are not dispatched
 // (dispatch.js), until the clock passes the reset recorded for it, which is
@@ -68,21 +73,28 @@ import { backupMemory } from './memory-backup.js';
 import { recordMemorySpend } from './memory-spend.js';
 import { superviseVms } from './vm-lifecycle.js';
 import { superviseWorkstations } from './workstations.js';
+import { superviseSubstrate } from './substrate.js';
+import { superviseSandboxes } from './sandboxes.js';
 import { seatMemory } from './seat-memory.js';
 import { assignSeats } from './seats.js';
+import { recordSeatQueue } from './seat-queue.js';
+import { budgetSeats } from './seat-budget.js';
+import { budgetRemote } from './remote-seats.js';
 import { dispatch } from './dispatch.js';
 import { fastTrack } from './fast-track.js';
 import { checkUsage } from './usage.js';
 import { checkApiCost } from './api-cost.js';
 import { checkPushAccount } from './push-account.js';
+import { refreshCommitLists } from './commit-refresh.js';
 import { detectReverts } from './reverts.js';
 import { raiseDependencies } from './dependencies.js';
 import { checkDisk, diskHeld } from './disk.js';
 import { readHostMemory } from './host-memory.js';
+import { readHostCpu } from './host-cpu.js';
 import { limaHome } from './vm.js';
 import { checkCredentials } from './credentials.js';
 import { login } from './login.js';
-import { sessionUsage } from '../agents/usage.js';
+import { sessionUsage, loginExpiry, refreshLogin } from '../agents/usage.js';
 import { newTickTimes, timeCall, timeSync, timeHere, untimed, commandName } from './tick-stats.js';
 import { monthCost } from '../agents/api-cost.js';
 import { pushAccount } from '../agents/forge.js';
@@ -135,6 +147,11 @@ export function createContext({ root, env = process.env, command, log = () => {}
   // the test fixtures' env, as ACLI_DISABLED is — so a test's control never
   // reads a real token or calls the endpoint. Tests replace it.
   ctx.usage = env.CLAUDE_USAGE_DISABLED === '1' ? null : dir => sessionUsage(dir);
+  // loginExpiry(configDir), refreshLogin(configDir) — ASS-571: when that login's token expires, and Claude Code
+  // renewing it (one minimal `claude -p` turn with that config dir, the agent command), for usage.js keepFresh; null
+  // with CLAUDE_USAGE_DISABLED=1 too. Tests replace them.
+  ctx.loginExpiry = env.CLAUDE_USAGE_DISABLED === '1' ? null : dir => loginExpiry(dir);
+  ctx.refreshLogin = env.CLAUDE_USAGE_DISABLED === '1' ? null : dir => refreshLogin(dir, { command: ctx.command, env: ctx.env });
   // apiCost(now, service) — an Anthropic API organization's spend in now's UTC
   // month, with the admin key in keychain item `service` (the harness org's
   // without one, ASS-221) (ASS-153, see src/agents/api-cost.js and api-cost.js); null with
@@ -148,12 +165,19 @@ export function createContext({ root, env = process.env, command, log = () => {}
   // — the test fixtures' env, as ANTHROPIC_API_COST_DISABLED is — so a test's
   // control never reads a forge token or calls a forge. Tests replace it.
   ctx.pushAccount = env.PUSH_ACCOUNT_DISABLED === '1' ? null : args => pushAccount({ ...args, env });
+  // commitLists — whether control keeps the ticket variations' commit lists fresh (ASS-558, commit-refresh.js); off
+  // with COMMIT_LISTS_DISABLED=1 — the test fixtures' env, as PUSH_ACCOUNT_DISABLED is — so a test's control never
+  // runs ticket:refresh-commits (a forge read). Tests set it.
+  ctx.commitLists = env.COMMIT_LISTS_DISABLED !== '1';
   // hostMemory() — the Mac's memory now (ASS-398; ASS-404, see host-memory.js:
   // macOS's free percentage and pressure level, and each Lima VM's resident
   // size); null with HOST_MEMORY_DISABLED=1 — the test fixtures' env, as
   // DISK_SPACE_DISABLED is — so a test's control never holds a VM for the real
   // Mac's memory. Tests replace it.
   ctx.hostMemory = env.HOST_MEMORY_DISABLED === '1' ? null : () => readHostMemory(limaHome(env))();
+  // hostCpu() — the Mac's CPU now (ASS-528, see host-cpu.js: every process's CPU summed, its cores, each Lima VM's
+  // CPU), for the seat budget (seat-budget.js); null with HOST_MEMORY_DISABLED=1 as hostMemory is. Tests replace it.
+  ctx.hostCpu = env.HOST_MEMORY_DISABLED === '1' ? null : () => readHostCpu(limaHome(env))();
   // ASS-494: within a deeper timed sub-routine (runSteps, finishEnded, detectReverts), each timed by command name,
   // its arguments dropped — '<parent key>/cli <command>', '…/script <command>' (tick-stats.js timeHere, commandName);
   // elsewhere just run. A script started and not awaited (steps.js's script steps) is started untimed (ctx.untimed):
@@ -182,8 +206,11 @@ export function createContext({ root, env = process.env, command, log = () => {}
     for (const p of state.projects) for (const e of p.switchedOffErrors) if (!ctx.memory.warned.has(`switched-off/${p.id}/${e}`)) { ctx.memory.warned.add(`switched-off/${p.id}/${e}`); ctx.log('error', `project ${p.id}: ${e}`); }
     // A wrong dev-environments (ASS-431: refused by loadState, devEnvironments null), each error logged once.
     for (const p of state.projects) for (const e of p.devEnvironmentsErrors) if (!ctx.memory.warned.has(`dev-environments/${p.id}/${e}`)) { ctx.memory.warned.add(`dev-environments/${p.id}/${e}`); ctx.log('error', `project ${p.id}: ${e}`); }
+    // ASS-540 AC3: a step its tickets can reach that can run on none of the project's run targets (run-targets.js), each logged once — never started.
+    for (const p of state.projects) for (const e of p.runTargetErrors ?? []) if (!ctx.memory.warned.has(`run-targets/${p.id}/${e}`)) { ctx.memory.warned.add(`run-targets/${p.id}/${e}`); ctx.log('error', `project ${p.id}: ${e}`); }
     // An engine declaring keys the harness no longer reads (ASS-450: loadState's obsoleteEngineKeys, ignored), logged once per engine.
-    for (const { file, keys } of state.obsoleteEngineKeys ?? []) if (!ctx.memory.warned.has(`obsolete/${file}`)) { ctx.memory.warned.add(`obsolete/${file}`); ctx.log('engines', `${file}: ${keys.join(', ')} ${keys.length === 1 ? 'is' : 'are'} obsolete and ignored (ASS-450: the ticket health check is removed); remove ${keys.length === 1 ? 'it' : 'them'}`); }
+    // ASS-524: one only a state-engine.json (legacy: not read), with how to convert it.
+    for (const { file, keys, legacy } of state.obsoleteEngineKeys ?? []) if (!ctx.memory.warned.has(`obsolete/${file}`)) { ctx.memory.warned.add(`obsolete/${file}`); ctx.log('engines', legacy ? `${file} is not read: engines are workflow.yaml since ASS-524; convert it with ./agent.sh engine:convert-to-yaml --all` : `${file}: ${keys.join(', ')} ${keys.length === 1 ? 'is' : 'are'} obsolete and ignored (ASS-450: the ticket health check is removed); remove ${keys.length === 1 ? 'it' : 'them'}`); }
     // ASS-460: an engine that failed to read, standing at its last good copy (loadState's staleEngines), logged once per failure streak; once it reads again, said so.
     const stale = new Set((state.staleEngines ?? []).map(({ file }) => file));
     for (const { file, error } of state.staleEngines ?? []) if (!ctx.memory.staleEngines.has(file)) { ctx.memory.staleEngines.add(file); ctx.log('engines', `${file} could not be read (${error}): its last good copy is used until it reads again`); }
@@ -232,7 +259,7 @@ export function createContext({ root, env = process.env, command, log = () => {}
 
 // The phases that start agents, skipped while a restart drains.
 const NEW_WORK = new Set([fastTrack, refineBacklog, dispatch]);
-const PHASES = [finishEnded, superviseRegistries, followGolden, superviseMemory, backupMemory, recordMemorySpend, assignSeats, seatMemory, superviseVms, superviseWorkstations, fastTrack, runSteps, detectGaps, fireTimers, detectReverts, checkGcloud, checkGlab, checkUsage, checkApiCost, checkPushAccount, raiseDependencies, refineBacklog, superviseAgents, dispatch];
+const PHASES = [finishEnded, superviseRegistries, followGolden, superviseMemory, backupMemory, recordMemorySpend, budgetRemote, budgetSeats, assignSeats, seatMemory, superviseVms, superviseWorkstations, superviseSubstrate, superviseSandboxes, fastTrack, runSteps, detectGaps, fireTimers, detectReverts, checkGcloud, checkGlab, checkUsage, checkApiCost, checkPushAccount, refreshCommitLists, raiseDependencies, refineBacklog, superviseAgents, dispatch, recordSeatQueue];
 // ASS-490: which of the header's nine phases (tick-stats.js TICK_PHASES) each phase function is timed under, and by
 // what name (ctx.timed, as '<phase>/<name>'; named here, as checkGcloud and checkGlab are made, not declared); the
 // hold, disk and credentials checks before fast track count under 'steps', the phase they gate. BACKGROUND: those that start work they do not await (vm-lifecycle.js's VM jobs, steps.js's script
@@ -240,24 +267,24 @@ const PHASES = [finishEnded, superviseRegistries, followGolden, superviseMemory,
 const PHASE_OF = new Map(Object.entries({
   finish: { finishEnded },
   registries: { superviseRegistries, followGolden, superviseMemory, backupMemory, recordMemorySpend },
-  'seats/VMs': { assignSeats, seatMemory, superviseVms, superviseWorkstations },
+  'seats/VMs': { budgetRemote, budgetSeats, assignSeats, seatMemory, superviseVms, superviseWorkstations, superviseSubstrate, superviseSandboxes },
   steps: { fastTrack, runSteps },
   gaps: { detectGaps },
-  timers: { fireTimers, detectReverts, checkGcloud, checkGlab, checkUsage, checkApiCost, checkPushAccount },
+  timers: { fireTimers, detectReverts, checkGcloud, checkGlab, checkUsage, checkApiCost, checkPushAccount, refreshCommitLists },
   dependencies: { raiseDependencies, refineBacklog },
   supervise: { superviseAgents },
-  dispatch: { dispatch },
+  dispatch: { dispatch, recordSeatQueue },
 }).flatMap(([phase, calls]) => Object.entries(calls).map(([name, fn]) => [fn, { phase, name }])));
 // ASS-497: CHECKS, the periodic checks that call out (background-checks.js), start their jobs and return a promise
 // of them, which the tick does not await: only their start is timed, and they are marked background too.
-const CHECKS = new Set([detectReverts, checkGcloud, checkGlab, checkUsage, checkApiCost, checkPushAccount]);
-const BACKGROUND = new Set([superviseVms, runSteps, ...CHECKS]);
+const CHECKS = new Set([detectReverts, checkGcloud, checkGlab, checkUsage, checkApiCost, checkPushAccount, refreshCommitLists]);   // ASS-558: refreshCommitLists
+const BACKGROUND = new Set([superviseVms, superviseSubstrate, runSteps, ...CHECKS]);   // ASS-533: its checks run as a job beside the tick
 // ASS-494: those timed a level deeper — their helpers, per-item loop bodies, agent.sh calls, scripts and loads
 // (ctx.timedHere, ctx.cli, ctx.script, ctx.load; ASS-493: ctx.succeeds runs untimed in the background). detectReverts
 // is not one: ASS-497 runs its work as a background job, which is never timed.
 const DEEPER = new Set([runSteps, finishEnded]);
 
-// tick(ctx) — the twenty-four phases, in order, each reading the data afresh; a
+// tick(ctx) — the twenty-five phases, in order, each reading the data afresh; a
 // phase that throws is logged under "error" and the next still runs. The
 // rate limits — recorded by the finish phase, so checked after it — are
 // logged and cleared (checkRateLimits), the tick going on; ASS-460: guarded as

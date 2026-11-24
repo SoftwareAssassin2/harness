@@ -28,7 +28,7 @@ function fixture({ own = false } = {}) {
   const sub = { steps: [{ id: 'check', 'paired-ticket-system-status': 'Checking', 'is-qa': true }, { id: 'done', 'paired-ticket-system-status': 'Finished', 'is-done': true }] };
   for (const [base, name, engine] of [[engines, 'main', main], [own ? join(p, 'engines') : engines, 'sub', sub], [engines, 'unused', { steps: [{ id: 'x', 'paired-ticket-system-status': 'Working', 'is-qa': true }] }]]) {
     mkdirSync(join(base, name), { recursive: true });
-    writeFileSync(join(base, name, 'state-engine.json'), JSON.stringify(engine));
+    writeFileSync(join(base, name, 'workflow.yaml'), JSON.stringify(engine));
   }
   const file = join(p, 'team.json');
   const write = (name, value) => writeFileSync(join(p, name), typeof value === 'string' ? value : JSON.stringify(value));

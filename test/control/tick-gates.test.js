@@ -12,7 +12,7 @@ import { until } from '../support/until.js';
 
 const turnsEnd = ctx => until(() => [...ctx.agents.values()].every(a => a.result));
 const sprintFile = f => join(f.dir, 'projects', 'p', 'sprints', 'sprint-10', 'sprint.json');
-const engineFile = f => join(f.dir, 'engines', 'example-development', 'state-engine.json');
+const engineFile = f => join(f.dir, 'engines', 'example-development', 'workflow.yaml');
 const edit = (file, change) => { const json = JSON.parse(readFileSync(file, 'utf8')); change(json); writeFileSync(file, JSON.stringify(json)); };
 
 test('tick: a gated variation stops with its work marked done when its exit holds, is not dispatched again, and goes on — the ticket system following — once a human moves it', async () => {
@@ -189,11 +189,11 @@ test('ticket:approve-gate fails, moving nothing, when no move waits at a gate', 
 test('tick: gates inside a run inside a run — a record-script-output script step and a prompt step — each approved, keep what the step produced, so the outer run\'s exit and the ticket step\'s, reading it, match (ASS-132)', async () => {
   const f = controlFixture();
   edit(engineFile(f), e => { e.steps.find(s => s.id === 'local-testing').action.engine = 'outer'; });
-  edit(join(f.dir, 'engines', 'test', 'state-engine.json'), e => {
+  edit(join(f.dir, 'engines', 'test', 'workflow.yaml'), e => {
     e.steps.unshift({ id: 'create-vm', sequence: 0, 'record-script-output': true, action: { type: 'script', command: 'echo {"vm-name":"lima-x"}' }, 'exit-events': [{ condition: { 'exit-code': 0 }, 'move-to-state': 'test' }] });
   });
   mkdirSync(join(f.dir, 'engines', 'outer'), { recursive: true });
-  writeFileSync(join(f.dir, 'engines', 'outer', 'state-engine.json'), JSON.stringify({ steps: [
+  writeFileSync(join(f.dir, 'engines', 'outer', 'workflow.yaml'), JSON.stringify({ steps: [
     { id: 'inner', sequence: 1, action: { type: 'state-engine', engine: 'test' },
       'exit-events': [{ condition: { all: [{ 'is-done': true }, { 'structured-output': { 'is-approved': true } }, { 'structured-output': { 'vm-name': 'lima-x' } }] }, 'move-to-state': 'done' }] },
     { id: 'done', sequence: 2, 'is-done': true, action: { type: 'none' } },
@@ -250,7 +250,7 @@ test('tick: a script step held at a gate, its work done, is not run again by a r
 
   const inner = controlFixture();
   mkdirSync(join(inner.dir, 'ran'));
-  edit(join(inner.dir, 'engines', 'test', 'state-engine.json'), e => {
+  edit(join(inner.dir, 'engines', 'test', 'workflow.yaml'), e => {
     e.steps.unshift({ id: 'request-restart', sequence: 0, action: { type: 'script', command: `mktemp ${join(inner.dir, 'ran')}/x.XXXXXX` }, 'exit-events': [{ condition: { 'exit-code': 0 }, 'move-to-state': 'test' }] });
   });
   edit(sprintFile(inner), s => { Object.assign(s.features[0].variations[0], { 'harness-status': hs('build'), 'gate-when-leaving-state': ['test/request-restart'] }); s.features[0]['ticket-system-status'] = 'In Progress'; });
@@ -337,7 +337,7 @@ test('tick: a gate never holds a timer script step — at the top level or insid
   }
 
   const inner = controlFixture();
-  edit(join(inner.dir, 'engines', 'test', 'state-engine.json'), e => {
+  edit(join(inner.dir, 'engines', 'test', 'workflow.yaml'), e => {
     e.steps.unshift({ id: 'poll', sequence: 0, action: { type: 'script', mode: 'timer', 'timer-minutes': 1, command: 'echo polled' }, 'exit-events': [{ condition: { 'exit-code': 0 }, 'move-to-state': 'test' }] });
   });
   edit(sprintFile(inner), s => { Object.assign(s.features[0].variations[0], { 'harness-status': hs('build'), 'gate-when-leaving-state': ['test/poll'] }); s.features[0]['ticket-system-status'] = 'In Progress'; });

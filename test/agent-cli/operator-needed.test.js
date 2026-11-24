@@ -31,7 +31,7 @@ const ticket = (key, state, extra = {}) => ({ key, title: `Title of ${key}`, var
 function fixture() {
   const root = mkdtempSync(join(tmpdir(), 'operator-needed-'));
   const projects = join(root, 'projects'), engines = join(root, 'engines');
-  write(join(engines, 'e', 'state-engine.json'), { steps });
+  write(join(engines, 'e', 'workflow.yaml'), { steps });
   for (const [id, features] of [
     ['p', [ticket('A-1', 'human-review'), ticket('A-2', 'stuck', { 'ai-feedback-short': 'Tests fail', 'ai-feedback-long': 'The tests fail on the VM.' }),
       ticket('A-3', 'build'), ticket('A-4', 'build'), { ...ticket('A-5', 'build'), 'pending-requirements-change': { description: 'New text' } }]],

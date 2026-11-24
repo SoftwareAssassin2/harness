@@ -43,7 +43,8 @@ async function verdict(q, key, ms = 120_000) {
   throw new Error(`${key}: the gate never finished`);
 }
 
-test('ASS-394 AC1/AC4: a failing test that passes when run again is a flake — the gate passes and merges, nothing raised', { timeout: 180_000 }, async t => {
+// ASS-545: no timeout of its own — test/run.sh's 600 s per test is the hang guard; a fixed one a loaded Mac outlasts.
+test('ASS-394 AC1/AC4: a failing test that passes when run again is a flake — the gate passes and merges, nothing raised', async t => {
   const q = queue(t);
   asHarness(q);
   const flag = join(q.dir, 'flaked');
@@ -64,7 +65,8 @@ test('ASS-394 AC1/AC4: a failing test that passes when run again is a flake — 
   assert.equal(await q.idle(), '');
 });
 
-test('ASS-394 AC2/AC4: a test failing again and on master too is master\'s — no exit (no visit, nothing back to Build), the ticket waits for master; raised once in the harness backlog, never twice for the same test; once master moves the gate runs again', { timeout: 300_000 }, async t => {
+// ASS-545: no timeout of its own — test/run.sh's 600 s per test is the hang guard; a fixed one a loaded Mac outlasts.
+test('ASS-394 AC2/AC4: a test failing again and on master too is master\'s — no exit (no visit, nothing back to Build), the ticket waits for master; raised once in the harness backlog, never twice for the same test; once master moves the gate runs again', async t => {
   const q = queue(t);
   asHarness(q);
   const broken = join(q.dir, 'master-broken');
@@ -78,7 +80,7 @@ test('ASS-394 AC2/AC4: a test failing again and on master too is master\'s — n
   const main = git(q.origin, 'rev-parse', 'main');
 
   const three = await verdict(q, 'ABC-3');
-  assert.deepEqual(three, { code: 0, out: { waiting: true, behind: null, 'master-red': true, tests: ['t/racy.test.js: racy on master'], tickets: ['ASS-1'] } });
+  assert.deepEqual(three, { code: 0, out: { waiting: true, 'master-red': true, tests: ['t/racy.test.js: racy on master'], tickets: ['ASS-1'] } });
   assert.equal(q.onMain('three.txt'), false);
   assert.equal(git(q.origin, 'rev-parse', 'main'), main);
   assert.doesNotMatch(q.read('work', 'ABC-3', 'execution-plan-A.md'), /merge gate/);   // not sent back to Build
@@ -112,7 +114,8 @@ test('ASS-394 AC2/AC4: a test failing again and on master too is master\'s — n
   assert.equal(await q.idle(), '');
 });
 
-test('ASS-394 AC3/AC4: a test failing again that passes on master is the ticket\'s — red (exit 2, back to Build) as before, nothing raised', { timeout: 180_000 }, async t => {
+// ASS-545: no timeout of its own — test/run.sh's 600 s per test is the hang guard; a fixed one a loaded Mac outlasts.
+test('ASS-394 AC3/AC4: a test failing again that passes on master is the ticket\'s — red (exit 2, back to Build) as before, nothing raised', async t => {
   const q = queue(t);
   asHarness(q);
   const ran = nodeTests(q, {

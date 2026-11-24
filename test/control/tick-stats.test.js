@@ -162,7 +162,7 @@ test('ASS-490 AC1, AC2, AC3: control --project times each tick and each of tick.
   // Each call tick.js makes, nested under its phase as '<phase>/<function>' (ASS-494: its loads too, as '<phase>/load';
   // the deeper keys under runSteps left out here); the VM phase's marked as background.
   const top = (phase, keys) => Object.keys(keys).filter(k => !k.slice(phase.length + 1).includes('/')).toSorted();
-  assert.deepEqual(top('timers', s.phases.timers['sub-routines']), ['timers/checkApiCost', 'timers/checkGcloud', 'timers/checkGlab', 'timers/checkPushAccount', 'timers/checkUsage', 'timers/detectReverts', 'timers/fireTimers', 'timers/load']);
+  assert.deepEqual(top('timers', s.phases.timers['sub-routines']), ['timers/checkApiCost', 'timers/checkGcloud', 'timers/checkGlab', 'timers/checkPushAccount', 'timers/checkUsage', 'timers/detectReverts', 'timers/fireTimers', 'timers/load', 'timers/refreshCommitLists']);   // ASS-558: refreshCommitLists
   assert.deepEqual(top('steps', s.phases.steps['sub-routines']), ['steps/checkCredentials', 'steps/checkDisk', 'steps/checkRateLimits', 'steps/fastTrack', 'steps/load', 'steps/runSteps']);
   assert.equal(s.phases['seats/VMs']['sub-routines']['seats/VMs/superviseVms'].background, true);
   assert.equal(s.phases.finish['sub-routines']['finish/finishEnded']['calls-last'], 1);
@@ -235,10 +235,11 @@ test('ASS-490 AC5: harness:tick-stats is listed in agent.sh\'s help with the oth
   assert.match(stdout, /\nharness:\n(?: {2}harness:.*\n)* {2}harness:tick-stats +Print how long control's ticks take/);
 });
 
-// ASS-494: a root whose agent.sh echoes its arguments; `fail` exits 3 with "nope" on stderr, `slow` sleeps first.
+// ASS-494: a root whose agent.sh echoes its arguments; `fail` exits 3 with "nope" on stderr; `slow <file>` waits
+// first until <file> exists (ASS-545: a gate the test opens, not a fixed sleep a loaded machine could outlast).
 function echoRoot() {
   const root = mkdtempSync(join(tmpdir(), 'tick-stats-root-'));
-  writeFileSync(join(root, 'agent.sh'), '#!/bin/sh\n[ "$1" = fail ] && { echo nope >&2; exit 3; }\n[ "$1" = slow ] && sleep 0.3\necho "$@"\n', { mode: 0o755 });
+  writeFileSync(join(root, 'agent.sh'), '#!/bin/sh\n[ "$1" = fail ] && { echo nope >&2; exit 3; }\nif [ "$1" = slow ]; then while [ ! -e "$2" ]; do sleep 0.05; done; fi\necho "$@"\n', { mode: 0o755 });
   return root;
 }
 const subsOf = ctx => Object.fromEntries(Object.entries(ctx.tickTimes.subs).map(([k, s]) => [k, s.calls]));
@@ -281,16 +282,21 @@ test('ASS-494 AC4: outside a deeper sub-routine nothing more is timed; work star
   assert.equal(await ctx.cli(['ticket:get', 'T-1']), 'ticket:get T-1\n');                                         // no timed call around it
   assert.equal(ctx.timedHere('x', () => 1), 1);
   await ctx.timed('timers', 'checkUsage', () => ctx.cli(['usage:check']));                                          // not a deeper one
-  let background;
+  let background, settled = false;
+  const gate = join(mkdtempSync(join(tmpdir(), 'tick-stats-gate-')), 'open');
   await ctx.timed('steps', 'runSteps', () => ctx.timedHere('runVariation', async () => {
-    background = ctx.untimed(() => ctx.cli(['slow', 'T-1']));                                                       // a script step left running
+    background = ctx.untimed(() => ctx.cli(['slow', gate]));                                                        // a script step left running
+    background.finally(() => { settled = true; });
   }), { deeper: true });
   assert.equal(ctx.tickTimes.depth, 0);
   await ctx.timed('dispatch', 'dispatch', async () => {});
-  assert.equal(await background, 'slow T-1\n');
+  // ASS-545: the slow call not waited for — it cannot end before the gate opens, so the phases above returned
+  // without it, whatever the machine's speed (was: steps under 300 ms, against a 0.3 s sleep).
+  assert.equal(settled, false, 'the phases did not wait for the slow call');
+  writeFileSync(gate, '');
+  assert.equal(await background, `slow ${gate}\n`);
   assert.deepEqual(subsOf(ctx), { 'timers/checkUsage': 1, 'steps/runSteps/runVariation': 1, 'steps/runSteps': 1, 'dispatch/dispatch': 1 });
   assert.deepEqual(Object.keys(ctx.tickTimes.phases), ['timers', 'steps', 'dispatch']);
-  assert.ok(ctx.tickTimes.phases.steps < 300, ctx.tickTimes.phases.steps);                                         // the slow call not waited for
 });
 
 test('ASS-494 AC2: a script\'s key names its agent.sh command, or else its program, its arguments dropped', () => {
@@ -302,7 +308,13 @@ test('ASS-494 AC2: a script\'s key names its agent.sh command, or else its progr
 
 test('ASS-494 AC1, AC3: in a tick, each phase\'s load is timed apart as \'<phase>/load\', the phase\'s time its top-level calls\' with it; runSteps\' and finishEnded\'s deeper keys recorded, ticket names in none', async () => {
   const f = controlFixture();
+  // ASS-545: no agent dispatched (max-agents 0), so the ghost below is the only agent finishEnded can see: before, the
+  // plan agent the first tick dispatched sometimes ended before the second tick (a loaded machine's timing), giving
+  // finishOne a second call.
+  const harness = join(f.dir, 'harness.json');
+  writeFileSync(harness, JSON.stringify({ ...JSON.parse(readFileSync(harness, 'utf8')), 'max-agents': 0 }));
   await runTick(f.ctx);                                                                                            // ABC-3 A: backlog → committed
+  assert.equal(f.ctx.agents.size, 0, 'no agent dispatched');
   const check = () => {
     const { phases, subs, depth } = f.ctx.tickTimes;
     assert.equal(depth, 0);
@@ -317,7 +329,7 @@ test('ASS-494 AC1, AC3: in a tick, each phase\'s load is timed apart as \'<phase
   };
   let subs = check();
   assert.equal(subs['finish/load'].calls, 1);
-  assert.equal(subs['timers/load'].calls, 7);                                                                      // one per timers phase function
+  assert.equal(subs['timers/load'].calls, 8);                                                                      // one per timers phase function (ASS-558: refreshCommitLists the eighth)
   for (const key of ['steps/runSteps/escalateFailedStarts', 'steps/runSteps/blockFailing', 'steps/runSteps/stopAtSpendingLimit', 'steps/runSteps/load', 'steps/runSteps/runVariation', 'steps/runSteps/runVariation/load', 'steps/runSteps/runVariation/cli ticket:change-state']) assert.ok(subs[key], key);
   assert.equal(subs['steps/runSteps/runVariation'].calls, 1);
   // An agent that ended with no assignment left: finishEnded's finishOne for it, its load inside.

@@ -38,8 +38,8 @@ const mac = ({ free = 64, pressure = 'normal', vms = {}, reclaimable, swapouts, 
 function seats(variations) {
   const f = controlFixture();
   const file = (...rest) => join(f.dir, ...rest);
-  writeFileSync(file('harness.json'), JSON.stringify({ ...JSON.parse(readFileSync(file('harness.json'), 'utf8')), 'max-tickets-in-progress': 1 }));
-  for (const name of engineNames()) if (!existsSync(file('engines', name)) && existsSync(join(engineDir(name), 'state-engine.json'))) cpSync(engineDir(name), file('engines', name), { recursive: true });
+  writeFileSync(file('projects', 'p', 'seat-budget.json'), JSON.stringify({ seats: 1 }));   // ASS-528: one seat, as control's seat budget records it
+  for (const name of engineNames()) if (!existsSync(file('engines', name)) && existsSync(join(engineDir(name), 'workflow.yaml'))) cpSync(engineDir(name), file('engines', name), { recursive: true });
   const project = JSON.parse(readFileSync(file('projects', 'p', 'project.json'), 'utf8'));
   writeFileSync(file('projects', 'p', 'project.json'), JSON.stringify({ ...project, 'execution-state-engine': ENGINE, 'golden-image': { folder: 'golden-p' } }));
   mkdirSync(file('golden-p'), { recursive: true });

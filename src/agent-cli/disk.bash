@@ -4,6 +4,7 @@
 #
 #   source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../disk.bash"
 #   volume_of <folder>        # "<free-bytes>\t<mount point>" of the volume holding <folder> (its nearest existing folder), by df
+#   volume_stats <folder>     # ASS-557: "<free-bytes>\t<total-bytes>\t<mount point>", the same with its size
 #   disk_levels <command>     # "<warn-bytes> <hold-bytes>"; fails, naming <command>, on a threshold that is not a positive number or a hold above the warn
 #   disk_held                 # whether disk-space.json records the hold (level hold)
 #   gib <bytes>               # the bytes in GiB, one decimal: 12.3
@@ -17,11 +18,18 @@ disk_data_folder="$(dirname "$disk_harness_file")"
 disk_space_file="${DISK_SPACE_FILE:-$disk_data_folder/disk-space.json}"
 
 volume_of() {
+  local line
+  line="$(volume_stats "$1")" || return 1
+  printf '%s\t%s\n' "${line%%$'\t'*}" "${line#*$'\t'*$'\t'}"
+}
+
+# volume_stats <folder> — ASS-557: "<free-bytes>\t<total-bytes>\t<mount point>" of the volume holding <folder>, by df.
+volume_stats() {
   local dir="$1" out
   while [[ ! -d "$dir" ]]; do dir="$(dirname "$dir")"; done
   # -P: one line per volume, the mount point (which may hold spaces) after the fifth field.
-  out="$(df -kP "$dir" 2>/dev/null | awk 'NR == 2 { m = $0; for (i = 1; i <= 5; i++) sub(/^[^ ]+ +/, "", m); printf "%.0f\t%s\n", $4 * 1024, m }')" || true
-  [[ "$out" =~ ^[0-9]+$'\t' ]] || { echo "could not read the free space on the volume holding $1 (df)" >&2; return 1; }
+  out="$(df -kP "$dir" 2>/dev/null | awk 'NR == 2 { m = $0; for (i = 1; i <= 5; i++) sub(/^[^ ]+ +/, "", m); printf "%.0f\t%.0f\t%s\n", $4 * 1024, $2 * 1024, m }')" || true
+  [[ "$out" =~ ^[0-9]+$'\t'[0-9]+$'\t' ]] || { echo "could not read the free space on the volume holding $1 (df)" >&2; return 1; }
   echo "$out"
 }
 

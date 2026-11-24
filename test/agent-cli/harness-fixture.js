@@ -68,7 +68,7 @@ export function fixture() {
   write(at('agent-names.json'), [['Daredevil', 'Marvel'], ['Spock', 'Star Trek'], ['Leia', 'Star Wars'], ['Hulk', 'Marvel'], ['Thor', 'Marvel'], ['Yoda', 'Star Wars']].map(([name, franchise]) => ({ name, 'franchise-name': franchise })));
   write(at('agent-names-last-used.json'), { Hulk: '2026-10-01T00:00:00Z', Thor: '2026-10-02T00:00:00Z', Yoda: '2026-10-03T00:00:00Z' });
 
-  write(at('engines', 'example-development', 'state-engine.json'), {
+  write(at('engines', 'example-development', 'workflow.yaml'), {
     'receive-dispatch-prompt': 'receive-dispatch', 'receive-pair-dispatch-prompt': 'receive-pair-dispatch', 'receive-message-prompt': 'receive-message-from-another-agent',
     'ask-for-status-update-prompt': 'ask-for-status-update', 'shut-down-prompt': 'shut-down',
     'check-health-steps': [{ id: 'check-health', sequence: 1, 'is-done': null, action: { type: 'state-engine', engine: 'check-health' } }, { id: 'done', sequence: 2, 'is-done': true, action: { type: 'none' } }],
@@ -79,8 +79,8 @@ export function fixture() {
     ],
   });
   // No *-prompt keys: commands fall back to the project's execution engine's.
-  write(at('engines', 'self-healing', 'state-engine.json'), { steps: [{ id: 'analyze', sequence: 1, 'is-done': null, action: { type: 'prompt', prompt: 'find-existing-ticket', 'agent-count': 1 } }, { id: 'apply-fix', sequence: 2, 'is-done': null, action: { type: 'prompt', prompt: 'apply-fix', 'agent-count': 1 } }, { id: 'done', sequence: 3, 'is-done': true, action: { type: 'none' } }] });
-  write(at('engines', 'test', 'state-engine.json'), { steps: [{ id: 'test', sequence: 1, 'is-done': null, action: { type: 'prompt', prompt: 'test', 'agent-count': 1 } }, { id: 'take-screenshots', sequence: 2, 'is-done': null, action: { type: 'prompt', prompt: 'take-screenshots', 'agent-count': 1 } }, { id: 'done', sequence: 3, 'is-done': true, action: { type: 'none' } }] });
+  write(at('engines', 'self-healing', 'workflow.yaml'), { steps: [{ id: 'analyze', sequence: 1, 'is-done': null, action: { type: 'prompt', prompt: 'find-existing-ticket', 'agent-count': 1 } }, { id: 'apply-fix', sequence: 2, 'is-done': null, action: { type: 'prompt', prompt: 'apply-fix', 'agent-count': 1 } }, { id: 'done', sequence: 3, 'is-done': true, action: { type: 'none' } }] });
+  write(at('engines', 'test', 'workflow.yaml'), { steps: [{ id: 'test', sequence: 1, 'is-done': null, action: { type: 'prompt', prompt: 'test', 'agent-count': 1 } }, { id: 'take-screenshots', sequence: 2, 'is-done': null, action: { type: 'prompt', prompt: 'take-screenshots', 'agent-count': 1 } }, { id: 'done', sequence: 3, 'is-done': true, action: { type: 'none' } }] });
 
   write(at('prompts', 'receive-dispatch', 'prompt.txt'), 'LEAD update: {status-update-command} approve: {approve-command}\n{assignment}\n');
   write(at('prompts', 'receive-pair-dispatch', 'prompt.txt'), 'PAIR with {agent-names}; pen {pen-holder}; send: {send-message-command}; approve: {approve-command}; update: {status-update-command}\n{assignment}\n');
@@ -126,6 +126,8 @@ export function fixture() {
     ANTHROPIC_API_COST_DISABLED: '1', API_COST_FILE: at('api-cost.json'),
     // Control's push-account check never reads a forge token or calls a forge (ASS-307).
     PUSH_ACCOUNT_DISABLED: '1',
+    // Control's commit lists (ASS-558) are not refreshed, so a test's control never calls a forge or reads a clone for them.
+    COMMIT_LISTS_DISABLED: '1',
     // Control waits for a script step's command up to 30 seconds in the tick that started it (ASS-328: 5 by
     // default, then left running), so a test ticking a fixed number of times still moves on a slow-starting one.
     SCRIPT_WAIT_MS: '30000',

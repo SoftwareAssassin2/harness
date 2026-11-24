@@ -66,16 +66,21 @@ export function lastStart(rows, bodyHeight) {
 // the table runs wider than `columns`, as it already may when too narrow. A
 // caller measuring rows (lastStart) measures these cells: a function cell's
 // height is known only once its width is.
-export function tableLayout(headers, rows, { columns, stretch, min = 0, shrink = [] }) {
+// ASS-559: `floors` (column index → width) holds a shrinking column at that width on a first pass over `shrink`, so
+// each gives up width in turn down to what it still reads well at; only when that is not enough does a second pass
+// take them on down to their headers. Without floors, one pass, as before.
+export function tableLayout(headers, rows, { columns, stretch, min = 0, shrink = [], floors = {} }) {
   const lay = (cell, w) => [typeof cell === 'function' ? cell(w) : cell ?? ''].flat();
   const natural = rows.map(row => headers.map((_, i) => lay(row[i], Infinity)));
   const widths = headers.map((h, i) => Math.max(h.length, ...natural.map(r => Math.max(...r[i].map(visible)))));
   let free = columns - widths.reduce((sum, w, i) => (i === stretch ? sum : sum + w + 3), 0) - 4;
-  for (const i of shrink) {
-    if (free >= min) break;
-    const give = Math.min(widths[i] - headers[i].length, min - free);
-    widths[i] -= give;
-    free += give;
+  for (const floorOf of [i => Math.max(headers[i].length, floors[i] ?? 0), i => headers[i].length]) {
+    for (const i of shrink) {
+      if (free >= min) break;
+      const give = Math.max(0, Math.min(widths[i] - floorOf(i), min - free));
+      widths[i] -= give;
+      free += give;
+    }
   }
   widths[stretch] = Math.max(headers[stretch].length, min, free);
   const cells = rows.map((row, r) => headers.map((_, i) => (typeof row[i] === 'function' ? lay(row[i], widths[i]) : natural[r][i])));
@@ -96,9 +101,9 @@ export function tableLayout(headers, rows, { columns, stretch, min = 0, shrink =
 // solid line like the inner border (├─┤, as wide) in `color` (an SGR code, '32' green),
 // `text`, if any, centred in it and cut to fit — still one line, so the
 // height, scroll and selection maths are unchanged. null keeps the usual line.
-export function boxTable(headers, rows, { columns, stretch, min = 0, shrink = [], height = Infinity, scroll = 0, selected, dashed = false, separators = () => null }) {
+export function boxTable(headers, rows, { columns, stretch, min = 0, shrink = [], floors = {}, height = Infinity, scroll = 0, selected, dashed = false, separators = () => null }) {
   const bodyHeight = Math.max(0, height - 4);
-  const { widths, cells } = tableLayout(headers, rows, { columns, stretch, min, shrink });
+  const { widths, cells } = tableLayout(headers, rows, { columns, stretch, min, shrink, floors });
   const last = lastStart(cells, bodyHeight);
   const start = Math.min(scroll, last);
 

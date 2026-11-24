@@ -10,23 +10,33 @@ import { mergedWindows } from '../agents/session-usage.js';
 import { loadReviews } from './review.js';
 import { dataDir } from '../data-folder.js';
 import { withoutObsolete } from '../workflow/obsolete.js';
+import { engineFileIn, parseEngine } from '../workflow/engine-file.js';
 import { limaHome } from '../control/vm.js';
 import { devEnvironments, devEnvironmentsErrors, usesWorkstations } from '../control/dev-environments.js';
 import { loadWorkstations, expiredLogins } from '../control/workstation-connection.js';
 import { loadSeats, SEATS_FILE } from '../control/seat-kinds.js';
+import { projectRunTargets } from '../control/run-targets.js';
+import { loadSeatQueue, SEAT_QUEUE_FILE } from '../control/seat-queue.js';
+import { LOOP_COUNT_FILE } from '../control/loop-count.js';
+import { SEAT_BUDGET_FILE, REMOTE_SEATS_FILE } from '../control/seat-budget-file.js';
+import { loadPlanningFocus, PLANNING_FOCUS_FILE } from '../control/planning-focus-file.js';
+import { loadSubstrate, substrateEntries, SUBSTRATE_FILE, loadSandboxFailures, SANDBOX_FAILURES_FILE, loadSandboxImages, sandboxImageFiles, SANDBOX_ARCHES } from '../control/substrate-config.js';
 
 // A file's JSON, parsed again only once it has changed (its mtime or size), so
 // reading everything again on every change costs only the files that did. An
 // unchanged file gives back the very same objects: nothing may change them.
 const parsed = new Map();
-const readJson = file => {
+// ASS-524: `parse` an engine's workflow.yaml's (readEngineFile), JSON's for every other file.
+const parseCached = (file, parse) => {
   const { mtimeMs, size } = statSync(file);
   const known = parsed.get(file);
   if (known?.mtimeMs === mtimeMs && known.size === size) return known.json;
-  const json = JSON.parse(readFileSync(file, 'utf8'));
+  const json = parse(readFileSync(file, 'utf8'), file);
   parsed.set(file, { mtimeMs, size, json });
   return json;
 };
+const readJson = file => parseCached(file, text => JSON.parse(text));
+const readEngineFile = file => parseCached(file, parseEngine);
 
 // keepSame(prev, next) — `next`, keeping every part of `prev` still equal to
 // it: prev itself when nothing changed, else a new value whose unchanged
@@ -96,16 +106,31 @@ const asShown = sprint => sprint && Object.fromEntries(Object.entries(sprint).ma
 // collaborations each ticket's
 // chat on its screen (see loadCollaborations); memorySpend what its Hindsight
 // spent on Claude (see loadMemorySpend, ASS-269); demoPlans each variation's
-// demo plan (see loadDemoPlans); reviews what Human Review shows of each
+// demo plan (see loadDemoPlans); commits each ticket variation's commit list (loadCommits, ASS-558); reviews what Human Review shows of each
 // ticket (src/tui/review.js loadReviews, ASS-118); spendLimit its tickets'
 // spending limit (ASS-191: control/spend.js defaultSpendLimit, harness.json the
 // one in `dir`'s parent, the data folder), null for none; apiCost its org's
 // API spend this month (see apiCostOf, ASS-221); golden its golden image (see
 // loadGolden, ASS-292), looked for in `lima` (control/vm.js limaHome); devEnvironments where its tickets run,
-// { mode, workstations } (control/dev-environments.js, ASS-431), null while its dev-environments is wrong. vms its
+// { mode, workstations } (control/dev-environments.js, ASS-431), null while its dev-environments is wrong; runTargets
+// its run targets in order (ASS-540 projectRunTargets: its own list or its mode's; [] while its dev-environments is
+// wrong), for the Mac's places (ASS-541; the n screen's Mac card since ASS-572). vms its
 // vms.json's rows by VM name (loadVms, ASS-486). Sprints and snapshots come
 // without their soft-deleted variations; sprints, snapshots, the backlog and
 // the questions without soft-deleted tickets (ASS-104).
+// substrateOf(project, live) — ASS-533: its substrate.json's entries for the machines its project.json still declares
+// (dev-environments.substrate.clusters; {} while that is wrong), so a removed cluster's last check shows nothing.
+function substrateOf(project, live) {
+  let machines;
+  try { machines = new Set(substrateEntries(project).map(e => e.machine)); } catch { return {}; }
+  return Object.fromEntries(Object.entries(live ?? {}).filter(([m]) => machines.has(m)));
+}
+// substrateMachinesOf(project) — ASS-539 AC1: the machines its project.json declares a kind cluster on
+// (dev-environments.substrate.clusters, in its order; a GKE entry, refused until approved, has none), [] while that is
+// wrong — the n screen's machine cards (ASS-572) read it.
+function substrateMachinesOf(project) {
+  try { return substrateEntries(project).filter(e => e.kind === 'kind').map(e => e.machine); } catch { return []; }
+}
 export const loadProjects = (dir, lima = limaHome()) => readdirSync(dir)
   .filter(name => existsSync(join(dir, name, 'project.json')))
   .map(name => {
@@ -128,6 +153,16 @@ export const loadProjects = (dir, lima = limaHome()) => readdirSync(dir)
       gcloudLogins: expiredLogins(settingsOf(project), loadWorkstations(join(dir, name))),   // ASS-433: the workstations' gcloud logins to renew
       workstations: loadWorkstations(join(dir, name)),   // ASS-433: each workstation's state, connection and last connect error
       seats: loadSeats(join(dir, name)),   // ASS-469: control's seats.json, who holds a VM seat and who a workstation's
+      seatQueue: loadSeatQueue(join(dir, name)),   // ASS-525: control's seat-queue.json, who gets the next free seat, in order (ASS-566: the sprint screen's q overlay; the footer's queue box before)
+      planningSeats: loadSeats(join(dir, name), readJson, 'planning'),   // ASS-528: its planning seat holders (one pool)
+      localSeats: loadSeats(join(dir, name), readJson, 'local'),   // ASS-541: its seatless holders on the Mac (ASS-540: local-worktree, local-workspace), for the n screen's Mac card (ASS-572)
+      seatBudget: loadSeatBudgetFile(join(dir, name)),   // ASS-528: control's seat-budget.json, the Mac seats it may hold now and why
+      planningFocus: loadPlanningFocus(join(dir, name)),   // ASS-531: its planning-focus.json, { on, by, at } or null (the sprint screen's P)
+      remoteBudget: loadSeatBudgetFile(join(dir, name), REMOTE_SEATS_FILE),   // ASS-529: control's remote-seats.json, each remote machine's seats
+      substrate: substrateOf(project, loadSubstrate(join(dir, name))),   // ASS-533: its Substrate clusters' last checks (substrate.json), those it still declares
+      substrateMachines: substrateMachinesOf(project),   // ASS-539: the machines it declares a kind cluster on (the n screen's cards, ASS-572)
+      sandboxFailures: loadSandboxFailures(join(dir, name)),   // ASS-539: control's sandbox-failures.json, the sandboxes that could not be made or resumed (a header warning each)
+      sandboxImages: loadSandboxImages(join(dir, name)),   // ASS-539: its sandbox images' labels and last builds, per architecture (a failed build is a header warning)
       vms: loadVms(join(dir, name)),   // ASS-486: its Lima VMs' vms.json rows by VM name (ticket, variation, state), for the local virtual machines box
       glabReauthentication: project['check-for-expired-glab-auth'] === true && requiresReauthentication(join(dir, name), 'glab'),
       backgroundWorkOff: project['background-work'] === false,
@@ -140,7 +175,7 @@ export const loadProjects = (dir, lima = limaHome()) => readdirSync(dir)
       claudeUsage: existsSync(join(dir, name, 'claude-usage.json')) ? readJson(join(dir, name, 'claude-usage.json')) : null,
       pushAccount: existsSync(join(dir, name, 'push-account.json')) ? readJson(join(dir, name, 'push-account.json')) : null,   // ASS-307: control's last push-account check
       memoryHold: loadMemoryHold(join(dir, name)),   // ASS-398: control holding its new VMs for want of memory
-      memoryWait: loadMemoryHold(join(dir, name), 'memory-wait.json'),   // ASS-420: the variations control refused a seat for want of memory for their VMs (no 💺)
+      memoryWait: loadMemoryHold(join(dir, name), 'memory-wait.json'),   // ASS-420: the variations control refused a seat for want of memory for their VMs (no Machine on the sprint screen, ASS-559)
       accountHold: project['account-hold'] ?? null,
       credentialsHold: existsSync(join(dir, name, 'credentials-hold.json')) ? readJson(join(dir, name, 'credentials-hold.json')) : null,   // ASS-395: control's credentials hold, { since, problems }
       jiraTokenRejected: existsSync(join(dir, name, 'jira-token-rejected.json')) ? readJson(join(dir, name, 'jira-token-rejected.json')) : null,   // ASS-475: the downloader's analytics sign-in rejected, { since, status, problem, work-source }
@@ -148,14 +183,17 @@ export const loadProjects = (dir, lima = limaHome()) => readdirSync(dir)
       apiKey: hasApiKey(join(dir, name)),   // ASS-333: whether its agents can fall back to an API key (see hasApiKey)
       hindsight: project.hindsight ?? null,   // its memory's server, for the memory screen (ASS-62)
       collaborations: loadCollaborations(join(dir, name), readJson),
-      chatSpend: loadChatSpend(join(dir, name), readJson),   // ASS-271: the chat screen's turns, for the models box's spend (ASS-430; the spend tiles before)
-      memorySpend: loadMemorySpend(join(dir, name), readJson),   // ASS-269: its Hindsight's Claude spend, for the models box's spend (ASS-430)
+      chatSpend: loadChatSpend(join(dir, name), readJson),   // ASS-271: the chat screen's turns, for the footer's spend (ASS-566; the models box's, ASS-430; the spend tiles before)
+      memorySpend: loadMemorySpend(join(dir, name), readJson),   // ASS-269: its Hindsight's Claude spend, for the footer's spend (ASS-566; the models box's, ASS-430)
       demoPlans: loadDemoPlans(join(dir, name)),
+      commits: loadCommits(join(dir, name)),   // ASS-558: each ticket variation's commit list, for the ticket screen's Commits tab
       reviews: loadReviews(join(dir, name)),
       spendLimit: defaultSpendLimit(harnessOf(dir), project),
       apiCost: apiCostOf(dir, name, project),
       golden: loadGolden(name, project, lima),
       devEnvironments: settingsOf(project),   // ASS-431: vm, vm+workstation or workstation, and its workstations
+      runTargetPlan: projectRunTargets(project),   // ASS-572: the run targets as control's planner reads them (list, mode, pool choice), for the n screen's next-ticket headline
+      runTargets: settingsOf(project) ? projectRunTargets(project).targets : [],   // ASS-541: its run targets, explicit or derived from its mode (ASS-540); none while its dev-environments is wrong
     };
   })
   .toSorted((a, b) => a.name.localeCompare(b.name));
@@ -175,9 +213,15 @@ const loadVms = folder => {
 const settingsOf = json => (devEnvironmentsErrors(json).length ? null : devEnvironments(json));
 
 // pickLimits(json) — the fields of a project.json or harness.json control's
-// planner (control/plan.js planDispatch) reads: the ticket limits, max-agents
-// and the per-ticket spending limit (ASS-357, the sprint screen's seats).
-const LIMIT_FIELDS = ['max-tickets-in-progress', 'max-tickets-in-planning', 'max-agents', 'max-spend-per-ticket-usd'];
+// planner (control/plan.js planDispatch) reads: max-agents and the per-ticket
+// spending limit (ASS-357, the sprint screen's seats; ASS-528: the seat counts
+// are gone — the seats are the seat budget's, seat-budget.json).
+const LIMIT_FIELDS = ['max-agents', 'max-spend-per-ticket-usd'];
+
+// loadSeatBudgetFile(folder) — ASS-528: the project's seat-budget.json, or null (none, or caught half-written).
+const loadSeatBudgetFile = (folder, file = SEAT_BUDGET_FILE) => {
+  try { return existsSync(join(folder, file)) ? readJson(join(folder, file)) : null; } catch { return null; }
+};
 const pickLimits = json => Object.fromEntries(LIMIT_FIELDS.filter(name => json?.[name] != null).map(name => [name, json[name]]));
 
 // hasApiKey(folder) — whether the project in `folder` has an API key to fall
@@ -356,22 +400,37 @@ function loadDemoPlans(dir) {
   return plans;
 }
 
-// One workflow per <dir>/<name>/state-engine.json, steps in sequence order,
+// A project's commit lists (ASS-558): each work/<KEY>/commits-<variation>.json, as ticket:refresh-commits wrote it
+// (src/control/ticket-commits.js) — { KEY: { variation: list } }, {} for none. One that is not JSON is left out.
+export function loadCommits(dir) {
+  const work = join(dir, 'work');
+  const lists = {};
+  for (const ticket of existsSync(work) ? readdirSync(work).toSorted() : []) {
+    for (const file of existsSync(join(work, ticket)) && statSync(join(work, ticket)).isDirectory() ? readdirSync(join(work, ticket)).toSorted() : []) {
+      const variation = /^commits-([A-Za-z]+)\.json$/.exec(file)?.[1];
+      if (!variation) continue;
+      try { (lists[ticket] ??= {})[variation] = readJson(join(work, ticket, file)); } catch { /* not JSON */ }
+    }
+  }
+  return lists;
+}
+
+// One workflow per <dir>/<name>/workflow.yaml (ASS-524), steps in sequence order,
 // and its *-steps lists by name (the sub-flowcharts follow them). With
 // projectsDir, each project's own engines too (ASS-276, ASS-277: its
-// <projectsDir>/<id>/engines/<name>/state-engine.json, as control's loadState
+// <projectsDir>/<id>/engines/<name>/workflow.yaml, as control's loadState
 // reads them), each with its project and file, ahead of engines/'s: a lookup
 // by name finds a project's own first (shared.js projectWorkflows keeps the
 // selected project's alone).
 const workflowsIn = (dir, own = {}) => (existsSync(dir) ? readdirSync(dir).toSorted() : [])
-  .filter(name => existsSync(join(dir, name, 'state-engine.json')))
+  .filter(name => existsSync(engineFileIn(dir, name)))
   .map(name => {
-    const engine = withoutObsolete(readJson(join(dir, name, 'state-engine.json')));   // ASS-450: keys no longer read dropped, as control drops them
+    const engine = withoutObsolete(readEngineFile(engineFileIn(dir, name)));   // ASS-450: keys no longer read dropped, as control drops them
     return {
       name,
       steps: (engine.steps ?? []).toSorted((a, b) => a.sequence - b.sequence),
       lists: Object.fromEntries(Object.entries(engine).filter(([key, value]) => key.endsWith('-steps') && Array.isArray(value))),
-      ...(own.project ? { project: own.project, file: join(dir, name, 'state-engine.json') } : {}),
+      ...(own.project ? { project: own.project, file: engineFileIn(dir, name) } : {}),
     };
   });
 export const loadWorkflows = (dir, projectsDir) => [
@@ -415,6 +474,16 @@ export async function loadAnalytics(projectDir) {
   return { tickets: JSON.parse(tickets), sprints, mergeRequests, team, accountId: account?.trim() || null };
 }
 
+// loadLoopCounts(dir, ids) — each project's control's finished loops since it
+// started, { <id>: loops } (ASS-526: its data/projects/<id>/loop-count.json,
+// src/control/loop-count.js, for the bottom-right counter); a project without
+// a readable file left out. Read by main.js each second rather than watched,
+// so a control's write every loop never sets off a full reload; readJson parses
+// a file again only once it has changed.
+export const loadLoopCounts = (dir, ids) => Object.fromEntries(ids.flatMap(id => {
+  try { return [[id, readJson(join(dir, id, LOOP_COUNT_FILE)).loops]]; } catch { return []; }
+}));
+
 // watchFiles(files, onChange, { delay }) — onChange() once a burst of changes
 // to any of `files` has been quiet for `delay` ms; { close } stops it. Each
 // file is watched through its folder, not itself: the agent-cli writes by
@@ -437,7 +506,7 @@ export function watchFiles(files, onChange, { delay = 50 } = {}) {
 // dataFiles(root, { projects, workflows, project, day }) — the files the
 // dashboard reads, to watch: assignments.json, chats.json, api-cost.json,
 // context-windows.json, harness.json (see loadApiCost and loadModelUsage) and disk-space.json (loadDiskSpace), each workflow's
-// state-engine.json (engines/'s, or a project's own), each project's project.json, gcloud- and glab-requires-reauthentication, rate-limit.json, claude-usage.json, push-account.json, api-cost.json, sprints.json, backlog.json, outside-tickets.json (ASS-355), questions
+// workflow.yaml (engines/'s, or a project's own), each project's project.json, gcloud- and glab-requires-reauthentication, rate-limit.json, claude-usage.json, push-account.json, api-cost.json, sprints.json, backlog.json, outside-tickets.json (ASS-355), questions
 // files (see loadQuestions), ticket chats (see loadCollaborations) and chat-spend.json (see loadChatSpend) — and of the sprints only the one on show: the
 // selected project's snapshot of the past `day`, or its active sprint.json;
 // then each project's golden image (ASS-292: loadGolden) as its golden-<id>
@@ -455,9 +524,12 @@ export function dataFiles(root, { projects, workflows, project, day }, lima = li
     join(dataDir(root), 'context-windows.json'),
     join(dataDir(root), 'harness.json'),
     join(dataDir(root), 'disk-space.json'),
-    ...workflows.map(w => w.file ?? join(root, 'engines', w.name, 'state-engine.json')),   // a project's own at its file (ASS-277)
+    ...workflows.map(w => w.file ?? engineFileIn(join(root, 'engines'), w.name)),   // a project's own at its file (ASS-277)
     ...projects.flatMap(({ id }) => [
-      join(dir(id), 'project.json'), join(dir(id), 'gcloud-requires-reauthentication'), join(dir(id), 'glab-requires-reauthentication'), join(dir(id), 'rate-limit.json'), join(dir(id), 'claude-usage.json'), join(dir(id), 'push-account.json'), join(dir(id), 'credentials-hold.json'), join(dir(id), 'jira-token-rejected.json'), join(dir(id), 'api-cost.json'), join(dir(id), 'memory-spend.json'), join(dir(id), 'sprints.json'), join(dir(id), 'backlog.json'), join(dir(id), 'global-questions-and-answers.json'), join(dir(id), 'chat-spend.json'), join(dir(id), 'vms.json'), join(dir(id), 'outside-tickets.json'), join(dir(id), 'memory-hold.json'), join(dir(id), 'memory-wait.json'), join(dir(id), SEATS_FILE), join(dir(id), 'workstations.json'),   // jira-token-rejected.json: ASS-475; seats.json and workstations.json (whose seats are lost): ASS-469; memory-hold.json: ASS-398; memory-wait.json: ASS-420; vms.json: its VMs' credential kinds (ASS-333, hasApiKey) and the local virtual machines box (ASS-486); outside-tickets.json: ASS-355
+      join(dir(id), 'project.json'), join(dir(id), 'gcloud-requires-reauthentication'), join(dir(id), 'glab-requires-reauthentication'), join(dir(id), 'rate-limit.json'), join(dir(id), 'claude-usage.json'), join(dir(id), 'push-account.json'), join(dir(id), 'credentials-hold.json'), join(dir(id), 'jira-token-rejected.json'), join(dir(id), 'api-cost.json'), join(dir(id), 'memory-spend.json'), join(dir(id), 'sprints.json'), join(dir(id), 'backlog.json'), join(dir(id), 'global-questions-and-answers.json'), join(dir(id), 'chat-spend.json'), join(dir(id), 'vms.json'), join(dir(id), 'outside-tickets.json'), join(dir(id), 'memory-hold.json'), join(dir(id), 'memory-wait.json'), join(dir(id), SEATS_FILE), join(dir(id), SEAT_QUEUE_FILE), join(dir(id), SEAT_BUDGET_FILE), join(dir(id), REMOTE_SEATS_FILE), join(dir(id), PLANNING_FOCUS_FILE), join(dir(id), SUBSTRATE_FILE), join(dir(id), 'workstations.json'),   // substrate.json: ASS-533;
+        // ASS-539: sandbox-failures.json, and each architecture's sandbox image label and last build's run;
+        join(dir(id), SANDBOX_FAILURES_FILE), ...SANDBOX_ARCHES.flatMap(arch => { const f = sandboxImageFiles(dir(id), arch); return [f.label, f.run]; }),
+        // planning-focus.json: ASS-531; seat-budget.json: ASS-528; jira-token-rejected.json: ASS-475; seats.json and workstations.json (whose seats are lost): ASS-469; seat-queue.json: ASS-525; memory-hold.json: ASS-398; memory-wait.json: ASS-420; vms.json: its VMs' credential kinds (ASS-333, hasApiKey) and the local virtual machines box (ASS-486); outside-tickets.json: ASS-355
       ...(existsSync(work(id)) ? readdirSync(work(id)).toSorted() : []).flatMap(ticket => ['questions-and-answers.json', 'collaboration.json'].map(file => join(work(id), ticket, file))),
     ]),
     ...(shown ? [shown] : []),

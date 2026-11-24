@@ -120,7 +120,7 @@ test('ASS-326 AC2, ASS-437 AC7, ASS-488 AC2: at a narrow width the grid fits, Ag
   for (const columns of [140, 130, 120]) {   // 120: about as narrow as Ticket's floor (ASS-207) lets this grid get (180 with ASS-355, 150 before it; ASS-360 took AWAITING off the Ticket cell's first line; 22 fewer since ASS-437 took the Build, MR and Health columns; 7 fewer since ASS-454 took the Priority column, 11 cells, for the Ticket cell's 4-cell priority; 11 fewer since ASS-488 took the Assignee column)
     const lines = grid(columns);
     for (const l of lines) assert.equal(visible(l), columns, `${columns}: ${l}`);
-    assert.match(lines[1], /│ Total Token Spend │ Agents │$/, `${columns}: ${lines[1]}`);
+    assert.match(lines[1], /│ Spend │ +Agents +│$/, `${columns}: ${lines[1]}`);   // ASS-559: was Total Token Spend (ten columns narrower with Machine and Runs in, so Agents may keep some width)
     const status = statusOf(lines);
     // All the text is there, wrapped: at Status's header width (6) a key may split, never drop.
     assert.equal(status.join('').replace(/\s/g, ''), `Committedignores${IGNORED.join(',').replace(/\s/g, '')}`, `${columns}:\n${status.join('\n')}`);

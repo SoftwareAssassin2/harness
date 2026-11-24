@@ -11,7 +11,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { join } from 'node:path';
 import { cpSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { controlFixture } from './control-fixture.js';
+import { controlFixture, macSeats } from './control-fixture.js';
 import { superviseVms } from '../../src/control/vm-lifecycle.js';
 import { fakeVm } from '../support/fake-vm.js';
 import { engineDir, engineNames } from '../support/engine-walk.js';
@@ -28,10 +28,11 @@ const OLD = { anthropic: '20261110120000Z', github: '20261001090000Z' };
 function stamped(names, rows, { keychain = OLD, failStamps = false, interval } = {}) {
   const f = controlFixture();
   const file = (...rest) => join(f.dir, ...rest);
-  for (const name of engineNames()) if (!existsSync(file('engines', name)) && existsSync(join(engineDir(name), 'state-engine.json'))) cpSync(engineDir(name), file('engines', name), { recursive: true });
+  macSeats(f.ctx, Infinity);   // ASS-528: seats not limited
+  for (const name of engineNames()) if (!existsSync(file('engines', name)) && existsSync(join(engineDir(name), 'workflow.yaml'))) cpSync(engineDir(name), file('engines', name), { recursive: true });
   const project = JSON.parse(readFileSync(file('projects', 'p', 'project.json'), 'utf8'));
   writeFileSync(file('projects', 'p', 'project.json'), JSON.stringify({ ...project, 'execution-state-engine': ENGINE }));
-  writeFileSync(file('harness.json'), JSON.stringify({ ...JSON.parse(readFileSync(file('harness.json'), 'utf8')), 'max-tickets-in-progress': null, ...(interval != null ? { 'credential-stamp-interval-seconds': interval } : {}) }));
+  writeFileSync(file('harness.json'), JSON.stringify({ ...JSON.parse(readFileSync(file('harness.json'), 'utf8')), ...(interval != null ? { 'credential-stamp-interval-seconds': interval } : {}) }));
   const v = fakeVm(f.env);
   const sprint = file('projects', 'p', 'sprints', 'sprint-10', 'sprint.json');
   writeFileSync(sprint, JSON.stringify({ number: 10, bugs: [], spikes: [], features: [{ key: 'ABC-3', 'ticket-system-status': 'In Progress', variations: names.map(name => {

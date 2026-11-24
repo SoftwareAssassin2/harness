@@ -1,0 +1,114 @@
+#!/usr/bin/env bash
+# sandbox-docker — the `docker` a declared suite sees in a sandbox (ASS-542;
+# services.yaml suites: docker: true): a sandbox has no Docker (ASS-532), but
+# the project's whole stack runs in it natively (sandbox-services up), so a
+# suite written against `docker compose` runs against that stack instead. It
+# stands in for the compose subcommands a test script uses, mapping compose's
+# service names onto the declared services (each one's name and aliases; and
+# SANDBOX_DOCKER_SERVICES="<compose name>=<service>,…" for names a suite's own
+# compose file uses):
+#
+#   docker compose … up [-d] [--wait] [<svc>…]   the named services (all without names) started, what they
+#                                                need first (sandbox-services start): already up, nothing
+#   docker compose … run [--rm] [-e K=V] [-w D] <svc> <cmd…>
+#   docker compose … exec [-T] [-e K=V] [-w D] [-u U] <svc> <cmd…>
+#                                                <cmd> run here, with <svc>'s declared env and the -e's,
+#                                                the sandbox's /usr/local/bin first (a project's wrappers for a
+#                                                service's tools: psql in Postgres's filesystem, say)
+#   docker compose … ps [-q] [<svc>…]            sandbox-services status
+#   docker compose … logs [<svc>…]               their logs (/var/log/sandbox/<svc>.log)
+#   docker compose … down|stop|rm|pull|build|create|kill|config   nothing: the stack is the sandbox's, kept
+#   docker info|version                          a line saying it is the sandbox's stand-in, exit 0
+#   anything else                                exit 1, naming it: no Docker in a sandbox
+#
+# Compose's own options (-f, -p, --profile, --env-file, --project-directory,
+# --ansi, --progress) are taken and ignored. A suite that needs more than this
+# is one the project lists as not runnable in a sandbox, with its reason.
+set -euo pipefail
+# lines_into <array> — stdin's lines into the array (mapfile, which bash 3.2 lacks).
+lines_into() { local __l; eval "$1=()"; while IFS= read -r __l; do eval "$1+=(\"\$__l\")"; done; }
+R="${HARNESS_VM_ROOT-}"
+declaration="${SANDBOX_SERVICES:-$R/etc/sandbox/services.json}"
+logs="${SANDBOX_LOGS:-$R/var/log/sandbox}"
+say() { echo "sandbox-docker: $*" >&2; }
+
+# service <compose name> — the declared service it is, or itself.
+service() {
+  local n="$1" pair
+  IFS=',' read -ra pairs <<<"${SANDBOX_DOCKER_SERVICES-}"
+  for pair in ${pairs[@]+"${pairs[@]}"}; do [[ "${pair%%=*}" != "$n" ]] || { echo "${pair#*=}"; return; }; done
+  jq -r --arg n "$n" 'first(.services[] | select(.name == $n or ((.aliases // []) | index($n)))) .name // $n' "$declaration"
+}
+
+case "${1-}" in
+  info|version) echo "sandbox-docker: the sandbox's stand-in for Docker (ASS-542): docker compose runs against the sandbox's own stack"; exit 0 ;;
+  compose) shift ;;
+  *) say "no Docker in a sandbox: \`docker ${1-}\` cannot run here (only docker compose against the sandbox's stack)"; exit 1 ;;
+esac
+
+# Compose's global options, before the subcommand.
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -f|--file|-p|--project-name|--profile|--env-file|--project-directory|--ansi|--progress|--parallel) shift 2 ;;
+    --file=*|--project-name=*|--profile=*|--env-file=*|--project-directory=*|--ansi=*|--progress=*|--parallel=*|--compatibility|--dry-run) shift ;;
+    -*) say "compose option $1 taken and ignored"; shift ;;
+    *) break ;;
+  esac
+done
+sub="${1-}"; shift || true
+
+# here <svc> <workdir> <env…> -- <cmd…> — <cmd> run as if in <svc>'s container: its declared env, then the given.
+here() {
+  local svc="$1" workdir="$2" e; shift 2
+  local envs=()
+  while [[ $# -gt 0 && "$1" != -- ]]; do envs+=("$1"); shift; done
+  shift
+  e="$(jq -c --arg n "$svc" 'first(.services[] | select(.name == $n)) // { env: {} }' "$declaration")"
+  lines_into own < <(jq -r '.env | to_entries[] | "\(.key)=\(.value)"' <<<"$e")
+  [[ -z "$workdir" ]] || cd "$R$workdir"
+  # The sandbox's own /usr/local/bin first: a project's wrappers there run a service's tools with its libraries
+  # (psql of a Postgres copied as a whole filesystem, say), where its PATH alone would find them without.
+  exec env ${own[@]+"${own[@]}"} ${envs[@]+"${envs[@]}"} bash -c 'PATH="/usr/local/bin:$PATH" exec "$@"' _ "$@"
+}
+
+case "$sub" in
+  up)
+    names=()
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --wait-timeout|--timeout|-t|--scale|--pull|--exit-code-from) shift 2 ;;
+        -*) shift ;;
+        *) names+=("$(service "$1")"); shift ;;
+      esac
+    done
+    if [[ ${#names[@]} -eq 0 ]]; then exec sandbox-services up >/dev/null; fi
+    exec sandbox-services start "${names[@]}" ;;
+  run|exec)
+    envs=() workdir="" svc=""
+    while [[ $# -gt 0 && -z "$svc" ]]; do
+      case "$1" in
+        -e|--env) envs+=("$2"); shift 2 ;;
+        --env=*) envs+=("${1#--env=}"); shift ;;
+        -w|--workdir) workdir="$2"; shift 2 ;;
+        -u|--user|--name|--entrypoint|-p|--publish|-v|--volume|-l|--label) shift 2 ;;
+        -*) shift ;;
+        *) svc="$(service "$1")"; shift ;;
+      esac
+    done
+    [[ -n "$svc" ]] || { say "compose $sub needs a service"; exit 1; }
+    [[ $# -gt 0 ]] || { say "compose $sub $svc: no command (a service's own command is not run again here)"; exit 1; }
+    here "$svc" "$workdir" ${envs[@]+"${envs[@]}"} -- "$@" ;;
+  ps)
+    names=(); quiet=false
+    for a; do case "$a" in -q|--quiet) quiet=true ;; -*) ;; *) names+=("$(service "$a")") ;; esac; done
+    sandbox-services status | jq -c --argjson only "$(printf '%s\n' ${names[@]+"${names[@]}"} | jq -Rsc 'split("\n") | map(select(. != ""))')" \
+      'select(.kind != "toolchain") | select(($only | length) == 0 or (.name as $n | $only | index($n)))' \
+      | if [[ "$quiet" == true ]]; then jq -r 'select(.running) | .pid'; else cat; fi ;;
+  logs)
+    names=()
+    for a; do case "$a" in -*) ;; *) names+=("$(service "$a")") ;; esac; done
+    [[ ${#names[@]} -gt 0 ]] || lines_into names < <(jq -r '.services[] | select(.kind != "toolchain") | .name' "$declaration")
+    for n in "${names[@]}"; do [[ ! -f "$logs/$n.log" ]] || sed "s/^/$n | /" "$logs/$n.log"; done ;;
+  down|stop|rm|pull|build|create|kill|config|wait) say "compose $sub: nothing to do (the stack is the sandbox's own, kept running)"; exit 0 ;;
+  *) say "compose ${sub:-(none)} is not something the sandbox's stack can stand in for"; exit 1 ;;
+esac

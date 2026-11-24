@@ -9,6 +9,17 @@ import { join } from 'node:path';
 export const sessionDir = (data, name, startTime) =>
   join(data, 'agents', `${name}-${new Date(startTime).toISOString().replace(/\.\d+Z$/, 'Z').replace(/[-:]/g, '')}`);
 
+// readSandboxed(dir) — ASS-564: its sandbox.json, { sandboxed, why?, target, machine } — whether the agent (one on a
+// worktree run target) runs in Claude Code's sandbox, and why not (process.js startAgent writes it) — or null.
+export function readSandboxed(dir) {
+  try {
+    const j = JSON.parse(readFileSync(join(dir, 'sandbox.json'), 'utf8'));
+    return j && typeof j === 'object' && typeof j.sandboxed === 'boolean' ? j : null;
+  } catch {
+    return null;
+  }
+}
+
 // readSession(dir) — its session.txt's lines, or null when there is none.
 export function readSession(dir) {
   try {

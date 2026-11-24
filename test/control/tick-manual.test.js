@@ -28,7 +28,7 @@ test('ASS-166 AC2, AC5: isPaused holds a ticket worked by hand — each variatio
 test('ASS-166 AC2: a ticket worked by hand neither dispatches nor holds a slot', () => {
   const engine = { steps: [{ id: 'build', sequence: 1, action: { type: 'prompt', prompt: 'build' } }] };
   const at = { name: 'A', 'harness-status': { state: 'build', 'state-engine': 'e' } };
-  const result = planDispatch({ ranked: [{ key: 'T-1', 'worked-manually': MARK, variations: [at] }, { key: 'T-2', variations: [at] }], engine, harness: { 'max-tickets-in-progress': 1 } });
+  const result = planDispatch({ ranked: [{ key: 'T-1', 'worked-manually': MARK, variations: [at] }, { key: 'T-2', variations: [at] }], engine, harness: {}, seats: { mac: 1, remote: 0 } });
   assert.deepEqual(result.reserved, [{ key: 'T-2', variation: 'A' }]);
   assert.deepEqual(result.dispatch.map(d => d.key), ['T-2']);
 });
@@ -72,7 +72,7 @@ test('ASS-166 AC2, AC4: control moves and dispatches nothing for a ticket worked
 
 test('ASS-166 AC2: no gap resolution or variation-appeal run starts about a ticket worked by hand', async () => {
   const f = manualFixture('In Progress');
-  edit(join(f.dir, 'engines', 'example-development', 'state-engine.json'), e => {
+  edit(join(f.dir, 'engines', 'example-development', 'workflow.yaml'), e => {
     e['check-variation-appeal-interval-seconds'] = 1;
     e['check-variation-appeal-steps'] = [{ id: 'check-variation-appeal', sequence: 1, action: { type: 'state-engine', engine: 'investigate-gap' }, 'exit-events': [{ condition: { 'is-done': true } }] }];
   });

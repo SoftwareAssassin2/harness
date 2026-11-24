@@ -57,7 +57,8 @@ const EXCLUDED = root => [`${root}/agent.sh *`, `${root}/off-board.sh *`, 'gh *'
 // which would run sandboxed and fail its write deep inside agent.sh, and tells
 // the agent the bare call to run as its own Bash call. It only refuses.
 const quote = s => `'${s.replace(/'/g, `'\\''`)}'`;
-const GUARD = root => `${quote(process.execPath)} ${quote(join(root, 'src', 'agents', 'agent-sh-guard.js'))} ${quote(root)}`;
+// Exported for ASS-555: the Mac's worktree agents run under the same guard (worktree-sandbox.js).
+export const GUARD = root => `${quote(process.execPath)} ${quote(join(root, 'src', 'agents', 'agent-sh-guard.js'))} ${quote(root)}`;
 
 // hostAgentSettings(root, data) — the settings object for the host agents of
 // the harness at root, its data folder `data` (dataDir(root) unless given).

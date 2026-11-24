@@ -1,0 +1,39 @@
+# ASS-532 spike: the ActorTemplate for a harness ticket sandbox (protojson,
+# kubectl ate create actor-template -f). __IMAGE__ is the pushed harness-sandbox
+# image pinned by digest.
+metadata:
+  atespace: harness-tickets
+  name: __NAME__
+workerSelector:
+  matchLabels: { workload: harness-gvisor }
+containers:
+- name: sandbox
+  image: __IMAGE__
+  env:
+  - { name: PORT, value: "80" }
+  # Trust the egress gateway's MITM CA (for https rules, which credential
+  # injection needs) as well as the public roots.
+  - { name: NODE_EXTRA_CA_CERTS, value: /run/ate/egress-trust-bundle/trust-bundle.pem }
+  - { name: GIT_SSL_CAINFO, value: /run/ate/egress-trust-bundle/trust-bundle.pem }
+  - { name: SSL_CERT_FILE, value: /run/ate/egress-trust-bundle/trust-bundle.pem }
+  volumeMounts:
+  - { name: system-info, mountPath: /run/ate/egress-trust-bundle }
+  # The default set (AUDIT_WRITE, KILL, NET_BIND_SERVICE) leaves root unable to
+  # sudo -u agent or read the agent's files; add every capability Substrate
+  # allows. SYS_ADMIN and NET_ADMIN (what dockerd needs) are refused at admission.
+  securityContext:
+    capabilities:
+      add: [CHOWN, DAC_OVERRIDE, FOWNER, FSETID, SETUID, SETGID, SETFCAP, SETPCAP, SYS_CHROOT]
+volumes:
+- name: system-info
+  systemInfo:
+    dataSources:
+    - trustBundle:
+        names: [egress-mitm.ate.dev, system-roots.ate.dev]
+        path: trust-bundle.pem
+resources:
+  limits:
+    cpuMillicores: 4000
+    memoryBytes: 3758096384 # 3.5 GiB: a 4Gi worker pod advertises ~3.94 GiB of capacity, so a 4 GiB actor never places
+snapshotConfig:
+  preferredFidelity: SNAPSHOT_FIDELITY_MEMORY

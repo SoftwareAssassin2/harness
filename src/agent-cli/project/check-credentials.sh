@@ -109,6 +109,67 @@ if hold="$(jq -ce '.["account-hold"] // empty | objects' "$json" 2>/dev/null)"; 
   problem "the Claude account" "$expected expected; $actual" "${config:+CLAUDE_CONFIG_DIR=$config }claude, then /login as $expected"
 fi
 
+# ASS-533: what the project's Substrate clusters (dev-environments.substrate) need, checked alike but holding nothing —
+# a cluster's trouble must not stop the project's VM work — and kept apart in substrate-needs.json ({ checked-at,
+# problems }; removed for a project with no cluster), which credentials-status prints as `substrate`:
+#   - the Mac's cluster: Docker answering on the Mac (Docker Desktop running), and the kit buildable — built already
+#     (~/.harness/substrate/build/<release>/), or go, git and curl there to build it;
+#   - a workstation's or cloud VM's: the gcloud login that reaches it (its live data's last connect not failing as
+#     expired: CLOUDSDK_CONFIG=<its gcloud-config> gcloud auth login);
+#   - a GKE entry: refused until the operator approves GKE (substrate-config.js GKE_REFUSED).
+# Substrate's images are public (ghcr.io, Docker Hub): no registry login is needed.
+# ASS-538 AC4: and, for each kind cluster, its egress gateway's credentials (src/substrate/egress.js) as the
+# cluster's last substrate:health and substrate:credentials recorded them (substrate.json: its egress and
+# credentials) — nothing asked of the cluster here: the credential provider's pod ready (else substrate:up with
+# repair), its namespace policy granting the project's atespace its own namespace, and a Secret
+# (harness-credential-<kind>) for each claude, anthropic, gitlab or github item the project declares (else
+# substrate:credentials), the last sync not failed.
+sub_problems=()
+sub_problem() { sub_problems+=("$(jq -cn --arg m "$1" --arg c "$2" --arg p "$3" --arg f "$4" '{ machine: $m, credential: $c, problem: $p, fix: $f }')"); }
+if sub_entries="$(node "$here/../substrate.js" "$projects" "$project" 2>/dev/null)" && [[ -n "$sub_entries" ]]; then
+  sub_release="$(sed -n 's/^SUBSTRATE_RELEASE=//p' "$here/../substrate.bash")"
+  want_kinds=()
+  if [[ -n "${decl:-}" ]]; then while IFS= read -r k; do [[ -n "$k" ]] && want_kinds+=("$k"); done < <(jq -r '["claude", "anthropic", "gitlab", "github"][] as $k | select(.[$k]["keychain-service"]) | $k' <<< "$decl" 2>/dev/null); fi
+  while IFS= read -r e; do
+    m="$(jq -r .machine <<< "$e")" host="$(jq -r .host <<< "$e")"
+    case "$host" in
+      mac)
+        status=0; timed docker info --format '{{.ServerVersion}}' >/dev/null 2>&1 || status=$?
+        [[ $status -eq 0 || $status -eq 142 ]] || sub_problem "$m" "Docker on the Mac" "docker info failed: Docker Desktop is not running" "open -a Docker"
+        if ! compgen -G "${HARNESS_SUBSTRATE_DIR:-$HOME/.harness/substrate}/build/$sub_release/darwin-*.tar.gz" >/dev/null; then
+          for t in go git curl; do command -v "$t" >/dev/null || sub_problem "$m" "the Substrate kit" "not built yet, and building it needs $t on the Mac" "brew install $t, then ./agent.sh substrate:kit"; done
+        fi ;;
+      gke) sub_problem "$m" "GKE" "$(jq -r .refused <<< "$e")" "approve a GKE trial (docs/spikes/ASS-532-substrate.md section 7), or remove the gke entry" ;;
+      *)
+        if [[ "$(jq -r --arg m "$m" '.[$m]["last-error"].kind // empty' "$dir/workstations.json" 2>/dev/null)" == expired ]]; then
+          cfg="$(jq -r --arg m "$m" '(."dev-environments".workstations // []) + (."dev-environments"."cloud-vms" // []) | map(select(.id == $m))[0]["gcloud-config"] // empty' "$json")"
+          sub_problem "$m" "the gcloud login that reaches $m" "expired: its cluster can be neither checked nor set up" "${cfg:+CLOUDSDK_CONFIG=$cfg }gcloud auth login"
+        fi ;;
+    esac
+    [[ "$host" != gke ]] || continue
+    rec="$(jq -c --arg m "$m" '.[$m] // {}' "$dir/substrate.json" 2>/dev/null || echo '{}')"
+    sync="./agent.sh substrate:credentials $project $m"
+    if jq -e '.credentials.ok == false' <<< "$rec" >/dev/null; then
+      sub_problem "$m" "the egress gateway's credentials" "the last sync failed: $(jq -r '.credentials.why // "unknown"' <<< "$rec")" "$sync"
+    fi
+    if jq -e '.egress | objects' <<< "$rec" >/dev/null; then
+      jq -e '.egress.provider.ready == true' <<< "$rec" >/dev/null \
+        || sub_problem "$m" "the egress gateway's credential provider" "not ready: $(jq -r '.egress.provider.why // "unknown"' <<< "$rec")" "HARNESS_SUBSTRATE_REPAIR=1 ./agent.sh substrate:up $project $m"
+      if [[ ${#want_kinds[@]} -gt 0 ]]; then
+        jq -e '.egress.policy.granted == true' <<< "$rec" >/dev/null \
+          || sub_problem "$m" "the credential provider's namespace policy" "does not grant the atespace $(jq -r '.egress.policy.atespace // "?"' <<< "$rec") its own namespace's Secrets" "$sync"
+        for k in "${want_kinds[@]}"; do
+          jq -e --arg n "harness-credential-$k" '(.egress.secrets // []) | index($n)' <<< "$rec" >/dev/null \
+            || sub_problem "$m" "Secret harness-credential-$k ($k)" "missing from the cluster: the gateway cannot inject $project's $k credential" "$sync"
+        done
+      fi
+    fi
+  done <<< "$sub_entries"
+  printf '%s\n' "${sub_problems[@]+"${sub_problems[@]}"}" | jq -sc '[.[] | select(. != null)]' | jq -c --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '{ "checked-at": $at, problems: . }' | replace_file "$dir/substrate-needs.json"
+else
+  rm -f "$dir/substrate-needs.json"
+fi
+
 record="$dir/credentials-hold.json"
 list="$(printf '%s\n' "${problems[@]}" | jq -sc '.')"
 if [[ "$list" == '[]' ]]; then

@@ -29,15 +29,15 @@ function setup({ check = './agent.sh ticket:set-paused {project} {ticket} {varia
   const f = vm ? { ...vm.f, env: vm.env } : fixture(), forge = fakeForge();
   const at = (...rest) => join(f.dir, ...rest);
   const group = (id, sequence, engine) => ({ id, sequence, 'return-to-state': id, action: { type: 'state-engine', engine }, 'exit-events': [{ condition: { 'is-done': true }, 'move-to-state': 'done' }] });
-  write(at('engines', 'dev', 'state-engine.json'), { steps: [
+  write(at('engines', 'dev', 'workflow.yaml'), { steps: [
     { id: 'blocked-for-human', sequence: 0, 'is-blocked-state': true, 'follow-return-to-state': true, action: { type: 'human' } },
     { id: 'blocked', sequence: 0, 'follow-return-to-state': true, action: { type: 'state-engine', engine: 'grouped-blocked' }, 'exit-events': [{ condition: { 'is-done': true }, 'follow-return-to-state': true }] },
     { id: 'committed', sequence: 1, action: { type: 'none' } },
     group('plan', 2, 'sub-plan'), group('build', 3, 'sub-build'), group('test', 4, 'sub-test'),
     { id: 'done', sequence: 5, 'is-done': true, action: { type: 'none' } },
   ] });
-  write(at('engines', 'sub-plan', 'state-engine.json'), { steps: [{ id: 'write-plan', sequence: 1, action: { type: 'prompt', prompt: 'p' } }, { id: 'done', sequence: 2, 'is-done': true, action: { type: 'none' } }] });
-  write(at('engines', 'sub-build', 'state-engine.json'), { steps: [
+  write(at('engines', 'sub-plan', 'workflow.yaml'), { steps: [{ id: 'write-plan', sequence: 1, action: { type: 'prompt', prompt: 'p' } }, { id: 'done', sequence: 2, 'is-done': true, action: { type: 'none' } }] });
+  write(at('engines', 'sub-build', 'workflow.yaml'), { steps: [
     { id: 'generate', sequence: 1, action: { type: 'prompt', prompt: 'generate-solution-grouped' } },
     ...(buildEngine ? [{ id: 'await-dependencies', sequence: 2, action: { type: 'script', command: './agent.sh merge-request:await-dependencies {project} {ticket} {variation}' } }] : []),
     { id: 'check', sequence: 3, action: { type: 'script', command: check } },
@@ -45,7 +45,7 @@ function setup({ check = './agent.sh ticket:set-paused {project} {ticket} {varia
     { id: 'done', sequence: 5, 'is-done': true, action: { type: 'none' } },
     { id: 'blocked', sequence: 6, 'is-done': true, action: { type: 'none' } },
   ] });
-  write(at('engines', 'sub-test', 'state-engine.json'), { steps: [{ id: 'test', sequence: 1, action: { type: 'prompt', prompt: 't' } }, { id: 'done', sequence: 2, 'is-done': true, action: { type: 'none' } }] });
+  write(at('engines', 'sub-test', 'workflow.yaml'), { steps: [{ id: 'test', sequence: 1, action: { type: 'prompt', prompt: 't' } }, { id: 'done', sequence: 2, 'is-done': true, action: { type: 'none' } }] });
   edit(at('projects', 'p', 'project.json'), p => { p['execution-state-engine'] = 'dev'; if (!vm) p.repositories = [{ url: APP }, { url: IMAGES }]; });
   const c = (from, to, sub) => ({ 'state-engine': 'dev', 'from-state': from, 'to-state': to, timestamp: '2026-11-12T09:00:00Z', 'agent-dispatch-log': [], ...(sub ? { 'sub-state-change': sub } : {}) });
   const s = (from, to) => c('build', 'build', { 'state-engine': 'sub-build', 'from-state': from, 'to-state': to });
@@ -250,7 +250,7 @@ test('ASS-390: ticket:fix-attempts counts a fix merge request\'s wait, and the p
 function loopSetup({ rounds = 2, check = './agent.sh ticket:set-paused {project} {ticket} Z false' } = {}) {
   const s = setup();
   const passing = './agent.sh ticket:set-paused {project} {ticket} {variation} false';
-  write(s.at('engines', 'sub-build', 'state-engine.json'), { steps: [
+  write(s.at('engines', 'sub-build', 'workflow.yaml'), { steps: [
     { id: 'generate', sequence: 1, 'max-visits': 5, 'on-max-visits': 'blocked', action: { type: 'prompt', prompt: 'generate-solution-grouped' }, 'exit-events': [{ condition: { 'turn-complete': true }, 'move-to-state': 'refresh' }] },
     { id: 'refresh', sequence: 2, action: { type: 'script', command: passing }, 'exit-events': [{ condition: { 'exit-code': 0 }, 'move-to-state': 'check' }, { condition: { not: { 'exit-code': 0 } }, 'move-to-state': 'blocked' }] },
     { id: 'check', sequence: 3, 'max-visits': 2, 'on-max-visits': 'blocked', action: { type: 'script', command: check }, 'exit-events': [{ condition: { 'exit-code': 0 }, 'move-to-state': 'done' }, { condition: { not: { 'exit-code': 0 } }, 'move-to-state': 'generate' }] },
@@ -298,7 +298,7 @@ test('ASS-474: no loop — the step reached never ran out of visits — re-check
   assert.equal(r.out.loop, undefined);
   // The loop's failing step an agent's: generate sends it back to itself (generate → generate) each round, check never reached.
   const t = loopSetup();
-  edit(t.at('engines', 'sub-build', 'state-engine.json'), e => { e.steps[0]['exit-events'] = [{ condition: { 'turn-complete': true }, 'move-to-state': 'refresh' }, { condition: { 'turn-complete': false }, 'move-to-state': 'generate' }]; });
+  edit(t.at('engines', 'sub-build', 'workflow.yaml'), e => { e.steps[0]['exit-events'] = [{ condition: { 'turn-complete': true }, 'move-to-state': 'refresh' }, { condition: { 'turn-complete': false }, 'move-to-state': 'generate' }]; });
   const c = (from, to, sub) => ({ 'state-engine': 'dev', 'from-state': from, 'to-state': to, timestamp: '2026-11-12T09:00:00Z', 'agent-dispatch-log': [], ...(sub ? { 'sub-state-change': sub } : {}) });
   const sb = (from, to) => c('build', 'build', { 'state-engine': 'sub-build', 'from-state': from, 'to-state': to });
   t.setVariation({ 'state-changes': [c('plan', 'build'), sb(null, 'generate'), sb('generate', 'generate'), sb('generate', 'generate'), sb('generate', 'generate'), sb('generate', 'generate'), sb('generate', 'blocked'), c('build', 'blocked')] });

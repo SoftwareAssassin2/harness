@@ -24,7 +24,10 @@ set -euo pipefail
 #   first line, its work-space branch the forge's default; then downloaded
 #   into the variation's VM when its Setup is complete (vm:create clones
 #   every repository the VM lacks); a VM not set up yet gets it when Setup
-#   runs vm:create again. Prints { repository, added, downloaded }.
+#   runs vm:create again. ASS-551: on a substrate run target the variation's
+#   machine is its Substrate sandbox, and vm:create clones the repository into
+#   its /repos through the Mac (substrate/relay.bash relay_clone), as a sandbox
+#   fetches nothing itself. Prints { repository, added, downloaded }.
 # A download that fails leaves the repository added and exits 1, naming why
 # as ai-feedback. Fails (1) on a bad project or variation too.
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../vm.bash"

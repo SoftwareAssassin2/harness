@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Description: Claim a free GCP workstation of a project for one step of a ticket variation, its repositories on the variation's branches — workstation:claim <project> <ticket-key> <variation> [--workstation <id>]; prints { name, machine, credential-kind, pushed, … }, exits 4 when none is free, 5 when an image the step needs could not be pulled there and is not there.
+# Description: Claim a free GCP workstation of a project for one step of a ticket variation, its repositories on the variation's branches — workstation:claim <project> <ticket-key> <variation> [--workstation <id> [--worktree]]; prints { name, machine, credential-kind, pushed, … }, exits 4 when none is free, 5 when an image the step needs could not be pulled there and is not there.
 set -euo pipefail
 
 # ASS-468 AC1, AC2: a step's start. Control runs it as a step of the
@@ -30,11 +30,21 @@ set -euo pipefail
 # not on stderr ("no workstation of <p>'s is free: <id>: held by <KEY> <v>;
 # …"), nothing claimed. ASS-469: --workstation <id> claims that workstation
 # or none — control's way to run a workstation-seat holder's step on its
-# seat's workstation (machines follow seats, src/control/seats.js).
+# seat's workstation (machines follow seats, src/control/seats.js). ASS-529:
+# with --workstation, the machine takes the step beside the other tickets'
+# steps there, in a folder of its own (the first free slot: the shared root,
+# else <home>/harness/slots/<n>; workstation-variation.bash) — control gives a
+# machine as many seats as its memory and CPU allow; the summary then names
+# its `slot` and `folder`. Without it, as before, only a machine nothing holds.
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../vm.bash"
 
 command=workstation:claim
-[[ $# -eq 3 || ( $# -eq 5 && "$4" == --workstation ) ]] || { echo "usage: $command <project> <ticket-key> <variation> [--workstation <id>]" >&2; exit 1; }
+# ASS-553: --worktree (with --workstation): the step runs in the variation's own worktree folder on that machine
+# (run targets workstation-worktree, cloud-vm-worktree; workstation-variation.bash wsv_worktree_root), kept between its
+# steps, instead of a shared slot.
+wsv_worktree=""
+if [[ $# -eq 6 && "${6}" == --worktree ]]; then wsv_worktree=1; set -- "$1" "$2" "$3" "$4" "$5"; fi
+[[ $# -eq 3 || ( $# -eq 5 && "$4" == --workstation ) ]] || { echo "usage: $command <project> <ticket-key> <variation> [--workstation <id> [--worktree]]" >&2; exit 1; }
 project="$1" key="$(tr '[:lower:]' '[:upper:]' <<< "$2")" variation="$3" only="${5:-}"
 variation_exists "$command" "$project" "$key" "$variation"
 [[ -z "$only" ]] || dev_environments_workstation "$command" "$project" "$only" >/dev/null || exit 1

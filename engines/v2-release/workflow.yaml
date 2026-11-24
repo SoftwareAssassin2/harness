@@ -1,0 +1,103 @@
+steps:
+  - id: merge-pull-request
+    sequence: 1
+    name: Merge Pull Request
+    description: "Merge the ticket's own pull requests, in their planned (depends-on) order, each with its branch rebased onto the latest main and the full tests (npm test) run first, in the background, asked again every minute; other tickets of the project merge at the same time (ASS-560: no project-wide lock or turn); red goes back to Build with nothing more merged — no team review. Main moved under the gate (another ticket merged first): base-moved, back into this step, rebased and tested again, each return a visit, so max-visits bounds the rebases, then Blocked saying so (record-script-output). ASS-394: failing tests run again once (passing, a flake: it merges); failing again, run on the latest main: failing there too, master's — raised once in the harness backlog, the ticket waits (no exit, no visit) until main moves"
+    max-visits: 5
+    on-max-visits: blocked
+    record-script-output: true
+    action:
+      type: script
+      command: ./agent.sh merge-request:merge-in-turn {project} {ticket} {variation} npm test
+      mode: timer
+      timer-minutes: 1
+    exit-events:
+      - condition:
+          all:
+            - exit-code: 0
+            - script-output:
+                base-moved: true
+        move-to-state: merge-pull-request
+      - condition:
+          all:
+            - exit-code: 0
+            - not:
+                script-output:
+                  waiting: true
+        move-to-state: update-workspace
+      - condition:
+          exit-code: 2
+        move-to-state: rebuild
+      - condition:
+          not:
+            exit-code: 0
+        move-to-state: blocked
+  - id: update-workspace
+    sequence: 2
+    name: Update the Harness
+    description: Bring the harness's checkout up to date with the merge
+    max-visits: 3
+    on-max-visits: blocked
+    action:
+      type: script
+      command: ./agent.sh code:update-workspace {project}
+    exit-events:
+      - condition:
+          exit-code: 0
+        move-to-state: request-restart
+      - condition:
+          not:
+            exit-code: 0
+        move-to-state: blocked
+  - id: request-restart
+    sequence: 3
+    name: Request a Restart
+    description: Ask the harness to restart onto the update
+    max-visits: 3
+    on-max-visits: blocked
+    action:
+      type: script
+      command: ./agent.sh harness:request-restart {ticket}
+    exit-events:
+      - condition:
+          exit-code: 0
+        move-to-state: await-restart
+      - condition:
+          not:
+            exit-code: 0
+        move-to-state: blocked
+  - id: await-restart
+    sequence: 4
+    name: Await the Restart
+    description: "Wait until the harness runs the updated code, polling while it does not (exit 1, its waiting-exit-code: no failure, ASS-255)"
+    action:
+      type: script
+      command: ./agent.sh harness:restarted {ticket}
+      mode: timer
+      timer-minutes: 1
+      waiting-exit-code: 1
+    exit-events:
+      - condition:
+          exit-code: 0
+        move-to-state: done
+  - id: done
+    name: Done
+    description: The group is finished; its parent step moves on
+    is-done: true
+    action:
+      type: none
+    sequence: 5
+  - id: blocked
+    name: Blocked
+    description: A step failed or looped too many times; the parent step sends the ticket to Blocked, which returns it to the start of this group
+    is-done: true
+    action:
+      type: none
+    sequence: 6
+  - id: rebuild
+    name: Back to Build
+    description: The merge gate was red — the branch does not rebase onto main, or the full tests fail on it — so nothing merged; the parent step sends the ticket back to Build's Generate Solution
+    is-done: true
+    action:
+      type: none
+    sequence: 7

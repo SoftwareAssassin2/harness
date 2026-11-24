@@ -71,14 +71,14 @@ test('ASS-294 AC1: Day Spend and Sprint Spend count UTC days — from 00:00Z up 
   assert.equal(sprintSpend(records, '2026-10-28', new Date('2026-10-29T12:00:00Z')), 1 + 2 + 4);
 });
 
-// The control box's lines, as app.test.js's ASS-292 tests read them.
-const controlBox = s => lines(s, { columns: 200, rows: 50, now: new Date('2026-11-08T12:00:00Z') })
-  .map(l => l.match(/│ ((control|disk free|golden image)[^│]*?) +│/)?.[1]).filter(Boolean);
+// The golden image's line, on the n screen's project section since ASS-566 (the control box's before).
+const controlBox = s => lines({ ...s, screen: 'n' }, { columns: 200, rows: 50, now: new Date('2026-11-08T12:00:00Z') })
+  .map(l => l.match(/(golden image [^·]*?) *(·|$)/)?.[1]).filter(Boolean);   // ASS-572: the n screen's project line
 
 test('ASS-294 AC1/AC3: the golden image\'s built date is its UTC day, and says UTC', () => {
   const golden = { name: 'golden-p', 'built-at': LATE.toISOString() };
   const box = controlBox(initialState({ projects: [{ id: 'p', name: 'P', sprint: null, environments: [], golden }], controls: { p: { pid: 1, startTime: '2026-10-01T15:51:00Z' } } }));
-  assert.ok(box.includes('golden image: golden-p (built 2026-11-08 UTC)'), box.join('\n'));
+  assert.ok(box.includes('golden image golden-p built 2026-11-08 UTC'), box.join('\n'));
 });
 
 test('ASS-294 AC2: the control log screen\'s header says its times are UTC, and each line\'s time is the UTC one', () => {

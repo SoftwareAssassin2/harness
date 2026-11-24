@@ -95,3 +95,30 @@ golden_status() {
 golden_building() {
   perl -MFcntl=:flock -e 'open(my $f, ">>", $ARGV[0]) or exit 1; exit(flock($f, LOCK_EX | LOCK_NB) ? 1 : 0)' "$projects/$1/golden-build.lock"
 }
+
+# inputs_stale <label file|/dev/null> <inputs> <hash> <image> — whether an
+# image built as its label records is stale against <inputs> (their <hash>),
+# and why, as JSON: { image, stale, hash, built-hash, built-at, why: [<line>…] }
+# — vm:golden-stale's (ASS-149), shared with the sandbox images' (ASS-534,
+# sandbox-image.bash). Why names what changed, from the input lines the label
+# records: "added <input>", "removed <input>", then "changed <file>" (a file
+# whose sha256 differs), an input a file's path ("definition/<path>",
+# "shared/<path>", …) or the line itself; a label recording no input list
+# says "inputs changed since <built-at>; this build recorded no input list";
+# a current image's is empty.
+inputs_stale() {
+  jq -n --arg h "$3" --arg in "$2" --arg image "$4" --slurpfile l "$1" '
+    def key: if test("^[0-9a-f]{64}  ") then .[66:] else . end;
+    ($l[0] // null) as $l
+    | ($in | rtrimstr("\n") | split("\n") | map(select(length > 0))) as $new
+    | ($l.inputs // null | if . == null then null else map(select(length > 0)) end) as $old
+    | { image: $image, stale: ($l.hash != $h), hash: $h, "built-hash": ($l.hash // null), "built-at": ($l["built-at"] // null) }
+    | .why = if .stale | not then []
+        elif $l == null then ["\($image) has not been built"]
+        elif $old == null then ["inputs changed since \($l["built-at"]); this build recorded no input list"]
+        else ($old | map(key)) as $ok | ($new | map(key)) as $nk
+          | ([$new[] | select(IN($old[]) | not) | key | select(IN($ok[]) | not)] | unique | map("added " + .))
+          + ([$old[] | select(IN($new[]) | not) | key | select(IN($nk[]) | not)] | unique | map("removed " + .))
+          + ([$new[] | select(IN($old[]) | not) | key | select(IN($ok[]))] | unique | map("changed " + .))
+        end'
+}

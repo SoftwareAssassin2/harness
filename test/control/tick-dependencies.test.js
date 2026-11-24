@@ -37,7 +37,7 @@ const later = (key, extra = {}, state = 'groom') => ({ key, title: key, 'ticket-
 function waiting(options = {}) {
   const { sprint = [], backlog = [], flag = true } = options;
   const f = controlFixture();
-  edit(join(f.dir, 'harness.json'), h => { h['max-tickets-in-planning'] = 5; });
+  f.seats(5);   // ASS-528: five seats on the Mac
   // flag: undefined asks for a project.json without the field at all; left out of the call, the flag is on.
   if (!('flag' in options && options.flag === undefined)) edit(join(f.dir, 'projects', 'p', 'project.json'), p => { p['wait-for-dependencies'] = flag; });
   edit(join(f.dir, 'projects', 'p', 'sprints', 'sprint-10', 'sprint.json'), s => { s.features = sprint; });
@@ -242,8 +242,8 @@ async function joining({ sprint, ...options }) {
   const f = waiting({ ...options, sprint: sprint.map(t => (t.variations[0]['harness-status'].state === 'committed' ? { ...t, 'ticket-system-status': 'Committed' } : t)) });
   const engine = 'example-backlog-refinement';
   mkdirSync(join(f.dir, 'engines', engine), { recursive: true });
-  writeFileSync(join(f.dir, 'engines', engine, 'state-engine.json'), readFileSync(join(engineDir(engine), 'state-engine.json')));
-  edit(join(f.dir, 'engines', 'example-development', 'state-engine.json'), e => {
+  writeFileSync(join(f.dir, 'engines', engine, 'workflow.yaml'), readFileSync(join(engineDir(engine), 'workflow.yaml')));
+  edit(join(f.dir, 'engines', 'example-development', 'workflow.yaml'), e => {
     e['backlog-refinement-steps'] = [{ id: 'backlog-refinement', sequence: 1, action: { type: 'state-engine', engine }, 'exit-events': [{ condition: { 'is-done': true } }] }];
     e['ready-tickets-join-sprint-at'] = 'committed';
     e.steps.find(x => x.id === 'committed')['paired-ticket-system-status'] = 'Committed';         // an off-board status

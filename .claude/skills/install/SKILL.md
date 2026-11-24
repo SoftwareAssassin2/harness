@@ -52,7 +52,7 @@ Homebrew (`brew install …`) only after the person agrees.
 
 glab and gcloud matter only if the project uses them (the install's remaining
 steps will say: a `glab-login` or `gcloud-login` step). Python is checked again
-in step 8. Run `npm install` if `node_modules/` is missing.
+in step 8. Run `npm ci` in the harness folder if `node_modules/` is missing (the harness's pinned npm dependencies, such as `yaml`, which reads the engines' `workflow.yaml`; `./harness.sh tui` and `install-project` also run it when it is missing).
 
 ## 2. The bundle
 

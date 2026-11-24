@@ -33,9 +33,9 @@ test('ASS-504 AC2, AC4: an agent mid tool call is interrupted and runs the resta
 
     const told = await f.agent('machine:restart-imminent', 'p', 'ABC-3', 'A', 'cloud-vm:p:vm-1:/home/ada/harness');
     assert.equal(told.stdout, `restart imminent on cloud-vm:p:vm-1:/home/ada/harness: told ${name}\n`);
-    const at = Date.now();
+    // ASS-545: the fake's long tool call never ends by itself (fake-agent.js), so the interrupt arriving at all is the
+    // line acted on; until()'s LOADED_MS is a hang guard only, in place of a 2 s limit a loaded Mac outlasted.
     assert.ok(await until(() => live.agent.interrupted));
-    assert.ok(Date.now() - at < 2000, `interrupted ${Date.now() - at} ms after the line was queued`);
     assert.ok(f.lines.includes(`dispatch ${name}: restart imminent: its turn interrupted and the restart prompt sent (commit and push now)`), f.lines.join('\n'));
     assert.ok(await until(() => live.result));
     assert.equal(live.result.subtype, 'success', 'the result control sees is the restart prompt\'s turn, never the interrupted one');

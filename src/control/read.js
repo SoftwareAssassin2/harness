@@ -8,6 +8,7 @@
 // data, up to harness.json's data-unreadable-exit-seconds.
 import { readFileSync, readdirSync, statSync, existsSync } from 'node:fs';
 import { dirname, sep } from 'node:path';
+import { parseEngine } from '../workflow/engine-file.js';
 
 // The error codes that say a file or its folder could not be read (ASS-457).
 export const UNREADABLE_CODES = new Set(['ENOENT', 'EIO', 'ENXIO', 'ENOTDIR', 'EACCES']);
@@ -85,18 +86,26 @@ const identity = file => {
   return `${s.dev}:${s.ino}:${s.size}:${s.mtimeNs}:${s.ctimeNs}`;
 };
 
-function parseCached(file, readText) {
+// ASS-524: `parse(text, file)` the file's parser — JSON's, or an engine's
+// workflow.yaml (engine-file.js parseEngine, whose errors are SyntaxErrors
+// too, so readJson tries them again as it does a JSON file caught half-written).
+const parseJsonText = text => JSON.parse(text);
+function parseCached(file, readText, parse = parseJsonText) {
   let id;
-  try { id = identity(file); } catch { return deepFreeze(JSON.parse(readText(file))); }
+  try { id = identity(file); } catch { return deepFreeze(parse(readText(file), file)); }
   const kept = parsed.get(file);
   if (kept?.id === id) { kept.used = generation; cacheStats.hits++; return kept.value; }
-  const value = deepFreeze(JSON.parse(readText(file)));
+  const value = deepFreeze(parse(readText(file), file));
   cacheStats.parses++;
   parsed.set(file, { id, value, used: generation });
   return value;
 }
 
 export const readJsonCached = (file, delays = READ_RETRY_MS, readText = readUtf8) => readJson(file, delays, readText, parseCached);
+
+// readEngineCached(file, delays) — readJsonCached's, for an engine's
+// workflow.yaml (ASS-524): the same retries, cache and freezing, parsed as YAML.
+export const readEngineCached = (file, delays = READ_RETRY_MS, readText = readUtf8) => readJson(file, delays, readText, (f, read) => parseCached(f, read, parseEngine));
 
 // sweepCached() — the files not read since the last sweep dropped from the cache.
 export function sweepCached() {

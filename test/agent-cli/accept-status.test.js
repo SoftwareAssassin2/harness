@@ -13,7 +13,7 @@ const fails = (promise, message) => assert.rejects(promise, e => message.test(e.
 // The fixture with paired statuses on its execution engine (generate-solution In Progress, local-testing In Testing, done Done) and ABC-3's ticket-system-status set to `status`.
 function gapped(status) {
   const f = fixture();
-  const engineFile = join(f.dir, 'engines', 'example-development', 'state-engine.json');
+  const engineFile = join(f.dir, 'engines', 'example-development', 'workflow.yaml');
   const engine = JSON.parse(readFileSync(engineFile, 'utf8'));
   const paired = { 'generate-solution': 'In Progress', 'local-testing': 'In Testing', done: 'Done' };
   engine.steps = engine.steps.map(s => ({ ...s, 'paired-ticket-system-status': paired[s.id] }));

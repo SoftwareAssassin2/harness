@@ -4,6 +4,10 @@
   "license": "MIT",
   "type": "module",
   "scripts": {
-    "test": "bash test/run.sh"
+    "test": "bash test/run.sh",
+    "test:stress": "bash test/stress.sh"
+  },
+  "dependencies": {
+    "yaml": "2.9.1"
   }
 }

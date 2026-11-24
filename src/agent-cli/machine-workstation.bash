@@ -54,7 +54,10 @@ source "$here_wsm/workstation.bash"
 
 # What a session runs first: into the workdir, HARNESS_VM_ROOT the folder, the harness's env sourced, then argv.
 # shellcheck disable=SC2016
-wsm_enter='d="$1" f="$2"; shift 2; cd "$d" || exit 1; export HARNESS_VM_ROOT="$f"; [ -r "$HOME/harness/env" ] && . "$HOME/harness/env"; exec "$@"'
+# ASS-529: then the folder's slot.env when it has one (workstation:claim's: a slot n's own forwarder token file; with
+# ticket-isolation separate, the ticket's own COMPOSE_PROJECT_NAME and port offset too). Slot 0 of a project that has
+# not opted in has none, so its sessions are exactly as before.
+wsm_enter='d="$1" f="$2"; shift 2; cd "$d" || exit 1; export HARNESS_VM_ROOT="$f"; [ -r "$HOME/harness/env" ] && . "$HOME/harness/env"; [ -r "$f/slot.env" ] && { set -a; . "$f/slot.env"; set +a; }; exec "$@"'
 
 wsm_parts() {
   IFS=: read -r wsm_project wsm_id wsm_folder <<< "$1"

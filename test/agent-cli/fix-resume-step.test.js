@@ -22,7 +22,7 @@ function blocked() {
   const f = fixture();
   const at = (...rest) => join(f.dir, ...rest);
   const group = (id, sequence, engine) => ({ id, sequence, 'return-to-state': id, action: { type: 'state-engine', engine }, 'exit-events': [{ condition: { 'is-done': true }, 'move-to-state': 'done' }] });
-  write(at('engines', 'dev', 'state-engine.json'), { steps: [
+  write(at('engines', 'dev', 'workflow.yaml'), { steps: [
     { id: 'blocked', sequence: 0, 'follow-return-to-state': true, action: { type: 'state-engine', engine: 'grouped-blocked' }, 'exit-events': [{ condition: { 'is-done': true }, 'follow-return-to-state': true }] },
     { id: 'backlog', sequence: 1, action: { type: 'none' } },
     { id: 'committed', sequence: 2, action: { type: 'none' } },
@@ -30,17 +30,17 @@ function blocked() {
     { id: 'done', sequence: 6, 'is-done': true, action: { type: 'none' } },
   ] });
   const updated = file => [{ condition: { all: [{ 'turn-complete': true }, { 'file-updated': { file, since: 'turn-start' } }] }, 'move-to-state': 'done' }];
-  write(at('engines', 'sub-plan', 'state-engine.json'), { steps: [
+  write(at('engines', 'sub-plan', 'workflow.yaml'), { steps: [
     { id: 'enrich-ac', sequence: 1, action: { type: 'prompt', prompt: 'enrich-ac-grouped' } },
     { id: 'write-execution-plan', sequence: 2, action: { type: 'prompt', prompt: 'write-execution-plan-grouped' }, 'exit-events': updated('execution-plan.md') },
     { id: 'done', sequence: 3, 'is-done': true, action: { type: 'none' } },
   ] });
-  write(at('engines', 'sub-build', 'state-engine.json'), { steps: [
+  write(at('engines', 'sub-build', 'workflow.yaml'), { steps: [
     { id: 'generate-automated-tests', sequence: 1, action: { type: 'prompt', prompt: 'generate-automated-tests-grouped' } },
     { id: 'automated-testing', sequence: 2, action: { type: 'script', command: './agent.sh automated-tests:verify-success {project} {ticket} {variation}' } },
     { id: 'done', sequence: 3, 'is-done': true, action: { type: 'none' } },
   ] });
-  write(at('engines', 'sub-release', 'state-engine.json'), { steps: [
+  write(at('engines', 'sub-release', 'workflow.yaml'), { steps: [
     { id: 'take-out-of-draft-mode', sequence: 1, action: { type: 'prompt', prompt: 'take-out-of-draft-mode' } },
     { id: 'done', sequence: 2, 'is-done': true, action: { type: 'none' } },
   ] });
@@ -108,10 +108,10 @@ test('ASS-343 AC1: the fix ticket\'s declared resume-at wins, a step inside a gr
 test('ASS-343 AC1: derived from the fix\'s commits — a prompt, a command and an engine each map to the group running it; the earliest at or before the blocked step wins', async () => {
   const f = blocked();
   f.fixTicket();
-  f.commit('Q-1: the release engine', 'engines/sub-release/state-engine.json');
+  f.commit('Q-1: the release engine', 'engines/sub-release/workflow.yaml');
   let out = await f.resume();
   assert.deepEqual([out['resume-at'], out['resume-source']], ['release', 'commits']);
-  assert.match(out['resume-why'], /Q-1's commits change engines\/sub-release\/state-engine\.json/);
+  assert.match(out['resume-why'], /Q-1's commits change engines\/sub-release\/workflow\.yaml/);
   f.commit('Q-1: the verify command', 'src/agent-cli/automated-tests/verify-success.sh');
   assert.equal((await f.resume())['resume-at'], 'build');
   f.commit('Q-1: the plan prompt', 'prompts/write-execution-plan-grouped/prompt.txt');
@@ -184,7 +184,7 @@ const DETOUR = 'blocked is a blocked or detour state';
 test('ASS-347 AC1: an earlier landed fix\'s commits count too — its plan prompt change rewinds a ticket blocked at release to plan (commits), naming its file', async () => {
   const f = blocked();
   f.commit('ASS-339: the plan prompt', PLAN_PROMPT);
-  f.commit('ASS-343: the blocked engine', 'engines/grouped-blocked/state-engine.json');
+  f.commit('ASS-343: the blocked engine', 'engines/grouped-blocked/workflow.yaml');
   blockedAgain(f, { middle: null });
   const out = await f.resume();
   assert.deepEqual([out['resume-at'], out['resume-source']], ['plan', 'commits']);
@@ -196,7 +196,7 @@ test('ASS-347 AC1: an earlier landed fix\'s commits count too — its plan promp
 test('ASS-347 AC2: a block whose fix did not land contributes nothing; an earlier fix\'s detour step is still ignored, tagged with its key', async () => {
   const f = blocked();
   f.commit('ASS-339: the plan prompt', PLAN_PROMPT);                                                  // its block says landed false
-  f.commit('ASS-340: the blocked engine', 'engines/grouped-blocked/state-engine.json');
+  f.commit('ASS-340: the blocked engine', 'engines/grouped-blocked/workflow.yaml');
   f.commit('ASS-343: the verify command', 'src/agent-cli/automated-tests/verify-success.sh');
   blockedAgain(f, { landed: [false, true, true] });
   const out = await f.resume();
@@ -209,7 +209,7 @@ test('ASS-347 AC2: a block whose fix did not land contributes nothing; an earlie
 test('ASS-347: an earlier fix whose step ran again since its block ended no longer rewinds — resume-ignored says so', async () => {
   const f = blocked();
   f.commit('ASS-339: the plan prompt', PLAN_PROMPT);
-  f.commit('ASS-343: the blocked engine', 'engines/grouped-blocked/state-engine.json');
+  f.commit('ASS-343: the blocked engine', 'engines/grouped-blocked/workflow.yaml');
   blockedAgain(f, { resumed: 'plan', middle: null });                                                 // resumed at plan after ASS-339 landed
   const out = await f.resume();
   assert.deepEqual([out['resume-at'], out['resume-source']], ['release', 'none']);

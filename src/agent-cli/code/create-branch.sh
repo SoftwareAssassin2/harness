@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Description: Create the ticket's branch in the project's workspace — code:create-branch <project> <ticket-key> <variation>.
+# Description: Create the ticket's branch in the project's workspace — code:create-branch <project> <ticket-key> <variation> [--harness-clone].
 set -euo pipefail
 
 # The branch change/<KEY> (change/<KEY>.<variation> for a variation other
@@ -11,9 +11,11 @@ set -euo pipefail
 # project, workspace, ticket or variation is missing.
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../code.bash"
 
-[[ $# -eq 3 ]] || { echo "usage: code:create-branch <project> <ticket-key> <variation>" >&2; exit 1; }
+# ASS-553: --harness-clone makes it in the harness's own clone (code.bash harness_clone) instead — local-worktree's,
+# so the operator's checkout is never touched (code:hand-over).
+[[ $# -eq 3 || ( $# -eq 4 && "$4" == --harness-clone ) ]] || { echo "usage: code:create-branch <project> <ticket-key> <variation> [--harness-clone]" >&2; exit 1; }
 project="$1" key="$(upper "$2")" variation="$3"
-workspace="$(workspace_of code:create-branch "$project")"
+if [[ "${4:-}" == --harness-clone ]]; then workspace="$(harness_clone code:create-branch "$project")"; else workspace="$(workspace_of code:create-branch "$project")"; fi
 build_of code:create-branch "$project" "$key" "$variation" >/dev/null
 wanted="$(branch_name "$key" "$variation")"
 

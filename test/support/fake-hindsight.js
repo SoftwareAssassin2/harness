@@ -7,6 +7,7 @@
 //   GET    /health                                      → { status: "healthy" }
 //   PUT    /v1/default/banks/<bank>                     → the bank, made if missing
 //   GET    /v1/default/banks/<bank>/memories/list       → { items, total, limit, offset }
+//   POST   /v1/default/banks/<bank>/memories            → { items: [{ content, document_id, metadata }] } retained (ASS-556)
 //   DELETE /v1/default/banks/<bank>/documents/<id>      → the document and its memories gone
 //   POST   /mcp/<bank>/                                 → an MCP tools/call (JSON-RPC) of
 //          retain { content, context, metadata, document_id }, recall { query } or
@@ -80,6 +81,11 @@ export function fakeHindsight() {
       if (req.method === 'GET' && (m = url.pathname.match(/^\/v1\/default\/banks\/([^/]+)\/memories\/list$/))) {
         const items = bank(m[1]);
         return send(200, { items, total: items.length, limit: Number(url.searchParams.get('limit') ?? 100), offset: 0 });
+      }
+      // ASS-556: retain over HTTP (CLAUDE.md's), each item as an MCP retain.
+      if (req.method === 'POST' && (m = url.pathname.match(/^\/v1\/default\/banks\/([^/]+)\/memories$/))) {
+        for (const item of body?.items ?? []) tools.retain(m[1], item);
+        return send(200, { success: true, items_count: (body?.items ?? []).length });
       }
       if (req.method === 'DELETE' && (m = url.pathname.match(/^\/v1\/default\/banks\/([^/]+)\/documents\/([^/]+)$/))) {
         tools.delete_document(m[1], { document_id: decodeURIComponent(m[2]) });

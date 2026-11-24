@@ -177,7 +177,9 @@ printf '%s\n' "$script" | machine_run "$vm" -- bash -s \
 # Only on a row there already: a VM vms.json does not know gets none, and no file is made; and only stamps
 # read: with none (no item shows an mdat) the row is left as it is. A workstation's on its live data's holder.
 if [[ "$target" == workstation ]]; then
-  [[ "$stamps" == '{}' ]] || workstation_record "$project" "$wsm_id" --argjson s "$stamps" 'if .holder then .holder["credential-stamps"] = $s else . end'
+  # ASS-529: on the holder of the machine's folder (its slot), several tickets' steps sharing one machine.
+  [[ "$stamps" == '{}' ]] || workstation_record "$project" "$wsm_id" --argjson s "$stamps" --arg f "$wsm_folder" \
+    'if (.holder.folder // "") == $f then .holder["credential-stamps"] = $s else .holders = ((.holders // {}) | with_entries(if .value.folder == $f then .value["credential-stamps"] = $s else . end)) end | if .holders == {} then del(.holders) else . end'
 else
   [[ ! -f "$projects/$project/vms.json" || "$stamps" == '{}' ]] || update_json "$projects/$project/vms.json" --arg n "$vm" --argjson s "$stamps" \
     'if .[$n] then .[$n]["credential-stamps"] = $s else . end'

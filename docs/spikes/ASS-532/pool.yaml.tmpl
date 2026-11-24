@@ -1,0 +1,22 @@
+# ASS-532 spike: a gVisor WorkerPool for harness ticket sandboxes, sized like a
+# harness Lima VM (4 CPU / 4 GiB). __WORKER_IMAGE__ is the ateworker-gvisor
+# image the install built (copy it from the sandbox demo's pool).
+apiVersion: v1
+kind: Namespace
+metadata: { name: harness-tickets }
+---
+apiVersion: ate.dev/v1
+kind: WorkerPool
+metadata:
+  name: harness-gvisor
+  namespace: harness-tickets
+  labels: { workload: harness-gvisor }
+spec:
+  replicas: __REPLICAS__
+  workerImage: __WORKER_IMAGE__
+  sandboxClasses:
+  - name: gvisor
+  template:
+    resources:
+      limits: { cpu: "4", memory: 4Gi }
+      requests: { cpu: 500m, memory: 4Gi }

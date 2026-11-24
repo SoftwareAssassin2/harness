@@ -1,5 +1,5 @@
 // Phase 8: putting agents on prompt steps — the runs' first (small, and
-// counted toward max-agents but never max-tickets-in-progress), then the sprints' as
+// counted toward max-agents but never a seat), then the sprints' as
 // plan.js plans them — each through assignments:create (with the agent's Claude
 // account, ASS-496), agent:dispatch (the prompt queued in the inbox the process
 // will read), startAgent, and assignments:set-process (ASS-496: not awaited; the
@@ -8,14 +8,20 @@ import { existsSync, readFileSync, mkdirSync, appendFileSync } from 'node:fs';
 import { readKept } from './read.js';
 import { join, dirname, resolve } from 'node:path';
 import { homedir } from 'node:os';
-import { stepOf, engineSteps, resolveTarget, isActive, isManual } from './engine.js';
+import { stepOf, engineSteps, resolveTarget, isActive, isManual, statusIn } from './engine.js';
+import { skipsForStack, stackRequired } from './work-mode.js';
 import { enginesFor, heldKinds, payWith } from './state.js';
-import { planFor, grooming, refinementDue, seatsOf } from './plan.js';
-import { rankBacklog } from './rank.js';
+import { planFor, grooming, refinementDue, seatsOf, atPlanningStep } from './plan.js';
+import { rankBacklog, planningFirst } from './rank.js';
+import { planningFocusOn } from './planning-focus-file.js';
 import { waitsForSeat } from './fast-track.js';
 import { startAgent, CLAUDE } from '../agents/process.js';
 import { mergedWindows } from '../agents/session-usage.js';
-import { confineHostAgent } from '../agents/confinement.js';
+import { confineHostAgent, GUARD } from '../agents/confinement.js';
+import { sandboxSettings, isSandboxedTarget, remoteSandboxProblem, remoteAgentSh, sandboxWhereText, macSandboxProblem, unsandboxedSettings, unsandboxedWhereText } from '../agents/worktree-sandbox.js';
+import { allowlist } from '../substrate/egress.js';
+import { declaredCredentials } from './vm-credentials.js';
+import { isRemoteWorktree } from './run-targets.js';
 import { memoryMcpConfig, memoryPort, memoryAnswers } from '../agents/memory.js';
 import { accountOf, kindOfAccount } from '../agents/account.js';
 import { sessionDir } from '../agents/session.js';
@@ -23,7 +29,11 @@ import { found, contextOf, ticketPath, isPaused, levelChanges, moveTicket, moveR
 import { problemOf, ticketOf, blockHistory, questionsOf } from './facts.js';
 import { failed, waiting, held, ticketKey, runKey } from './backoff.js';
 import { runsInVm, vmOf } from './vm.js';
-import { machineOf, machinePaths, onWorkstation, remoteName } from './machine.js';
+import { runsOnMachine, readyTarget, heldElsewhere } from './run-target-places.js';
+import { targetOf, onSubstrateTarget } from './seat-kinds.js';
+import { sandboxWaits, syncSandboxTicket } from './sandboxes.js';
+import { macHost } from './machine-substrate.js';
+import { machineOf, machinePaths, onWorkstation, onSandbox, remoteName, runTargetOf } from './machine.js';
 import { syncTicketCopy } from './machine-workstation.js';
 import { awaitsVm, credentialKindOf, NEVER_UP, neverUp, vmUpCeilingMs } from './vm-lifecycle.js';
 import { awaitsDependencies } from './dependencies.js';
@@ -105,8 +115,14 @@ export function containerPath(mounts, folder) {
 // else null. Throws when the project has neither, the folder is not on disk,
 // or the container does not mount it: an agent never runs from control's
 // own folder, and one working in the container must be told where it is.
-export function agentFolder(ctx, project, variation, container) {
-  const folder = variation?.build?.['worktree-folder'] ?? project.json['local-environments']?.find(e => e.type === 'local-pc')?.folder;
+// ASS-540: on the local-workspace run target (`target`), the workspace even when the variation has a worktree.
+// ASS-567: on local-worktree, its worktree — the one handed over to this tick (machine.js runTargetOf's folder, not yet
+// in the loaded variation) or the one it records — and never the workspace: without one it throws (held, tried again).
+export function agentFolder(ctx, project, variation, container, target) {
+  const workspace = project.json['local-environments']?.find(e => e.type === 'local-pc')?.folder;
+  const worktree = runTargetOf(variation)?.folder ?? variation?.build?.['worktree-folder'];
+  if (target === 'local-worktree' && !worktree) throw new Error(`${project.id}: its step runs on local-worktree, and the variation has no worktree yet (it is made by its hand-over): not started in the workspace`);
+  const folder = target === 'local-workspace' ? workspace : worktree ?? workspace;
   if (!folder) throw new Error(`${project.id} has no worktree for the variation and no local-pc folder in project.json`);
   if (!existsSync(folder)) throw new Error(`${folder} does not exist`);
   if (!container) return { folder, containerFolder: null };
@@ -194,10 +210,12 @@ export const codeFolder = (project, vm, folder, repository) => (!vm ? folder : r
 // vmFor(state, project, step, key, variation) — the VM a step of the ticket
 // variation runs in: null for a step on the host; else the variation's VM's
 // name, thrown when it has none (vm.js vmOf), before any assignment is made.
+// ASS-540: null too for a vm step whose run target is on the Mac (run-target-places.js runsOnMachine).
+// ASS-535: on a substrate run target, its Substrate sandbox (vmOf given the target).
 function vmFor(state, project, step, key, variation) {
-  if (!runsInVm(step)) return null;
+  if (!runsOnMachine(project, key, variation, step)) return null;
   const found = project.tickets.find(t => t.key === key)?.variations?.find(v => v.name === variation && !v['is-deleted']);
-  return vmOf(found, `${key} ${variation} ${step.id}`);
+  return vmOf(found, `${key} ${variation} ${step.id}`, targetOf(project, key, variation) ?? undefined);
 }
 
 // ticketFolderOf(ctx, machine) — the ticket folder on the Mac a workstation
@@ -320,10 +338,11 @@ const vmNameOf = (project, key, variation) => machineOf(project.tickets.find(t =
 // cannot pay by the key (a VM with one credential), it waits, held as ASS-232
 // holds a project with none.
 async function paymentFor(ctx, limited, project, step, key, variation, weekly = false) {
-  const held = limited.get(project.id) ?? [], recorded = runsInVm(step) ? credentialKindOf(ctx, project.id, vmNameOf(project, key, variation)) : undefined;
-  const both = runsInVm(step) ? recorded === 'both' : Boolean(configDir(ctx, project, 'api'));
+  const inVm = runsOnMachine(project, key, variation, step);   // ASS-540: on a Mac target it runs on the host
+  const held = limited.get(project.id) ?? [], recorded = inVm ? credentialKindOf(ctx, project.id, vmNameOf(project, key, variation)) : undefined;
+  const both = inVm ? recorded === 'both' : Boolean(configDir(ctx, project, 'api'));
   // The one kind it runs on, asked only when a kind is held (hostKind asks claude auth status); payWith decides (ASS-400: shared with vm-lifecycle.js).
-  const kind = both || !held.length ? null : runsInVm(step) ? recorded : await hostKind(ctx, project);
+  const kind = both || !held.length ? null : inVm ? recorded : await hostKind(ctx, project);
   return payWith({ held, both, kind, capHold: project.json['api-cap-hold'], weekly });
 }
 
@@ -348,9 +367,10 @@ export const worksOnCode = (step, variation, record) =>
 // one; undefined for a project with none. A Hindsight not answering now is
 // left out — the step runs without memory, never held for it (AC5) — and the
 // agent's session log (in `dir`) says so first, as control's log does.
-async function memoryFor(ctx, project, vm, dir) {
-  // A VM reaches Hindsight at host.lima.internal; a workstation at 127.0.0.1, its connection's reverse forward (ASS-435 AC5).
-  const mcpConfig = memoryMcpConfig(project, { vm: Boolean(vm) && !onWorkstation(vm) });
+export async function memoryFor(ctx, project, vm, dir) {
+  // A VM reaches Hindsight at host.lima.internal; a workstation at 127.0.0.1, its connection's reverse forward (ASS-435 AC5);
+  // ASS-536: a Substrate sandbox at its cluster's name for the Mac (macHost), through its egress rule for that port.
+  const mcpConfig = memoryMcpConfig(project, onSandbox(vm) ? { host: macHost(vm.slice('substrate:'.length)) } : { vm: Boolean(vm) && !onWorkstation(vm) });
   if (!mcpConfig || await memoryAnswers(memoryPort(project))) return mcpConfig;
   const note = `memory unavailable: ${project.id}'s Hindsight is not answering on 127.0.0.1:${memoryPort(project)}; this step runs without memory`;
   mkdirSync(dir, { recursive: true });
@@ -359,14 +379,75 @@ async function memoryFor(ctx, project, vm, dir) {
   return undefined;
 }
 
-async function startFor(ctx, state, project, record, account, vm, repository, step, payment = null) {
+// ASS-555: the agents on a worktree run target (local-worktree, local-workspace, workstation-worktree,
+// cloud-vm-worktree) run inside Claude Code's own sandbox (worktree-sandbox.js says what it is and why); ASS-564:
+// unsandboxed, in the same worktree, where that sandbox cannot run.
+// sandboxRefused(project, key, variation, vm) — null: ASS-564 refuses no agent for its sandbox any more (where it
+// can't run the agent runs unsandboxed: agentSandbox). Kept, refusing nothing, for its caller in the sprint loop.
+export function sandboxRefused() {
+  return null;
+}
+
+// agentSandbox(ctx, project, { target, vm, folder, container, containerFolder }) — { settings, addDirs, agentSh,
+// where, unsandboxed, machine } for an agent on a sandboxed target, or null for any other: on the Mac (`vm` none:
+// local-worktree, local-workspace, or a host step of a remote worktree's variation, which runs on the Mac) Seatbelt,
+// its folder the worktree, the harness's agent.sh and off-board.sh by absolute path outside the sandbox and the guard;
+// on a remote worktree (`vm` the machine) bubblewrap, the variation folder's repos/ writable, the machine's agent.sh by
+// absolute path, its runtime folder unreadable. The hosts are the project's allowlist (ASS-538's egress.js allowlist,
+// from project.json and its vm-credentials.json entry: names only). ASS-564: where the sandbox can't run (the Mac
+// without Seatbelt: ctx.macSandboxProblem, else worktree-sandbox.js macSandboxProblem; a remote machine whose setup
+// found it unavailable or has not probed it: remoteSandboxProblem) `settings` are unsandboxedSettings and
+// `unsandboxed` says why (null otherwise); `machine` is 'mac' or the remote machine's id.
+export function agentSandbox(ctx, project, { target, vm, folder, container, containerFolder }) {
+  if (!isSandboxedTarget(target)) return null;
+  const hosts = allowlist(project.json ?? {}, declaredCredentials(ctx.env, project.id)).map(h => h.host);
+  if (!vm) {
+    const agentSh = join(ctx.root, 'agent.sh');
+    const why = (ctx.macSandboxProblem ?? macSandboxProblem)();
+    if (why) return { settings: unsandboxedSettings(), addDirs: [], agentSh, where: unsandboxedWhereText({ worktree: folder, agentSh, why }), unsandboxed: why, machine: 'mac' };
+    const settings = sandboxSettings({ platform: 'mac', worktree: folder, hosts, agentSh: [agentSh, join(ctx.root, 'off-board.sh')], container: container ? { name: container, folder: containerFolder } : null,
+      guard: GUARD(ctx.root), deniedReads: [join(ctx.paths.projects, '*', 'project.json')] });
+    return { settings, addDirs: [], agentSh, where: sandboxWhereText({ worktree: folder, agentSh }), unsandboxed: null, machine: 'mac' };
+  }
+  const ws = onWorkstation(vm);
+  if (!ws || !isRemoteWorktree(target)) return null;
+  const repos = machinePaths(vm).repos.replace(/\/$/, ''), agentSh = remoteAgentSh(ws.folder);
+  const addDirs = folder.replace(/\/$/, '') === repos ? [] : [repos];
+  const why = remoteSandboxProblem(project.workstations?.[ws.id]);
+  if (why) return { settings: unsandboxedSettings(), addDirs, agentSh, where: unsandboxedWhereText({ worktree: repos, agentSh, why }), unsandboxed: why, machine: ws.id };
+  const runtime = project.workstations?.[ws.id]?.setup?.runtime;
+  const settings = sandboxSettings({ platform: 'linux', worktree: folder.replace(/\/$/, ''), writable: [repos], hosts, agentSh: [agentSh], deniedReads: runtime ? [runtime] : [] });
+  return { settings, addDirs, agentSh, where: sandboxWhereText({ worktree: repos, agentSh }), unsandboxed: null, machine: ws.id };
+}
+
+// noteUnsandboxed(ctx, key, variation, sandbox) — ASS-564: an agent of the variation running unsandboxed (agentSandbox
+// `unsandboxed`) is logged once per machine while the reason stays the same: "worktree <KEY> <var> on <machine>:
+// Claude Code's sandbox unavailable (<why>) — running unsandboxed". A sandboxed start there forgets it, so a later
+// loss is logged again.
+export function noteUnsandboxed(ctx, key, variation, sandbox) {
+  if (!sandbox || key == null) return;
+  const m = (ctx.memory.unsandboxed ??= new Map()), k = `${key} ${variation} ${sandbox.machine}`;
+  if (!sandbox.unsandboxed) { m.delete(k); return; }
+  if (m.get(k) === sandbox.unsandboxed) return;
+  m.set(k, sandbox.unsandboxed);
+  ctx.log(PHASE, `worktree ${key} ${variation} on ${sandbox.machine}: Claude Code's sandbox unavailable (${sandbox.unsandboxed}) — running unsandboxed`);
+}
+
+async function startFor(ctx, state, project, record, account, vm, repository, step, payment = null, planned = null) {
   const name = record['agent-name'];
   const { variation } = found(state, record);
   const container = record['working-in-dev-container'] === true ? project.json['dev-container'] : undefined;
-  const { folder: codeAt, containerFolder } = vm ? { folder: vmFolder(vm, repository), containerFolder: null } : agentFolder(ctx, project, variation, container);
+  // ASS-540: a step on a Mac run target works on the code there (its worktree, or the workspace): never confined.
+  // ASS-555: else the target the planner gave it this tick (`planned`), a step reached since seats were placed.
+  const target = record['work-item'] != null && record.variation ? targetOf(project, record['work-item'], record.variation) ?? planned : null;
+  const onMac = target === 'local-worktree' || target === 'local-workspace';
+  const { folder: codeAt, containerFolder } = vm ? { folder: vmFolder(vm, repository), containerFolder: null } : agentFolder(ctx, project, variation, container, target);
   // Confined, it runs in the harness's folder for the project; the code it reads stays codeAt.
-  const confined = !vm && !worksOnCode(step, variation, record) ? confineHostAgent({ root: ctx.root, data: dirname(ctx.paths.agents), project: project.id }) : null;
+  const confined = !vm && !onMac && !worksOnCode(step, variation, record) ? confineHostAgent({ root: ctx.root, data: dirname(ctx.paths.agents), project: project.id }) : null;
   const folder = confined?.cwd ?? codeAt;
+  // ASS-555: on a worktree target (and not confined), in Claude Code's sandbox; ASS-564: unsandboxed where it can't run, logged.
+  const sandbox = confined ? null : agentSandbox(ctx, project, { target, vm, folder, container, containerFolder });
+  noteUnsandboxed(ctx, record['work-item'], record.variation, sandbox);
   // The inbox is named by the agent and its start time to the second: an
   // earlier process of the same name started in the same second left its
   // prompts there, which agent:dispatch drops, under the inbox's lock (ASS-179).
@@ -379,16 +460,17 @@ async function startFor(ctx, state, project, record, account, vm, repository, st
   const dir = configDir(ctx, project, payment);
   // In a VM its ticket folder is the mount and agent.sh the VM's own: what the prompt's commands run.
   // On a workstation (ASS-435) the ticket's read-only copy, brought up to date first (AC4), and the setup's agent.sh.
-  const vmArgs = vm ? [`ticket-folder=${machinePaths(vm).ticket}`, 'agent-sh=agent.sh'] : [];
+  const vmArgs = vm ? [`ticket-folder=${machinePaths(vm).ticket}`, `agent-sh=${sandbox?.agentSh ?? 'agent.sh'}`] : [];
   if (onWorkstation(vm)) await syncTicketCopy(remoteName(vm), ticketFolderOf(ctx, vm), { env: ctx.env });   // ASS-481: a cloud VM's too
-  await cli(ctx, ['agent:dispatch', name, `folder=${folder}`, `where=${vm ? vmWhereText(project, vm, repository) : confined ? confinedWhereText(folder, codeAt, join(ctx.root, 'agent.sh')) : whereText(ctx, folder, container, containerFolder, repository)}`, `project-code-folder=${codeFolder(project, vm, codeAt, repository)}`, ...vmArgs, ...aboutArgs]);
+  await cli(ctx, ['agent:dispatch', name, `folder=${folder}`, `where=${vm ? vmWhereText(project, vm, repository) : confined ? confinedWhereText(folder, codeAt, join(ctx.root, 'agent.sh')) : whereText(ctx, folder, container, containerFolder, repository)}${sandbox ? `\n${sandbox.where}` : ''}`, `project-code-folder=${codeFolder(project, vm, codeAt, repository)}`, ...vmArgs, ...aboutArgs]);
   const live = { name, project: project.id, record, repository, startedAt: ctx.now(), result: null, exited: null, cost: 0, tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, sessionRecorded: false, rateLimit: null, pending: null, pendingThisTurn: false,
     vm: vm ?? null, payment, kind: payment ? (payment === 'api' ? 'anthropic' : 'claude') : vm ? credentialKindOf(ctx, project.id, vm) : kindOfAccount(account) };
   live.agent = startAgent({
     name, root: dirname(ctx.paths.agents), cwd: folder, vm: vm ?? undefined, model: record.model,
     command: vm && payment ? ['env', '-u', UNSET[payment], ...(ctx.command ?? CLAUDE)] : ctx.command,
     jsonSchema: confined ? withSandboxRefused(outputSchema(ctx.paths.prompts, record.prompt)) : outputSchema(ctx.paths.prompts, record.prompt), mcpConfig,
-    startTime: record['start-time'], confinedBy: confined?.settings,
+    startTime: record['start-time'], confinedBy: confined?.settings, sandbox: sandbox?.settings, addDirs: sandbox?.addDirs,
+    sandboxed: sandbox ? (sandbox.unsandboxed ? { sandboxed: false, why: sandbox.unsandboxed, target, machine: sandbox.machine } : { sandboxed: true, target, machine: sandbox.machine }) : undefined,
     usage: { prices: state.harness['model-prices'] ?? {}, windows: mergedWindows(state.harness, state.contextWindows) },
     // limactl shell passes no environment into the VM: its own (vm:credentials) is the agent's there.
     env: vm ? ctx.env : dir ? { ...process.env, CLAUDE_CONFIG_DIR: dir } : process.env,
@@ -434,7 +516,7 @@ async function startFor(ctx, state, project, record, account, vm, repository, st
   // before it records the session id, so the two land in that order. The record, with its account, was there before
   // the process started (create).
   live.processWrite = unawaited(ctx, `${name}'s process`, () => ctx.cli(['assignments:set-process', name, String(live.agent.pid), '-']));
-  ctx.log(PHASE, `${name} (${record.model}) on ${record['work-item'] ?? record['state-engine']}${record.variation ? ` ${record.variation}` : ''} ${record.state}, pid ${live.agent.pid}, in ${folder}${container ? ` (${container}:${containerFolder})` : ''}${vm ? (onWorkstation(vm) ? ` (${onWorkstation(vm).kind === 'cloud-vm' ? 'cloud VM' : 'workstation'} ${onWorkstation(vm).id})` : ` (VM ${vm})`) : ''}${repository ? ` for ${repository}` : ''}${payment ? ` on the ${payment === 'api' ? 'API key' : 'subscription'}` : ''}`);
+  ctx.log(PHASE, `${name} (${record.model}) on ${record['work-item'] ?? record['state-engine']}${record.variation ? ` ${record.variation}` : ''} ${record.state}, pid ${live.agent.pid}, in ${folder}${container ? ` (${container}:${containerFolder})` : ''}${vm ? (onWorkstation(vm) ? ` (${onWorkstation(vm).kind === 'cloud-vm' ? 'cloud VM' : 'workstation'} ${onWorkstation(vm).id})` : ` (VM ${vm})`) : ''}${repository ? ` for ${repository}` : ''}${payment ? ` on the ${payment === 'api' ? 'API key' : 'subscription'}` : ''}${sandbox?.unsandboxed ? `, unsandboxed (${target}: Claude Code's sandbox unavailable: ${sandbox.unsandboxed})` : sandbox ? `, in Claude Code's sandbox (${target}: writes ${sandbox.settings.sandbox.filesystem.allowWrite[0]}, ${sandbox.settings.sandbox.network.allowedDomains.length} allowed hosts)` : ''}`);
 }
 
 // create(ctx, project, payment, args, step, harness) — assignments:create with
@@ -517,6 +599,8 @@ const takeWorkspace = (ctx, step, project, key, variation) =>
 async function vmDown(ctx, state, step, project, key, variation, at) {
   if (!runsInVm(step)) return false;
   const v = found(state, { project, 'work-item': key, variation }), who = `${key} ${variation} ${at}`;
+  if (!runsOnMachine(v.project, key, variation, step)) return false;   // ASS-540: on a Mac target, no VM to wait for
+  if (onSubstrateTarget(v.project, key, variation)) return false;   // ASS-535: its sandbox is waited for instead (sandboxWaits)
   const waits = awaitsVm(ctx, state, v.project, v.variation, who), name = v.variation?.vm?.name;
   if (waits === NEVER_UP) await neverUp(ctx, PHASE, v, name, vmUpCeilingMs(state));   // ASS-387: its start pending past the ceiling
   if (waits) return true;
@@ -562,7 +646,20 @@ function waitsOnAnswer(ctx, state) {
   return held;
 }
 
-// dispatch(ctx, state) — nothing while the agents are paused. Else each run
+// runOrder(state) — ASS-531: the runs in the order dispatch gives them agents: state.transient's; while a project's
+// focus on planning is on, its runs for a variation at a planning step (plan.js atPlanningStep: grouped Plan's, say)
+// first, the rest after, each in its own order. No project's switch on: state.transient itself.
+export function runOrder(state) {
+  const focused = new Map(state.projects.filter(p => p.engine && planningFocusOn(p)).map(p => [p.id, p]));
+  if (!focused.size) return state.transient;
+  return planningFirst(state.transient, run => {
+    const project = focused.get(run.project), at = project && ticketPath(run, state.transient);
+    const variation = at && project.tickets.find(t => t.key === at.workItem)?.variations?.find(v => v.name === at.variation);
+    return Boolean(variation) && atPlanningStep(statusIn(project.engine, variation, project.engines ?? state.engines ?? {}));
+  });
+}
+
+// dispatch(ctx, state) — nothing while the agents are paused. Else each run (in runOrder's order, ASS-531)
 // at a prompt step with no agent on it gets one
 // (work-item the ticket it works for, facts.js ticketOf — its context's, or
 // the one a create-ticket step returned — variation from its context, {problem} the nearest
@@ -619,13 +716,17 @@ export async function dispatch(ctx, state) {
   const weekly = new Map(state.projects.map(p => [p.id, weeklyLimit(ctx, p)]));
   // Each project planned against its own limits and harness.json's, every other project's tickets in motion counted (plan.js planFor).
   const plan = (project, state) => planFor(state, project, { agentsRunning: allAgents(), projectAgentsRunning: agentsOf(project.id) });
-  const holds = state.projects.filter(p => p.engine && p.sprint).flatMap(p => plan(p, state).held.map(h => ({ project: p.id, ...h })));
+  // ASS-567: each project's plan as the runs below are dispatched — where each run's step is placed (heldElsewhere).
+  const runPlans = new Map(state.projects.filter(p => p.engine && p.sprint).map(p => [p.id, plan(p, state)]));
+  const holds = [...runPlans].flatMap(([id, planned]) => planned.held.map(h => ({ project: id, ...h })));
   const answering = waitsOnAnswer(ctx, state);
-  for (const run of state.transient) {
+  for (const run of runOrder(state)) {   // ASS-531: a focused project's planning runs first
     if (run['is-done'] || state.assignments.some(a => a['transient-state-engine'] === run.id)) continue;
     const step = stepOf(engineSteps(enginesFor(state, run.project), run['state-engine']), run.state);
     if (step?.action?.type !== 'prompt' || !isActive(step)) continue;   // switched off (ASS-192): passed by steps.js, no agent
     const at = ticketPath(run, state.transient);
+    // ASS-556: a step needing the running stack, its ticket built in a worktree: passed by steps.js, no agent.
+    if (at && stackRequired(step) && skipsForStack(step, found(state, { project: run.project, 'work-item': at.workItem, variation: at.variation }).variation)) continue;
     if (at && holds.some(h => h.project === run.project && h.key === at.workItem && h.variation === at.variation && h['state-engine'] === run['state-engine'] && h.state === run.state)) continue;
     const context = contextOf(run, state.transient);
     const project = state.projects.find(p => p.id === run.project);
@@ -642,6 +743,8 @@ export async function dispatch(ctx, state) {
     // before its VM, which is stopped while it is held, so the wait is never taken for a VM that does not come up (ASS-348).
     const waits = found(state, { project: run.project, 'work-item': context.workItem, variation: context.variation });
     if (!waits.backlog && awaitsDependencies(ctx, state, project, waits.ticket, waits.variation, `run ${run['state-engine']} ${run.id.slice(0, 8)} ${run.state}`)) continue;
+    // ASS-567: its step not yet placed where the planner puts it (a record still the last step's target, or none): placed next tick.
+    if (!waits.backlog && waits.ticket && waits.variation && heldElsewhere(project, waits.ticket.key, waits.variation.name, runPlans.get(project.id))) continue;
     if (await vmDown(ctx, state, step, run.project, context.workItem, context.variation, run.state)) continue;
     const pays = await paymentFor(ctx, limited, project, step, context.workItem, context.variation, limit === 'api');
     if (!pays) continue;
@@ -655,6 +758,7 @@ export async function dispatch(ctx, state) {
     if (!workspaceFree(ctx, state, step, project, context.workItem ?? run.id.slice(0, 8), context.variation ?? '-')) continue;
     // ASS-468: a workstation (or, in vm+workstation mode, its VM) claimed for the step before its agent goes there.
     if (!waits.backlog && stepWaits(ctx, state, project, waits.ticket, waits.variation, step, `run ${run['state-engine']} ${run.id.slice(0, 8)} ${run.state}`)) continue;
+    if (!waits.backlog && sandboxWaits(ctx, state, project, waits.ticket, waits.variation, step, `run ${run['state-engine']} ${run.id.slice(0, 8)} ${run.state}`, key)) continue;   // ASS-535 (ASS-537: a failure the step's)
     // The ticket it works for (the fix ticket once made); the variation only when that is the context's own,
     // and in the run's own project (a harness run about another project's ticket logs no dispatch on it).
     const ticket = ticketOf(run, state.transient);
@@ -663,7 +767,9 @@ export async function dispatch(ctx, state) {
     await ctx.attempt(PHASE, `run ${run.id.slice(0, 8)}`, heldOnFailure(ctx, key, async () => {
       const where = nextRepository(ctx.memory, step, found(state, { project: run.project, 'work-item': context.workItem, variation: context.variation }).variation, visitOf({ run, changes: run['state-changes'] ?? [] }));
       if (where?.skip) return skip(ctx, step, engineSteps(enginesFor(state, run.project), run['state-engine']), run['state-changes'] ?? [], `run ${run.id.slice(0, 8)} ${run.state}`, to => moveRun(ctx, PHASE, run, to));
+      if (!waits.backlog) await readyTarget(ctx, project, waits.ticket, waits.variation);   // ASS-540: its branch where its target is
       const vm = vmFor(state, project, step, context.workItem, context.variation);
+      if (!waits.backlog) await syncSandboxTicket(ctx, project, waits.ticket, waits.variation, vm);   // ASS-535: its /mnt/ticket up to date
       await takeWorkspace(ctx, step, project, context.workItem, context.variation);
       const { records, account } = await create(ctx, project, pays.payment, [run.project, run['state-engine'], run.state, step.action.prompt, String(count), String(inContainer(step, project)), ticket ?? '-', (ticket === context.workItem && !elsewhere ? context.variation : undefined) ?? '-', run.id, problemOf(run, state.transient, { harness: state.harness, project: ticketProjectOf(state, run.id) ?? run.project, history: blockHistory(found(state, { project: run.project, 'work-item': context.workItem, variation: context.variation }).variation) })], step, state.harness);
       for (const record of records) await startFor(ctx, state, project, record, account, vm, where?.repository, step, pays.payment);
@@ -716,15 +822,21 @@ export async function dispatch(ctx, state) {
       if (!pays) continue;
       if (!workspaceFree(ctx, state, step, project, item.key, item.variation)) continue;
       if (stepWaits(ctx, state, project, at.ticket, at.variation, step, who)) continue;   // ASS-468: a workstation (or its VM) claimed for the step first
+      if (heldElsewhere(project, item.key, item.variation, planned)) continue;   // ASS-565, ASS-567: not yet placed where the planner puts it: placed next tick
+      if (sandboxWaits(ctx, state, project, at.ticket, at.variation, step, who, key)) continue;   // ASS-535: its Substrate sandbox up first (ASS-537: a failure the step's)
       const done = dispatching(ctx, project.id, item.key, item.variation);
       await ctx.attempt(PHASE, `${item.key} ${item.variation}`, heldOnFailure(ctx, key, async () => {
         const { ticket, variation } = at;
         const where = nextRepository(ctx.memory, step, variation, visitOf({ project, ticket, variation, changes: levelChanges(variation) }));
         if (where?.skip) return skip(ctx, step, project.engine, levelChanges(variation), who, to => mayMove(ctx, PHASE, state, project, variation, who, to) && moveTicket(ctx, PHASE, project, ticket, variation, to));
+        await readyTarget(ctx, project, ticket, variation);   // ASS-540: its branch where its target is
         const vm = vmFor(state, project, step, item.key, item.variation);
+        const refused = sandboxRefused(project, item.key, item.variation, vm);   // ASS-564: refuses nothing now (unsandboxed where the sandbox can't run)
+        if (refused) throw new Error(refused);
+        await syncSandboxTicket(ctx, project, ticket, variation, vm);   // ASS-535: its /mnt/ticket up to date
         await takeWorkspace(ctx, step, project, item.key, item.variation);
         const { records, account } = await create(ctx, project, pays.payment, [project.id, project.engineName, item.state, step.action.prompt, String(item.agentCount), String(inContainer(step, project)), item.key, item.variation, '-'], step, state.harness);
-        for (const record of records) await startFor(ctx, state, project, record, account, vm, where?.repository, step, pays.payment);
+        for (const record of records) await startFor(ctx, state, project, record, account, vm, where?.repository, step, pays.payment, (planned.targets ?? []).find(t => t.key === item.key && t.variation === item.variation)?.target ?? null);   // ASS-555: the target planned now
       })).finally(done);
       state = ctx.load();
     }

@@ -11,18 +11,19 @@ import { join } from 'node:path';
 import { stepOf, answersGap } from '../../src/control/engine.js';
 import { validateStateEngine } from '../../src/workflow/validate.js';
 import { ROOT, loadEngines, walk } from '../support/engine-walk.js';
+import { readEngine } from '../../src/workflow/engine-file.js';
 
 const engines = loadEngines();
 // A ticket walked from the example's qa step, the ticket system at `status` while QA Testing waits.
 const fromQa = status => walk(engines, 'example-development-grouped', { from: 'qa', stop: ['blocked', 'blocked-for-human'], answers: { 'grouped-qa/qa-testing': { ticketSystemStatus: status } } });
 
 test('ASS-282 AC1: qa-testing has an exit on any status but Done (and In Testing, its in-progress pairing) to blocked, after its Done exit', () => {
-  const exits = JSON.parse(readFileSync(join(ROOT, 'engines', 'grouped-qa', 'state-engine.json'), 'utf8')).steps.find(s => s.id === 'qa-testing')['exit-events'];
+  const exits = readEngine(join(ROOT, 'engines', 'grouped-qa', 'workflow.yaml')).steps.find(s => s.id === 'qa-testing')['exit-events'];
   assert.deepEqual(exits[0], { condition: { 'ticket-system-status': 'Done' }, 'move-to-state': 'done' }, 'the Done exit stays first');
   const parked = exits.find(e => e['move-to-state'] === 'blocked');
   assert.ok(parked, JSON.stringify(exits));
   assert.ok(JSON.stringify(parked.condition).includes('"not":{"ticket-system-status":"Done"}'), JSON.stringify(parked.condition));
-  assert.deepEqual(validateStateEngine(JSON.parse(readFileSync(join(ROOT, 'engines', 'grouped-qa', 'state-engine.json'), 'utf8')), ROOT, 'grouped-qa'), []);
+  assert.deepEqual(validateStateEngine(readEngine(join(ROOT, 'engines', 'grouped-qa', 'workflow.yaml')), ROOT, 'grouped-qa'), []);
 });
 
 test('ASS-282 AC2: at qa/qa-testing with the ticket system On Hold, grouped-qa ends at blocked and the parent qa moves to blocked', () => {

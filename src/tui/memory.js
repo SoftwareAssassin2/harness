@@ -22,7 +22,7 @@ export const memoryOpened = state => ({ ...state, memorySelected: 0, memoryScrol
 export const memoryLoaded = (state, project, result) => ({ ...state, memories: { ...state.memories, [project]: result } });
 
 // The dashboard's own check of each project's Hindsight (ASS-293), for the
-// control box's hindsight line (frame.js): the dashboard asks rather than
+// footer's hindsight (frame.js; the control box's line until ASS-566): the dashboard asks rather than
 // reading what control found, so the line stays live while control is down
 // or has never run. main.js polls every second; healthPoller starts, for each
 // project with a hindsight in its project.json, a check (src/agents/memory.js

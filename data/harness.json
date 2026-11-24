@@ -37,9 +37,6 @@
             ]
         }
     ],
-    "max-agents": 100,
-    "max-tickets-in-progress": 50,
-    "max-tickets-in-planning": 50,
     "agent-graceful-shut-down-delay-in-seconds": 120,
     "download-updates-interval-in-minutes": 4,
     "harness-project": "harness",
@@ -89,5 +86,7 @@
             "cache-read": 0.01,
             "cache-write": 0.125
         }
-    }
+    },
+    "max-memory-percent": 90,
+    "max-cpu-percent": 90
 }

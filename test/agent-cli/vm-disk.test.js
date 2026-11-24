@@ -22,7 +22,7 @@ const STAMP = /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$/;
 function disk({ limit = 1 } = {}) {
   const l = lima();
   const at = (...rest) => join(l.f.dir, ...rest);
-  edit(at('engines', 'example-development', 'state-engine.json'), e => { for (const s of e.steps) if (s.id !== 'done') s.vm = 'running'; });
+  edit(at('engines', 'example-development', 'workflow.yaml'), e => { for (const s of e.steps) if (s.id !== 'done') s.vm = 'running'; });
   edit(at('harness.json'), h => { h['vm-disk-limit-gb'] = limit; });
   const vm = (name, blocks, status = 'Stopped', accessed = '2026-10-20T00:00:00Z') => {
     if (!existsSync(join(l.v.instances, name))) l.v.instance(name, status);
@@ -164,7 +164,7 @@ test('vm:stop p <vm> stops one of p\'s VMs and records it accessed now; another\
 // deletes one; a released variation is not in flight, so its stopped VM is deletable to make_room and vm:reclaim-all too.
 test('ASS-325 AC2: vm:delete p <vm> deletes one of p\'s stopped VMs whose variation is not in flight — at a vm: released step — dropping its vms.json row and forwarder token; a running one, one whose variation is at a running or stopped step, another project\'s or a golden image it refuses', async () => {
   const d = disk();
-  edit(d.at('engines', 'example-development', 'state-engine.json'), e => { e.steps.find(s => s.id === 'local-testing').vm = 'released'; e.steps.push({ id: 'blocked', sequence: 4, 'is-done': null, action: { type: 'none' }, vm: 'stopped' }); });
+  edit(d.at('engines', 'example-development', 'workflow.yaml'), e => { e.steps.find(s => s.id === 'local-testing').vm = 'released'; e.steps.push({ id: 'blocked', sequence: 4, 'is-done': null, action: { type: 'none' }, vm: 'stopped' }); });
   d.vm('abc-3-c', 1, 'Stopped'); d.record('C', 'abc-3-c');   // at local-testing: released
   d.vm('abc-3-b', 1, 'Running'); d.record('B', 'abc-3-b');   // at local-testing, still running
   d.vm('abc-3-a', 1, 'Stopped'); d.record('A', 'abc-3-a');   // at generate-solution: running
@@ -192,7 +192,7 @@ test('ASS-325 AC2: vm:delete p <vm> deletes one of p\'s stopped VMs whose variat
 // vm:delete; once the end has run (the record gone) it is as before.
 test('ASS-480 AC1: a stopped VM at a vm: released step is not deletable while a step\'s end is pending on it', async () => {
   const d = disk();
-  edit(d.at('engines', 'example-development', 'state-engine.json'), e => { e.steps.find(s => s.id === 'local-testing').vm = 'released'; });
+  edit(d.at('engines', 'example-development', 'workflow.yaml'), e => { e.steps.find(s => s.id === 'local-testing').vm = 'released'; });
   d.vm('abc-3-c', 1, 'Stopped'); d.record('C', 'abc-3-c');   // at local-testing: released
   writeFileSync(d.at('projects', 'p', 'step-ends.json'), JSON.stringify({ ends: { 'ABC-3 C': { key: 'ABC-3', variation: 'C', vm: 'abc-3-c', step: 'Build', completed: true } } }));
   assert.deepEqual((await d.inventory()).vms.filter(v => v.deletable).map(v => v.name), [], 'its step\'s end pending: kept');

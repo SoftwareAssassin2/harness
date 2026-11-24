@@ -40,7 +40,7 @@
             },
             "vm-source": {
                 "type": "boolean",
-                "description": "ASS-427: true when the fix is one every VM from the project's golden image would need too (a tool or package it lacks, a cache or image it should carry, a harness-written VM file missing an entry): nothing fixed here, the harness sends it to Repair the VM, which fixes the VM and its source"
+                "description": "True when the fix is one every VM from the project's golden image would need too (a tool or package it lacks, a cache or image it should carry, a harness-written VM file missing an entry): nothing fixed here, the harness sends it to Repair the VM, which fixes the VM and its source"
             },
             "evidence": {
                 "type": "array",
@@ -64,5 +64,8 @@
             "ai-feedback-short",
             "ai-feedback-long"
         ]
+    },
+    "output-tickets": {
+        "vm-source": "ASS-427"
     }
 }

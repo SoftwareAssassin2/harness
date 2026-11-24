@@ -20,6 +20,7 @@ import { tendSteps, LOST_HEALTH, STRAY_HEALTH, ownerOf } from '../../src/control
 import { healthOf } from '../../src/control/workstations.js';
 import { loadEnds, recover, STEP_ENDS_FILE } from '../../src/control/step-ends.js';
 import { fakeVm } from '../support/fake-vm.js';
+import { readEngine } from '../../src/workflow/engine-file.js';
 
 const PLAN = [{ id: 1, repository: 'https://gitlab.example.com/o/example-api.git', branch: 'change/ABC-3-1', status: 'Open' }, { id: 2, repository: 'https://gitlab.example.com/o/example-web', branch: 'change/ABC-3-2', status: 'Merged' }];
 
@@ -28,10 +29,10 @@ const PLAN = [{ id: 1, repository: 'https://gitlab.example.com/o/example-api.git
 function fixture({ state = 'done', status = 'Stopped', answer = () => '{}' } = {}) {
   const c = controlFixture();
   const file = (...rest) => join(c.dir, ...rest);
-  const engine = JSON.parse(readFileSync(file('engines', 'example-development', 'state-engine.json'), 'utf8'));
+  const engine = readEngine(file('engines', 'example-development', 'workflow.yaml'));
   engine.steps.find(x => x.id === 'plan').vm = 'running';
   engine.steps.push({ id: 'qa', sequence: 7, vm: 'released', 'paired-ticket-system-status': 'QA', action: { type: 'human' } });
-  writeFileSync(file('engines', 'example-development', 'state-engine.json'), JSON.stringify(engine));
+  writeFileSync(file('engines', 'example-development', 'workflow.yaml'), JSON.stringify(engine));
   const v = fakeVm(c.env);
   if (status) v.instance('abc-3-a', status);
   writeFileSync(file('projects', 'p', 'sprints', 'sprint-10', 'sprint.json'), JSON.stringify({ number: 10, bugs: [], spikes: [], features: [

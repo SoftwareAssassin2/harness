@@ -16,10 +16,11 @@ import { guard } from '../../src/agents/agent-sh-guard.js';
 import { fixture } from '../agent-cli/harness-fixture.js';
 import { copyFileSync } from 'node:fs';
 import { engineDir, engineNames } from '../support/engine-walk.js';
+import { readEngine } from '../../src/workflow/engine-file.js';
 
 const ROOT = join(import.meta.dirname, '..', '..');
-const engines = Object.fromEntries(engineNames().filter(d => existsSync(join(engineDir(d), 'state-engine.json')))
-  .map(d => [d, JSON.parse(readFileSync(join(engineDir(d), 'state-engine.json'), 'utf8'))]));
+const engines = Object.fromEntries(engineNames().filter(d => existsSync(join(engineDir(d), 'workflow.yaml')))
+  .map(d => [d, readEngine(join(engineDir(d), 'workflow.yaml'))]));
 const hostPrompts = Object.entries(engines).flatMap(([engine, e]) => e.steps.filter(s => s.action?.type === 'prompt' && !runsInVm(s)).map(step => ({ engine, step })));
 
 test('every host prompt step without a worktree is confined but the fix ticket\'s Apply Fix, which changes the repo its ticket names, and grouped Blocked\'s host repair, which repairs the ticket\'s own environment; the VM repair runs in the VM', () => {

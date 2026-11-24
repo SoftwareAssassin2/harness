@@ -34,6 +34,19 @@ export function loadWorkstations(projectDir, read = readJson) {
   }
 }
 
+// ASS-529: a machine takes several of its project's tickets at once, each a step at a time in a folder of its own
+// there (a slot: workstation-variation.bash). The live data's `holder` is slot 0's — the shared root, <home>/harness,
+// as before — and `holders` { "<n>": holder } the others', each { ticket, variation, folder: <home>/harness/slots/<n>,
+// slot: n, since, … }. holdersOf(entry) — every holder of the machine, slot 0 first, each with its `slot`.
+export function holdersOf(entry) {
+  const out = entry?.holder ? [{ ...entry.holder, slot: entry.holder.slot ?? 0 }] : [];
+  for (const [n, h] of Object.entries(entry?.holders ?? {}).sort(([a], [b]) => Number(a) - Number(b))) if (h) out.push({ ...h, slot: h.slot ?? Number(n) });
+  return out;
+}
+
+// holderOf(entry, key, variation) — the variation's holder on the machine (holdersOf's), or undefined.
+export const holderOf = (entry, key, variation) => holdersOf(entry).find(h => String(h.ticket ?? '').toUpperCase() === String(key ?? '').toUpperCase() && h.variation === variation);
+
 // controlPath(env, project, id) — the master's socket, as workstation.bash
 // workstation_control_path names it: $HARNESS_HOME/workstations/<project>-<id>.sock
 // (HARNESS_HOME ~/.harness by default).

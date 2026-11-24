@@ -12,11 +12,36 @@
 # golden-image/workstation-tools.sh in base64 (an empty line without one),
 # then (ASS-477) on-workstation/docker-credential-harness in base64;
 # then (ASS-504) on-workstation/restart-watcher.sh in base64;
+# then (ASS-533) substrate/on-machine/substrate.sh in base64 (an empty line
+# when the project has no Substrate cluster on this machine);
 # then (ASS-462) one line per golden-image file shipped beside it,
 # `<name> <base64>`.
-# Prints one JSON line, { ok, version, home, runtime, boot-id, did: [what it
+# Prints one JSON line, { ok, version, home, runtime, boot-id, sandbox, did: [what it
 # changed], failed: [{ what, why }] }, each failure said on stderr too, with
 # whatever an installer printed; exits 1 when anything failed.
+# ASS-555: `sandbox` — { ok, why? }, whether Claude Code's sandbox can run here
+# (bubblewrap and socat on PATH, and bwrap able to make a sandbox: Ubuntu's
+# AppArmor user-namespace restriction refuses it). Never a failure of setup:
+# a machine without it still takes every target but the worktree ones, whose
+# agents run in that sandbox (src/agents/worktree-sandbox.js).
+# ASS-563: setup installs what it needs, on the machine as it is (nothing of
+# how the machine is stood up changes), re-applied at every start:
+#   - bubblewrap and socat, when missing, as rsync is (below): their packages,
+#     and those of their dependencies the machine lacks (`apt-get -s install`
+#     says which), fetched once with `apt-get download` into
+#     ~/harness/tools/debs/sandbox and installed from there with `sudo -n dpkg -i`;
+#   - when bwrap still can't make a sandbox and the kernel's
+#     apparmor_restrict_unprivileged_userns is 1, a profile allowing bwrap user
+#     namespaces, loaded with `sudo -n apparmor_parser -r` (in the kernel only,
+#     so a restart drops it and the next setup loads it again): Ubuntu's own
+#     bwrap-userns-restrict when the apparmor package ships it, else (or when it
+#     loads but bwrap still fails) the minimal one written to
+#     ~/harness/tools/apparmor/bwrap. The sysctl itself is never changed.
+# The probe (`bwrap --ro-bind / / … --unshare-all … -- true`) runs after them
+# and is the last word: sandbox.ok only when bwrap really made a sandbox. What
+# could not be done (no passwordless sudo, a package not found, apparmor_parser
+# refusing, as inside a Cloud Workstation's container) is said in sandbox.why
+# and in failed, its entries marked `"sandbox": true`, and never makes ok false.
 #
 # Only /home survives a Cloud Workstation's restart (the rest is its config's
 # container image again), so everything is installed under $HOME/harness and
@@ -104,7 +129,7 @@ while [[ $# -gt 0 && "$1" != -- ]]; do tools+=("$1"); shift; done
 while [[ $# -ge 2 ]]; do needs+=("$1") needed_by+=("$2"); shift 2; done
 H="$HOME/harness" B="$HOME/harness/bin" L="$HOME/harness/lib" T="$HOME/harness/tools"
 export PATH="$B:$PATH"
-did=() failed=()
+did=() failed=() soft=()   # soft: ASS-563, the sandbox's failures — said in failed, never failing setup
 done_() { did+=("$1"); }
 bad() { failed+=("$1"$'\t'"$2"); echo "workstation setup: $1: $2" >&2; }
 has() { command -v "$1" >/dev/null 2>&1; }
@@ -116,12 +141,14 @@ json_str() {
 }
 json_list() { local out="" x; for x in "$@"; do out+="${out:+,}$(json_str "$x")"; done; printf '[%s]' "$out"; }
 
+sandbox_json='{"ok":false,"why":"not probed (setup ended before its probe)"}'
 finish() {
   local f out="" ok=true
   for f in "${failed[@]+"${failed[@]}"}"; do out+="${out:+,}{\"what\":$(json_str "${f%%$'\t'*}"),\"why\":$(json_str "${f#*$'\t'}")}"; done
+  for f in "${soft[@]+"${soft[@]}"}"; do out+="${out:+,}{\"what\":$(json_str "${f%%$'\t'*}"),\"why\":$(json_str "${f#*$'\t'}"),\"sandbox\":true}"; done
   [[ ${#failed[@]} -eq 0 ]] || ok=false
-  printf '{"ok":%s,"version":%s,"home":%s,"runtime":%s,"boot-id":%s,"did":%s,"failed":[%s]}\n' \
-    "$ok" "$(json_str "$version")" "$(json_str "$HOME")" "$(json_str "${R-}")" "$(json_str "${boot-}")" "$(json_list "${did[@]+"${did[@]}"}")" "$out"
+  printf '{"ok":%s,"version":%s,"home":%s,"runtime":%s,"boot-id":%s,"sandbox":%s,"did":%s,"failed":[%s]}\n' \
+    "$ok" "$(json_str "$version")" "$(json_str "$HOME")" "$(json_str "${R-}")" "$(json_str "${boot-}")" "$sandbox_json" "$(json_list "${did[@]+"${did[@]}"}")" "$out"
   [[ "$ok" == true ]]
   exit
 }
@@ -143,6 +170,7 @@ IFS= read -r agent_b64 || true
 IFS= read -r tools_b64 || true
 IFS= read -r helper_b64 || true
 IFS= read -r watcher_b64 || true
+IFS= read -r substrate_b64 || true
 files=()
 while IFS=' ' read -r name b64 || [[ -n "${name-}" ]]; do [[ -z "$name" ]] || files+=("$name" "$b64"); done
 mkdir -p "$H" "$B" "$L" "$T" || { bad "$H" "could not be made"; finish; }
@@ -193,6 +221,75 @@ for c in git curl base64 rsync; do
   [[ "$c" == rsync && -n "${rsync_said-}" ]] && continue   # its failure said above
   has "$c" || bad "$c" "not installed: the workstation config's container image must have it (setup installs nothing outside \$HOME but rsync, above)"
 done
+
+# ASS-563: Claude Code's sandbox (see the header): bubblewrap and socat installed, bwrap's AppArmor profile loaded
+# when the kernel restricts user namespaces, then probed. HARNESS_WS_USERNS_RESTRICT and HARNESS_WS_APPARMOR_EXTRA
+# stand in for the sysctl's file and the apparmor package's extra-profiles folder in tests; a real session never
+# carries them.
+sandbox_why=""
+sandbox_fail() { soft+=("$1"$'\t'"$2"); echo "workstation setup: $1: $2" >&2; sandbox_why+="${sandbox_why:+; }$1: $2"; }
+sandbox_probe() { bwrap --ro-bind / / --dev /dev --proc /proc --unshare-all --die-with-parent -- true 2>&1; }
+# sandbox_fetch <package>… — into $sdebs, the packages and the dependencies the machine lacks; prints what failed.
+sandbox_fetch() {
+  local sim pkgs
+  sim="$(apt-get -s install --no-install-recommends "$@" 2>&1)"
+  pkgs="$(sed -n 's/^Inst \([^ ]*\).*/\1/p' <<< "$sim")"
+  if [[ -z "$pkgs" ]]; then
+    sudo -n apt-get update -qq 2>&1 || return 1
+    sim="$(apt-get -s install --no-install-recommends "$@" 2>&1)"
+    pkgs="$(sed -n 's/^Inst \([^ ]*\).*/\1/p' <<< "$sim")"
+  fi
+  [[ -n "$pkgs" ]] || { printf '%s\n' "${sim:-apt-get -s install named no package}"; return 1; }
+  rm -rf "$sdebs" && mkdir -p "$sdebs" && (cd "$sdebs" && apt-get download $pkgs 2>&1)
+}
+sdebs="$T/debs/sandbox" missing=()
+has bwrap || missing+=(bubblewrap)
+has socat || missing+=(socat)
+if [[ ${#missing[@]} -gt 0 ]]; then
+  if ! sudo -n true 2>/dev/null; then sandbox_fail "${missing[*]}" "not installed, and there is no passwordless sudo to install them for Claude Code's sandbox"
+  else
+    kept=true
+    for p in "${missing[@]}"; do compgen -G "$sdebs/${p}_*.deb" >/dev/null || kept=false; done
+    if out="$( { [[ "$kept" == true ]] || sandbox_fetch "${missing[@]}"; } && sudo -n env DEBIAN_FRONTEND=noninteractive dpkg -i "$sdebs"/*.deb 2>&1)" && hash -r && has bwrap && has socat; then
+      done_ "installed ${missing[*]} for Claude Code's sandbox (sudo dpkg -i, the packages kept in $sdebs)"
+    else
+      printf '%s\n' "$out" >&2
+      sandbox_fail "${missing[*]}" "could not be installed for Claude Code's sandbox (apt-get download, sudo dpkg -i): $(first_line "${out:-not on PATH afterwards}")"
+    fi
+  fi
+fi
+if has bwrap && has socat; then
+  if ! probed="$(sandbox_probe)"; then
+    restrict="$(cat "${HARNESS_WS_USERNS_RESTRICT:-/proc/sys/kernel/apparmor_restrict_unprivileged_userns}" 2>/dev/null)"
+    if [[ "$restrict" == 1 ]]; then
+      ubuntu="${HARNESS_WS_APPARMOR_EXTRA:-/usr/share/apparmor/extra-profiles}/bwrap-userns-restrict"
+      minimal="$T/apparmor/bwrap"
+      mkdir -p "$T/apparmor"
+      printf 'abi <abi/4.0>,\ninclude <tunables/global>\n\nprofile bwrap %s flags=(unconfined) {\n  userns,\n}\n' "$(readlink -f "$(command -v bwrap)")" | put "$minimal" 644
+      profiles=()
+      [[ ! -r "$ubuntu" ]] || profiles+=("$ubuntu")
+      profiles+=("$minimal")
+      if ! sudo -n true 2>/dev/null; then sandbox_fail "bwrap's AppArmor profile" "not loaded: apparmor_restrict_unprivileged_userns is 1 and there is no passwordless sudo to load a profile allowing bwrap user namespaces"
+      else
+        tried=""
+        for f in "${profiles[@]}"; do
+          if ! out="$(sudo -n apparmor_parser -r "$f" 2>&1)"; then tried+="${tried:+; }$f: apparmor_parser refused it: $(first_line "${out:-it exited non-zero}")"; continue; fi
+          if probed="$(sandbox_probe)"; then done_ "loaded bwrap's AppArmor profile ($f) allowing it user namespaces (apparmor_restrict_unprivileged_userns is 1)"; tried=""; break; fi
+          tried+="${tried:+; }$f loaded, but bwrap still could not make a sandbox: $(first_line "${probed:-it exited non-zero}")"
+        done
+        [[ -z "$tried" ]] || sandbox_fail "bwrap's AppArmor profile" "$tried"
+      fi
+    fi
+  fi
+fi
+if ! has bwrap || ! has socat; then
+  m=(); has bwrap || m+=(bubblewrap); has socat || m+=(socat)
+  sandbox_json="{\"ok\":false,\"why\":$(json_str "${m[*]} not installed (Claude Code's sandbox needs bubblewrap and socat)${sandbox_why:+: $sandbox_why}")}"
+elif probed="$(sandbox_probe)"; then
+  sandbox_json='{"ok":true}'
+else
+  sandbox_json="{\"ok\":false,\"why\":$(json_str "bwrap could not make a sandbox: $(first_line "${probed:-it exited non-zero}")${sandbox_why:+ ($sandbox_why)}")}"
+fi
 
 # jq: its static release binary, when missing.
 if ! has jq; then
@@ -326,6 +423,24 @@ elif ! out="$(docker_info 30)"; then
       if [[ -n "$ends" ]]; then why+="; $dlog ends: $ends"; else why+="; $dlog could not be read"; fi
       bad docker "$why"
     fi
+  fi
+fi
+
+# ASS-533: the Substrate cluster's host setup, when the project has one on this machine (HARNESS_WS_SUBSTRATE, its
+# host kind: workstation or cloud-vm). Kept as ~/harness/lib/substrate.sh and run here at every setup — so after every
+# start — for what it keeps outside /home, which a workstation's restart resets: Docker's data-root under /home (set in
+# /etc/docker/daemon.json only when the workstation's own config does not put it there already), the inotify limits
+# kind needs (sudo sysctl -w, only when lower), and the cluster's node started again (its state is in Docker's data-root
+# under /home, so the cluster and its hibernated sandboxes are still there) with its proxy ARP. What it did and what
+# failed join setup's own. Skipped while Docker is not usable (failed above already).
+if [[ -n "$substrate_b64" ]]; then
+  printf '%s' "$substrate_b64" | base64 -d | put "$L/substrate.sh" 755 && done_ "installed the Substrate host setup ($L/substrate.sh)"
+  if has docker && docker_info 10 >/dev/null; then
+    sub="$(HARNESS_SUBSTRATE_HOST="${HARNESS_WS_SUBSTRATE:-workstation}" bash "$L/substrate.sh" host-setup 2>/dev/null </dev/null | tail -n 1)"
+    if jq -e 'type == "object" and has("ok")' <<< "$sub" >/dev/null 2>&1; then
+      while IFS= read -r l; do [[ -z "$l" ]] || done_ "Substrate: $l"; done < <(jq -r '.did[]' <<< "$sub")
+      while IFS=$'\x1f' read -r w y; do [[ -z "$w" ]] || bad "Substrate $w" "$y"; done < <(jq -r '.failed[] | "\(.what)\u001f\(.why)"' <<< "$sub")
+    else bad "Substrate host setup" "$L/substrate.sh host-setup printed no result"; fi
   fi
 fi
 

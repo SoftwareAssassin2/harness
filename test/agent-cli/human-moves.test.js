@@ -13,7 +13,7 @@ const fails = (promise, message) => assert.rejects(promise, e => message.test(e.
 // The fixture's execution engine given paired statuses: generate-solution In Progress, local-testing In Testing, done without one.
 function paired() {
   const f = fixture();
-  const file = join(f.dir, 'engines', 'example-development', 'state-engine.json');
+  const file = join(f.dir, 'engines', 'example-development', 'workflow.yaml');
   const engine = JSON.parse(readFileSync(file, 'utf8'));
   engine.steps = engine.steps.map(s => ({ ...s, ...(s.id === 'generate-solution' ? { 'paired-ticket-system-status': 'In Progress' } : s.id === 'local-testing' ? { 'paired-ticket-system-status': 'In Testing' } : {}) }));
   writeFileSync(file, JSON.stringify(engine));

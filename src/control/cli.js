@@ -90,7 +90,9 @@ export function runScript(ctx, given, vm, extra) {
 // group is killed and it counts as not succeeded, an 'error' line naming the
 // command and `who` (the ticket and variation); one that took over
 // SLOW_CHECK_MS (ctx.slowCheckMs, tests) logs its duration as it exits. A command that cannot start is
-// a no.
+// a no. ASS-550: ctx.checkTimeoutArmed (tests only; inert unless set), a function returning a promise, arms the
+// limit only once that settles (the test's check has started), so a short test limit can't strike before the
+// check's first line on a loaded Mac.
 export const SCRIPT_CHECK_TIMEOUT_MS = 10 * 60_000;
 export const SLOW_CHECK_MS = 30_000;
 export function scriptSucceeds(ctx, given, vm, who) {
@@ -101,18 +103,24 @@ export function scriptSucceeds(ctx, given, vm, who) {
     const started = Date.now(), limit = ctx.checkTimeoutMs ?? SCRIPT_CHECK_TIMEOUT_MS;
     const child = spawn(argv[0], argv.slice(1), { cwd: ctx.root, env, detached: true, stdio: 'ignore' });
     if (child.pid != null) ctx.scripts?.add(child);
-    let timedOut = false;
-    const timer = setTimeout(() => {
-      timedOut = true;
-      try { process.kill(-child.pid, 'SIGKILL'); } catch { /* gone */ }
-      ctx.log('error', `script-succeeds check ${command}${who ? ` (${who})` : ''} still running after ${limit / 1000}s: killed, counted as not succeeded`);
-    }, limit);
+    let timedOut = false, ended = false, timer;
+    const arm = () => {
+      if (ended) return;
+      timer = setTimeout(() => {
+        timedOut = true;
+        try { process.kill(-child.pid, 'SIGKILL'); } catch { /* gone */ }
+        ctx.log('error', `script-succeeds check ${command}${who ? ` (${who})` : ''} still running after ${limit / 1000}s: killed, counted as not succeeded`);
+      }, limit);
+    };
+    if (ctx.checkTimeoutArmed) ctx.checkTimeoutArmed().then(arm, arm); else arm();
     child.once('error', error => {   // it cannot start: no 'close' follows
+      ended = true;
       clearTimeout(timer);
       ctx.log('script', `cannot start: ${error.message}`);
       resolve(false);
     });
     child.once('close', code => {
+      ended = true;
       clearTimeout(timer);
       ctx.scripts?.delete(child);
       const took = Date.now() - started;

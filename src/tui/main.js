@@ -8,14 +8,14 @@ import { mkdirSync, readFileSync, rmSync, appendFileSync, existsSync } from 'nod
 import { homedir } from 'node:os';
 import { execFile, execFileSync } from 'node:child_process';
 import { join } from 'node:path';
-import { initialState, handleKey, render, decided, openRequested, controlStarted, controlExited, controlDraining, controlWaiting, controlRestarted, controlBack, BACK_MS, drawColumns } from './app.js';
-import { loadProjects, loadWorkflows, loadPauses, loadSelfHealing, loadAssignments, loadTransientEngines, loadChats, loadHarness, loadDownloadInterval, analyticsFiles, loadModelUsage, loadDiskSpace, loadAnalytics, watchFiles, dataFiles, keepSame, projectsChanged, activeSprintFile } from './load.js';
+import { initialState, handleKey, render, decided, loopCountsRead, openRequested, controlStarted, controlExited, controlDraining, controlWaiting, controlRestarted, controlBack, BACK_MS, drawColumns } from './app.js';
+import { loadProjects, loadWorkflows, loadPauses, loadSelfHealing, loadAssignments, loadTransientEngines, loadChats, loadHarness, loadDownloadInterval, analyticsFiles, loadModelUsage, loadDiskSpace, loadAnalytics, watchFiles, dataFiles, keepSame, projectsChanged, activeSprintFile, loadLoopCounts } from './load.js';
 import { operatorNeededNotifier, headerWarningNotifier } from '../notify/notifier.js';
 import { startControl } from '../control/process.js';
 import { ender, stillNamed, vmStopper, goldenBuilds } from './shutdown.js';
 import { restartRequestedBy } from '../control/tick.js';
 import { limaEnv } from '../control/vm.js';
-import { sessionDir, readSession, readSessionTail, sessionModified } from '../agents/session.js';
+import { sessionDir, readSession, readSessionTail, sessionModified, readSandboxed } from '../agents/session.js';
 import { readUsage } from '../agents/session-usage.js';
 import { chatRunner, chatSpendArgs } from '../agents/chats.js';
 import { configDir } from '../control/dispatch.js';
@@ -86,7 +86,8 @@ function draw() {
 // Tails are keyed as the tiles are: an assignment's by its agent-name, a
 // chat's by its id. `was` is when each was last written before this read.
 // Each one's usage.json (ASS-190: its context and cost) too, read every time:
-// it is a few hundred bytes.
+// it is a few hundred bytes. ASS-564: and each assignment's sandbox.json (whether its agent runs in Claude Code's
+// sandbox, and why not: session.js readSandboxed), in `sandboxed` by agent-name, for the ticket screen and the footer.
 const withSession = s => {
   const dir = a => a['start-time'] && sessionDir(DATA, a['agent-name'], a['start-time']);
   const sessionWritten = Object.fromEntries(s.assignments
@@ -104,8 +105,9 @@ const withSession = s => {
   const sessionTails = Object.fromEntries(tailed.map(([key, folder, at]) =>
     [key, at != null && at === was(key) && s.sessionTails[key] !== undefined ? s.sessionTails[key] : readSessionTail(folder)]));
   const usage = Object.fromEntries(tailed.map(([key, folder]) => [key, readUsage(folder)]).filter(([, u]) => u));
+  const sandboxed = Object.fromEntries(s.assignments.filter(a => dir(a)).map(a => [a['agent-name'], readSandboxed(dir(a))]).filter(([, v]) => v));
   return settlePending({
-    ...s, sessionWritten, chatsWritten, chatsRunning, sessionTails, usage,
+    ...s, sessionWritten, chatsWritten, chatsRunning, sessionTails, usage, sandboxed,
     ...(s.agent ? { agentLog: open ? readSession(open) : null } : {}),
     ...(s.chat ? { chatLog: s.chat.id ? readSession(chats.dir(s.chat.id)) : null } : {}),
     ...(s.ticket && featureOn(s, 'ticket-chat-tab') ? { ticketChatLog: readSession(chats.dir(chatId(s.projects[s.project]?.id, s.ticket.key))) } : {}),
@@ -257,7 +259,7 @@ function restartControl(id, why) {
   setTimeout(() => { state = controlBack(state, id, control.pid); draw(); notifyLater(); }, BACK_MS).unref();
   draw();
 }
-// Each running control's process id and when it started go on the state, for the footer's control box (ASS-310);
+// Each running control's process id and when it started go on the state, for the footer's first line (ASS-310; its control box until ASS-566);
 // they all start in this tick, so one start time stands for them all, and controlExited drops each as it ends.
 const startTime = new Date();
 controls.forEach((c, i) => { state = controlStarted(state, controlIds[i], { pid: c.pid, startTime }); });
@@ -462,6 +464,17 @@ stdin.on('keypress', (_, key) => {
       reload();
     });
   }
+  // ASS-531: P on the sprint screen — the project's focus on planning flipped by project:set-planning-focus (the
+  // screen shows the flip at once; the file is the truth once the command finishes).
+  if (next.planningFocusRun) {
+    const args = next.planningFocusRun;
+    execFile(join(ROOT, 'agent.sh'), args, (error, _out, stderr) => {
+      if (error) log(`${args.join(' ')}: ${stderr.trim() || error.message}`);
+      reload();
+      draw();
+    });
+    next = { ...next, planningFocusRun: null };
+  }
   // An answer is saved by the agent-cli, which locks the file; the screen
   // shows the file as it is once the command finishes, or what went wrong —
   // read at once, not waiting on the watcher.
@@ -586,7 +599,7 @@ stdout.on('resize', () => {
 });
 // Each project's Hindsight, checked by the dashboard itself (ASS-293: see
 // tui/memory.js healthPoller), polled with the clock; an answer that changes
-// the control box's hindsight line is drawn at once.
+// the footer's hindsight is drawn at once.
 const health = healthPoller({
   check: port => memoryHealthy(port),
   onResult: (id, result) => {
@@ -596,13 +609,17 @@ const health = healthPoller({
     draw();
   },
 });
+// ASS-526: every project's control's finished loops (loop-count.json), for the bottom-right counter; read each second.
+const readLoopCounts = () => { state = loopCountsRead(state, loadLoopCounts(join(DATA, 'projects'), state.projects.map(p => p.id))); };
 setInterval(() => { // keeps the clock and an open session log current
   health.poll(state.projects, Date.now());
+  readLoopCounts();
   state = withSession(state);
   draw();
   if (warningNotifier.due()) checkWarnings();   // ASS-412: a warning that waits before it notifies, now due
 }, 1000);
 health.poll(state.projects, Date.now());
+readLoopCounts();
 state = withSession(state);
 draw();
 notifyLater();   // the start: every ticket already in the set is taken as seen (ASS-383)

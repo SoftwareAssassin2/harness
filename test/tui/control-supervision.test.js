@@ -68,7 +68,7 @@ test('ASS-460 AC4: R on the control screen asks main.js to start the selected pr
   assert.equal(pressed.controlCrashes.p, undefined);
   const elsewhere = handleKey({ ...down, project: 1 }, key('R', { sequence: 'R' }));   // q's control runs
   assert.equal(elsewhere.controlRestart, null);
-  assert.match(strip(render(down, screen).join('\n')), /│ restart: in 5s \(crash 1\)/);   // its DOWN box says when
+  assert.match(strip(render(down, { ...screen, now: T0 }).join('\n')), /control: DOWN \(exit 1, restart in 5s, crash 1\)/);   // the footer's first line says when (ASS-566; its DOWN box before)
 });
 
 test('ASS-460 AC6: a control down shows in red in the header, whichever project is selected, with its project and last error, until it has run BACK_MS again', () => {
@@ -116,7 +116,7 @@ test('ASS-460 AC6: one notification per outage — not again as it crashes on, s
   assert.equal(runs.length, 2);
 });
 
-test('ASS-457 AC2: control\'s "data waiting" line shows it waiting for its data, in the header and its box, until its "data recovered" line', () => {
+test('ASS-457 AC2: control\'s "data waiting" line shows it waiting for its data, in the header and the footer, until its "data recovered" line', () => {
   const s = running();
   const at = new Date(T0);
   const waiting = controlWaiting(s, 'p', '2026-11-15T09:11:07.000Z data waiting: cannot read /d/assignments.json (ENOENT: no such file or directory); control skips its ticks until it reads, and exits if it cannot for 300s', at);
@@ -124,7 +124,7 @@ test('ASS-457 AC2: control\'s "data waiting" line shows it waiting for its data,
   assert.equal(controlWaiting(waiting, 'p', '2026-11-15T09:11:09.000Z dispatch x'), waiting);   // any other line: nothing
   const text = strip(render(waiting, screen).join('\n'));
   assert.match(text, /CONTROL PROJECT P WAITING FOR ITS DATA since 09:11:07 UTC — cannot read \/d\/assignments\.json \(ENOENT/);
-  assert.match(text, /│ status: Waiting for its data/);
+  assert.match(text, /control: waiting for its data \(/);   // the footer's first line (ASS-566; its box's status before)
   const warning = headerWarnings(waiting, T0).find(w => w.id === 'control-data-wait');
   assert.deepEqual([warning.scope, warning.text, warning.after], ['project', 'Control waiting for its data', 60e3]);
   const recovered = controlWaiting(waiting, 'p', '2026-11-15T09:11:20.000Z data recovered: it reads again after 13s (/d/assignments.json); control carries on with its agents, VMs and workstations');

@@ -12,7 +12,7 @@ import { tick } from '../../src/control/tick.js';
 // The fixture with its plan step's action given `extra` (e.g. a model and an agent-count).
 function withPlan(extra) {
   const f = controlFixture();
-  const file = join(f.dir, 'engines', 'example-development', 'state-engine.json');
+  const file = join(f.dir, 'engines', 'example-development', 'workflow.yaml');
   const engine = JSON.parse(readFileSync(file, 'utf8'));
   for (const s of engine.steps) if (s.id === 'plan') s.action = { ...s.action, ...extra };
   writeFileSync(file, JSON.stringify(engine, null, 4));

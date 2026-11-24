@@ -17,10 +17,11 @@ import { stepOf, nextState } from '../../src/control/engine.js';
 import { firstStepId } from '../../src/control/moves.js';
 import { validateStateEngine } from '../../src/workflow/validate.js';
 import { working, engineDir, engineNames, EXAMPLE_ENGINES } from '../support/engine-walk.js';
+import { readEngine } from '../../src/workflow/engine-file.js';
 
 const ROOT = join(import.meta.dirname, '..', '..');
-const engines = Object.fromEntries(engineNames().filter(d => existsSync(join(engineDir(d), 'state-engine.json')))
-  .map(d => [d, JSON.parse(readFileSync(join(engineDir(d), 'state-engine.json'), 'utf8'))]));
+const engines = Object.fromEntries(engineNames().filter(d => existsSync(join(engineDir(d), 'workflow.yaml')))
+  .map(d => [d, readEngine(join(engineDir(d), 'workflow.yaml'))]));
 const WORKFLOW = 'grouped-requirements-changed';
 const TOPS = ['harness-development-v2', 'harness-development-grouped', 'example-development-grouped'];
 const flagged = top => engines[top].steps.filter(s => s['recheck-on-requirements-change'] === true).map(s => s.id);

@@ -6,7 +6,8 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, realpathSync, cpSync, existsSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, realpathSync, cpSync, existsSync, symlinkSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { inPty } from '../support/pty.js';
@@ -57,9 +58,10 @@ test('ASS-338 AC2: with a live claim held by another dashboard, the dashboard sh
   const r = await inPty({
     argv: [process.execPath, MAIN], env: h.env, cols: 100, rows: 30,
     steps: [
-      { wait: 1500 }, { mark: 'shown' }, { children: 'shown' },
+      // ASS-545: waits for the message itself (pty-run.py's until), not a fixed 1.5 s.
+      { until: { output: MESSAGE } }, { wait: 300 }, { mark: 'shown' }, { children: 'shown' },
       ...['q', 'Q', '\r', '\x1b', '/', 'c', ' ', '!', '\x04', '\t'].map(send => ({ send })), { wait: 500 }, { mark: 'keys' },
-      { resize: [120, 40] }, { wait: 500 }, { mark: 'resized' },
+      { resize: [120, 40] }, { until: { output: `\x1b[20;22H${RED}${MESSAGE}` } }, { mark: 'resized' },
       { send: '\x03' },
     ],
   });
@@ -84,6 +86,9 @@ function checkout() {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'tui-root-')));
   const repo = join(import.meta.dirname, '..', '..');
   for (const dir of ['src', 'engines', 'prompts']) cpSync(join(repo, dir), join(root, dir), { recursive: true });
+  // ASS-524: the npm dependencies (yaml) the copy's src/ imports, as the checkout resolves them.
+  const modules = fileURLToPath(import.meta.resolve('yaml')).replace(/(\/node_modules)\/.*$/, '$1');
+  symlinkSync(modules, join(root, 'node_modules'));
   mkdirSync(join(root, 'data', 'projects'), { recursive: true });
   cpSync(join(repo, 'data', 'harness.json'), join(root, 'data', 'harness.json'));
   writeFileSync(join(root, 'data', 'assignments.json'), JSON.stringify({ assignments: [] }));
@@ -101,7 +106,7 @@ test('ASS-338 AC1/AC4: a single dashboard claims run-tui.pid with its pid, start
   const pidfile = join(h.harness, 'run-tui.pid');
   const r = await inPty({
     argv: [process.execPath, checkout()], env: h.env, timeout: 15000,
-    steps: [{ wait: 2500 }, { file: 'running', path: pidfile }, { children: 'running' }, { send: 'Q' }],
+    steps: [{ until: { file: pidfile, mine: true } }, { until: { children: 1 } }, { file: 'running', path: pidfile }, { children: 'running' }, { send: 'Q' }],   // ASS-545: the claim and the downloader waited for, not 2.5 s
   });
   assert.equal(r.files.running, `${r.pid}\n`);
   assert.equal(r.children.running.length, 1, 'the downloader');
@@ -117,7 +122,7 @@ test('ASS-338 AC1: a claim whose process is gone, or is not a dashboard (its pid
     writeFileSync(pidfile, `${stale}\n`);
     const r = await inPty({
       argv: [process.execPath, checkout()], env: h.env, timeout: 15000,
-      steps: [{ wait: 2500 }, { file: 'running', path: pidfile }, { children: 'running' }, { send: 'Q' }],
+      steps: [{ until: { file: pidfile, mine: true } }, { until: { children: 1 } }, { file: 'running', path: pidfile }, { children: 'running' }, { send: 'Q' }],   // ASS-545: the claim and the downloader waited for, not 2.5 s
     });
     assert.equal(r.files.running, `${r.pid}\n`, `stale ${stale}`);
     assert.equal(r.children.running.length, 1);

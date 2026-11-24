@@ -12,24 +12,25 @@ import { tick } from '../../src/control/tick.js';
 import { hs } from '../agent-cli/harness-fixture.js';
 import { engineDir } from '../support/engine-walk.js';
 import { until } from '../support/until.js';
+import { readEngine } from '../../src/workflow/engine-file.js';
 
 const ROOT = join(import.meta.dirname, '..', '..');
 const edit = (file, change) => { const json = JSON.parse(readFileSync(file, 'utf8')); change(json); writeFileSync(file, JSON.stringify(json)); };
 const sprint = f => join(f.dir, 'projects', 'p', 'sprints', 'sprint-10', 'sprint.json');
-const grouped = JSON.parse(readFileSync(join(engineDir('grouped-blocked'), 'state-engine.json'), 'utf8'));
+const grouped = readEngine(join(engineDir('grouped-blocked'), 'workflow.yaml'));
 const KEPT = ['await-fix', 'resume-step', 'done', 'retry', 'blocked-for-human'];
 
 // The control fixture with ABC-3 A at blocked, waiting on ABC-9 (Blocked for Human, not landed): blocked
 // runs grouped-blocked's own await-fix step and its ends, so the run starts at await-fix.
 function fixture() {
   const f = controlFixture();
-  edit(join(f.dir, 'engines', 'example-development', 'state-engine.json'), e => {
+  edit(join(f.dir, 'engines', 'example-development', 'workflow.yaml'), e => {
     e['check-health-interval-seconds'] = 1e9;
     e.steps.unshift({ id: 'blocked-for-human', sequence: -1, 'is-blocked-state': true, action: { type: 'human' } });
     Object.assign(e.steps.find(s => s.id === 'blocked'), { action: { type: 'state-engine', engine: 'await' } });
   });
   mkdirSync(join(f.dir, 'engines', 'await'), { recursive: true });
-  writeFileSync(join(f.dir, 'engines', 'await', 'state-engine.json'), JSON.stringify({ steps: grouped.steps.filter(s => KEPT.includes(s.id)) }));
+  writeFileSync(join(f.dir, 'engines', 'await', 'workflow.yaml'), JSON.stringify({ steps: grouped.steps.filter(s => KEPT.includes(s.id)) }));
   edit(sprint(f), s => {
     s.features[0]['ticket-system-status'] = 'Blocked';
     Object.assign(s.features[0].variations[0], { 'harness-status': hs('blocked'), 'waits-on': { project: 'p', ticket: 'ABC-9' } });
@@ -88,7 +89,7 @@ test('ASS-253 AC2: a genuine error between not-landed polls is not "in a row" â€
 // the moves after it count afresh too.
 test('ASS-309: a landed fix whose merge is only in a nested sub-state-change clears Blocked back to Build, the change marked "fix-landed", though Build is at its max-visits', async () => {
   const f = fixture();
-  edit(join(f.dir, 'engines', 'example-development', 'state-engine.json'), e => Object.assign(e.steps.find(s => s.id === 'blocked'), {
+  edit(join(f.dir, 'engines', 'example-development', 'workflow.yaml'), e => Object.assign(e.steps.find(s => s.id === 'blocked'), {
     'follow-return-to-state': true, 'exit-events': [{ condition: { 'is-done': true }, 'follow-return-to-state': true }],
   }));
   const was = (from, to) => ({ 'state-engine': 'example-development', 'from-state': from, 'to-state': to, timestamp: '2026-10-29T20:00:00Z', 'agent-dispatch-log': [], 'work-is-done': true });
@@ -111,7 +112,7 @@ test('ASS-309: a landed fix whose merge is only in a nested sub-state-change cle
 // moveTicket gives ticket:change-state an explicit MOVE_CAUSE ({}), so its manual-move default (fix-landed) is not applied.
 test('ASS-514 AC3: control clearing Blocked back to Build with no landed fix records no cause on the change', async () => {
   const f = fixture();
-  edit(join(f.dir, 'engines', 'example-development', 'state-engine.json'), e => Object.assign(e.steps.find(s => s.id === 'blocked'), {
+  edit(join(f.dir, 'engines', 'example-development', 'workflow.yaml'), e => Object.assign(e.steps.find(s => s.id === 'blocked'), {
     'follow-return-to-state': true, 'exit-events': [{ condition: { 'is-done': true }, 'follow-return-to-state': true }],
   }));
   const was = (from, to) => ({ 'state-engine': 'example-development', 'from-state': from, 'to-state': to, timestamp: '2026-10-29T20:00:00Z', 'agent-dispatch-log': [], 'work-is-done': true });
@@ -132,7 +133,7 @@ test('ASS-514 AC3: control clearing Blocked back to Build with no landed fix rec
 const turnsEnd = ctx => until(() => [...ctx.agents.values()].every(a => a.result));
 function blockedAtLocalTesting(resume) {
   const f = fixture();
-  edit(join(f.dir, 'engines', 'example-development', 'state-engine.json'), e => Object.assign(e.steps.find(s => s.id === 'blocked'), {
+  edit(join(f.dir, 'engines', 'example-development', 'workflow.yaml'), e => Object.assign(e.steps.find(s => s.id === 'blocked'), {
     'follow-return-to-state': true, 'exit-events': [{ condition: { 'is-done': true }, 'follow-return-to-state': true }],
   }));
   const was = (from, to) => ({ 'state-engine': 'example-development', 'from-state': from, 'to-state': to, timestamp: '2026-10-29T20:00:00Z', 'agent-dispatch-log': [], 'work-is-done': true });

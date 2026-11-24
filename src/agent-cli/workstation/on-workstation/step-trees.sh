@@ -33,8 +33,8 @@
 # start before any checkout.
 #
 # start (the step's start, before any agent or script runs): each
-# repository cloned when it is missing (once: the shared repositories are
-# kept across steps and restarts, under /home), fetched, and left clean
+# repository cloned when it is missing (once: the shared repositories — and,
+# ASS-529, each slot's — are kept across steps and restarts, under /home), fetched, and left clean
 # (changes a step that ended uncleanly left are discarded, each file named);
 # its git hooks set to refuse a commit on its default branch (git-hooks.sh,
 # AC10), naming the branch to use — the planned one, else
@@ -150,8 +150,12 @@ for spec in "$@"; do
   d="$R/repos/$name"
   if [ ! -d "$d/.git" ]; then
     [ "$mode" = start ] || continue
-    if ! err="$(git clone -q "$url" "$d" 2>&1)"; then unclean "could not clone $url: $(oneline <<< "$err")"; continue; fi
-    say "cloned"
+    # ASS-529: a slot's folder (<home>/harness/slots/<n>) clones with the shared root's checkout as a reference when
+    # it has one, its objects copied (--dissociate), so a second ticket on the machine fetches only what it lacks.
+    ref=(); shared="$HOME/harness/repos/$name"
+    [ "$d" = "$shared" ] || [ ! -d "$shared/.git" ] || ref=(--reference-if-able "$shared" --dissociate)
+    if ! err="$(git clone -q ${ref[@]+"${ref[@]}"} "$url" "$d" 2>&1)"; then unclean "could not clone $url: $(oneline <<< "$err")"; continue; fi
+    if [ ${#ref[@]} -gt 0 ]; then say "cloned, with the shared root checkout as a reference"; else say "cloned"; fi
   fi
   cd "$d" || { unclean "no checkout"; continue; }
   fetched=yes

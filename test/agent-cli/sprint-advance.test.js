@@ -30,7 +30,7 @@ function fixture({ jira = false } = {}) {
   const p = join(dir, 'projects', 'p');
   mkdirSync(join(p, 'sprints', 'sprint-1'), { recursive: true });
   mkdirSync(join(dir, 'engines', 'dev'), { recursive: true });
-  writeFileSync(join(dir, 'engines', 'dev', 'state-engine.json'), JSON.stringify({ steps: [{ id: 'build' }, { id: 'done', 'is-done': true }] }));
+  writeFileSync(join(dir, 'engines', 'dev', 'workflow.yaml'), JSON.stringify({ steps: [{ id: 'build' }, { id: 'done', 'is-done': true }] }));
   writeFileSync(join(p, 'project.json'), JSON.stringify({ 'execution-state-engine': 'dev', 'work-sources': [
     { name: 'Off', type: 'off-board', folder: 'p' }, ...jira ? [{ name: 'J', type: 'jira', url: 'https://x.atlassian.net/jira/software/c/projects/EX/boards/5' }] : []] }));
   writeFileSync(join(p, 'sprints.json'), JSON.stringify({ list: [{ number: 1, 'is-active': true }] }));

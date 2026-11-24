@@ -43,7 +43,7 @@ test('ASS-182 AC2: a confined host agent writes only temp: the harness\'s data (
     join(root, 'archive', 'x.json'),
     join(root, 'src', 'off-board', 'harness', 'ASS-1.md'),              // the harness's own tickets: off-board.sh's
     '/Volumes/Data/src/example-project/libs/users/ada/docs/todo.md',   // a project checkout's file (ASS-93's stray note)
-    join(root, 'src', 'control', 'dispatch.js'), join(root, 'agent.sh'), join(root, 'engines', 'x', 'state-engine.json'),
+    join(root, 'src', 'control', 'dispatch.js'), join(root, 'agent.sh'), join(root, 'engines', 'x', 'workflow.yaml'),
     join(root, 'assignments.json'), join(root, 'projects', 'p', 'x'),   // the root's old data paths
     `${process.env.HOME}/.zshrc`, `${process.env.HOME}/.harness/vm-credentials.json`,
   ]) assert.deepEqual(writes(refused), [false, false], refused);

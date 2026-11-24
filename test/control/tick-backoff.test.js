@@ -50,7 +50,7 @@ test('tick: a script step that fails back into itself is held between tries, not
   const { readFileSync, writeFileSync } = await import('node:fs');
   const { join } = await import('node:path');
   const edit = (file, change) => { const json = JSON.parse(readFileSync(file, 'utf8')); change(json); writeFileSync(file, JSON.stringify(json)); };
-  edit(join(f.dir, 'engines', 'example-development', 'state-engine.json'), e => {     // build's script always fails: a bad usage
+  edit(join(f.dir, 'engines', 'example-development', 'workflow.yaml'), e => {     // build's script always fails: a bad usage
     e.steps.find(s => s.id === 'build').action.command = './agent.sh ticket:set-paused {project} {ticket} {variation} maybe';
   });
   edit(join(f.dir, 'projects', 'p', 'sprints', 'sprint-10', 'sprint.json'), s => {
@@ -79,7 +79,7 @@ test('tick: a failing script step whose exit sends it elsewhere (to Blocked) log
   const { readFileSync, writeFileSync } = await import('node:fs');
   const { join } = await import('node:path');
   const edit = (file, change) => { const json = JSON.parse(readFileSync(file, 'utf8')); change(json); writeFileSync(file, JSON.stringify(json)); };
-  edit(join(f.dir, 'engines', 'example-development', 'state-engine.json'), e => {
+  edit(join(f.dir, 'engines', 'example-development', 'workflow.yaml'), e => {
     const build = e.steps.find(s => s.id === 'build');
     build.action.command = './agent.sh ticket:set-paused {project} {ticket} {variation} maybe';
     build['exit-events'][1]['move-to-state'] = 'blocked';
@@ -105,7 +105,7 @@ test('ASS-240 AC1: a script step that fails is recorded on its variation as its 
   const { readFileSync, writeFileSync } = await import('node:fs');
   const { join } = await import('node:path');
   const edit = (file, change) => { const json = JSON.parse(readFileSync(file, 'utf8')); change(json); writeFileSync(file, JSON.stringify(json)); };
-  edit(join(f.dir, 'engines', 'example-development', 'state-engine.json'), e => {
+  edit(join(f.dir, 'engines', 'example-development', 'workflow.yaml'), e => {
     e.steps.find(s => s.id === 'build').action.command = './agent.sh ticket:set-paused {project} {ticket} {variation} maybe';
   });
   edit(join(f.dir, 'projects', 'p', 'sprints', 'sprint-10', 'sprint.json'), s => {

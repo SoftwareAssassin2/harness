@@ -10,10 +10,11 @@ import { stepOf, nextState } from '../../src/control/engine.js';
 import { firstStepId } from '../../src/control/moves.js';
 import { validateStateEngine } from '../../src/workflow/validate.js';
 import { EXAMPLE_ENGINES, engineDir } from '../support/engine-walk.js';
+import { readEngine } from '../../src/workflow/engine-file.js';
 
 const ROOT = join(import.meta.dirname, '..', '..');
 const read = (...path) => readFileSync(join(ROOT, ...path), 'utf8');
-const engine = name => JSON.parse(readFileSync(join(engineDir(name), 'state-engine.json'), 'utf8'));
+const engine = name => readEngine(join(engineDir(name), 'workflow.yaml'));
 const GROUPED = ['grouped-plan', 'v2-plan'], FLAT = ['harness-development', 'example-development'];
 const REVISE_FROM = ['root-cause-analysis', 'write-execution-plan', 'write-test-plan'];
 const rejected = reviseFrom => ({ turnComplete: true, structuredOutput: { 'is-approved': false, ...(reviseFrom !== undefined && { 'revise-from': reviseFrom }) } });
@@ -41,7 +42,7 @@ test('AC2: grouped-plan and v2-plan route a rejection to its revise-from; a miss
     const e = engine(name), step = stepOf(e, 'review-plan');
     for (const id of REVISE_FROM) assert.equal(routed(e, rejected(id)), id, `${name} ${id}`);
     for (const bad of [undefined, null, 'test-plan']) assert.equal(routed(e, rejected(bad)), 'write-execution-plan', `${name} ${bad}`);
-    assert.equal(nextState(step, e, { turnComplete: true, structuredOutput: { 'is-approved': true } }).to, 'done');
+    assert.equal(nextState(step, e, { turnComplete: true, structuredOutput: { 'is-approved': true } }).to, 'choose-work-mode');   // ASS-556: then Record Where to Work, then done
     assert.deepEqual(validateStateEngine(e, ROOT, name, EXAMPLE_ENGINES), [], name);
   }
 });
@@ -79,7 +80,7 @@ function walk(name, reviews) {
 test('AC4: a test-plan-only rejection re-runs Write Test Plan without visiting Write Execution Plan; one touching the root cause starts there', () => {
   for (const name of GROUPED) {
     const trail = walk(name, [rejected('write-test-plan').structuredOutput, { 'is-approved': true }]);
-    assert.deepEqual(trail.slice(trail.indexOf('review-plan')), ['review-plan', 'write-test-plan', 'enrich-automated-test-data', 'review-plan'], name);
+    assert.deepEqual(trail.slice(trail.indexOf('review-plan')), ['review-plan', 'write-test-plan', 'enrich-automated-test-data', 'review-plan', 'choose-work-mode'], name);   // ASS-556: approved, on to Choose Where to Work
     assert.equal(trail.filter(s => s === 'write-execution-plan').length, 1, name);
     const rca = walk(name, [rejected('root-cause-analysis').structuredOutput, { 'is-approved': true }]);
     assert.deepEqual(rca.slice(rca.indexOf('review-plan') + 1, rca.indexOf('review-plan') + 3), ['root-cause-analysis', 'review-root-cause-analysis'], name);

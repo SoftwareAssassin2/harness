@@ -77,7 +77,7 @@ test('ASS-270 AC2: a ticket whose running agents take it to its limit is planned
   const engine = { steps: [{ id: 'build', sequence: 1, action: { type: 'prompt', prompt: 'build' } }] };
   const at = (name, log = []) => ({ name, 'harness-status': { state: 'build', 'state-engine': 'e' }, 'state-changes': [change(log)] });
   const ranked = [{ key: 'T-1', variations: [at('A', [ran(6)]), at('B')] }, { key: 'T-2', variations: [at('A')] }];
-  const plan = running => planDispatch({ ranked, engine, harness: { 'max-tickets-in-progress': 1 }, project: { 'max-spend-per-ticket-usd': 10 }, running });
+  const plan = running => planDispatch({ ranked, engine, harness: {}, seats: { mac: 1, remote: 0 }, project: { 'max-spend-per-ticket-usd': 10 }, running });
   assert.deepEqual(plan({}).reserved, [{ key: 'T-1', variation: 'A' }]);
   assert.deepEqual(plan({ 'T-1': 4 }).reserved, [{ key: 'T-2', variation: 'A' }]);
 });
@@ -86,7 +86,7 @@ test('ASS-191 AC3: a ticket at its limit is planned no agent and holds no slot; 
   const engine = { steps: [{ id: 'build', sequence: 1, action: { type: 'prompt', prompt: 'build' } }] };
   const at = (name, log = []) => ({ name, 'harness-status': { state: 'build', 'state-engine': 'e' }, 'state-changes': [change(log)] });
   const ranked = [{ key: 'T-1', variations: [at('A', [ran(6)]), at('B', [ran(4)])] }, { key: 'T-2', variations: [at('A', [ran(9)])] }];
-  const result = planDispatch({ ranked, engine, harness: { 'max-tickets-in-progress': 1 }, project: { 'max-spend-per-ticket-usd': 10 } });
+  const result = planDispatch({ ranked, engine, harness: {}, seats: { mac: 1, remote: 0 }, project: { 'max-spend-per-ticket-usd': 10 } });
   assert.deepEqual(result.dispatch.map(d => d.key), ['T-2']);
   assert.deepEqual(result.reserved, [{ key: 'T-2', variation: 'A' }]);
 });
@@ -95,7 +95,7 @@ test('ASS-191 AC3: a ticket at its limit is planned no agent and holds no slot; 
 // returns the ticket where it was) and project p's limit `limit`, harness.json's 25.
 function limitFixture(limit) {
   const f = controlFixture();
-  edit(join(f.dir, 'engines', 'example-development', 'state-engine.json'), e => {
+  edit(join(f.dir, 'engines', 'example-development', 'workflow.yaml'), e => {
     e.steps.unshift({ id: 'blocked-for-human', sequence: 0, 'is-blocked-state': true, 'follow-return-to-state': true, action: { type: 'human' },
       'exit-events': [{ condition: { 'human-review': 'Resolved' }, 'follow-return-to-state': true }] });
   });

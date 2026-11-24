@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Description: Merge the ticket's pull requests itself, in depends-on order, confirming each merged — merge-request:merge <project> <ticket-key> <variation>.
+# Description: Merge the ticket's pull requests itself, in depends-on order, confirming each merged — merge-request:merge <project> <ticket-key> <variation> [--first].
 set -euo pipefail
 
 # For the harness's own repository (GitHub), whose development engine merges
@@ -18,10 +18,15 @@ set -euo pipefail
 # variation has no merge request (a fast-tracked ticket's none passes, ASS-151:
 # load_merge_requests) or one is not on GitHub; or the project,
 # ticket or variation is missing.
+#
+# --first (ASS-560: the merge gate, merge-request:merge-in-turn, which tests
+# each of the variation's pull requests on its own, in depends-on order,
+# before it merges it): only the first Open one in depends-on order is
+# merged — the one the gate has just tested — and the rest left Open.
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../merge-requests.bash"
 
-[[ $# -eq 3 ]] || { echo "usage: merge-request:merge <project> <ticket-key> <variation>" >&2; exit 1; }
-project="$1" key="$(upper "$2")" variation="$3"
+[[ $# -eq 3 || ( $# -eq 4 && "$4" == --first ) ]] || { echo "usage: merge-request:merge <project> <ticket-key> <variation> [--first]" >&2; exit 1; }
+project="$1" key="$(upper "$2")" variation="$3" first="${4:-}"
 load_merge_requests merge-request:merge "$project" "$key" "$variation"
 stranger="$(jq -r 'first(.[] | select(startswith("https://github.com/") | not)) // empty' <<< "$URLS")"
 [[ -z "$stranger" ]] || { echo "merge-request:merge: merges GitHub pull requests only; $stranger is not on GitHub" >&2; exit 1; }
@@ -37,4 +42,5 @@ while :; do
   [[ "$(jq -r .state <<< "$view")" == Merged ]] || { echo "merge-request:merge: $name is $(jq -r .state <<< "$view"), not merged" >&2; exit 1; }
   set_merge_request merge-request:merge "$project" "$key" "$variation" "$i" '{ "status": "Merged" }'
   jq -nc --argjson iid "$iid" '{ iid: $iid, merged: true }'
+  [[ -z "$first" ]] || break
 done

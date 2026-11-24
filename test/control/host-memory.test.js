@@ -47,11 +47,14 @@ const mac = ({ free = 64, pressure = 'normal', vms = {}, reclaimable, swapouts, 
 // gives its VMs `memory`; ABC-3's variations as `variations` gives them
 // ({ name: [harness-status, VM status or null, extra] }), each VM abc-3-<name>;
 // agent.sh calls recorded; the Mac's memory set(reading options: mac's).
-function holding(variations, { memory = '4GiB', harness = {} } = {}) {
+function holding(variations, { memory = '4GiB', seats = null, harness = {} } = {}) {
   const f = controlFixture();
   const file = (...rest) => join(f.dir, ...rest);
-  writeFileSync(file('harness.json'), JSON.stringify({ ...JSON.parse(readFileSync(file('harness.json'), 'utf8')), 'max-tickets-in-progress': null, ...harness }));
-  for (const name of engineNames()) if (!existsSync(file('engines', name)) && existsSync(join(engineDir(name), 'state-engine.json'))) cpSync(engineDir(name), file('engines', name), { recursive: true });
+  // ASS-528: `seats`, the project's seats as control's seat budget records them (seat-budget.json; none: no limit) —
+  // these tests run the phases after it alone.
+  if (seats != null) writeFileSync(file('projects', 'p', 'seat-budget.json'), JSON.stringify({ seats }));
+  writeFileSync(file('harness.json'), JSON.stringify({ ...JSON.parse(readFileSync(file('harness.json'), 'utf8')), ...harness }));
+  for (const name of engineNames()) if (!existsSync(file('engines', name)) && existsSync(join(engineDir(name), 'workflow.yaml'))) cpSync(engineDir(name), file('engines', name), { recursive: true });
   const project = JSON.parse(readFileSync(file('projects', 'p', 'project.json'), 'utf8'));
   writeFileSync(file('projects', 'p', 'project.json'), JSON.stringify({ ...project, 'execution-state-engine': ENGINE, 'golden-image': { folder: 'golden-p' } }));
   mkdirSync(file('golden-p'), { recursive: true });
@@ -251,7 +254,7 @@ test('ASS-404 AC2: free memory below the need holds under normal pressure — cr
 });
 
 test('ASS-404 AC3: a variation whose VM is held for memory holds no seat while it waits — the next in rank order gets it — and takes its seat again once its VM can start; no step re-run, no visit spent', async () => {
-  const h = holding({ A: [BUILDING, 'Stopped'], B: [BUILDING, 'Stopped'] }, { harness: { 'max-tickets-in-progress': 1 } });
+  const h = holding({ A: [BUILDING, 'Stopped'], B: [BUILDING, 'Stopped'] }, { seats: 1 });
   assert.deepEqual(h.seats(), { reserved: ['A'], waiting: ['B'], memoryHeld: [] });
   h.set({ free: 2 });
   assert.deepEqual(await h.pass(), []);
@@ -270,7 +273,8 @@ test('ASS-404 AC3: a variation whose VM is held for memory holds no seat while i
 });
 
 test('ASS-404 AC3, ASS-420 AC4: while the hold is on, a seat a held variation freed goes to a variation whose VM is up, not to one whose VM does not fit (ASS-420\'s check, replacing ASS-404\'s VM-up rule); a held variation that moves off its step is dropped from the hold', async () => {
-  const h = holding({ A: [BUILDING, 'Stopped'], C: [PLANNING, 'Running'], D: [PLANNING, 'Stopped'] }, { harness: { 'max-tickets-in-progress': 1 } });
+  // ASS-528: one pool — three seats, so A, C and D each have one, as A's in-progress seat and C's and D's planning ones were.
+  const h = holding({ A: [BUILDING, 'Stopped'], C: [PLANNING, 'Running'], D: [PLANNING, 'Stopped'] }, { seats: 3 });
   h.set({ free: 2 });
   await h.pass();
   assert.deepEqual(h.record().held.map(x => x.variation), ['A', 'D']);
@@ -319,7 +323,7 @@ test('ASS-398 AC1: harness.json\'s memory-free-hold-gib sets the need; with room
 test('ASS-398 AC1, ASS-404 AC3: a script step that creates a VM (vm:create) waits, not run, while memory is short — said once, no failure — the hold on, its variation held with it (no seat); it runs once memory frees', async () => {
   const f = controlFixture();
   const edit = (file, change) => { const json = JSON.parse(readFileSync(file, 'utf8')); change(json); writeFileSync(file, JSON.stringify(json)); };
-  edit(join(f.dir, 'engines', 'example-development', 'state-engine.json'), e => {
+  edit(join(f.dir, 'engines', 'example-development', 'workflow.yaml'), e => {
     e.steps.find(s => s.id === 'build').action.command = 'echo vm:create {project} {ticket} {variation}';
   });
   edit(join(f.dir, 'projects', 'p', 'sprints', 'sprint-10', 'sprint.json'), s => {
@@ -335,7 +339,9 @@ test('ASS-398 AC1, ASS-404 AC3: a script step that creates a VM (vm:create) wait
   assert.deepEqual(JSON.parse(readFileSync(record, 'utf8')).held, [{ key: 'ABC-4', variation: 'A', state: 'build' }]);
   assert.ok(f.lines.some(l => /^hold Out of memory: 1\.0 GiB free, below the 4\.0 GiB a VM needs .*: its VM \(ABC-4 A\) not started/.test(l)), f.lines.join('\n'));
   const state = f.ctx.load();
-  assert.deepEqual(planFor(state, state.projects[0]).memoryHeld, [{ key: 'ABC-4', variation: 'A' }]);
+  // ASS-527: the echo standing in for vm:create is a host command, so its step takes no seat to be held from; the real
+  // ./agent.sh vm:create is declared in-machine (machine-steps.js), and its step would be memoryHeld, as before.
+  assert.deepEqual(planFor(state, state.projects[0]).memoryHeld, []);
   reading = mac({ free: 8 });
   await runSteps(f.ctx, f.ctx.load());
   assert.ok(f.lines.some(l => /^hold memory back: pressure normal, 8\.0 GiB free/.test(l)), f.lines.join('\n'));

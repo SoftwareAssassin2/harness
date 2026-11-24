@@ -20,10 +20,17 @@ set -euo pipefail
 # origin, the update would overwrite a local change, the workspace is not on
 # the default branch, or it cannot fast-forward; or the project or workspace
 # is missing.
+#
+# ASS-560: tickets of a project merge side by side now, so two Releases can
+# update the workspace at once; the fetch and the fast-forward hold the
+# project's update-workspace.lock (descriptor 7, for at most 120 seconds), so
+# the two never meet in git's index.lock — the second fast-forwards to the
+# same or a later main. Only this short update is serialised, never a merge.
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../code.bash"
 
 [[ $# -eq 1 ]] || { echo "usage: code:update-workspace <project>" >&2; exit 1; }
 workspace="$(workspace_of code:update-workspace "$1")"
+lock_on 7 "$projects/$1/update-workspace.lock" code:update-workspace 120 || exit 1
 branch="$(default_branch "$workspace")"
 on="$(git -C "$workspace" symbolic-ref --quiet --short HEAD || echo detached)"
 [[ "$on" == "$branch" ]] || { echo "code:update-workspace: the workspace is on $on, not $branch" >&2; exit 1; }

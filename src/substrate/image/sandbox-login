@@ -1,0 +1,82 @@
+#!/usr/bin/env node
+// sandbox-login [--check] [--state <file>] [--screenshot <file>] — an agent's headless browser in the sandbox signs in
+// to the project's app as its seeded user (ASS-542; services.yaml login), as a person would: Chromium (Playwright's,
+// the project's toolchain: login.env gives NODE_PATH and PLAYWRIGHT_BROWSERS_PATH; sandbox-services login runs this
+// with it) opens login.url — the app's real local URL, *.internal mapped to the sandbox itself and its CA trusted
+// (sandbox-services hosts, trust), so no TLS error is ignored — lands on the identity server's sign-in form, fills
+// username and password, submits, and must come back signed in: at a URL starting with login.signed-in, with no
+// password field on the page. Its session (cookies, local storage) is kept in --state (by default
+// /var/lib/sandbox/login/<username>.json) for an agent's or a test's browser to start from.
+//
+// --check: no form filled. The kept session alone must load login.url signed in — what a hibernated and resumed
+// sandbox must still do (ASS-542 AC6, ASS-537).
+//
+// Prints one JSON line { ok, check, url, title, seconds, state } and exits 0; signed out or failed: { ok: false, why }
+// and exits 1.
+import { readFileSync, mkdirSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { createRequire } from 'node:module';
+
+const R = process.env.HARNESS_VM_ROOT ?? '';
+const args = process.argv.slice(2);
+const opt = name => { const i = args.indexOf(name); return i >= 0 ? args[i + 1] : undefined; };
+const check = args.includes('--check');
+const declaration = JSON.parse(readFileSync(process.env.SANDBOX_SERVICES ?? `${R}/etc/sandbox/services.json`, 'utf8'));
+const login = declaration.login;
+const started = Date.now();
+const out = (v, code) => { process.stdout.write(`${JSON.stringify({ check, ...v, seconds: Math.round((Date.now() - started) / 100) / 10 })}\n`); process.exit(code); };
+if (!login) out({ ok: false, why: 'the project declares no login (services.yaml login)' }, 1);
+const state = opt('--state') ?? `${R}/var/lib/sandbox/login/${login.username.replace(/[^A-Za-z0-9@._-]/g, '_')}.json`;
+
+// Playwright from NODE_PATH (the project's toolchain), as `require` finds it there.
+let chromium;
+try {
+  const require = createRequire(join(process.cwd(), 'noop.js'));
+  ({ chromium } = require('playwright'));
+} catch (error) {
+  out({ ok: false, why: `no playwright package (NODE_PATH: ${process.env.NODE_PATH ?? 'unset'}): ${error.message.split('\n')[0]}` }, 1);
+}
+
+// result(v, code) — kept, said once the browser is closed.
+let said = null;
+const result = (v, code) => { said ??= [v, code]; };
+const browser = await chromium.launch({ headless: true, args: ['--no-sandbox'] });
+let page = null;
+try {
+  const context = await browser.newContext(check ? { storageState: state } : {});
+  page = await context.newPage();
+  const timeout = Number(process.env.SANDBOX_LOGIN_TIMEOUT_MS ?? 180_000);
+  page.setDefaultTimeout(timeout);
+  await page.goto(login.url, { waitUntil: 'domcontentloaded' });
+  const signedIn = async () => page.url().startsWith(login['signed-in']) && !(await page.locator(login['password-field']).count());
+  if (!check) {
+    // An auth proxy's own page first (its "Sign in with ..." button), when the login declares one and it shows.
+    if (login['click-first'] && !(await page.locator(login['password-field']).count())) {
+      const first = page.locator(login['click-first']).first();
+      if (await first.count()) await Promise.all([page.waitForLoadState('domcontentloaded'), first.click()]);
+    }
+    // The sign-in form, wherever the app sent it (the identity server's page).
+    await page.locator(login['password-field']).first().waitFor({ state: 'visible' });
+    await page.locator(login['username-field']).first().fill(login.username);
+    await page.locator(login['password-field']).first().fill(login.password);
+    await Promise.all([page.waitForURL(u => String(u).startsWith(login['signed-in']), { timeout }), page.locator(login.submit).first().click()]);
+  }
+  await page.waitForLoadState('domcontentloaded');
+  if (opt('--screenshot')) await page.screenshot({ path: opt('--screenshot') });
+  if (!(await signedIn())) result({ ok: false, why: `not signed in: the browser is at ${page.url()}`, url: page.url(), title: await page.title() }, 1);
+  else {
+    if (!check) {
+      mkdirSync(dirname(state), { recursive: true });
+      writeFileSync(state, JSON.stringify(await context.storageState()), { mode: 0o600 });
+    }
+    result({ ok: true, url: page.url(), title: await page.title(), state }, 0);
+  }
+} catch (error) {
+  // Where it got stuck (a required action's page, an error page): its URL, title and, asked for, a screenshot.
+  const where = page ? { url: page.url(), title: await page.title().catch(() => null) } : {};
+  if (page && opt('--screenshot')) await page.screenshot({ path: opt('--screenshot') }).catch(() => {});
+  result({ ok: false, why: error.message.split('\n')[0], ...where }, 1);
+} finally {
+  await browser.close().catch(() => {});
+}
+out(...said);

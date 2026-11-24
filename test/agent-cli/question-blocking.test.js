@@ -28,7 +28,7 @@ function folders(questions) {
   const at = (name, state) => ({ name, 'harness-status': { state, 'state-engine': 'e' }, 'state-changes': [] });
   write(join(dir, 'p', 'sprints', 'sprint-10', 'sprint.json'), { number: 10, features: [{ key: 'ABC-1', title: 'T', description: 'D', variations: [at('A', 'plan'), at('B', 'setup')] }] });
   write(join(dir, 'p', 'backlog.json'), { tickets: [{ key: 'ABC-2', title: 'U', variations: [{ name: 'A', 'harness-status': { state: 'groom', 'state-engine': 'r' } }] }] });
-  write(join(dir, 'engines', 'e', 'state-engine.json'), { steps: [
+  write(join(dir, 'engines', 'e', 'workflow.yaml'), { steps: [
     { id: 'setup', name: 'Setup', sequence: 1 },
     { id: 'plan', name: 'Plan', sequence: 2, 'recheck-on-requirements-change': true },
     { id: 'requirements-changed', name: 'Requirements Changed', sequence: 0, 'follow-return-to-state': true, action: { type: 'state-engine', engine: 'grouped-requirements-changed' } },

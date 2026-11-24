@@ -40,7 +40,7 @@ dir="$(readlink -f "$projects/$project")"
 
 # The engines it runs, each file once.
 execution="$(jq -r '.["execution-state-engine"] // empty' "$dir/project.json" 2>/dev/null || true)"
-names="$( { for f in "$dir/engines"/*/state-engine.json; do [[ -f "$f" ]] && basename "$(dirname "$f")"; done
+names="$( { for f in "$dir/engines"/*/workflow.yaml; do [[ -f "$f" ]] && basename "$(dirname "$f")"; done
             if [[ -n "$execution" ]]; then echo "$execution"; connected_engines "$execution" "$project"; fi; } | sort -u)"
 files="$(while IFS= read -r name; do [[ -n "$name" ]] && engine_path "$name" "$project" || true; done <<< "$names" | jq -Rsc 'split("\n") | map(select(. != ""))')"
 

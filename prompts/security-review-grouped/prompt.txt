@@ -4,6 +4,10 @@ Variation {variation}'s brief: if {ticket-folder}/variation-brief-{variation}.md
 
 {where}
 
+{work-mode-rule}
+
+When the variation is built in a worktree and your review finds risk only a full machine can check, escalate it (Work mode, above) with review, say why in your findings, and reject the change: it is built again on a full machine.
+
 The changes are in every merge request not Closed: {agent-sh} ticket:merge-request-plan {project} {ticket} {variation} lists each one's id, repository, branch and base. Review them all in one pass: in each one's repository checkout, git fetch origin, then its changes are git diff origin/<base>...origin/<branch>.
 
 Look for:
@@ -13,7 +17,7 @@ Look for:
 - Sensitive data exposed in responses, logs or errors
 - New dependencies with known vulnerabilities
 
-Read {ticket-folder}/ci-checks-results-{variation}.md if it exists: the project's merge-request CI checks (secret scans, policy gates), as last run on these merge requests. A scanner finding is evidence to act on: confirm it in the diff and list it as a finding; one the results say master has too is pre-existing: note it, but it alone is no reason to reject. Never copy a secret value into security-review-{variation}.md or anywhere else: name its merge request, file, line and kind only.
+The workflow runs none of the project's CI checks (secret scans, policy gates) itself: the project's own CI pipeline runs them on the merge request. So look for what they would catch in the diff yourself: a secret, a credential or a policy breach in the change is a finding. Never copy a secret value into security-review-{variation}.md or anywhere else: name its merge request, file, line and kind only.
 
 If {ticket-folder}/operator-review-{variation}.md exists, it holds the operator's notes from rejecting earlier passes at Human Review: read it and address each note in this step's work.
 

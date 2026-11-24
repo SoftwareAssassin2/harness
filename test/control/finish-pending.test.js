@@ -18,7 +18,7 @@ import { sessionDir } from '../../src/agents/session.js';
 const turnsEnd = ctx => until(() => [...ctx.agents.values()].every(a => a.result));
 const alive = pid => { try { process.kill(pid, 0); return true; } catch { return false; } };
 const edit = (file, change) => { const data = JSON.parse(readFileSync(file, 'utf8')); change(data); writeFileSync(file, JSON.stringify(data, null, 4)); };
-const engineFile = f => join(f.dir, 'engines', 'example-development', 'state-engine.json');
+const engineFile = f => join(f.dir, 'engines', 'example-development', 'workflow.yaml');
 // The agents named by the lines finish logged while it waited on pending work, and by the timeouts.
 const named = lines => lines.map(l => l.split(' ')[1].replace(/:$/, ''));
 const waiting = f => f.lines.filter(l => /^finish \S+: turn ended with pending background work; waiting up to .+ before finishing$/.test(l));

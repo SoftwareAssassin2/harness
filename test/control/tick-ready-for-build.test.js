@@ -34,11 +34,12 @@ const steps = [
 // `own`, its sprint `tickets`: [key, state, manual-priority] each, listed in
 // that order and ranked by the priority — 'planned' for one at prepare whose
 // test run is done (its sub-status there, its run kept). state(key) is where it stands.
-function queue(tickets, { harness = {}, own = {} } = {}) {
+function queue(tickets, { harness = {}, own = {}, seats = Infinity } = {}) {
   const f = controlFixture();
+  f.seats(seats);   // ASS-528: the seats on the Mac, one pool
   const sprint = join(f.dir, 'projects', 'p', 'sprints', 'sprint-10', 'sprint.json');
-  edit(join(f.dir, 'engines', 'example-development', 'state-engine.json'), e => { e.steps = steps; });
-  edit(join(f.dir, 'harness.json'), h => Object.assign(h, { 'max-tickets-in-progress': null, 'max-tickets-in-planning': null }, harness));
+  edit(join(f.dir, 'engines', 'example-development', 'workflow.yaml'), e => { e.steps = steps; });
+  edit(join(f.dir, 'harness.json'), h => Object.assign(h, harness));
   edit(join(f.dir, 'projects', 'p', 'project.json'), p => Object.assign(p, own));
   edit(sprint, s => {
     s.features = tickets.map(([key, state, rank]) => ({ key, 'manual-priority': rank, variations: [{ name: 'A', 'harness-status': state === 'planned' ? { ...hs('prepare'), 'sub-status': { state: 'done', 'state-engine': 'test' } } : hs(state), 'state-changes': [] }] }));
@@ -51,19 +52,21 @@ function queue(tickets, { harness = {}, own = {} } = {}) {
   return { ...f, state, move, steps: () => runSteps(f.ctx, f.ctx.load()) };
 }
 
-test('ASS-362 AC2: one planning seat, a finished plan waiting with the in-progress seats full — the next-ranked ticket at committed enters planning and is dispatched', async () => {
-  const f = queue([['T-1', 'review', 1], ['T-2', 'planned', 2], ['T-3', 'committed', 3]], { own: { 'max-tickets-in-planning': 1, 'max-tickets-in-progress': 1 } });
+test('ASS-362 AC2, ASS-528 AC2: a finished plan holds no seat; one pool — the seat left goes in rank order, the finished plan on to Build before the ticket at committed; with one more seat both move, and are dispatched', async () => {
+  const f = queue([['T-1', 'review', 1], ['T-2', 'planned', 2], ['T-3', 'committed', 3]], { seats: 2 });
   await tick(f.ctx);
-  assert.deepEqual([f.state('T-1'), f.state('T-2'), f.state('T-3')], ['review', 'prepare', 'plan'], f.lines.join('\n'));
-  assert.ok(f.lines.includes('steps T-2 A prepare: waits for an in-progress slot to move to build'), f.lines.join('\n'));
-  // T-3's planning agent goes out (T-1's at review too, its seat held).
-  for (let i = 0; i < 3 && !f.assignments().assignments.some(a => a['work-item'] === 'T-3'); i++) await tick(f.ctx);
-  assert.ok(f.assignments().assignments.some(a => a['work-item'] === 'T-3' && a.state === 'plan'), f.lines.join('\n'));
+  assert.deepEqual([f.state('T-1'), f.state('T-2'), f.state('T-3')], ['review', 'review', 'committed'], f.lines.join('\n'));
+  const g = queue([['T-1', 'review', 1], ['T-2', 'planned', 2], ['T-3', 'committed', 3]], { seats: 3 });
+  await tick(g.ctx);
+  assert.deepEqual([g.state('T-1'), g.state('T-2'), g.state('T-3')], ['review', 'review', 'plan'], g.lines.join('\n'));
+  // T-3's planning agent goes out (T-1's and T-2's at review too, their seats held).
+  for (let i = 0; i < 3 && !g.assignments().assignments.some(a => a['work-item'] === 'T-3'); i++) await tick(g.ctx);
+  assert.ok(g.assignments().assignments.some(a => a['work-item'] === 'T-3' && a.state === 'plan'), g.lines.join('\n'));
 });
 
 test('ASS-362 AC3: a freed in-progress seat goes to the highest-ranked finished plan; the lower-ranked one and a ticket still planning wait', async () => {
   // Listed out of rank order: T-3 first, T-2 ranked above it; T-4, below both, ready to leave planning by a script step.
-  const f = queue([['T-3', 'planned', 3], ['T-1', 'review', 1], ['T-4', 'approve', 4], ['T-2', 'planned', 2]], { own: { 'max-tickets-in-progress': 1 } });
+  const f = queue([['T-3', 'planned', 3], ['T-1', 'review', 1], ['T-4', 'approve', 4], ['T-2', 'planned', 2]], { seats: 1 });
   await f.steps();
   assert.deepEqual(['T-1', 'T-2', 'T-3', 'T-4'].map(f.state), ['review', 'prepare', 'prepare', 'approve']);
   f.move('T-1', 'done');   // its seat freed
@@ -76,17 +79,20 @@ test('ASS-362 AC3: a freed in-progress seat goes to the highest-ranked finished 
 });
 
 test('ASS-362 AC5: while max-tickets-ready-for-build is reached no ticket enters planning — it waits at committed, said once — and once there is room it does', async () => {
-  const f = queue([['T-1', 'review', 1], ['T-2', 'planned', 2], ['T-3', 'committed', 3]], { own: { 'max-tickets-in-progress': 1, 'max-tickets-ready-for-build': 1 } });
+  const f = queue([['T-1', 'review', 1], ['T-2', 'planned', 2], ['T-3', 'committed', 3]], { seats: 1, own: { 'max-tickets-ready-for-build': 1 } });
   await f.steps();
   await f.steps();
   assert.deepEqual(['T-2', 'T-3'].map(f.state), ['prepare', 'committed']);
   assert.equal(f.lines.filter(l => l === 'steps T-3 A committed: waits to enter planning: max-tickets-ready-for-build reached (1 ready for build, 0 in planning)').length, 1, f.lines.join('\n'));
-  // T-2 moves on to Build: the queue has room again.
+  // T-2 moves on to Build: the queue has room again, and once T-2's seat frees (ASS-528: one pool) T-3 enters planning.
   f.move('T-1', 'done');
   await f.steps();
-  assert.deepEqual(['T-2', 'T-3'].map(f.state), ['review', 'plan']);
+  assert.deepEqual(['T-2', 'T-3'].map(f.state), ['review', 'committed']);
+  f.move('T-2', 'done');
+  await f.steps();
+  assert.equal(f.state('T-3'), 'plan');
   // harness.json's counts every project's together, as the other ticket limits do.
-  const g = queue([['T-1', 'review', 1], ['T-2', 'planned', 2], ['T-3', 'committed', 3]], { harness: { 'max-tickets-in-progress': 1, 'max-tickets-ready-for-build': 1 } });
+  const g = queue([['T-1', 'review', 1], ['T-2', 'planned', 2], ['T-3', 'committed', 3]], { seats: 1, harness: { 'max-tickets-ready-for-build': 1 } });
   await g.steps();
   assert.equal(g.state('T-3'), 'committed');
 });

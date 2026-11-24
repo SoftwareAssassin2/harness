@@ -130,7 +130,7 @@ test('ticket:sync starts a new sprint ticket where its ticket-system status says
   const engines = join(dir, 'engines');
   mkdirSync(join(engines, 'example-development'), { recursive: true });
   const step = (id, sequence, paired, extra = {}) => ({ id, sequence, 'paired-ticket-system-status': paired, action: { type: 'none' }, ...extra });
-  writeFileSync(join(engines, 'example-development', 'state-engine.json'), JSON.stringify({ steps: [
+  writeFileSync(join(engines, 'example-development', 'workflow.yaml'), JSON.stringify({ steps: [
     step('fix', 0, 'In Progress', { area: 'quarantine', action: { type: 'state-engine', engine: 'x' } }),
     step('blocked', 0, 'On Hold', { area: 'quarantine', action: { type: 'state-engine', engine: 'blocked' } }),
     step('blocked-for-human', 0, 'On Hold', { area: 'quarantine', action: { type: 'human' } }),

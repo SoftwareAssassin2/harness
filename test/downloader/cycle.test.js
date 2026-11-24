@@ -279,7 +279,7 @@ test('an off-board project\'s first cycle after its sprint\'s last day advances 
   const p = join(dir, 'data', 'projects', 'p');
   mkdirSync(join(p, 'sprints', 'sprint-1'), { recursive: true });
   mkdirSync(join(dir, 'engines', 'dev'), { recursive: true });
-  writeFileSync(join(dir, 'engines', 'dev', 'state-engine.json'), JSON.stringify({ steps: [
+  writeFileSync(join(dir, 'engines', 'dev', 'workflow.yaml'), JSON.stringify({ steps: [
     { id: 'todo', sequence: 1, 'paired-ticket-system-status': 'To Do' }, { id: 'build', sequence: 2 }, { id: 'done', sequence: 3, 'is-done': true, 'paired-ticket-system-status': 'Done' }] }));
   writeFileSync(join(p, 'project.json'), JSON.stringify({ 'execution-state-engine': 'dev', 'work-sources': [{ name: 'Off', type: 'off-board', folder: 'p' }] }));
   writeFileSync(join(p, 'backlog.json'), JSON.stringify({ tickets: [] }));
@@ -313,7 +313,7 @@ test('an off-board ticket closed straight from Backlog (ASS-296): the next cycle
   const p = join(dir, 'data', 'projects', 'p');
   mkdirSync(join(p, 'sprints', 'sprint-1'), { recursive: true });
   mkdirSync(join(dir, 'engines', 'dev'), { recursive: true });
-  writeFileSync(join(dir, 'engines', 'dev', 'state-engine.json'), JSON.stringify({ steps: [
+  writeFileSync(join(dir, 'engines', 'dev', 'workflow.yaml'), JSON.stringify({ steps: [
     { id: 'todo', sequence: 1, 'paired-ticket-system-status': 'To Do' }, { id: 'done', sequence: 2, 'is-done': true, 'paired-ticket-system-status': 'Done' }] }));
   writeFileSync(join(p, 'project.json'), JSON.stringify({ 'execution-state-engine': 'dev', 'work-sources': [{ name: 'Off', type: 'off-board', folder: 'p' }] }));
   writeFileSync(join(p, 'backlog.json'), JSON.stringify({ tickets: [] }));
@@ -373,7 +373,7 @@ test('a Jira project\'s cycle, the pinned Jira sprint no longer the board\'s act
   const p = join(dir, 'data', 'projects', 'p');
   mkdirSync(join(p, 'sprints', 'sprint-11'), { recursive: true });
   mkdirSync(join(dir, 'engines', 'dev'), { recursive: true });
-  writeFileSync(join(dir, 'engines', 'dev', 'state-engine.json'), JSON.stringify({ steps: [{ id: 'build', sequence: 1 }, { id: 'done', sequence: 2, 'is-done': true }] }));
+  writeFileSync(join(dir, 'engines', 'dev', 'workflow.yaml'), JSON.stringify({ steps: [{ id: 'build', sequence: 1 }, { id: 'done', sequence: 2, 'is-done': true }] }));
   writeFileSync(join(p, 'project.json'), JSON.stringify({ 'execution-state-engine': 'dev', 'work-sources': [{ name: 'J', type: 'jira', url: 'https://x.atlassian.net/jira/software/c/projects/EX/boards/5205' }] }));
   writeFileSync(join(p, 'backlog.json'), JSON.stringify({ tickets: [] }));
   writeFileSync(join(p, 'sprints.json'), JSON.stringify({ list: [{ number: 11, 'is-active': true, 'jira-sprint-id': 13422 }] }));

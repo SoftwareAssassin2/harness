@@ -124,7 +124,7 @@ test('ASS-499 AC2/AC3: --brief writes work/<KEY>/variation-brief-<variation>.md,
 
 // The grouped development prompts that read the ticket's questions and answers, and Requirements Changed's.
 const BRIEFED = ['enrich-ac-grouped', 'root-cause-analysis-grouped', 'review-root-cause-analysis-grouped', 'write-execution-plan-grouped', 'write-test-plan-grouped', 'review-plan-grouped',
-  'generate-solution-grouped', 'generate-automated-tests-grouped', 'code-review-grouped', 'security-review-grouped', 'test-grouped', 'judge-requirements-change', 'revise-acceptance-criteria'];
+  'generate-solution-grouped', 'generate-automated-tests-grouped', 'code-review-grouped', 'security-review-grouped', 'test-grouped', 'judge-requirements-change', 'revise-acceptance-criteria', 'choose-work-mode-grouped'];
 const prompt = name => readFileSync(join(ROOT, 'prompts', name, 'prompt.txt'), 'utf8');
 
 test('ASS-499 AC3: every grouped development prompt reading the questions and answers reads its variation\'s brief first, the brief winning over the answers and description for that variation only', () => {

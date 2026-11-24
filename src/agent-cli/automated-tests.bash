@@ -73,19 +73,36 @@ run_minutes() {
 # A run stopped so exits 124, its output ending with the limit's line, for
 # test-results.js timedOut; any other run exits with the command's own code,
 # the watchdog stopped. With none, the command as it is.
+# ASS-545, for the tests only: with AUTOMATED_TESTS_LIMIT_GATE=<file> on the
+# host, the watchdog strikes once <file> exists (removing it, for the next run)
+# in place of after the limit's seconds — so a test's run reaches the point it
+# means to be stopped at (its children started, its output written) before
+# the limit strikes, however slow the machine, and a run that never makes the
+# file is never stopped.
+# ASS-549: with job control on, each fork's child puts itself in its own
+# process group, and on a loaded Mac that setpgid can lose a race with the
+# parent's and fail: bash then writes "bash: child setpgid (N to N): Operation
+# not permitted" to its stderr — the run's output, and so the results file
+# (ASS-99's cause). The child writes it before the command's own redirections
+# apply, so the shell's stderr points at /dev/null across the two forks (kept
+# on fd 9, which neither child inherits), and the command's stderr is the
+# real one again through its own 2>&9.
 TIME_LIMIT='f="$(mktemp)"
 set -m
-bash -c "$run" & c=$!
-( sleep "$seconds"; echo stopped > "$f"; kill -TERM -- -"$c"
+exec 9>&2 2> /dev/null
+bash -c "$run" 2>&9 9>&- & c=$!
+( if [ -n "$gate" ]; then until [ -f "$gate" ]; do sleep 0.05; done; rm -f "$gate"; else sleep "$seconds"; fi
+  echo stopped > "$f"; kill -TERM -- -"$c"
   for _ in 1 2 3 4 5 6 7 8 9 10; do kill -0 -- -"$c" || exit 0; sleep 1; done
-  kill -KILL -- -"$c" ) > /dev/null 2>&1 & w=$!
+  kill -KILL -- -"$c" ) > /dev/null 2>&1 9>&- & w=$!
+exec 2>&9 9>&-
 set +m
 wait "$c" 2> /dev/null; s=$?
 if [ -s "$f" ]; then wait "$w"; rm -f "$f"; echo "automated-tests:verify-success: timed out after $minutes minutes" >&2; exit 124; fi
 kill -- -"$w" 2> /dev/null; rm -f "$f"; exit "$s"'
 time_limited() {
   [[ "$1" != none ]] || { printf '%s' "$2"; return; }
-  printf 'minutes=%q seconds=%q run=%q\n%s' "$1" "$(awk -v m="$1" 'BEGIN { print m * 60 }')" "$2" "$TIME_LIMIT"
+  printf 'minutes=%q seconds=%q run=%q gate=%q\n%s' "$1" "$(awk -v m="$1" 'BEGIN { print m * 60 }')" "$2" "${AUTOMATED_TESTS_LIMIT_GATE:-}" "$TIME_LIMIT"
 }
 
 tests_setup() {
@@ -96,6 +113,7 @@ tests_setup() {
   else
     build="$(build_of "$command" "$project" "$key" "$variation")"
     where="$(jq -r '.["worktree-folder"] // empty' <<< "$build")"
+    [[ "${HARNESS_RUN_TARGET:-}" != local-workspace ]] || where=""   # ASS-540: on local-workspace, the project's checkout
     [[ -n "$where" && -d "$where" ]] || where="$(workspace_of "$command" "$project")"
   fi
   folder="$projects/$project/work/$key"

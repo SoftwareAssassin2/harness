@@ -6,6 +6,7 @@ import * as app from '../../src/tui/app.js';   // controlStarted (ASS-310) and d
 // src/tui/features.json), so the tests from before their flags run as they
 // did; the ASS-262 tests turn them off (flagsOff).
 const CHAT_ON = { 'chat-screen': true, 'ticket-chat-tab': true };
+import { readEngine } from '../../src/workflow/engine-file.js';
 const initialState = (options = {}) => flagged({ features: CHAT_ON, ...options });
 const flagsOff = (s, features = {}) => ({ ...s, features });
 import * as agentsScreen from '../../src/tui/screens/agents.js';
@@ -83,9 +84,9 @@ const strip = s => s.replace(/\x1b\[[0-9;]*m|\x1b\]8;;[^\x1b]*\x1b\\/g, '');
 const neededDot = (l, text) => /\x1b\[31m[●⦿]/.test(l) && new RegExp(`[●⦿][ ]*(?:🤖|💻)?[ ]*(?:💺)?[ ]*${text.replaceAll('.', '\\.')}`, 'u').test(strip(l));
 // A sprint row's Ticket cell up to its text, plain (ASS-259): c1 █ step, c2 type, c3 ☛ by hand, c4 ↯
 // fast-tracked, c5 ⦿ — one cell each, a blank when it does not apply; then 🤖 agent working or 💻 script running
-// (ASS-456; a one-cell ⚉ before), two cells, two blanks without; then 💺 holding a
-// seat, two cells, two blanks without (ASS-357); a blank, then the text.
-const cols = ({ step = '█', type = '✦', hand = ' ', fast = ' ', dot = ' ', agent = '  ', seat = '💺' } = {}) => `${[step, type, hand, fast, dot, agent].join('')}${seat === '💺' ? seat : '  '} `;
+// (ASS-456; a one-cell ⚉ before), two cells, two blanks without; a blank, then the text. (ASS-559: no 💺 seat column
+// after 🤖/💻 any more — the Machine and Runs in columns say where it runs; `seat` is ignored.)
+const cols = ({ step = '█', type = '✦', hand = ' ', fast = ' ', dot = ' ', agent = '  ' } = {}) => `${[step, type, hand, fast, dot, agent].join('')} `;
 // How many lines of the key under the sprint grid (ASS-259) follow line `bottom`, its bottom border.
 const keyUnder = (out, bottom) => {
   const end = out.slice(bottom + 1).findIndex(l => !/^([█✦✘⌕☛↯⦿]|\d+|🤖|💻|💺|PAUSED|UNASSIGNED|AWAITING|AWAITING MERGE) /.test(strip(l)));
@@ -94,6 +95,11 @@ const keyUnder = (out, bottom) => {
 const lines = (s, size = screen) => render(s, size).map(strip);
 const centered = (line, text, columns = screen.columns) =>
   assert.equal(line, ' '.repeat(Math.floor((columns - text.length) / 2)) + text);
+// The bottom line: centered text, then (ASS-526) the loop counter at its right end, here 0.
+const bottomLine = (line, text, columns = screen.columns) => {
+  assert.match(line, / {1,}0$/);
+  centered(line.replace(/ +0$/, ''), text, columns);
+};
 
 test('fills the screen exactly, one string per row', () => {
   assert.equal(render(state, screen).length, 40);
@@ -211,13 +217,13 @@ test('while a project\'s background work is off, the sprint header says Backgrou
 
 test('the footer\'s last updated is the selected project\'s own: switching project shows that project\'s time (ASS-10)', () => {
   const s = { ...state, focus: 'menu', menuHidden: false, updatedAt: { 'example': Date.parse('2026-10-01T16:00:00Z'), assassin: Date.parse('2026-10-01T15:00:00Z') } };
-  centered(lines(s).at(-1), 'last updated: 2026-10-01 16:00:00 UTC (4m ago)');
-  centered(lines(handleKey(s, key('right'))).at(-1), 'last updated: 2026-10-01 15:00:00 UTC (1h 4m ago)');
+  bottomLine(lines(s).at(-1), 'last updated: 2026-10-01 16:00:00 UTC (4m ago)');
+  bottomLine(lines(handleKey(s, key('right'))).at(-1), 'last updated: 2026-10-01 15:00:00 UTC (1h 4m ago)');
 });
 
 test('at the very bottom, under the bottom line: when the data on show last changed, and how long ago', () => {
   const out = lines({ ...state, updatedAt: Date.parse('2026-10-01T16:00:00Z') });
-  centered(out.at(-1), 'last updated: 2026-10-01 16:00:00 UTC (4m ago)');
+  bottomLine(out.at(-1), 'last updated: 2026-10-01 16:00:00 UTC (4m ago)');
   assert.match(out.at(-2), /press \? for menu/);
   assert.equal(out.length, screen.rows);
   assert.match(render({ ...state, updatedAt: Date.parse('2026-10-01T16:00:00Z') }, screen).at(-1), /^ +\x1b\[90mlast updated: /);   // gray
@@ -239,7 +245,8 @@ test('under the banner, one centered line per health-check assignment in any pro
   centered(out[1], '🤖 Doctor-Strange - All systems nominal');
   centered(out[2], '🤖 Wong');
   assert.equal(out[3], '');
-  assert.ok(!out.some(l => l.includes('Busy')));
+  // Not under the banner (ASS-559: the sprint grid's Agents column now has room for Daredevil's status there).
+  assert.ok(!out.slice(0, 4).some(l => l.includes('Busy')));
 });
 
 test('paused by a human: PAUSED BY HUMAN in block letters, centered, then how to release', () => {
@@ -582,7 +589,7 @@ const zKey = key('z', { sequence: 'z' });
 const openDraft = s => s.agentDraft[s.agent?.name] ?? '';
 // A ticket screen on one of its tabs (ASS-184).
 const onTab = (s, tab) => ({ ...s, ticketTab: tab });
-const TAB_IDS = ['actions', 'details', 'merges', 'history', 'questions', 'chat'];
+const TAB_IDS = ['actions', 'details', 'merges', 'history', 'questions', 'chat', 'commits', 'criteria'];   // ASS-558: Commits; ASS-559: Acceptance criteria last
 const statusOf = (s, ticket) => lines(s, wide).find(l => l.includes(ticket))?.match(/ (Backlog|Code Review) /)?.[1];
 
 test('the project menu has focus at first; tab moves it to the day, the ticket grid, then back', () => {
@@ -788,7 +795,7 @@ test('S and B: the diagram gains the freed lines (ASS-187)', () => {
   const size = h => headerLines(h, 160, at160.now).length + platform(h, 160, at160.now).length;
   for (const [flow, module] of [['S', sprintFlow], ['B', backlogFlow]]) {
     const s = { ...state, screen: flow, flowchartView: 'tickets' };
-    assert.ok(size(s) <= size({ ...state, screen: 's' }) - 10, `${flow}: ${size(s)}`);
+    assert.ok(size(s) <= size({ ...state, screen: 's' }) - 7, `${flow}: ${size(s)} vs ${size({ ...state, screen: 's' })}`);   // ASS-566: 7, was 10 (the footer's three lines, boxes before)
     const view = module.view(s, at160);
     const top = view.findIndex(l => strip(l).startsWith('┌'));
     assert.ok(view.length - top >= 25, `${flow}: box ${view.length - top}`);
@@ -916,7 +923,8 @@ test('on a past day the ticket table takes all the space under the progress bar'
   const top = out.findIndex(l => /│ +Ticket +│ +Status +│/.test(l)) - 1, bottom = out.findIndex((l, i) => i > top && l.startsWith('└'));
   assert.ok(out.some(l => l.includes('ABC-100')));
   assert.ok(keyUnder(out, bottom) > 0);                                // the key under it (ASS-259)
-  assert.match(out[bottom + 1 + keyUnder(out, bottom)], /^ +┌/);      // then the platform boxes (the models box is always there)
+  assert.equal(out[bottom + 1 + keyUnder(out, bottom)], '');                     // ASS-573: a blank line under the key,
+  assert.match(out[bottom + 2 + keyUnder(out, bottom)], /^ +control: /);      // then the footer's status lines (ASS-566; the platform boxes before)
 });
 
 test('shift-tab moves the focus back the other way', () => {
@@ -1282,9 +1290,9 @@ const menuOf = (s, size = wide) => {
 };
 
 test('ASS-183: the bottom line reads press ? for menu', () => {
-  centered(lines(state).at(-1), 'press ? for menu');
-  centered(lines({ ...state, screen: 'r' }).at(-1), 'press ? for menu');
-  centered(lines(menuOpened(state)).at(-1), 'press ? for menu');   // the dialog open too
+  bottomLine(lines(state).at(-1), 'press ? for menu');
+  bottomLine(lines({ ...state, screen: 'r' }).at(-1), 'press ? for menu');
+  bottomLine(lines(menuOpened(state)).at(-1), 'press ? for menu');   // the dialog open too
 });
 const menuOpened = s => handleKey(s, questionMark, wide);
 
@@ -1293,9 +1301,9 @@ test('ASS-183: ? opens the menu: one entry per line — key, label, agent count 
   const menu = menuOf(state);
   assert.deepEqual(menu, [
     's sprint 🤖x3', 'S sprint flow', 'b backlog 🤖x0', 'B backlog flow', 'c control', 'f sub-flows 🤖x0', 'm merge requests 🤖x0',
-    'r repos 🤖x0', 'u updates', 'U MRs ready for approval', 'a agents 🤖x0', 'x chat', 'h memory', 'p performance',   // p: ASS-411
+    'r repos 🤖x0', 'u updates', 'U MRs ready for approval', 'a agents 🤖x0', 'x chat', 'h memory', 'p performance', 'n compute network',   // p: ASS-411; n: ASS-557
     'A agents for all projects',   // its own group (ASS-188, ASS-246)
-    'space pause Example', '! pause every project', '/ hide project menu', 'Q quit',
+    'space pause Example', '! pause every project', 'P focus on planning on', 'q seat queue', '/ hide project menu', 'Q quit',   // P: ASS-531, q: ASS-566, on the sprint screen
     '⦿ needs you — counted on Operator Needed if a sprint ticket (backlog: ●)', '⦿ going on with an assumption — not counted (backlog: ●)',   // what the marks mean, a blank line apart (ASS-248)
     '⦿ a requirements change waits to be accepted or rejected', '🤖 agents are working on it 💻 a script is running on it', '✦ feature ✘ bug ⌕ spike ☛ worked by hand ↯ fast-tracked',   // the sprint row's glyphs (ASS-259)
   ]);
@@ -1419,144 +1427,6 @@ test('the dashboard opens with the progress bar, full width', () => {
   assert.ok(!lines(handleKey(state, key('f'))).some(l => l.startsWith('┌')));
 });
 
-// ASS-368: the local-environments entries no longer get a box; only control and models.
-test('above the bottom line, with a blank line between: a control box and the models box, each field as field: value, without control start-time; no box for a local environment', () => {
-  const project = {
-    id: 'p', name: 'P', sprint: null,
-    environments: [
-      { name: 'local-pc', type: 'local-pc', folder: '/src/example', 'active-branch': 'master' },
-      { name: 'dev-container', type: 'dev-container' },
-    ],
-  };
-  // The box is built from the running control the dashboard started (state.controls), not project.json (ASS-310); no model line, no start-time.
-  const out = lines(initialState({ projects: [project], controls: { p: { pid: 44704, startTime: '2026-10-01T15:51:00Z' } } }));
-  const boxes = out.slice(-11, -2);
-  assert.match(out.at(-1), /press \? for menu/);
-  assert.equal(out.at(-2), '');
-  assert.match(boxes[0], /^ +┌─+┐ {4}┌─+┐$/);                 // the models box last, always there
-  assert.match(boxes[1], /│ control +│ {4}│ models +│$/);
-  assert.match(boxes[2], /│ status: Online +│ {4}│ Day Spend: \$0\.00 +│$/);   // the spend under the models (ASS-430)
-  assert.match(boxes[3], /│ process-id: 44704 +│ {4}│ Sprint Spend: \$0\.00 +│$/);
-  assert.match(boxes[4], /│ uptime: 13m +│ {4}│ session: — +│$/);
-  assert.match(boxes[5], /│ disk free: unknown +│ {4}│ weekly: — +│$/);   // ASS-292
-  assert.match(boxes[6], /│ golden image: none +│ {4}│ account: — +│$/);
-  assert.match(boxes[7], /│ hindsight: none +│ {4}│ +│$/);   // ASS-293
-  assert.match(boxes[8], /^ +└─+┘ {4}└─+┘$/);
-  assert.ok(!boxes.join().includes('local-pc') && !boxes.join().includes('dev-container') && !boxes.join().includes('folder:'));
-  assert.ok(!boxes.join().includes('start-time'));
-  assert.ok(!boxes.join().includes('model:'));
-  assert.ok(!boxes.join().includes('type'));
-  assert.equal(boxes[0].length - boxes[0].trimStart().length, Math.floor((120 - boxes[0].trim().length) / 2));
-});
-
-test('after the other platform boxes, a models box: one line per model in use in this project, most agents first, with its robot count', () => {
-  const project = { id: 'p', name: 'P', sprint: null, environments: [{ name: 'local-pc', type: 'local-pc' }] };
-  const agent = (model, projectId = 'p') => ({ project: projectId, model, 'agent-name': 'X', 'work-item': null });
-  const team = [agent('opus-4.8'), agent('opus-5'), agent('opus-5'), agent('haiku-4'), agent('opus-5', 'other')];
-  const out = lines(initialState({ projects: [project], assignments: team, controls: { p: { pid: 1, startTime: '2026-10-01T15:51:00Z' } } }));
-  const top = out.findLastIndex(l => /^ +┌/.test(l));
-  assert.match(out[top], /┐ {4}┌─+┐$/);
-  assert.match(out[top + 1], /│ control +│ {4}│ models +│$/);   // no local-pc box (ASS-368)
-  assert.match(out[top + 2], /│ opus-5 🤖x2 +│$/);
-  assert.match(out[top + 3], /│ haiku-4 🤖x1 +│$/);
-  assert.match(out[top + 4], /│ opus-4\.8 🤖x1 +│$/);
-});
-
-test('the models box ends with the Claude session and weekly usage, each counting down each second, and the logged-in account; without a reading, dashes', () => {
-  const usage = { email: 'me@example.com', session: { percent: 7.4, 'resets-at': '2026-10-01T18:00:00Z' }, weekly: { percent: 88.6, 'resets-at': '2026-10-03T03:00:00Z' }, 'as-of': '2026-10-01T16:00:00Z' };
-  const project = { id: 'p', name: 'P', sprint: null, environments: [], claudeUsage: usage };
-  const agent = model => ({ project: 'p', model, 'agent-name': 'X', 'work-item': null });
-  const box = (s, size) => { const out = lines(s, size); const top = out.findLastIndex(l => /^ +┌/.test(l)); return out.slice(top + 1, out.findLastIndex(l => /^ +└/.test(l))); };
-  const withAgents = box(initialState({ projects: [project], assignments: [agent('opus-5')] }));
-  assert.match(withAgents[0], /│ models +│$/);
-  assert.match(withAgents[1], /│ opus-5 🤖x1 +│$/);
-  assert.match(withAgents[2], /│ Day Spend: \$0\.00 +│$/);   // the spend below the models (ASS-430)
-  assert.match(withAgents[3], /│ Sprint Spend: \$0\.00 +│$/);
-  assert.match(withAgents[4], /│ session: 7% used, resets Thu Oct 1 @ 6:00 PM UTC \(in 1h 56m\) +│$/);   // whole percent shown
-  assert.match(withAgents[5], /│ weekly: 89% used, resets Sat Oct 3 @ 3:00 AM UTC \(in 1d 10h\) +│$/);
-  assert.match(withAgents[6], /│ account: me@example\.com +│$/);
-  const later = box(initialState({ projects: [project] }), { ...screen, now: new Date('2026-10-01T17:59:58Z') });
-  assert.equal(later.length, 6);                                          // no agents: the box, the spend and the three lines
-  assert.match(later[0], /│ models +│$/);
-  assert.match(later[3], /session: 7% used, resets Thu Oct 1 @ 6:00 PM UTC \(in 2s\)/);
-  assert.match(box(initialState({ projects: [project] }), { ...screen, now: new Date('2026-10-01T18:00:05Z') })[3], /\(5s ago\)/);
-  assert.match(box(initialState({ projects: [project] }), { ...screen, now: new Date('2026-10-03T02:59:59Z') })[4], /weekly: 89% used, .*\(in 1s\)/);
-  assert.match(box(initialState({ projects: [project] }), { ...screen, now: new Date('2026-10-03T03:00:07Z') })[4], /weekly: 89% used, .*\(7s ago\)/);
-  const none = box(initialState({ projects: [{ ...project, claudeUsage: null }] }));
-  assert.match(none[3], /│ session: — +│$/);
-  assert.match(none[4], /│ weekly: — +│$/);
-  assert.match(none[5], /│ account: — +│$/);
-  const emailOnly = box(initialState({ projects: [{ ...project, claudeUsage: { email: 'me@example.com', session: { percent: null, 'resets-at': null }, weekly: null, 'as-of': '2026-10-01T16:00:00Z' } }] }));
-  assert.match(emailOnly[3], /│ session: — +│$/);
-  assert.match(emailOnly[4], /│ weekly: — +│$/);                       // weekly null: no weekly cap (ASS-65)
-  assert.match(emailOnly[5], /│ account: me@example\.com +│$/);
-});
-
-test('the models box shows this month\'s Anthropic API spend just before the account (ASS-153), the project\'s own (ASS-221): with a budget its share of it, gold from 80% and red from 100%; nothing without data or for another month', () => {
-  const project = { id: 'p', name: 'P', sprint: null, environments: [], claudeUsage: null };
-  const raw = (apiCost, size = screen) => { const out = render(initialState({ projects: [{ ...project, apiCost }] }), size); const top = out.findLastIndex(l => /┌/.test(l)); return out.slice(top + 1, out.findLastIndex(l => /└/.test(l))); };
-  const box = (apiCost, size) => raw(apiCost, size).map(strip);
-  const cost = (usd, budget = null, month = '2026-10') => ({ month, usd, 'as-of': '2026-10-01T15:00:00Z', budget });
-  assert.match(box(cost(12.34))[5], /│ API \$12\.34 this month +│$/);
-  assert.match(box(cost(12.34))[6], /│ account: — +│$/);                     // the account last
-  assert.match(box(cost(5))[5], /│ API \$5\.00 this month +│$/);
-  assert.match(box(cost(12.34, 50))[5], /│ API \$12\.34 \/ \$50 this month +│$/);
-  assert.match(box(cost(12.34, 50.5))[5], /│ API \$12\.34 \/ \$50\.50 this month +│$/);
-  assert.ok(!raw(cost(39.99, 50))[5].includes('\x1b['));                    // under 80%: plain
-  assert.ok(raw(cost(40, 50))[5].includes('\x1b[38;2;255;215;0m'));        // 80%: gold
-  assert.ok(raw(cost(50, 50))[5].includes('\x1b[31m'));                    // the budget reached: red
-  assert.ok(!raw(cost(500))[5].includes('\x1b['));                         // no budget: never coloured
-  assert.equal(box(null).length, 6);                                       // no data: just the spend and usage lines
-  assert.ok(!box(null).join().includes('API'));
-  assert.equal(box(cost(12.34, null, '2026-09')).length, 6);               // last month's: not this month's spend
-});
-
-test('ASS-221 AC1, AC2, AC4: the models box shows each project\'s billing — an API-key login its org and its own spend, or spend unknown; a subscription login its usage, and its own spend or none', () => {
-  const usage = (authMethod, org = 'Example') => ({ email: 'me@example.com', session: { percent: 100, 'resets-at': '2026-10-01T18:00:00Z' }, weekly: { percent: 100, 'resets-at': '2026-10-03T03:00:00Z' }, 'auth-method': authMethod, org, 'as-of': '2026-10-01T15:00:00Z' });
-  const box = (claudeUsage, apiCost = null) => {
-    const out = render(initialState({ projects: [{ id: 'p', name: 'P', sprint: null, environments: [], claudeUsage, apiCost }] }), screen).map(strip);
-    return out.slice(out.findLastIndex(l => /┌/.test(l)) + 1, out.findLastIndex(l => /└/.test(l))).map(l => l.replace(/^ *│ (.*?) *│$/, '$1'));
-  };
-  const dollarless = l => (/^(Day|Sprint) Spend: \$0\.00$/.test(l) ? l.split(':')[0] : l);   // ASS-430: the spend under the models
-  const own = { month: '2026-10', usd: 3.92, 'as-of': '2026-10-01T15:00:00Z', budget: 50 };
-  // An API-key project with its own org's spend: no subscription usage.
-  assert.deepEqual(box(usage('api_key'), own).map(dollarless), ['models', 'Day Spend', 'Sprint Spend', 'billing: API key (Example)', 'API $3.92 / $50 this month', 'account: me@example.com']);
-  // An API-key project with no admin key, or no reading this month: unknown, never another org's number.
-  assert.deepEqual(box(usage('api_key')).map(dollarless), ['models', 'Day Spend', 'Sprint Spend', 'billing: API key (Example)', 'API spend: unknown for Example', 'account: me@example.com']);
-  assert.deepEqual(box(usage('api_key'), { ...own, month: '2026-09' })[4], 'API spend: unknown for Example');
-  // A subscription project: its usage as before, with no API line unless it has its own spend.
-  const subscription = box(usage('claude.ai', 'Ada Example'));
-  assert.deepEqual(subscription.map(l => l.split(':')[0]), ['models', 'Day Spend', 'Sprint Spend', 'session', 'weekly', 'account']);
-  assert.match(subscription[4], /^weekly: 100% used/);
-  assert.deepEqual(box(usage('claude.ai'), own).map(l => l.split(':')[0]), ['models', 'Day Spend', 'Sprint Spend', 'session', 'weekly', 'API $3.92 / $50 this month', 'account']);
-  assert.deepEqual(box(null).map(l => l.split(':')[0]), ['models', 'Day Spend', 'Sprint Spend', 'session', 'weekly', 'account']);   // nothing read yet: as before
-});
-
-// ASS-368 AC1: project.json's local-environments get no box, on any screen,
-// with or without an agent assigned to one; control and models still show.
-test('ASS-368: no box is drawn for a local-environments entry (local-pc, dev-container), on any screen; the control and models boxes stay', () => {
-  const project = { id: 'p', name: 'P', sprint: null, environments: [{ name: 'local-pc', type: 'local-pc', folder: '/src/x', 'ai-feedback-short': 'Healthy' }, { name: 'dev-container', type: 'dev-container' }] };
-  const watcher = env => ({ project: 'p', model: 'm', 'agent-name': 'X', 'work-item': null, 'local-environment': env });
-  for (const screen of ['a', 'b', 'c', 'm', 's', 'S', 'B']) {
-    const st = { ...initialState({ projects: [project], assignments: [watcher('local-pc'), watcher('dev-container')], controls: { p: { pid: 1, startTime: '2026-10-01T15:51:00Z' } } }), screen };
-    const out = lines(st);
-    assert.ok(!out.some(l => /│ (local-pc|dev-container)( 🤖)? +│/.test(l)), `screen ${screen}: no environment box`);
-    assert.ok(!out.some(l => l.includes('folder: /src/x') || l.includes('Healthy')), `screen ${screen}: no environment fields`);
-    if (screen !== 'S' && screen !== 'B') {
-      assert.ok(out.some(l => /│ control +│/.test(l)), `screen ${screen}: control box`);
-      assert.ok(out.some(l => /│ models +│/.test(l)), `screen ${screen}: models box`);
-    }
-  }
-});
-
-test('the control box title carries a robot when one of this project\'s agents is assigned to control', () => {
-  const project = { id: 'p', name: 'P', sprint: null, environments: [] };
-  const agent = (control, projectId = 'p') => ({ project: projectId, model: 'm', 'agent-name': 'X', 'work-item': null, control });
-  const title = team => lines(initialState({ projects: [project], assignments: team, controls: { p: { pid: 1, startTime: '2026-10-01T15:51:00Z' } } })).find(l => l.includes('│ control'));
-  assert.match(title([agent(true)]), /│ control 🤖 +│/);
-  assert.match(title([agent(false), agent(true, 'other')]), /│ control +│/);
-});
-
 test('a control exiting with 75 starts the restart, once; any other code, not while quitting, marks it down with its code and the line before its exit line (ASS-193)', () => {
   const project = { id: 'p', name: 'P', sprint: null, environments: [] };
   // The control was started (state.controls), not read from project.json (ASS-310).
@@ -1566,15 +1436,14 @@ test('a control exiting with 75 starts the restart, once; any other code, not wh
   const down = controlExited(logged, 'p', 1, 0, 1_000_000);
   assert.deepEqual(down.controlsDown, { p: { code: 1, line: 'boom: no such file', at: 1_000_000, restartAt: 1_005_000, gaveUp: false, crashes: 1 } });   // ASS-460: started again in 5 s
   assert.equal(down.quitting, false);
-  const box = lines(down).filter(l => l.includes('│ control') || l.includes('│ exited: ') || l.includes('│ last: '));   // the box's, not the header's red line (ASS-460)
-  assert.match(box[0], /│ control DOWN +│/);
-  assert.ok(box.some(l => /│ exited: code 1 +│/.test(l)));
-  assert.ok(box.some(l => /│ last: boom: no such file +│/.test(l)));
-  assert.ok(render(down, screen).some(l => l.includes('\x1b[31mcontrol DOWN')));   // in red
-  // Shown even once control's own record is gone, and the long line cut short.
+  // ASS-566: the footer's first line says it down, red, with its code; the header's red line (ASS-460) its last line.
+  const then = { ...screen, now: 1_000_000 };
+  assert.ok(lines(down, then).some(l => l.includes('control: DOWN (exit 1, restart in 5s, crash 1)')), lines(down, then).join('\n'));
+  assert.ok(render(down, then).some(l => l.includes('\x1b[31mcontrol: DOWN')));   // in red
+  assert.ok(lines(down).some(l => l.includes('CONTROL DOWN') && l.includes('last: boom: no such file')));
+  // Shown even once control's own record is gone.
   const gone = controlExited({ ...logged, controlLog: [{ text: 'x'.repeat(200), project: 'p' }, { text: 'control exited (code 1)', project: 'p' }] }, 'p', 1);
-  assert.ok(lines(gone).some(l => /│ control DOWN +│/.test(l)));
-  assert.ok(lines(gone).filter(l => l.includes('│ last: ')).every(l => !l.includes('x'.repeat(61))));   // in the box; the header's line (ASS-460) has the width
+  assert.ok(lines(gone).some(l => l.includes('control: DOWN (exit 1')));
   // 75: a restart, the dashboard shutting down to exit with it; nothing marked down.
   const restarting = controlExited(logged, 'p', 75);
   assert.deepEqual([restarting.quitting, restarting.restart, restarting.controlsDown], [true, true, {}]);
@@ -1609,26 +1478,15 @@ test('a restart drains: each control\'s "restart waiting for N agents" line show
   assert.deepEqual([crashed.quitting, crashed.restart, crashed.controlsDown.q?.code], [true, true, 1]);
 });
 
-test('uptime is the time since control started, in its two largest units', () => {
-  const at = start => lines(initialState({ projects: [{ id: 'p', name: 'P', sprint: null, environments: [] }], controls: { p: { pid: 1, startTime: start } } }))
-    .find(l => l.includes('│ uptime: '));
-  assert.match(at('2026-10-01T16:03:30Z'), /│ uptime: 0m /);
-  assert.match(at('2026-09-30T16:43:00Z'), /│ uptime: 23h 21m /);
-  assert.match(at('2024-06-06T00:00:00Z'), /│ uptime: 847d 16h /);
-  // No running control (no state.controls entry): no control box at all — no uptime, no DOWN box (ASS-310 AC1).
-  const noControl = lines(initialState({ projects: [{ id: 'p', name: 'P', sprint: null, environments: [] }] }));
-  assert.ok(!noControl.some(l => l.includes('uptime')));
-  assert.ok(!noControl.some(l => l.includes('│ control')));   // no normal box and no DOWN box
-});
-
-test('the ticket table runs down to the platform boxes', () => {
+test('the ticket table runs down to the footer\'s status lines (ASS-566; the platform boxes before)', () => {
   const many = Array.from({ length: 40 }, (_, i) => ({ key: `ABC-${100 + i}`, title: 'T', priority: i }));
   const project = { id: 'p', name: 'P', sprint: { ...sprint, features: many, bugs: [], spikes: [] }, environments: [] };
   const out = lines(initialState({ projects: [project], controls: { p: { pid: 1, startTime: '2026-10-01T15:51:00Z' } } }), wide);
   const top = out.findIndex(l => /│ +Ticket +│ +Status +│/.test(l)) - 1, bottom = out.findIndex((l, i) => i > top && l.startsWith('└'));
-  const boxes = out.findIndex(l => /^ +┌/.test(l));
+  const boxes = out.findIndex(l => l.includes('control: up'));
   assert.ok(keyUnder(out, bottom) > 0);
-  assert.equal(bottom + keyUnder(out, bottom), boxes - 1);           // the key between them (ASS-259)
+  assert.equal(bottom + keyUnder(out, bottom), boxes - 2);           // the key between them (ASS-259), then a blank line (ASS-573)
+  assert.equal(out[boxes - 1], '');
 });
 
 test('the progress bar sizes each state by its tickets and shades it by sequence: Done #3A703A, darker each step back, black at the furthest; the table\'s squares match (ASS-48)', () => {
@@ -1658,7 +1516,7 @@ test('on the progress bar\'s bottom border, a robot per agent on a sprint ticket
   const bar = out.findIndex(l => l.startsWith('│█'));
   assert.equal(out[bar + 1], `└🤖🤖${'─'.repeat(16)}🤖${'─'.repeat(18)}┘`);   // runs of 20 and 20: build at column 0, done at 20
   assert.equal(out[bar + 2], ` Build${' '.repeat(15)}Done`);       // each state's name where its run starts
-  assert.equal(out[bar + 3], '');                                  // then a blank line, and the ticket table
+  assert.equal(out[bar + 3], 'P focus on planning: off');         // then the focus-on-planning line (ASS-531: was blank), and the ticket table
   assert.ok(out[bar + 4].startsWith('┌'));
 });
 
@@ -1672,7 +1530,7 @@ test('below the progress bar, a full-width ticket table', () => {
   const top = out.findIndex(l => l.startsWith('└')) + 3;            // past the state names and a blank line
   assert.equal(out[top], `┌${out[top].slice(1, -1)}┐`);
   assert.equal(out[top].length, wide.columns);
-  assert.match(out[top + 1], /^│ +Ticket +│ +Status +│ Points │ +Dev +│ +Testing +│ Total Token Spend │ +Agents +│$/);   // no Build, MR or Health column (ASS-437), no Assignee (ASS-488)
+  assert.match(out[top + 1], /^│ +Ticket +│ +Status +│ Points │ +Machine +│ +Runs in +│ +Spend +│ +Agents +│$/);   // no Build, MR or Health column (ASS-437), no Assignee (ASS-488); ASS-559: Machine and Runs in for Dev and Testing
 });
 
 test('ASS-488 AC1, AC4: the sprint grid has no Assignee column — neither its header nor any row shows the ticket\'s assignee', () => {
@@ -1681,17 +1539,17 @@ test('ASS-488 AC1, AC4: the sprint grid has no Assignee column — neither its h
   assert.ok(!out[top + 1].includes('Assignee'), out[top + 1]);
   const row = out.find(l => l.includes('ABC-1: New Feature'));
   assert.ok(!row.includes('Ada Example'), row);
-  assert.match(row, / — +🤖 Daredevil +│$/);                          // Total Token Spend, then Agents
+  assert.match(row, / — +🤖 Daredevil +│$/);                          // Spend (ASS-559: was Total Token Spend), then Agents
   assert.equal(out[top + 1].split('│').length - 2, 7);               // seven headers
 });
 
 test('one row per sprint ticket, without the branch, worktree or merge requests (ASS-437: on the ticket screen\'s Merge requests tab)', () => {
   const out = lines(state, wide);
   const first = out.findIndex(l => l.includes('ABC-1: New Feature'));
-  assert.match(out[first], /^│   2 .*ABC-1: New Feature +Code Review +3 +● ● ● +● ● ● +— +🤖 Daredevil +│$/);   // no Assignee (ASS-488)
+  assert.match(out[first], /^│   2 .*ABC-1: New Feature +Code Review +3 +Mac +Lima VM +— +🤖 Daredevil +│$/);   // no Assignee (ASS-488); ASS-559: where it runs, no AC dots
   assert.match(out[first + 1], /^│ +🤖 Elektra +│$/);
   assert.match(out[first + 2], /^│( {3}-)+ +│$/);                                   // dashed between rows (ASS-243)
-  assert.match(out[first + 3], /^│   1 .*ABC-2: New Bug +Backlog +— +— +— +— +— +│$/);
+  assert.match(out[first + 3], /^│   1 .*ABC-2: New Bug +Backlog +— +Mac +Lima VM +— +— +│$/);   // ASS-559: where it runs
   assert.ok(!out.some(l => /change\/ABC-1|worktrees|!1827|!12\b|Healthy/.test(l)));   // nor its Health (ASS-437 AC7)
 });
 
@@ -1725,13 +1583,14 @@ test('the ticket table takes all the space under the progress bar; the repos scr
     assert.equal(out.length, tall.rows);
     assert.ok(out.some(l => l.includes('ABC-100')));
     assert.ok(!out.some(l => l.includes('repo-0')));
-    const boxes = out.findLastIndex(l => /^ +┌/.test(l)), bottom = out.findLastIndex((l, i) => i < boxes && l.startsWith('└'));
-    assert.equal(bottom + keyUnder(out, bottom), boxes - 1);   // the ticket table ends above the key (ASS-259) and the platform boxes
+    const boxes = out.findLastIndex(l => /^ +control: /.test(l)), bottom = out.findLastIndex((l, i) => i < boxes && l.startsWith('└'));
+    assert.equal(bottom + keyUnder(out, bottom), boxes - 2);   // the ticket table ends above the key (ASS-259), a blank line (ASS-573) and the footer's status lines (ASS-566)
+    assert.equal(out[boxes - 1], '');
     const repos = lines({ ...initialState({ projects: [project], pauses }), screen: 'r' }, tall);
     assert.equal(repos.length, tall.rows);
     assert.ok(repos.some(l => l.includes('repo-0')));
     assert.ok(!repos.some(l => l.includes('ABC-100')));
-    assert.ok(repos[repos.findLastIndex(l => /^ +┌/.test(l)) - 1].startsWith('└'));
+    assert.ok(repos[repos.findLastIndex(l => /^ +control: /.test(l)) - 1].startsWith('└'));
     assert.equal(repos.at(-2), '');
   }
 });
@@ -1836,9 +1695,9 @@ test('a ticket with several variations shows one full row per variation, keyed K
   const out = lines(initialState({ projects: [{ name: 'P', sprint: { ...sprint, features: tickets, bugs: [], spikes: [] } }] }), { ...wide, rows: 80 });
   const rows = out.filter(l => /ABC-\d/.test(l));
   assert.equal(rows.length, 3);
-  assert.match(rows[0], /^│   1  ✦ {7} ABC-7\.A: Two ways +— +5 +● +● +— +— +│$/);
-  assert.match(rows[1], /^│   1  ✦ {7} ABC-7\.B: Two ways +— +5 +● +● +— +— +│$/);
-  assert.match(rows[2], /^│   2  ✦ {7} ABC-8: One way /);   // no engine, no seat (ASS-357)
+  assert.match(rows[0], /^│   1  ✦ {5} ABC-7\.A: Two ways +— +5 +— +— +│$/);   // ASS-559: no AC dots; on no machine
+  assert.match(rows[1], /^│   1  ✦ {5} ABC-7\.B: Two ways +— +5 +— +— +│$/);
+  assert.match(rows[2], /^│   2  ✦ {5} ABC-8: One way /);   // no engine, no seat (ASS-357)
   assert.ok(!out.some(l => /ABC-7: |Variation/.test(l)));
   assert.ok(render(initialState({ projects: [{ name: 'P', sprint: { ...sprint, features: tickets, bugs: [], spikes: [] } }] }), { ...wide, rows: 80 })
     .some(l => l.includes('\x1b]8;;http://t/7\x1b\\ABC-7.B: Two ways\x1b]8;;\x1b\\')));
@@ -1855,8 +1714,8 @@ test('each variation row has its own status and sort position; priority and poin
   const rows = out.filter(l => /ABC-\d/.test(l)).map(strip);
   assert.deepEqual(rows.map(l => l.match(/ABC-[\d.AB]+/)[0]), ['ABC-7.B', 'ABC-8', 'ABC-7.A']);
   assert.match(rows[0], /ABC-7\.B: T +Done +5 /);
-  assert.match(rows[2], /^│   4 █✦ {5}💺 ABC-7\.A: T +Blocked for Human +5 /);   // a step that takes a seat (ASS-357)
-  assert.match(rows[0], /^│   4 █✦ {5}💺 ABC-7\.B: /);   // the icon columns blank (ASS-259); a seat: this Done is not is-done (ASS-357)
+  assert.match(rows[2], /^│   4 █✦ {6}ABC-7\.A: T +Blocked for Human +5 +Mac +Lima VM /);   // a step that takes a seat (ASS-357): ASS-559 says where
+  assert.match(rows[0], /^│   4 █✦ {6}ABC-7\.B: T +Done +5 +Mac +Lima VM /);   // the icon columns blank (ASS-259); a seat: this Done is not is-done (ASS-357)
   const bar = out.find(l => l.startsWith('│') && l.includes('38;2'));
   assert.equal([...bar.matchAll(/\x1b\[(?:38;2;[\d;]+|32)m█/g)].length, 3);             // one run per variation status
 });
@@ -1881,7 +1740,7 @@ test('an Agents line longer than 40 columns is cut with an ellipsis', () => {
   const long = [assignment('Daredevil-of-Hells-Kitchen-and-Matt-Murdock', 'ABC-1')];
   // 220 columns, not wide's 200: with Ticket's floor taken first (ASS-207) the Agents cell is 29 wide there.
   const row = lines(initialState({ projects, workflows: [engine], assignments: long }), { ...wide, columns: 220 }).find(l => l.includes('🤖 Daredevil'));
-  const cell = row.slice(row.indexOf('🤖 ')).replace(/ +│$/, '');
+  const cell = row.slice(row.lastIndexOf('🤖 ')).replace(/ +│$/, '');   // the Agents cell's 🤖, not the row's own (ASS-559: no seat column after it)
   assert.equal(visible(cell), 40);
   assert.ok(cell.endsWith('…'));
 });
@@ -1931,7 +1790,7 @@ test('an assignment shows only on the dashboard of the project it names', () => 
   const twin = { id: 'example-2', name: 'Example 2', stateEngine: 'example-development', sprint };
   const mixed = [assignment('Daredevil', 'ABC-1'), assignment('Elektra', 'ABC-1', null, 'example-2')];
   const first = initialState({ projects: [projects[0], twin], workflows: [engine], assignments: mixed });
-  const shows = s => lines(s, wide).flatMap(l => [...l.matchAll(/🤖 (\w+)/g)].map(m => m[1])).filter(name => name !== 'agent');   // not the key's "🤖 agent working" (ASS-456)
+  const shows = s => lines(s, wide).flatMap(l => [...l.matchAll(/🤖 (?![A-Z]+-\d)(\w+)/g)].map(m => m[1])).filter(name => name !== 'agent');   // not the key's "🤖 agent working" (ASS-456), nor a row's own 🤖 before its key (ASS-559: no seat column between)
   assert.deepEqual(shows(first), ['Daredevil']);
   assert.deepEqual(shows(handleKey(first, key('right'), wide)), ['Elektra']);
 });
@@ -1949,14 +1808,14 @@ test('MR keys and build statuses are links (ASS-437: on the Merge requests tab)'
 test('the ticket cell links to the ticket; without a url it is plain', () => {
   const out = render(state, wide);
   assert.ok(out.some(l => l.includes('\x1b]8;;http://t/ABC-1\x1b\\ABC-1: New Feature\x1b]8;;\x1b\\')));
-  assert.ok(out.some(l => /^│ [ \d]{3} \x1b\[(?:38;2;[\d;]+|32)m█\x1b\[0m✘ {5}💺 ABC-2: New Bug /.test(l)));
+  assert.ok(out.some(l => /^│ [ \d]{3} \x1b\[(?:38;2;[\d;]+|32)m█\x1b\[0m✘ {6}ABC-2: New Bug /.test(l)));
 });
 
 test('each ticket type has its own icon left of the name, and rows stay full width', () => {
   const out = lines(state, wide);
   for (const [icon, name] of [['✦', 'ABC-1: New Feature'], ['✘', 'ABC-2: New Bug'], ['⌕', 'ABC-3: New Spike']]) {   // one-cell glyphs (ASS-259)
     const row = out.find(l => l.includes(name.split(':')[0]));
-    assert.match(row, new RegExp(`^│ [ \\d]{3} (█| )${icon} {3}(🤖|💻| {2})(💺| {2}) ${name.split(':')[0]}`, 'u'));
+    assert.match(row, new RegExp(`^│ [ \\d]{3} (█| )${icon} {3}(🤖|💻| {2}) ${name.split(':')[0]}`, 'u'));
     assert.equal(visible(row), wide.columns);
   }
 });
@@ -1970,7 +1829,7 @@ test('ASS-437 AC1: without the Build column a row with a branch is one line, lik
   const seven = out.findIndex(l => l.includes('ABC-7')), eight = out.findIndex(l => l.includes('ABC-8'));
   assert.ok(!out.some(l => /change\/abc-7|wt-7/.test(l)));
   assert.equal(eight, seven + 2);                                   // one line, then the dashed line between rows
-  assert.equal(out[eight].match(/—/g).length, 6);                  // Status, Points, Dev, Testing, Total Token Spend, Agents — no MR or Health, no Assignee (ASS-488)
+  assert.equal(out[eight].match(/—/g).length, 4);                  // Status, Points, Spend, Agents — no MR or Health, no Assignee (ASS-488); ASS-559: Machine and Runs in blank, no Dev or Testing
 });
 
 test('the branch name links to its branch-url; without one it is plain (ASS-437: on the Merge requests tab)', () => {
@@ -1978,18 +1837,12 @@ test('the branch name links to its branch-url; without one it is plain (ASS-437:
   assert.ok(mergesOf({ key: 'ABC-9', title: 'T', ...single({ build: { branch: 'change/x' } }) }).some(l => /^Branch +change\/x$/.test(l)));
 });
 
-test('Dev shows a circle per AC: green Passed, red Failed, gray Incomplete', () => {
+test('ASS-559 AC1: the grid shows no acceptance-criteria circles — Dev and Testing went to the ticket screen\'s Acceptance criteria tab', () => {
   const criteria = ['Passed', 'Failed', 'Incomplete'].map(status => ({ 'dev-status': status, 'testing-status': 'Passed' }));
   const one = { name: 'P', sprint: { ...sprint, features: [{ key: 'ABC-9', title: 'T', ...single({ 'acceptance-criteria': criteria }) }], bugs: [], spikes: [] } };
   const out = render(initialState({ projects: [one] }), wide).map(unhighlight);
-  assert.ok(out.some(l => l.includes(' \x1b[32m●\x1b[0m \x1b[31m●\x1b[0m \x1b[90m●\x1b[0m ')));
-});
-
-test('Testing shows the same circles, by testing-status', () => {
-  const criteria = ['Incomplete', 'Passed', 'Failed'].map(status => ({ 'dev-status': 'Passed', 'testing-status': status }));
-  const one = { name: 'P', sprint: { ...sprint, features: [{ key: 'ABC-9', title: 'T', ...single({ 'acceptance-criteria': criteria }) }], bugs: [], spikes: [] } };
-  const out = render(initialState({ projects: [one] }), wide).map(unhighlight);
-  assert.ok(out.some(l => l.includes(' \x1b[90m●\x1b[0m \x1b[32m●\x1b[0m \x1b[31m●\x1b[0m ')));
+  assert.ok(!out.some(l => strip(l).includes('●')));
+  assert.ok(!out.some(l => /│ +Dev +│|│ +Testing +│/.test(strip(l))));
 });
 
 test('the worktree name links to its worktree-folder as a file URL; without one it is plain (ASS-437: on the Merge requests tab)', () => {
@@ -2295,7 +2148,7 @@ test('ASS-245 AC3: on a narrow screen a sub-flow\'s stations wrap onto further r
 
 test('ASS-245 AC5: the shipped three-level harness-development-v2 draws Test › Local Testing › Take Screenshots as nested boxes, the ticket at Take Screenshots', () => {
   const shipped = ['harness-development-v2', 'v2-test', 'v2-local-testing', 'v2-steps-to-test'].map(name => {
-    const loaded = JSON.parse(readFileSync(join(engineDir(name), 'state-engine.json'), 'utf8'));
+    const loaded = readEngine(join(engineDir(name), 'workflow.yaml'));
     return { name, steps: loaded.steps.toSorted((a, b) => a.sequence - b.sequence), lists: {} };
   });
   const at = { state: 'test', 'state-engine': 'harness-development-v2', 'sub-status': { state: 'local-testing', 'state-engine': 'v2-test', 'sub-status': { state: 'take-screenshots', 'state-engine': 'v2-local-testing' } } };
@@ -2376,47 +2229,17 @@ test('warning-indicator adds no box: only the status square leads the ticket', (
   const tickets = [{ key: 'ABC-7', title: 'T', ...single({ 'harness-status': hs('stuck') }) }, { key: 'ABC-8', title: 'U', ...single({ 'harness-status': hs('ok') }) }];
   const project = { name: 'P', stateEngine: 'e', sprint: { ...sprint, features: tickets, bugs: [], spikes: [] } };
   const out = render(initialState({ projects: [project], workflows: [warned] }), wide).map(unhighlight);
-  assert.match(out.find(l => l.includes('ABC-7')), /^│ [ \d]{3} \x1b\[(?:38;2;[\d;]+|32)m█\x1b\[0m✦ {5}💺 ABC-7: T /);
+  assert.match(out.find(l => l.includes('ABC-7')), /^│ [ \d]{3} \x1b\[(?:38;2;[\d;]+|32)m█\x1b\[0m✦ {6}ABC-7: T /);
   assert.ok(!out.some(l => l.includes('\x1b[31m██')));
   assert.match(strip(out.find(l => l.includes('ABC-7'))), / Blocked for Human {2,}/);
-  assert.match(out.find(l => l.includes('ABC-8')), /^│ [ \d]{3} \x1b\[(?:38;2;[\d;]+|32)m█\x1b\[0m✦ {5}💺 ABC-8: U /);
+  assert.match(out.find(l => l.includes('ABC-8')), /^│ [ \d]{3} \x1b\[(?:38;2;[\d;]+|32)m█\x1b\[0m✦ {6}ABC-8: U /);
 });
 
-test('Dev adds the automated test tally beneath the circles', () => {
+test('ASS-559: the grid shows no automated test tally (it is on the Acceptance criteria tab) — never undefined/undefined', () => {
   const tests = { 'number-of-relevant-automated-tests': 83, 'number-of-passing-relevant-automated-tests': 37 };
-  const criteria = [{ 'dev-status': 'Passed', 'testing-status': 'Passed' }];
-  const tickets = [
-    { key: 'ABC-7', title: 'T', priority: 1, ...single({ 'acceptance-criteria': criteria, 'local-testing': tests }) },
-    { key: 'ABC-8', title: 'U', priority: 2, ...single({ 'local-testing': tests }) },
-    { key: 'ABC-9', title: 'V', priority: 3, ...single({ 'acceptance-criteria': criteria }) },
-  ];
-  const out = render(initialState({ projects: [{ name: 'P', sprint: { ...sprint, features: tickets, bugs: [], spikes: [] } }] }), wide).map(unhighlight);
-  const row = out.findIndex(l => l.includes('ABC-7'));
-  assert.ok(out[row].includes(' \x1b[32m●\x1b[0m '));
-  assert.ok(out[row + 1].includes(' 37/83 automated tests  '));
-  const column = (line, text) => visible(strip(line).slice(0, strip(line).indexOf(text)));
-  assert.equal(column(out[row], '●'), column(out[row + 1], '37/83'));
-  assert.ok(out[row + 3].includes('ABC-8') && out[row + 3].includes(' 37/83 automated tests  '));
-  assert.ok(out[row + 5].includes('ABC-9') && !out[row + 6].includes('automated tests'));   // ABC-8 one line since the Build column went (ASS-437)
-});
-
-test('Dev shows no tally — never undefined/undefined — when local-testing has no counts: empty as ticket:sync makes it, or a verdict alone (ASS-45)', () => {
-  const verdict = { 'is-approved': true, summary: 'All green', timestamp: '2026-10-14T10:00:00Z' };
-  const criteria = [{ 'dev-status': 'Passed', 'testing-status': 'Passed' }];
-  const tickets = [
-    { key: 'ABC-7', title: 'T', priority: 1, ...single({ 'local-testing': {} }) },
-    { key: 'ABC-8', title: 'U', priority: 2, ...single({ 'acceptance-criteria': criteria, 'local-testing': verdict }) },
-    { key: 'ABC-9', title: 'V', priority: 3, ...single({ 'local-testing': { ...verdict, 'number-of-relevant-automated-tests': 83 } }) },
-    { key: 'ABC-10', title: 'W', priority: 4, ...single({ 'acceptance-criteria': criteria }) },   // no local-testing at all
-  ];
-  const out = render(initialState({ projects: [{ name: 'P', sprint: { ...sprint, features: tickets, bugs: [], spikes: [] } }] }), wide).map(unhighlight);
-  assert.ok(!out.some(l => l.includes('undefined')));
-  assert.ok(!out.some(l => l.includes('automated tests')));
-  const dash = out.find(l => l.includes('ABC-7'));
-  assert.match(strip(dash), /ABC-7: T .* — /);   // no criteria, no counts: the empty value
-  assert.ok(out.find(l => l.includes('ABC-8')).includes(' \x1b[32m●\x1b[0m '));
-  assert.ok(!strip(out.find(l => l.includes('ABC-9'))).includes('/83'));   // one count alone is not a tally
-  assert.ok(out.find(l => l.includes('ABC-10')).includes(' \x1b[32m●\x1b[0m '));   // local-testing missing: circles alone
+  const tickets = [{ key: 'ABC-7', title: 'T', priority: 1, ...single({ 'local-testing': tests }) }, { key: 'ABC-8', title: 'U', priority: 2, ...single({ 'local-testing': {} }) }];
+  const out = lines(initialState({ projects: [{ name: 'P', sprint: { ...sprint, features: tickets, bugs: [], spikes: [] } }] }), wide);
+  assert.ok(!out.some(l => l.includes('automated tests') || l.includes('undefined')));
 });
 
 test('a square left of each ticket name is shaded like its status in the progress bar', () => {
@@ -2430,7 +2253,7 @@ test('a square left of each ticket name is shaded like its status in the progres
   const out = render(initialState({ projects: [project], workflows: [{ name: 'e', steps }] }), { ...wide, rows: 80 }).map(unhighlight);
   const bar = out.find(l => l.startsWith('│') && l.includes('38;2'));
   const barShades = [...bar.matchAll(/(\x1b\[(?:38;2;[\d;]+|32)m)█/g)].map(m => m[1]);   // early, then done
-  const square = key => out.find(l => l.includes(key)).match(/^│ [ \d]{3} (\x1b\[(?:38;2;[\d;]+|32)m)█\x1b\[0m✦ {5}💺 /)?.[1];
+  const square = key => out.find(l => l.includes(key)).match(/^│ [ \d]{3} (\x1b\[(?:38;2;[\d;]+|32)m)█\x1b\[0m✦ {6}/)?.[1];
   assert.equal(square('ABC-7'), barShades.at(-1));
   assert.equal(square('ABC-8'), barShades[0]);
   assert.notEqual(square('ABC-7'), square('ABC-8'));
@@ -2700,7 +2523,7 @@ test('c shows control\'s output in a box the width of the screen, each line with
   const bottom = out.findIndex((l, i) => i > top && l.startsWith('└'));
   assert.equal(out[bottom + 1], 'log: /home/me/.harness/logs/control.log');
   assert.ok(render(s, wide)[render(s, wide).findIndex(l => l.startsWith('log: '))].includes('\x1b]8;;file:///home/me/.harness/logs/control.log'));
-  assert.match(out[bottom + 2], /^( *$| +┌| +press \?)/);                   // then the platform boxes, or the bottom line
+  assert.match(out[bottom + 2], /^( *$| +control: | +press \?)/);                   // then the footer's status lines (ASS-566), or the bottom line
 });
 
 test('before control prints, its box says so', () => {
@@ -3025,7 +2848,7 @@ test('Total Token Spend sums the cost-usd of every agent dispatched on the row\'
   const change = (...costs) => ({ 'from-state': 'backlog', 'to-state': 'code-review', timestamp: '2026-09-29T10:00:00Z', 'agent-dispatch-log': costs.map(dispatch) });
   const spent = { ...detailed, ...single({ 'harness-status': hs('code-review'), 'state-changes': [change(1.5, 0.26), change(null), change(10)] }) };
   const s = { ...onGrid, projects: [{ ...detailProject, sprint: { ...detailProject.sprint, features: [spent] } }] };
-  assert.match(lines(s, wide).find(l => l.includes('ABC-5')), /—\s+\$11\.76\s+🤖 Daredevil/);   // after Testing, then Agents (no Assignee since ASS-488)
+  assert.match(lines(s, wide).find(l => l.includes('ABC-5')), /Lima VM\s+\$11\.76\s+🤖 Daredevil/);   // after Runs in (ASS-559; Testing before), then Agents (no Assignee since ASS-488)
   assert.ok(!lines(s, wide).find(l => l.includes('ABC-5')).includes('Pat Owner'));
   assert.match(lines(onTab(press(s, 'return'), 'details'), { ...wide, rows: 80 }).join('\n'), /Total Token Spend\s+\$11\.76/);
   assert.match(lines(onTab(press(onGrid, 'down', 'return'), 'details'), { ...wide, rows: 80 }).join('\n'), /Ticket name +New Bug[\s\S]*Total Token Spend\s+—/);   // nothing dispatched
@@ -3067,18 +2890,18 @@ test('the ticket chat\'s spend (collaboration.json, ASS-35) — the sum of its t
   const s = { ...onGrid, projects: [{ ...detailProject, sprint: { ...detailProject.sprint, features: [two] }, collaborations: { 'ABC-5': { 'session-id': 's', briefed: null, turns: [{ timestamp: '2026-09-29T10:00:00Z', billing: 'api', 'cost-usd': 1 }, { timestamp: '2026-09-29T11:00:00Z', 'cost-usd': 0.25 }] } } }] };
   const rows = lines(s, wide).filter(l => l.includes('ABC-5.'));
   assert.match(rows.find(l => l.includes('ABC-5.A')), /\$2\.11/);    // $0.86 dispatched + $1.25 chatting
-  assert.match(rows.find(l => l.includes('ABC-5.B')), /—\s+—\s+🤖 Daredevil/);   // not counted twice (no Assignee since ASS-488)
+  assert.match(rows.find(l => l.includes('ABC-5.B')), /Lima VM\s+—\s+🤖 Daredevil/);   // not counted twice (no Assignee since ASS-488)
   assert.match(lines(onTab(press(s, 'return'), 'details'), { ...wide, rows: 80 }).join('\n'), /Total Token Spend\s+\$2\.11/);
   assert.match(lines(onTab(press(s, 'down', 'return'), 'details'), { ...wide, rows: 80 }).join('\n'), /Variation +B[\s\S]*Total Token Spend\s+\$1\.25/);
 });
 
 test('the ticket screen shows every detail of the ticket and the row\'s variation', () => {
   const open = press(onGrid, 'return');
-  const out = ['details', 'history'].map(tab => lines(onTab(open, tab), { ...wide, rows: 80 }).join('\n')).join('\n');
+  const out = ['details', 'history', 'criteria'].map(tab => lines(onTab(open, tab), { ...wide, rows: 80 }).join('\n')).join('\n');
   for (const text of [
     '✨ ABC-5', 'Detailed', 'Every field this ticket has', 'In Progress', 'Pat Owner',
     'Code Review (1, 1)', 'Long health: the whole story.', 'change/ABC-5', 'wt-5', '3/4 passing', '🤖 Daredevil',
-    'First criterion', 'Second criterion', 'Failed', 'Incomplete', '!55', 'Passed',
+    'First criterion', 'Second criterion', 'Failed', 'Incomplete', 'Passed',   // the Acceptance criteria tab (ASS-559)
     '10:00 UTC  Backlog   →   Code Review 🤖 Peter-Pan $0.86',   // the History tab, its times UTC (ASS-294)
   ]) assert.ok(out.includes(text), `shows ${text}`);
   assert.match(out, /Priority\s+4/);
@@ -3172,7 +2995,7 @@ test('with more than one variation, the ticket screen shows the variation\'s AI\
 
 test('the ticket screen\'s fields come in order, in groups, the health in its long form only', () => {
   const tab = tabOf(lines(onTab(press(onGrid, 'return'), 'details'), { ...wide, rows: 80 }));
-  const fields = tab.slice(0, 35);
+  const fields = tab.slice(0, 32);
   assert.ok(!tab.some(l => /Merge requests|!55/.test(l)), tab.join('\n'));   // its merge requests on their own tab (ASS-437)
   const labels = fields.map(l => l.match(/^(\S.*?)(?: {2,}|$)/)?.[1] ?? '');
   assert.deepEqual(labels, [
@@ -3183,11 +3006,12 @@ test('the ticket screen\'s fields come in order, in groups, the health in its lo
     'Branch', 'Worktree', '',
     'Total Token Spend', 'Total Agent Time', 'Total Time Planning', 'Total Time Executing', '',
     'Health', 'Automated tests', 'Gates', '',
-    'Agents', '',
-    'Acceptance criteria', '', '', '',                                // its two criteria, indented
+    'Agents',
+    'Acceptance criteria', '',                                        // ASS-559: how many; the criteria are on their own tab
     'QA',                                                             // the last: no Merge requests section (ASS-437: its own tab)
   ]);
-  assert.match(fields[34], /QA +Passed$/);
+  assert.match(fields[31], /QA +Passed$/);
+  assert.match(fields[29], /Acceptance criteria +2 — see the Acceptance criteria tab$/);
   assert.match(fields[0], /✨ ABC-5$/);
   assert.match(fields[12], /Dependencies +ABC-1 — not found$/);   // ASS-355: each named, with its status and assignee when found
   assert.match(fields[13], /^ +ABC-2 — no status, unassigned, not done$/);   // ABC-2 in the sprint
@@ -3196,8 +3020,22 @@ test('the ticket screen\'s fields come in order, in groups, the health in its lo
   assert.ok(!TAB_IDS.some(tab => lines(onTab(press(onGrid, 'return'), tab), { ...wide, rows: 80 }).some(l => l.includes('Short health'))));
 });
 
+test('ASS-564 AC3: the ticket screen marks an agent running without Claude Code\'s sandbox — "(unsandboxed)" beside it, and a Sandbox field saying where and why; a sandboxed one, neither', () => {
+  const at = sandboxed => tabOf(lines(onTab(press({ ...onGrid, sandboxed }, 'return'), 'details'), { ...wide, rows: 80 }));
+  const off = at({ Daredevil: { sandboxed: false, why: 'socat not installed', target: 'workstation-worktree', machine: 'ws-1' } });
+  const agents = off.findIndex(l => l.startsWith('Agents'));
+  assert.match(off[agents], /^Agents +🤖 Daredevil \(unsandboxed\)$/);
+  assert.match(off[agents + 1], /^Sandbox +Daredevil on ws-1: Claude Code's sandbox unavailable \(socat not installed\) — running unsandboxed$/);
+  for (const on of [{ Daredevil: { sandboxed: true, target: 'local-worktree', machine: 'mac' } }, undefined]) {
+    const out = at(on);
+    assert.match(out.find(l => l.startsWith('Agents')), /^Agents +🤖 Daredevil$/);
+    assert.ok(!out.some(l => l.startsWith('Sandbox')));
+  }
+});
+
 test('on the Details tab ↑/↓ scroll and other keys do nothing until esc; space still pauses', () => {
-  const long = { ...detailed, ...single({ 'harness-status': hs('code-review'), 'acceptance-criteria': Array.from({ length: 80 }, (_, i) => ({ 'criteria-number': i + 1, description: `Criterion ${i + 1}` })) }) };
+  // A description long enough to scroll (ASS-559: the acceptance criteria that made it long are on their own tab now).
+  const long = { ...detailed, description: Array.from({ length: 80 }, (_, i) => `Criterion-${i + 1}`.padEnd(100, '.')).join(' '), ...single({ 'harness-status': hs('code-review') }) };
   const s = { ...onGrid, projects: [{ ...detailProject, sprint: { ...detailProject.sprint, features: [long] } }] };
   const open = onTab(press(s, 'return'), 'details');
   const first = s => tabOf(lines(s, wide))[0];   // the Details tab's first line
@@ -3207,7 +3045,7 @@ test('on the Details tab ↑/↓ scroll and other keys do nothing until esc; spa
   assert.deepEqual(press(open, 'f', 'left'), open);
   assert.ok(press(open, 'space').pauses['example']?.human);
   const bottom = press(open, ...Array(200).fill('down'));
-  assert.ok(lines(bottom, wide).some(l => l.includes('Criterion 80')));
+  assert.ok(lines(bottom, wide).some(l => /│ QA +Passed/.test(l)));   // its last line
   assert.deepEqual(press(bottom, 'down'), bottom);                  // no further than the last line
 });
 
@@ -3234,7 +3072,7 @@ test('a human gate\'s ticket screen opens on its Actions tab: its human-review c
   assert.ok(actionsOf(out).some(l => /Approved\s+→ Working/.test(l)));
   assert.ok(actionsOf(out).some(l => /Rejected\s+→ back where it came from/.test(l)));
   assert.ok(!actionsOf(out).some(l => /Done/.test(l)));               // not a human's choice
-  assert.ok(out.some(l => l.includes('tab or 1-6 switch tabs')));
+  assert.ok(out.some(l => l.includes('tab or 1-8 switch tabs')));   // ASS-558: seven with Commits; ASS-559: eight with Acceptance criteria
   assert.match(tabOf(lines(onTab(open, 'details'), wide))[0], /Ticket number +✨ ABC-6/);
   assert.ok(!lines(press(onGrid, 'return'), wide).some(l => l.includes('HUMAN GATE')));   // no gate
 });
@@ -3247,7 +3085,7 @@ test('at a human gate ↑/↓ move the choice; shift-tab steps back a section, w
   assert.match(strip(chosen(down)), /Rejected/);
   const last = press(down, 'down', 'down', 'down', 'down');          // Set manual priority, Gate when leaving states, Pause this ticket and Delete ticket, after the gate's choices
   assert.deepEqual(press(last, 'down'), last);                       // no further than the last choice
-  assert.equal(handleKey(down, key('tab', { shift: true }), wide).ticketTab, 'chat');   // the section before the actions (ASS-101)
+  assert.equal(handleKey(down, key('tab', { shift: true }), wide).ticketTab, 'criteria');   // the section before the actions (ASS-101): the last, Acceptance criteria (ASS-559; Commits before, ASS-558)
   const back = { ...down, ticketTab: 'details' };
   assert.equal(chosen(back), undefined);                             // no reverse video while the details have focus
   assert.equal(press(back, 'down').ticketChoice, 1);                 // ↓ scrolls the details instead
@@ -3673,7 +3511,7 @@ test('ASS-185 AC4: the Details tab shows the whole description — no 300-charac
 // The backlog refinement engine as the dashboard loads engines/example-backlog-refinement (load.js loadWorkflows), and
 // the execution engine whose backlog-refinement-steps names it: where a backlog ticket sits (ASS-144); the History tab lists its steps.
 const refinementEngine = (() => {
-  const loaded = JSON.parse(readFileSync(join(engineDir('example-backlog-refinement'), 'state-engine.json'), 'utf8'));
+  const loaded = readEngine(join(engineDir('example-backlog-refinement'), 'workflow.yaml'));
   // ASS-258: the steps the tests below name shown by these names, whatever the engine calls them — these test the screen, not the engine's wording.
   const NAMES = { groom: 'Groom', 'awaiting-answers': 'Awaiting Answers', estimate: 'Estimate', 'awaiting-approval': 'Awaiting Approval', ready: 'Ready' };
   return { name: 'example-backlog-refinement', steps: loaded.steps.toSorted((a, b) => a.sequence - b.sequence).map(s => ({ ...s, name: NAMES[s.id] ?? s.name })), lists: {} };
@@ -3748,14 +3586,14 @@ test('on the backlog, enter opens the ticket screen; esc returns with the same s
   assert.equal(press(typed, 'escape').reasonDraft, null);                                       // esc gives up
   const back = press(opened, 'escape');
   assert.deepEqual([back.screen, back.ticket, back.backlogSelected, back.focus], ['b', null, 0, 'backlog']);
-  assert.ok(!lines(press(press(s, 'down'), 'return'), wide).some(l => l.includes('Accept')));   // grooming: nothing to decide
+  assert.ok(!lines(press(press(s, 'down'), 'return'), wide).some(l => /Accept\b/.test(l)));   // grooming: nothing to decide (ASS-559: not the Acceptance criteria tab)
 });
 
 // ASS-252: the harness's refinement, at Awaiting Split Decision, shows the
 // proposal Split's agent recorded and offers its exits: Accept, Reject (asking
 // why) and Keep whole.
 test('ASS-252 AC2, AC3: a backlog ticket at Awaiting Split Decision shows the proposed tickets — points, what they cover, their dependencies and criteria — and offers Accept, Reject with a reason, and Keep whole', () => {
-  const loaded = JSON.parse(readFileSync(join(engineDir('harness-backlog-refinement'), 'state-engine.json'), 'utf8'));
+  const loaded = readEngine(join(engineDir('harness-backlog-refinement'), 'workflow.yaml'));
   const harnessRefinement = { name: 'harness-backlog-refinement', steps: loaded.steps.toSorted((a, b) => a.sequence - b.sequence), lists: {} };
   const harnessRefining = { ...engine, lists: { 'backlog-refinement-steps': [{ id: 'backlog-refinement', sequence: 1, name: 'Backlog Refinement', action: { type: 'state-engine', engine: 'harness-backlog-refinement' } }] } };
   const proposal = { ticket: 'ABC-62', summary: 'two halves', tickets: [
@@ -3784,7 +3622,7 @@ test('ASS-252 AC2, AC3: a backlog ticket at Awaiting Split Decision shows the pr
 // screen offers its exits as example's Awaiting Approval's — Accept, and Return, which asks for the
 // operator's note — and its details and panel show the estimate noted (ticket:note-too-large).
 test('ASS-264 AC2: an example GitHub ticket at Too Large offers Accept, to Ready, and Return with a note, to Groom, and shows the estimate it was given', () => {
-  const loaded = JSON.parse(readFileSync(join(engineDir('example-github-backlog-refinement'), 'state-engine.json'), 'utf8'));
+  const loaded = readEngine(join(engineDir('example-github-backlog-refinement'), 'workflow.yaml'));
   const githubRefinement = { name: 'example-github-backlog-refinement', steps: loaded.steps.toSorted((a, b) => a.sequence - b.sequence), lists: {} };
   const githubRefining = { ...engine, lists: { 'backlog-refinement-steps': [{ id: 'backlog-refinement', sequence: 1, name: 'Backlog Refinement', action: { type: 'state-engine', engine: 'example-github-backlog-refinement' } }] } };
   const ticket = { ...backlogTicket('ABC-62', 'too-large', { points: null, 'too-large-estimate': { points: 13, 'noted-at': '2026-10-30T10:00:00Z' } }),
@@ -3810,7 +3648,7 @@ test('ASS-264 AC2: an example GitHub ticket at Too Large offers Accept, to Ready
 // example GitHub project's Awaiting Split Decision, shown as ASS-252 shows the harness's, Accept applying it and Reject
 // (asking why) going back to Too Large.
 test('ASS-265 AC1, AC2: an example GitHub ticket at Too Large offers Split beside Accept and Return; at Awaiting Split Decision it shows the proposal and offers Accept and Reject, back to Too Large', () => {
-  const loaded = JSON.parse(readFileSync(join(engineDir('example-github-backlog-refinement'), 'state-engine.json'), 'utf8'));
+  const loaded = readEngine(join(engineDir('example-github-backlog-refinement'), 'workflow.yaml'));
   const githubRefinement = { name: 'example-github-backlog-refinement', steps: loaded.steps.toSorted((a, b) => a.sequence - b.sequence), lists: {} };
   const githubRefining = { ...engine, lists: { 'backlog-refinement-steps': [{ id: 'backlog-refinement', sequence: 1, name: 'Backlog Refinement', action: { type: 'state-engine', engine: 'example-github-backlog-refinement' } }] } };
   const at = state => ({ ...backlogTicket('ABC-62', state, { points: null }), variations: [{ name: 'A', 'harness-status': { state, 'state-engine': 'example-github-backlog-refinement' } }] });
@@ -3870,8 +3708,8 @@ test('the control screen shows the selected project\'s control output only — a
 const shifted = letter => key(letter, { shift: true, sequence: letter.toUpperCase() });
 const plain = letter => key(letter, { sequence: letter });
 
-test('ASS-103 AC1–AC3: the menu lists the screens s S b B c f m r u U a x h (ASS-366: U) — no questions, no o (ASS-262), p the performance screen (ASS-411) — then space and !, / and Q', () => {
-  assert.deepEqual(menuOf(state).map(e => e.split(' ')[0]), [...'sSbBcfmruUaxhp', 'A', 'space', '!', '/', 'Q', '⦿', '⦿', '⦿', '🤖', '✦']);   // A in its own group (ASS-188, ASS-246); the marks' legend (ASS-248, ASS-259)
+test('ASS-103 AC1–AC3: the menu lists the screens s S b B c f m r u U a x h (ASS-366: U) — no questions, no o (ASS-262), p the performance screen (ASS-411), n the compute network (ASS-557) — then space and !, / and Q', () => {
+  assert.deepEqual(menuOf(state).map(e => e.split(' ')[0]), [...'sSbBcfmruUaxhpn', 'A', 'space', '!', 'P', 'q', '/', 'Q', '⦿', '⦿', '⦿', '🤖', '✦']);   // A in its own group (ASS-188, ASS-246); the marks' legend (ASS-248, ASS-259)
 });
 
 test('ASS-103 AC1–AC3: s opens the sprint and S the sprint flow; d, D and q open nothing', () => {
@@ -3892,7 +3730,7 @@ test('ASS-262 AC1: o is gone — in no menu, and pressing it opens nothing, the 
 
 test('ASS-262 AC3: with chat-screen off, x is not in the menu and pressing it does nothing; with it on, x opens the chat screen, after a', () => {
   const off = flagsOff(state);
-  assert.deepEqual(menuOf(off).map(e => e.split(' ')[0]), [...'sSbBcfmruUahp', 'A', 'space', '!', '/', 'Q', '⦿', '⦿', '⦿', '🤖', '✦']);
+  assert.deepEqual(menuOf(off).map(e => e.split(' ')[0]), [...'sSbBcfmruUahpn', 'A', 'space', '!', 'P', 'q', '/', 'Q', '⦿', '⦿', '⦿', '🤖', '✦']);
   assert.equal(handleKey({ ...off, screen: 'b' }, plain('x')).screen, 'b');
   assert.equal(handleKey({ ...off, menuOpen: true }, plain('x')).menuOpen, true);   // not a menu key either
   const on = flagsOff(state, { 'chat-screen': true });
@@ -3901,18 +3739,22 @@ test('ASS-262 AC3: with chat-screen off, x is not in the menu and pressing it do
   assert.equal(handleKey(flagsOff(state, { 'ticket-chat-tab': true }), plain('x')).screen, 's');   // each flag on its own
 });
 
-test('ASS-262 AC4: with ticket-chat-tab off, the ticket screen shows Actions, Details, Merge requests, History and Questions numbered 1–5 (ASS-437), 6 does nothing, and its chat is never asked for', () => {
+test('ASS-262 AC4: with ticket-chat-tab off, the ticket screen shows Actions, Details, Merge requests, History, Questions and Commits numbered 1–6 (ASS-437, ASS-558), 7 does nothing, and its chat is never asked for', () => {
   const open = press(flagsOff(onGrid), 'return');
   assert.equal(open.ticketChatOpen, null);                   // no briefing sent (collaboration.js)
   assert.equal(open.ticketTab, 'details');                   // nothing waits: Details, in Chat's place
   const out = lines(open, wide);
-  assert.match(out.find(l => l.startsWith('┌ 1 Actions')), /^┌ 1 Actions │ 2 Details │ 3 Merge requests │ 4 History │ 5 Questions ─+┬ Ticket ─+┐$/);
-  assert.ok(out.some(l => l.includes('tab or 1-5 switch tabs')), out.join('\n'));
-  assert.equal(handleKey(open, key('6', { sequence: '6' }), wide), open);
+  assert.match(out.find(l => l.startsWith('┌ 1 Actions')), /^┌ 1 Actions │ 2 Details │ 3 Merge requests │ 4 History │ 5 Questions │ 6 Commits │ 7 Acceptance criteria ─+┬ Ticket ─+┐$/);   // ASS-559: 7th
+  assert.ok(out.some(l => l.includes('tab or 1-7 switch tabs')), out.join('\n'));
+  assert.equal(handleKey(open, key('8', { sequence: '8' }), wide), open);
+  assert.equal(handleKey(open, key('7', { sequence: '7' }), wide).ticketTab, 'criteria');
+  assert.equal(handleKey(open, key('6', { sequence: '6' }), wide).ticketTab, 'commits');
   assert.equal(handleKey(open, key('5', { sequence: '5' }), wide).ticketTab, 'questions');
   assert.equal(handleKey(open, key('3', { sequence: '3' }), wide).ticketTab, 'merges');
-  assert.equal(handleKey(onTab(open, 'questions'), key('tab'), wide).ticketTab, 'actions');                    // round again, past no Chat
-  assert.equal(handleKey(onTab(open, 'actions'), key('tab', { shift: true }), wide).ticketTab, 'questions');
+  assert.equal(handleKey(onTab(open, 'questions'), key('tab'), wide).ticketTab, 'commits');                    // past no Chat
+  assert.equal(handleKey(onTab(open, 'commits'), key('tab'), wide).ticketTab, 'criteria');                     // ASS-559
+  assert.equal(handleKey(onTab(open, 'criteria'), key('tab'), wide).ticketTab, 'actions');                     // round again
+  assert.equal(handleKey(onTab(open, 'actions'), key('tab', { shift: true }), wide).ticketTab, 'criteria');
   assert.equal(press(handleKey(flagsOff(withBacklog([backlogTicket('ABC-60', 'groom')])), key('b')), 'return').ticketChatOpen, null);
   assert.equal(press(flagsOff(onGrid, { 'chat-screen': true }), 'return').ticketTab, 'details');   // each flag on its own
 });
@@ -3921,7 +3763,7 @@ test('ASS-262 AC4: with ticket-chat-tab on, the Chat tab is sixth (ASS-437) and 
   const open = press(flagsOff(onGrid, { 'ticket-chat-tab': true }), 'return');
   assert.deepEqual(open.ticketChatOpen, { project: 'example', key: 'ABC-5' });
   assert.equal(open.ticketTab, 'chat');
-  assert.match(lines(open, wide).find(l => l.startsWith('┌ 1 Actions')), /^┌ 1 Actions │ 2 Details │ 3 Merge requests │ 4 History │ 5 Questions │ 6 Chat ─+┬ Ticket ─+┐$/);
+  assert.match(lines(open, wide).find(l => l.startsWith('┌ 1 Actions')), /^┌ 1 Actions │ 2 Details │ 3 Merge requests │ 4 History │ 5 Questions │ 6 Chat │ 7 Commits │ 8 Acceptance criteria ─+┬ Ticket ─+┐$/);
   assert.equal(handleKey(onTab(open, 'details'), key('6', { sequence: '6' }), wide).ticketTab, 'chat');
 });
 
@@ -4132,7 +3974,7 @@ test('ASS-150 AC4: the TUI names no refinement step — no step id or name of a 
     .replace("{ status: 'ready' }", '');   // a demo's status (main.js), not a step
   assert.doesNotMatch(source, /REFINEMENT/);
   for (const name of ['harness-backlog-refinement', 'example-backlog-refinement']) {
-    for (const s of JSON.parse(readFileSync(join(engineDir(name), 'state-engine.json'), 'utf8')).steps) {
+    for (const s of readEngine(join(engineDir(name), 'workflow.yaml')).steps) {
       for (const word of [s.id, s.name]) assert.ok(!new RegExp(`['"\`]${word}['"\`]`).test(source), `${name}: ${word}`);
     }
   }
@@ -4273,7 +4115,7 @@ test('on the Chat tab every printable key is its text — space, !, / and Q too;
   const cleared = press(typed, 'escape');
   assert.deepEqual([cleared.ticketChatDraft, cleared.ticket?.key], ['', 'ABC-5']);
   assert.equal(press(cleared, 'escape').ticket, null);
-  assert.equal(press(typed, 'tab').ticketTab, 'actions');                  // tab still switches tabs, round to the first
+  assert.equal(press(typed, 'tab').ticketTab, 'commits');                  // tab still switches tabs, to the next (ASS-558: Commits, after Chat)
 });
 
 test('↑/↓ scroll the chat\'s log while it has focus, no further than its ends; reaching the end follows it again', () => {
@@ -4319,7 +4161,7 @@ test('ASS-300 AC1: the ticket chat renders tool results through chat-look — �
 test('ASS-300 AC5: ctrl+o on the ticket chat flips ticketChatEvents; tab still switches tabs', () => {
   const chat = ticketReading([...folding, '{"type":"tool_progress"}']);
   const moved = press(chat, 'tab');
-  assert.equal(moved.ticketTab, 'actions');                                     // tab switches tabs, not events
+  assert.equal(moved.ticketTab, 'commits');   // ASS-558: the tab after Chat                                     // tab switches tabs, not events
   const showing = handleKey(chat, ctrl('o', '\x0f'), wide);
   assert.equal(showing.ticketChatEvents, true);
   assert.equal(showing.ticketTab, 'chat');                                      // ctrl+o did not switch tabs
@@ -4449,7 +4291,7 @@ test('a cursor in the middle of a draft marks the character under it instead of 
 test('the ticket chat keeps its draft and cursor while another tab is open, and draws them again on coming back (ASS-184)', () => {
   const mid = press(typing(press(onGrid, 'return'), 'hi'), 'left');
   const away = press(mid, 'tab');
-  assert.equal(away.ticketTab, 'actions');
+  assert.equal(away.ticketTab, 'commits');   // ASS-558: the tab after Chat
   assert.deepEqual([away.ticketChatDraft, away.ticketChatCursor], ['hi', 1]);  // the draft and its cursor are kept
   assert.ok(!lines(away, wide).some(l => l.includes('> hi')));                 // the prompt is the Chat tab's alone
   assert.equal(promptRow(handleKey(away, key('tab', { shift: true }), wide)), '> h\x1b[7mi\x1b[0m');
@@ -4667,7 +4509,7 @@ test('fitRows: rows that fit pass through; past the room the hint and the last r
 test('a multi-row ticket chat draft keeps its rows, and the lines they take, across a switch to another tab and back', () => {
   const s = rowsDrafted(prompts[2], 2, 3);
   const away = press(s, 'tab');
-  assert.equal(away.ticketTab, 'actions');
+  assert.equal(away.ticketTab, 'commits');   // ASS-558: the tab after Chat
   const back = handleKey(away, key('tab', { shift: true }), wide);
   assert.deepEqual(draftRows(back), draftRows(s));
   assert.deepEqual(logShown(back), logShown(s));
@@ -4760,7 +4602,7 @@ const onBacklogTicket = (status, extra = {}) => press(handleKey(withBacklog([bac
 
 // The ticket box's body rows in `out` (ASS-184): between the tab bar and the box's foot.
 const ticketBody = (out) => {
-  const top = out.findIndex(l => /^┌ 1 Actions/.test(strip(l)));
+  const top = out.findIndex(l => /^┌ ?1 Actions/.test(strip(l)));   // ASS-559: at 120 columns the eight tabs drop their gaps
   const bottom = out.findIndex((l, i) => i > top && strip(l).startsWith('└'));
   return out.slice(top + 1, bottom);
 };
@@ -4781,13 +4623,16 @@ const digit = n => key(String(n), { sequence: String(n) });
 const onHistory = s => onTab(s, 'history');
 const tabBarRaw = (s, size = wide) => render(s, size).find(l => strip(l).startsWith('┌ 1 Actions'));
 
-test('ASS-184 AC1: six numbered tabs (ASS-437: Merge requests third) fill the width left of a 40-column panel; no line wider than the screen at any width', () => {
+test('ASS-184 AC1: seven numbered tabs (ASS-437: Merge requests third; ASS-558: Commits last) fill the width left of a 40-column panel; no line wider than the screen at any width', () => {
   const open = press(ticketOn(fourSteps, 'code-review'), 'return');
   for (const size of [wide, screen, narrow]) {
     const out = lines(open, size);
-    const top = out.find(l => l.startsWith('┌ 1 Actions'));
-    assert.match(top, size === narrow ? /^┌ 1 Actions │ 2 Details │ 3 Merge requests │ 4 History │ 5 Questions │ 6 Chat ─+┐$/   // no panel under 100 columns (ASS-185)
-      : /^┌ 1 Actions │ 2 Details │ 3 Merge requests │ 4 History │ 5 Questions │ 6 Chat ─+┬ Ticket ─+┐$/, `${size.columns}`);
+    const top = out.find(l => /^┌ ?1 Actions/.test(l));
+    // ASS-558: seven tabs with Commits; ASS-559: eight with Acceptance criteria — at 120 columns every label goes by its
+    // short form and the gaps go (tabBar); under 100 (no panel) Criteria and MRs.
+    assert.match(top, size === narrow ? /^┌ 1 Actions │ 2 Details │ 3 MRs │ 4 History │ 5 Questions │ 6 Chat │ 7 Commits │ 8 Criteria ─+┐$/   // no panel under 100 columns (ASS-185)
+      : size === screen ? /^┌1 Actions│2 Details│3 MRs│4 History│5 Q&A│6 Chat│7 Commits│8 ACs─+┬ Ticket ─+┐$/
+        : /^┌ 1 Actions │ 2 Details │ 3 Merge requests │ 4 History │ 5 Questions │ 6 Chat │ 7 Commits │ 8 Acceptance criteria ─+┬ Ticket ─+┐$/, `${size.columns}`);
     if (size === narrow) continue;
     assert.equal(top.indexOf('┬'), size.columns - PANEL, `${size.columns}`);
     for (const line of ticketBody(out)) assert.match(from(line, size.columns - PANEL), /^[│█] /, `${size.columns}: ${line}`);
@@ -4823,10 +4668,10 @@ test('ASS-184 AC3: tab and shift-tab switch tabs in order, round again, from Cha
   const open = onTab(press(blockable('code-review'), 'return'), 'actions');
   const cycle = TAB_IDS.reduce((acc) => [...acc, handleKey(acc.at(-1), key('tab'), wide)], [open]).map(s => s.ticketTab);
   assert.deepEqual(cycle, [...TAB_IDS, 'actions']);
-  assert.equal(handleKey(open, key('tab', { shift: true }), wide).ticketTab, 'chat');
+  assert.equal(handleKey(open, key('tab', { shift: true }), wide).ticketTab, 'criteria');   // ASS-559: Acceptance criteria last (Commits before it, ASS-558)
   assert.equal(handleKey(onTab(open, 'chat'), key('tab', { shift: true }), wide).ticketTab, 'questions');
   for (const from of TAB_IDS.filter(t => t !== 'chat')) {
-    assert.deepEqual([1, 2, 3, 4, 5, 6].map(n => handleKey(onTab(open, from), digit(n), wide).ticketTab), TAB_IDS, from);
+    assert.deepEqual([1, 2, 3, 4, 5, 6, 7, 8].map(n => handleKey(onTab(open, from), digit(n), wide).ticketTab), TAB_IDS, from);
   }
   const chat = handleKey(onTab(open, 'chat'), digit(2), wide);              // typing: the digit is text
   assert.deepEqual([chat.ticketTab, chat.ticketChatDraft], ['chat', '2']);
@@ -4853,9 +4698,11 @@ test('ASS-184 AC3: esc closes from every tab; space and ! still pause except on 
 test('ASS-184 AC3: the keys line says how to switch tabs and what ↑/↓ do on the open one', () => {
   const open = press(blockable('code-review'), 'return');
   const hint = tab => lines(onTab(open, tab), wide).find(l => l.startsWith('esc returns to the sprint'));
-  assert.match(hint('actions'), /tab or 1-6 switch tabs {3}↑\/↓ choose {3}enter records the choice/);
-  assert.match(hint('details'), /tab or 1-6 switch tabs {3}↑\/↓ scroll the details/);
-  assert.match(hint('merges'), /tab or 1-6 switch tabs {3}↑\/↓ scroll the merge requests/);   // ASS-437
+  assert.match(hint('actions'), /tab or 1-8 switch tabs {3}↑\/↓ choose {3}enter records the choice/);
+  assert.match(hint('details'), /tab or 1-8 switch tabs {3}↑\/↓ scroll the details/);
+  assert.match(hint('merges'), /tab or 1-8 switch tabs {3}↑\/↓ scroll the merge requests/);   // ASS-437
+  assert.match(hint('commits'), /tab or 1-8 switch tabs {3}↑\/↓ scroll the commits {3}PgUp\/PgDn page/);   // ASS-558
+  assert.match(hint('criteria'), /tab or 1-8 switch tabs {3}↑\/↓ scroll the acceptance criteria {3}PgUp\/PgDn page/);   // ASS-559
   assert.match(hint('history'), /↑\/↓ entry by entry/);
   assert.match(hint('questions'), /↑\/↓ choose a question {3}enter answers it/);
   assert.match(hint('chat'), /tab switches tabs {3}type a message, enter sends it/);
@@ -5284,7 +5131,7 @@ test('ASS-118 AC1: Rejected at Human Review asks why; enter records it with the 
 
 // ASS-116 pair 2: the harness's Human Review is a human step inside v2-review's run, with the real engines.
 test('ASS-116: at v2-review\'s Human Review, inside the Review group\'s run, the Actions tab shows the review and the choices are recorded at the detailed step for control to move the run — Approved → AI Token Expense Check, Rejected → Back to Plan, asking why', () => {
-  const real = name => ({ name, steps: JSON.parse(readFileSync(join(engineDir(name), 'state-engine.json'), 'utf8')).steps });
+  const real = name => ({ name, steps: readEngine(join(engineDir(name), 'workflow.yaml')).steps });
   const into = (from, to) => ({ 'state-engine': 'harness-development-v2', 'from-state': 'review', 'to-state': 'review', timestamp: '2026-10-25T03:00:00Z', 'agent-dispatch-log': [], 'work-is-done': true, 'sub-state-change': { 'state-engine': 'v2-review', 'from-state': from, 'to-state': to } });
   const variation = { name: 'A', 'merge-request': MRS, 'harness-status': { state: 'review', 'state-engine': 'harness-development-v2', 'sub-status': { state: 'human-review', 'state-engine': 'v2-review' } },
     'state-changes': [{ 'state-engine': 'harness-development-v2', 'from-state': 'document', 'to-state': 'review', timestamp: '2026-10-25T02:00:00Z', 'agent-dispatch-log': [] }, into(null, 'explain-the-change'), into('explain-the-change', 'risk-assessment'), into('risk-assessment', 'human-review')] };
@@ -5536,7 +5383,7 @@ test('ASS-185 AC1: the panel is 40 wide from 120 columns up, 28 from 100 to 119;
   for (const columns of [200, 120, 119, 100, 99, 96, 70]) {
     const size = sized(columns);
     const out = lines(s, size);
-    const at = out.findIndex(l => l.startsWith('┌ 1 Actions'));
+    const at = out.findIndex(l => /^┌ ?1 Actions/.test(l));   // ASS-558: from 100 to 119 columns the tabs drop their gaps to fit
     const top = out[at];
     for (const line of render(s, size)) assert.ok(visible(line) <= columns, `${columns}: ${line}`);
     if (columns >= 100) {
@@ -5552,7 +5399,7 @@ test('ASS-185 AC1: the panel is 40 wide from 120 columns up, 28 from 100 to 119;
     assert.match(out.find((l, i) => i > at && l.startsWith('└')), new RegExp(`^└─{${columns - 2}}┘$`));
   }
   const top96 = lines(s, narrow).find(l => l.startsWith('┌ 1 Actions'));
-  assert.match(top96, /^┌ 1 Actions ● │ 2 Details │ 3 Merge requests │ 4 History │ 5 Questions │ 6 Chat ─+┐$/, 'full labels at 96 columns');
+  assert.match(top96, /^┌ 1 Actions ● │ 2 Details │ 3 MRs │ 4 History │ 5 Questions │ 6 Chat │ 7 Commits │ 8 Criteria ─+┐$/, 'whole labels at 96 columns (ASS-559: eight tabs, two short)');
 });
 
 test('ASS-185 AC2: the Actions label shows a red ● while a gate waits and Questions (n) ● open questions; the labels stay whole on a narrow screen', () => {
@@ -5561,7 +5408,9 @@ test('ASS-185 AC2: the Actions label shows a red ● while a gate waits and Ques
   assert.match(tabBarRaw(press(atGate(), 'return')), /\x1b\[31m●/);
   assert.match(bar(press(asked(), 'return')), /^┌ 1 Actions │ 2 Details │ 3 Merge requests │ 4 History │ 5 Questions \(2\) ● │ 6 Chat /);
   assert.match(tabBarRaw(press(asked(), 'return')), /Questions \(2\) \x1b\[31m●/);
-  assert.match(bar(press(asked(), 'return'), narrow), /^┌ 1 Actions │ 2 Details │ 3 Merge requests │ 4 History │ 5 Questions \(2\) ● │ 6 Chat ─+┐$/);
+  // ASS-558: with Commits too, Merge requests goes by MRs here to fit; ASS-559: with Acceptance criteria, Criteria and
+  // Q&A too — still whole, never cut.
+  assert.match(bar(press(asked(), 'return'), narrow), /^┌ 1 Actions │ 2 Details │ 3 MRs │ 4 History │ 5 Q&A \(2\) ● │ 6 Chat │ 7 Commits │ 8 Criteria ─+┐$/);
   assert.match(bar(press(onGrid, 'return')), /^┌ 1 Actions │ 2 Details │ 3 Merge requests │ 4 History │ 5 Questions │ 6 Chat /);
 });
 
@@ -5685,7 +5534,7 @@ const longTail = [reply, 'x'.repeat(300)];
 // rows each tile is 6 lines, leaving two body rows under its two header lines —
 // too few for a help line, a log line and a prompt (ASS-299 AC3's too-short
 // tile, which shows the log alone).
-const shortTiles = { ...wide, rows: 30 };   // ASS-430: 30, was 28 (the models box's two spend lines)
+const shortTiles = { ...wide, rows: 24 };   // ASS-566: 24 (the footer's three lines); ASS-430: 30, was 28 (the models box's two spend lines)
 
 // The tiles a render draws (ASS-188), in reading order: each from its top border
 // `┌─ <name> ─…┐` — its name, line and column, width and height (to the └ under
@@ -5779,7 +5628,7 @@ test('ASS-188 AC1: a tile is never smaller than 16 × 6 — columns drop on a na
   };
   const narrow = { ...wide, columns: 40 };
   assert.ok(atLeast(onAgents(teamOf(6)), narrow).filter((t, _, all) => t.row === all[0].row).length <= 2);
-  const short = { ...wide, rows: 32 };
+  const short = { ...wide, rows: 26 };   // ASS-566: 26, was 32 (the footer's three lines, boxes before)
   atLeast(onAgents(teamOf(6)), short);
   assert.equal(tileRows(onAgents(teamOf(6)), short), 1);
   const clamped = { ...wide, columns: 80, rows: 60 };
@@ -6162,7 +6011,7 @@ test('ASS-188 AC5: the ? menu lists A agents for all projects in its own group, 
   const at = open.findIndex(l => l.includes('A agents for all projects'));
   const left = open[at].lastIndexOf('│', open[at].indexOf('A agents')), right = open[at].indexOf('│', open[at].indexOf('A agents'));
   assert.match(open[at - 1].slice(left, right + 1), /^│ +│$/);                            // a blank row before it
-  assert.match(open[at - 2], /p +performance/);                                            // the screens' own keys stay lined up in their columns (p last since ASS-411)
+  assert.match(open[at - 2], /n +compute network/);                                        // the screens' own keys stay lined up in their columns (n last since ASS-557)
 });
 
 test('ASS-188 AC5: A opens the all-projects screen with its grid focused, from the ? menu too; its ticket numbers are marked', () => {
@@ -6223,16 +6072,18 @@ const squeezedState = initialState({
 const squeezedRow = columns => lines(squeezedState, { ...wide, columns }).find(l => l.includes('✦')) ?? '';
 const TICKET_CELL = `  2 ${cols({ agent: '🤖' })}ABC-1: Sprint screen: the Ticke…`;   // the priority (ASS-454), the icon columns (ASS-259), the key and 24 characters of title
 
-test('ASS-207 AC1: at 146 columns the Ticket cell keeps the key and 24 characters of title', () => {
-  assert.equal(squeezedRow(146).slice(0, 2 + TICKET_CELL.length), `│ ${TICKET_CELL}`);
+// ASS-559: the Dev and Testing columns went for Machine and Runs in, and Total Token Spend is Spend: ten columns
+// narrower, so each width here is ten under what it was (146, 131, 197).
+test('ASS-207 AC1: at 136 columns the Ticket cell keeps the key and 24 characters of title', () => {
+  assert.equal(squeezedRow(136).slice(0, 2 + TICKET_CELL.length), `│ ${TICKET_CELL}`);
 });
 
 // ASS-437: the Build, MR and Health columns went, their width to the rest, so each width here is under what it was;
 // ASS-488 took the Assignee column ("Ada Example", 14 cells), each 14 under again.
-test('ASS-207 AC2, ASS-437 AC7: at 131 columns Agents gives up its width first, Health gone, Status still whole, and the table still fits', () => {
-  const row = squeezedRow(131);
-  assert.match(row, / Code Review {3}3 .* — {19}🤖 Daredevil-of-… │$/);   // Health cut hardest, Agents after it — two columns more now the icon columns widen Ticket's floor (ASS-259), two more for the seat (ASS-357); seven back now the Priority column's 11 went, 4 to the Ticket cell's priority (ASS-454); one less for 🤖/💻's two cells (ASS-456); 14 fewer, no Assignee (ASS-488)
-  assert.equal(visible(row), 131);
+test('ASS-207 AC2, ASS-437 AC7: at 121 columns Agents gives up its width first, Health gone, Status still whole, and the table still fits', () => {
+  const row = squeezedRow(121);
+  assert.match(row, / Code Review {3}3 +Mac +Lima VM +— {7}🤖 Daredevil-of-He… │$/);   // ASS-559: Spend's narrower column   // Health cut hardest, Agents after it — two columns more now the icon columns widen Ticket's floor (ASS-259), two more for the seat (ASS-357); seven back now the Priority column's 11 went, 4 to the Ticket cell's priority (ASS-454); one less for 🤖/💻's two cells (ASS-456); 14 fewer, no Assignee (ASS-488)
+  assert.equal(visible(row), 121);
   assert.ok(row.includes(TICKET_CELL), row);
   assert.ok(!row.includes('Two f'), row);
 });
@@ -6244,12 +6095,12 @@ test('ASS-207 AC3: at 80 columns the Ticket cell still shows the key and 24 char
   assert.ok(!row.includes('Two f'), row);                             // Health is off-screen, as today
 });
 
-test('ASS-207 AC4: with room to spare — 197 columns (300 before ASS-437, 211 before ASS-488) — the row is laid out as it is today: the whole title, Agents at its 40-column cap', () => {
-  const row = squeezedRow(197);
+test('ASS-207 AC4: with room to spare — 185 columns (300 before ASS-437, 211 before ASS-488, 197 before ASS-559) — the row is laid out as it is today: the whole title, Agents at its 40-column cap', () => {
+  const row = squeezedRow(185);
   assert.ok(row.startsWith(`│   2 ${cols({ agent: '🤖' })}ABC-1: Sprint screen: the Ticket column is squeezed by Health `), row);
   assert.match(row, /squeezed by Health {17}Code Review /);   // two blanks fewer: the seat column's (ASS-357); no Priority column, its width to Ticket less the priority's four cells (ASS-454), one fewer for 🤖/💻's second cell (ASS-456)
-  assert.match(row, / — {19}🤖 Daredevil-of-Hells-Kitchen-and-Matt-… │$/);
-  assert.equal(visible(row), 197);
+  assert.match(row, / Lima VM +— {7}🤖 Daredevil-of-Hells-Kitchen-and-Matt-… │$/);
+  assert.equal(visible(row), 185);
 });
 
 // ===== ASS-189: type to an agent from its tile =====
@@ -6658,191 +6509,8 @@ test('ASS-398 AC2: while control holds new VMs for want of memory (any project\'
   assert.ok(!lines(state, wide).some(l => l.includes('Out of disk space')));
 });
 
-// ===== ASS-292: the disk's free space and the project's golden image in the control box =====
-const goldenBuilt = { name: 'golden-p', 'built-at': '2026-11-01T05:42:33Z' };
-// A running control the dashboard started (ASS-310: the box is built from state.controls, not project.json's control).
-const running = { p: { pid: 1, startTime: '2026-10-01T15:51:00Z' } };
-const controlBox = s => lines(s).filter(l => /│ (control|status|uptime|disk free|golden image|exited|last)/.test(l)).map(l => l.match(/│ ((control|status|uptime|disk free|golden image|exited|last)[^│]*?) +│/)?.[1]).filter(Boolean);
-
-test('ASS-292 AC1: the control box ends with the disk\'s free space and the project\'s golden image, its name and the day it was built (UTC, ASS-294)', () => {
-  const project = { id: 'p', name: 'P', sprint: null, environments: [], golden: goldenBuilt };
-  const box = controlBox(initialState({ projects: [project], disk: diskAt('ok', 120), controls: running }));
-  assert.deepEqual(box.slice(-2), ['disk free: 120.0 GiB', 'golden image: golden-p (built 2026-11-01 UTC)']);
-  assert.equal(box[0], 'control');
-});
-
-test('ASS-292 AC1: below the warning level the disk free line is amber, as the low-disk line under the banner; at or above it, plain', () => {
-  const project = { id: 'p', name: 'P', sprint: null, environments: [], golden: goldenBuilt };
-  const at = disk => render(initialState({ projects: [project], disk, controls: running }), screen).find(l => l.includes('disk free: '));
-  assert.ok(at(diskAt('warn', 42)).includes('\x1b[38;2;255;176;0mdisk free: 42.0 GiB'), at(diskAt('warn', 42)));
-  assert.ok(at(diskAt('hold', 12)).includes('\x1b[38;2;255;176;0mdisk free: 12.0 GiB'));
-  assert.ok(!at(diskAt('ok', 120)).includes('\x1b[38;2;255;176;0m'));
-});
-
-test('ASS-292 AC1/AC3: a project without a golden image says none, one never built says so, and a disk control never read is unknown', () => {
-  const box = (golden, disk) => controlBox(initialState({ projects: [{ id: 'p', name: 'P', sprint: null, environments: [], golden }], disk, controls: running })).slice(-2);
-  assert.deepEqual(box(null, null), ['disk free: unknown', 'golden image: none']);
-  assert.deepEqual(box(undefined, diskAt('ok', 99)), ['disk free: 99.0 GiB', 'golden image: none']);
-  assert.deepEqual(box({ name: 'golden-p', 'built-at': null }, null), ['disk free: unknown', 'golden image: golden-p (not built)']);
-});
-
-test('ASS-292 AC2: the red control DOWN box shows the same two lines', () => {
-  const project = { id: 'p', name: 'P', sprint: null, environments: [], golden: goldenBuilt };
-  const logged = { ...initialState({ projects: [project], disk: diskAt('ok', 120), controls: running }), controlLog: [{ text: 'boom', project: 'p' }, { text: 'control exited (code 1)', project: 'p' }] };
-  const box = controlBox(controlExited(logged, 'p', 1));
-  assert.equal(box[0], 'control DOWN');
-  assert.deepEqual(box.slice(-2), ['disk free: 120.0 GiB', 'golden image: golden-p (built 2026-11-01 UTC)']);
-});
-
-// ===== ASS-293: the project's Hindsight, as the dashboard last checked it, in the control box =====
-// p with a Hindsight on 9077 (project.json's hindsight) and the dashboard's last check of it (memoryHealth, tui/memory.js memoryChecked).
-const withHindsight = { id: 'p', name: 'P', sprint: null, environments: [], golden: goldenBuilt, hindsight: { port: 9077 } };
-const checked = (healthy, extra = {}) => ({ p: { port: 9077, healthy, since: Date.parse('2026-10-01T15:58:00Z'), ...extra } });
-const memoryBox = s => lines(s).map(l => l.match(/│ ((control|status|uptime|disk free|golden image|hindsight|exited|last)[^│]*?) +│/)?.[1]).filter(Boolean);
-const hindsightLine = s => render(s, screen).find(l => strip(l).includes('hindsight: '));
-const since1558 = timestamp(new Date('2026-10-01T15:58:00Z'));
-
-test('ASS-293 AC2: after the golden image line the control box ends with the project\'s Hindsight: up with its port, down with its port and since when, checking before the first check', () => {
-  const box = memoryHealth => memoryBox({ ...initialState({ projects: [withHindsight], controls: running }), memoryHealth });
-  assert.deepEqual(box(checked(true)).slice(-2), ['golden image: golden-p (built 2026-11-01 UTC)', 'hindsight: up (port 9077)']);
-  assert.equal(box(checked(false)).at(-1), `hindsight: down (port 9077) since ${since1558}`);
-  assert.equal(box(undefined).at(-1), 'hindsight: checking');
-  assert.equal(box({}).at(-1), 'hindsight: checking');
-  assert.equal(box(checked(true, { port: 9078 })).at(-1), 'hindsight: checking');   // a check of the port it had: the new one not yet checked
-});
-
-test('ASS-293 AC2: up is green, down red, checking and none plain', () => {
-  const line = (memoryHealth, project = withHindsight) => hindsightLine({ ...initialState({ projects: [project], controls: running }), memoryHealth });
-  assert.ok(line(checked(true)).includes('\x1b[32mhindsight: up (port 9077)'));
-  assert.ok(line(checked(false)).includes(`\x1b[31mhindsight: down (port 9077) since ${since1558}`));
-  assert.ok(!/\x1b\[(32|31)mhindsight/.test(line({})));
-  assert.ok(!/\x1b\[(32|31)mhindsight/.test(line(checked(true), { ...withHindsight, hindsight: null })));
-});
-
-test('ASS-293 AC2: a project without a hindsight says none, whatever check is left', () => {
-  const box = (project, memoryHealth) => memoryBox({ ...initialState({ projects: [project], controls: running }), memoryHealth }).at(-1);
-  assert.equal(box({ ...withHindsight, hindsight: null }, checked(true)), 'hindsight: none');
-  assert.equal(box({ ...withHindsight, hindsight: undefined }, undefined), 'hindsight: none');
-});
-
-test('ASS-293 AC3: the red control DOWN box shows the same line, still checked live', () => {
-  const down = memoryHealth => {
-    const logged = { ...initialState({ projects: [withHindsight] }), memoryHealth, controlLog: [{ text: 'boom', project: 'p' }, { text: 'control exited (code 1)', project: 'p' }] };
-    return memoryBox(controlExited(logged, 'p', 1));
-  };
-  assert.equal(down(checked(true))[0], 'control DOWN');
-  assert.equal(down(checked(true)).at(-1), 'hindsight: up (port 9077)');
-  assert.equal(down(checked(false)).at(-1), `hindsight: down (port 9077) since ${since1558}`);
-  assert.equal(down({}).at(-1), 'hindsight: checking');
-});
-
-// ===== ASS-307: the project's repository provider, repository link and push account in the control box =====
-// The footer's first box, cell by cell (raw: with its colors and links; else stripped) — the
-// control box (or control DOWN), never the models box, which has its own `account:` line.
-const footerOf = (s, columns = screen.columns) => platform(s, columns, screen.now);
-const rawCells = (s, columns) => {
-  const rows = footerOf(s, columns);
-  return rows.slice(1, rows.findIndex(l => l.includes('└'))).map(l => l.split('│')[1].slice(1).trimEnd());
-};
-const controlCells = (s, columns) => rawCells(s, columns).map(strip).filter(Boolean);
-const HUB = 'https://github.com/SoftwareAssassin2/harness';
-const groupRepos = Array.from({ length: 26 }, (_, i) => ({ url: `https://gitlab.com/example-group/repo-${i}` }));
-const onForge = (repositories, extra = {}) => ({ id: 'p', name: 'P', sprint: null, environments: [], golden: null, claudeUsage: { email: 'me@example.com' }, repositories, ...extra });
-const forgeState = (repositories, extra) => initialState({ projects: [onForge(repositories, extra)], controls: { p: { pid: 44704, startTime: '2026-10-01T15:51:00Z' } } });
-const pushed = (provider, account, error = null) => ({ project: 'p', provider, account, error, 'checked-at': '2026-11-08T13:00:00Z' });
-const MACHINE = ['disk free: unknown', 'golden image: none', 'hindsight: none'];
-
-test('ASS-307 AC1: one repository — provider: GitHub and repo: owner/name linked to the repository\'s url, after the control fields and before the machine lines', () => {
-  const s = forgeState([{ url: HUB }], { pushAccount: pushed('GitHub', 'SoftwareAssassin2') });
-  assert.deepEqual(controlCells(s), ['control', 'status: Online', 'process-id: 44704', 'uptime: 13m', 'provider: GitHub', 'repo: SoftwareAssassin2/harness', 'account: SoftwareAssassin2', ...MACHINE]);
-  assert.ok(rawCells(s).some(c => c.includes(`repo: ${link('SoftwareAssassin2/harness', HUB)}`)), rawCells(s).join('\n'));
-  assert.deepEqual(controlCells(forgeState([{ url: 'https://gitlab.com/g/app' }])).slice(4, 6), ['provider: GitLab', 'repo: g/app']);
-});
-
-test('ASS-307 AC1: several repositories — repos: <N> in <group>, linked to their longest common group/owner page', () => {
-  const s = forgeState(groupRepos);
-  assert.deepEqual(controlCells(s).slice(4, 6), ['provider: GitLab', 'repos: 26 in example-group']);
-  const repos = rawCells(s).find(c => strip(c).startsWith('repos: '));
-  assert.ok(repos.includes('\x1b]8;;https://gitlab.com/example-group\x1b\\'), repos);
-  assert.ok(repos.includes('26 in example-group'));
-  const nested = forgeState([{ url: 'https://gitlab.com/g/sub/a' }, { url: 'https://gitlab.com/g/sub/b' }]);
-  assert.equal(controlCells(nested)[5], 'repos: 2 in g/sub');
-  assert.ok(rawCells(nested)[5].includes('\x1b]8;;https://gitlab.com/g/sub\x1b\\'));
-});
-
-test('ASS-307 AC1: several repositories under no common owner — repos: <N> in <host>, linked to the host', () => {
-  const s = forgeState([{ url: 'https://gitlab.com/one/a' }, { url: 'https://gitlab.com/two/b' }]);
-  assert.equal(controlCells(s)[5], 'repos: 2 in gitlab.com');
-  assert.ok(rawCells(s)[5].includes('\x1b]8;;https://gitlab.com\x1b\\'), rawCells(s)[5]);
-});
-
-test('ASS-307 AC1: every repository project.json lists is counted, Active or not; a malformed url is dropped, not thrown', () => {
-  const mixed = [...groupRepos.slice(0, 3).map((r, i) => ({ ...r, status: i ? 'Active' : 'Archived' })), { url: 'not a url' }];
-  assert.equal(controlCells(forgeState(mixed))[5], 'repos: 3 in example-group');
-  assert.deepEqual(controlCells(forgeState([{ url: 'not a url' }, { url: HUB }])).slice(4, 6), ['provider: GitHub', 'repo: SoftwareAssassin2/harness']);
-});
-
-test('ASS-307 AC1: no repositories (none, an empty list, or none whose url parses) — no provider, repo or account line: the box as before', () => {
-  const before = ['control', 'status: Online', 'process-id: 44704', 'uptime: 13m', ...MACHINE];
-  for (const repositories of [undefined, [], [{ url: 'not a url' }], [{}]]) {
-    assert.deepEqual(controlCells(forgeState(repositories, { pushAccount: pushed('GitHub', 'ada') })), before, JSON.stringify(repositories));
-  }
-});
-
-test('ASS-307 AC3: account: … plain while the lookup has not run, or its record is for another provider than the repositories\' now', () => {
-  for (const pushAccount of [null, undefined, pushed('GitLab', 'old-login'), pushed('GitLab', null, 'token rejected (401)')]) {
-    const s = forgeState([{ url: HUB }], { pushAccount });
-    assert.equal(controlCells(s)[6], 'account: …', JSON.stringify(pushAccount));
-    assert.ok(!rawCells(s)[6].includes('\x1b[31m'), JSON.stringify(pushAccount));
-  }
-});
-
-test('ASS-307 AC3: a resolved account — account: <login>, plain', () => {
-  const s = forgeState(groupRepos, { pushAccount: pushed('GitLab', 'ada') });
-  assert.equal(controlCells(s)[6], 'account: ada');
-  assert.ok(!rawCells(s)[6].includes('\x1b[31m'));
-});
-
-test('ASS-307 AC3: a failed lookup — account: <reason> in red, for each reason', () => {
-  for (const reason of ['no token declared', 'no token in the keychain', 'token rejected (401)', 'the forge is unavailable (500)', 'the forge is unreachable', 'the forge answered no account']) {
-    const s = forgeState([{ url: HUB }], { pushAccount: pushed('GitHub', null, reason) });
-    assert.equal(controlCells(s)[6], `account: ${reason}`);
-    assert.ok(rawCells(s)[6].includes(`\x1b[31maccount: ${reason}`), rawCells(s)[6]);
-  }
-});
-
-test('ASS-307 AC3: the control box\'s account is the push account, the models box\'s still the Claude login', () => {
-  const s = forgeState([{ url: HUB }], { pushAccount: pushed('GitHub', 'SoftwareAssassin2') });
-  assert.ok(controlCells(s).includes('account: SoftwareAssassin2'));
-  assert.ok(!controlCells(s).includes('account: me@example.com'));
-  const footer = footerOf(s).map(strip);
-  // Both accounts appear in the rendered footer — the push account's cell is the control box's (first), the Claude login's the models box's; their rows may differ because the boxes differ in height.
-  assert.ok(footer.some(l => /^\s*│ account: SoftwareAssassin2 +│/.test(l)), footer.join('\n'));
-  assert.ok(footer.some(l => /│ account: me@example\.com +│$/.test(l)), footer.join('\n'));
-});
-
-test('ASS-307 AC4: at 80 columns and 30 rows the control box with its new lines still fits, every row as wide as its border', () => {
-  const s = forgeState([{ url: HUB }], { pushAccount: pushed('GitHub', null, 'the forge is unavailable (500)'), golden: { name: 'golden-p', 'built-at': '2026-11-01T05:42:33Z' } });
-  const size = { columns: 80, rows: 30, now: screen.now };
-  const footer = footerOf(s, 80).filter(Boolean);
-  assert.ok(controlCells(s, 80).includes('repo: SoftwareAssassin2/harness'));
-  for (const line of footer) {
-    assert.equal(visible(line), visible(footer[0]), strip(line));
-    assert.ok(visible(line) <= 80, strip(line));
-  }
-  const out = render(s, size);
-  assert.equal(out.length, 30);
-  for (const line of out) assert.ok(visible(line) <= 80, strip(line));
-  assert.ok(out.map(strip).some(l => l.includes('provider: GitHub')));
-});
-
-test('ASS-307 AC4: the control DOWN box is unchanged — no provider, repo or account line for a project with repositories', () => {
-  const logged = { ...forgeState(groupRepos, { pushAccount: pushed('GitLab', 'ada') }), controlLog: [{ text: 'boom', project: 'p' }, { text: 'control exited (code 1)', project: 'p' }] };
-  const box = controlCells(controlExited(logged, 'p', 1));
-  assert.deepEqual(box.slice(0, 3), ['control DOWN', 'exited: code 1', 'last: boom']);
-  assert.match(box[3], /^restart: in \d+s \(crash 1\)$/);   // ASS-460: when the dashboard starts it again
-  assert.deepEqual(box.slice(4), MACHINE);
-});
+// ASS-292, ASS-293, ASS-307: the disk, golden image, Hindsight, forge and push account — the footer's lines and the n
+// screen's since ASS-566: test/tui/footer-lines.test.js.
 
 // ===== ASS-299: one chat component draws every chat view (zoomed agent log,
 // chat screen, ticket Chat tab, agents-grid tile) with one layout, ctrl+o
@@ -6991,104 +6659,14 @@ test('ASS-299 AC5: the zoomed log reserves the same box+prompt rows as before th
   }
 });
 
-// ===== ASS-310: the footer control box is built from the running control the dashboard started (state.controls), not project.json's control =====
-// Reuses ASS-307's controlCells / rawCells helpers above (first box's cells, stripped, blanks filtered).
-
-test('ASS-310 AC1: the control box is built from the running control the dashboard started (state.controls), not project.json — status Online, its pid and uptime, then the machine lines; no model, no start-time', () => {
-  const project = { id: 'p', name: 'P', sprint: null, environments: [], golden: goldenBuilt, hindsight: { port: 9077 } };
-  const state = app.controlStarted(initialState({ projects: [project], disk: diskAt('ok', 120) }), 'p', { pid: 44704, startTime: '2026-10-01T15:51:00Z' });
-  const cells = controlCells(state);
-  assert.deepEqual(cells, ['control', 'status: Online', 'process-id: 44704', 'uptime: 13m', 'disk free: 120.0 GiB', 'golden image: golden-p (built 2026-11-01 UTC)', 'hindsight: checking']);
-  assert.ok(!cells.join().includes('model'));
-  assert.ok(!cells.join().includes('start-time'));
-});
+// ===== ASS-310: the footer's control (its first line since ASS-566: test/tui/footer-lines.test.js) is built from the
+// running control the dashboard started (state.controls), not project.json's control =====
 
 test('ASS-310 AC1: controlStarted records a project\'s running control in state.controls by id, keeping other projects\' entries and not mutating the input', () => {
   const start = { ...initialState({ projects: [] }), controls: { q: { pid: 2, startTime: '2026-10-01T00:00:00Z' } } };
   const next = app.controlStarted(start, 'p', { pid: 44704, startTime: '2026-10-01T15:51:00Z' });
   assert.deepEqual(next.controls, { q: { pid: 2, startTime: '2026-10-01T00:00:00Z' }, p: { pid: 44704, startTime: '2026-10-01T15:51:00Z' } });
   assert.deepEqual(start.controls, { q: { pid: 2, startTime: '2026-10-01T00:00:00Z' } });   // input untouched
-});
-
-test('ASS-310 AC1: a Date start time (what main.js passes) renders the same uptime as the ISO string', () => {
-  const project = { id: 'p', name: 'P', sprint: null, environments: [] };
-  const up = startTime => controlCells(app.controlStarted(initialState({ projects: [project] }), 'p', { pid: 1, startTime })).find(l => l.startsWith('uptime:'));
-  assert.equal(up(new Date('2026-10-01T15:51:00Z')), 'uptime: 13m');
-  assert.equal(up('2026-10-01T15:51:00Z'), 'uptime: 13m');
-});
-
-test('ASS-310 AC1: only the selected project\'s control box shows — another project\'s state.controls entry renders no box for the selected one', () => {
-  const project = { id: 'p', name: 'P', sprint: null, environments: [] };
-  const out = lines(initialState({ projects: [project], controls: { q: { pid: 1, startTime: '2026-10-01T15:51:00Z' } } }));
-  assert.ok(!out.some(l => l.includes('│ control')));
-});
-
-test('ASS-310 AC2: once a control exits (not 75) its state.controls entry is dropped and only the red DOWN box shows — no Online status, no process-id', () => {
-  const project = { id: 'p', name: 'P', sprint: null, environments: [], golden: goldenBuilt };
-  const logged = { ...app.controlStarted(initialState({ projects: [project], disk: diskAt('ok', 120) }), 'p', { pid: 44704, startTime: '2026-10-01T15:51:00Z' }), controlLog: [{ text: 'boom', project: 'p' }, { text: 'control exited (code 1)', project: 'p' }] };
-  const down = controlExited(logged, 'p', 1);
-  assert.ok(!down.controls?.p);
-  const cells = controlCells(down);
-  assert.equal(cells[0], 'control DOWN');
-  assert.ok(!cells.some(l => l === 'status: Online' || l.startsWith('process-id:')));
-  assert.equal(lines(down).filter(l => /│ control/.test(l)).length, 1);   // exactly one box titled control*
-});
-
-test('ASS-310 AC2: a control killed by a signal (code null) drops its state.controls entry and shows the DOWN box too', () => {
-  const project = { id: 'p', name: 'P', sprint: null, environments: [] };
-  const logged = { ...app.controlStarted(initialState({ projects: [project] }), 'p', { pid: 1, startTime: '2026-10-01T15:51:00Z' }), controlLog: [{ text: 'boom', project: 'p' }, { text: 'control exited', project: 'p' }] };
-  const down = controlExited(logged, 'p', null);
-  assert.ok(!down.controls?.p);
-  assert.equal(controlCells(down)[0], 'control DOWN');
-});
-
-test('ASS-310 AC3: while a control drains (state.draining[id]) the box stays with its pid, uptime and machine lines, and the status says Draining', () => {
-  const project = { id: 'p', name: 'P', sprint: null, environments: [], golden: goldenBuilt };
-  const state = { ...app.controlStarted(initialState({ projects: [project], disk: diskAt('ok', 120) }), 'p', { pid: 44704, startTime: '2026-10-01T15:51:00Z' }), draining: { p: 2 } };
-  const cells = controlCells(state);
-  assert.equal(cells[0], 'control');
-  assert.equal(cells[1], 'status: Draining');
-  assert.ok(cells.includes('process-id: 44704'));
-  assert.ok(cells.some(l => l.startsWith('uptime:')));
-  assert.ok(cells.includes('disk free: 120.0 GiB'));   // machine lines stay
-});
-
-test('ASS-310 AC3: while the dashboard restarts (state.restart) a still-running control keeps its box, status Restarting, and no DOWN box', () => {
-  const projects = ['p', 'q'].map(id => ({ id, name: id.toUpperCase(), sprint: null, environments: [] }));
-  let state = app.controlStarted(initialState({ projects }), 'p', { pid: 44704, startTime: '2026-10-01T15:51:00Z' });
-  state = app.controlStarted(state, 'q', { pid: 5, startTime: '2026-10-01T15:51:00Z' });
-  const restarting = controlExited(state, 'q', 75, 1);   // q named and still waited for: restarting, not quitting
-  assert.equal(restarting.restart, true);
-  assert.ok(restarting.controls?.p);                      // p still running
-  const cells = controlCells(restarting);                 // p is the selected project (0)
-  assert.equal(cells[0], 'control');
-  assert.equal(cells[1], 'status: Restarting');
-  assert.ok(!lines(restarting).some(l => l.includes('control DOWN')));
-});
-
-test('ASS-310 AC3: draining takes precedence over restarting — a control both draining and in a restart shows Draining', () => {
-  const project = { id: 'p', name: 'P', sprint: null, environments: [] };
-  const state = { ...app.controlStarted(initialState({ projects: [project] }), 'p', { pid: 1, startTime: '2026-10-01T15:51:00Z' }), draining: { p: 2 }, restart: true };
-  assert.equal(controlCells(state)[1], 'status: Draining');
-});
-
-test('ASS-310 AC3: another project draining leaves the selected project Online', () => {
-  const project = { id: 'p', name: 'P', sprint: null, environments: [] };
-  const state = { ...app.controlStarted(initialState({ projects: [project] }), 'p', { pid: 1, startTime: '2026-10-01T15:51:00Z' }), draining: { q: 1 } };
-  assert.equal(controlCells(state)[1], 'status: Online');
-});
-
-test('ASS-310 AC4: the control box fits beside the models box at every frame-test width (narrow included), nothing wrapped or clipped', () => {
-  const project = { id: 'p', name: 'P', sprint: null, environments: [{ name: 'local-pc', type: 'local-pc' }], golden: goldenBuilt, hindsight: { port: 9077 } };
-  const state = app.controlStarted(initialState({ projects: [project], disk: diskAt('ok', 120) }), 'p', { pid: 44704, startTime: '2026-10-01T15:51:00Z' });
-  for (const size of [at80, screen, wide]) {
-    const out = render(state, size);
-    const stripped = out.map(strip);
-    const top = stripped.findLastIndex(l => /^ *┌/.test(l));
-    assert.equal((stripped[top].match(/┌/g) || []).length, 2, `two boxes side by side at ${size.columns}`);   // control, models: no local-pc box (ASS-368)
-    assert.match(stripped[top + 1], /│ control .*│ models /);
-    for (const l of out) assert.ok(visible(l) <= size.columns, `${size.columns}: ${strip(l)}`);
-  }
 });
 
 test('ASS-311 AC1, AC2: the dashboard draws one column narrower than the terminal, so its rightmost column stays blank', () => {

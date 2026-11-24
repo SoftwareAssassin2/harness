@@ -5,8 +5,10 @@
 // then agent:kill once agent-graceful-shut-down-delay-in-seconds has passed
 // and they are still alive.
 import { isPaused, releaseWorkspace, found } from './moves.js';
-import { runsInVm } from './vm.js';
-import { machineOf, machinePaths } from './machine.js';
+import { runsOnMachine } from './run-target-places.js';
+import { machineOf, machinePaths, onWorkstation } from './machine.js';
+import { onRemoteWorktree } from './seat-kinds.js';
+import { remoteAgentSh } from '../agents/worktree-sandbox.js';
 import { stepOf, engineSteps } from './engine.js';
 import { isHarnessProject } from './harness-project.js';
 import { loadCollaborations, loadChatSpend, loadMemorySpend, enginesFor } from './state.js';
@@ -132,8 +134,11 @@ async function superviseOne(ctx, state, record, now, delay, capped, over) {
       // An agent on a step in its variation's VM is told the VM's ticket folder and agent.sh, as its dispatch was (ASS-181):
       // by the step's run-location (ASS-182), as dispatch.js vmFor decides, not by the variation having a VM.
       const step = stepOf(engineSteps(enginesFor(state, record.project), record['state-engine'] ?? ''), record.state);
-      const machine = runsInVm(step) ? machineOf(found(state, record).variation) : undefined;   // ASS-435: a workstation's ticket copy, if there
-      await ctx.cli(['agent:shut-down', name, ...(machine ? [`ticket-folder=${machinePaths(machine).ticket}`, 'agent-sh=agent.sh'] : [])]);
+      const at = found(state, record);
+      const machine = runsOnMachine(at.project, record['work-item'], record.variation, step) ? machineOf(at.variation) : undefined;   // ASS-540: none on a Mac run target   // ASS-435: a workstation's ticket copy, if there
+      // ASS-555: an agent in Claude Code's sandbox on a remote worktree runs agent.sh by its absolute path, the one excluded from the sandbox.
+      const agentSh = machine && onWorkstation(machine) && onRemoteWorktree(at.project, record['work-item'], record.variation) ? remoteAgentSh(onWorkstation(machine).folder) : 'agent.sh';
+      await ctx.cli(['agent:shut-down', name, ...(machine ? [`ticket-folder=${machinePaths(machine).ticket}`, `agent-sh=${agentSh}`] : [])]);
       ctx.log(PHASE, `${name} asked to shut down${over ? ` (${record['work-item']} is at its spending limit: ${spendText(over.spend, over.limit)})` : ''}`);
     }
     return;

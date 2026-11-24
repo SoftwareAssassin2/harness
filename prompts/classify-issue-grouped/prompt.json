@@ -42,7 +42,7 @@
                     "behind-base",
                     "numbered-file-taken"
                 ],
-                "description": "Where the fix is made: harness (a fix ticket in the harness project's backlog), project (the cause is in the project's own code: checked against the latest master next, a bug raised in the project's own ticket system only when it fails there; the harness's backlog on the harness project), environment (where the work runs: repaired in place, else by the operator); dependency (ASS-390: no fault — it only waits for one of the ticket's own merge requests, one another depends on in another repository, to merge: back to Build's Await Sequential Merge); rate-limit (ASS-391: no fault of the ticket's — Claude usage or rate limits stopped its agents: Await Rate Limit resumes it on the API key fallback at once, or once the limit resets); credentials (ASS-395 AC5: a missing or failing credential — keychain item, token, login: a fresh credentials check; the project held, the ticket waits for the operator's fix there; else Blocked for Human with this reasoning); image (ASS-392: the project's golden image, the ticket's VM cloned from it, or the local image registry: Repair Image on the Mac, one golden rebuild at a time — ASS-427: only what cannot be fixed in the ticket's VM, the Lima template, kernel settings, the image's build); vm (ASS-427: a problem in the ticket's VM fixable in place there with a source every VM shares — a tool or package the image lacks, a cache or pulled image, a harness-written VM file missing an entry because its non-secret declaration lacks it, the credential valid: Repair the VM fixes it there at once and in its source for later VMs, never waiting for a rebuild); behind-base (ASS-509: the ticket's branch behind origin/<base> — the failure explained by what the base has and the branch lacks: Bring the Base In rebases it, pushes and re-runs the check, a conflict going to Generate Solution); numbered-file-taken (ASS-509: a numbered file the ticket adds whose number origin/<base> or an older open merge request took: Bring the Base In renames it to the next free number, pushes and re-runs the check)"
+                "description": "Where the fix is made: harness (a fix ticket in the harness project's backlog), project (the cause is in the project's own code: checked against the latest master next, a bug raised in the project's own ticket system only when it fails there; the harness's backlog on the harness project), environment (where the work runs: repaired in place, else by the operator); dependency (no fault — it only waits for one of the ticket's own merge requests, one another depends on in another repository, to merge: back to Build's Await Sequential Merge); rate-limit (no fault of the ticket's — Claude usage or rate limits stopped its agents: Await Rate Limit resumes it on the API key fallback at once, or once the limit resets); credentials (a missing or failing credential — keychain item, token, login: a fresh credentials check; the project held, the ticket waits for the operator's fix there; else Blocked for Human with this reasoning); image (the project's golden image, the ticket's VM cloned from it, or the local image registry: Repair Image on the Mac, one golden rebuild at a time — only what cannot be fixed in the ticket's VM, the Lima template, kernel settings, the image's build); vm (a problem in the ticket's VM fixable in place there with a source every VM shares — a tool or package the image lacks, a cache or pulled image, a harness-written VM file missing an entry because its non-secret declaration lacks it, the credential valid: Repair the VM fixes it there at once and in its source for later VMs, never waiting for a rebuild); behind-base (the ticket's branch behind origin/<base> — the failure explained by what the base has and the branch lacks: Bring the Base In rebases it, pushes and re-runs the check, a conflict going to Generate Solution); numbered-file-taken (a numbered file the ticket adds whose number origin/<base> or an older open merge request took: Bring the Base In renames it to the next free number, pushes and re-runs the check)"
             },
             "reasoning": {
                 "type": "string",
@@ -50,36 +50,46 @@
             },
             "own-branch": {
                 "type": "boolean",
-                "description": "Project only (ASS-384): true when the cause is in what the ticket's own branch adds or changes (Troubleshoot's failing-file), not in master's code; its merged merge requests count too (ASS-423); the harness checks master and the branch, then sends the ticket back to Generate Solution; left out otherwise; ASS-492: also true when nothing failed but the ticket's own work lacks a change (missing-change)"
+                "description": "Project only: true when the cause is in what the ticket's own branch adds or changes (Troubleshoot's failing-file), not in master's code; its merged merge requests count too; the harness checks master and the branch, then sends the ticket back to Generate Solution; left out otherwise; also true when nothing failed but the ticket's own work lacks a change (missing-change)"
             },
             "human-action": {
                 "type": "string",
-                "description": "Environment or credentials (ASS-395) only: what the operator must do should it not be repaired in place; left out otherwise"
+                "description": "Environment or credentials only: what the operator must do should it not be repaired in place; left out otherwise"
             },
             "dependency-merge-request": {
                 "type": "string",
-                "description": "Dependency only (ASS-390): the merge request the block waits for — its planned id, key or url, from ticket:merge-request-plan; left out otherwise"
+                "description": "Dependency only: the merge request the block waits for — its planned id, key or url, from ticket:merge-request-plan; left out otherwise"
             },
             "missing-change": {
                 "type": "string",
-                "description": "Project, own-branch true only (ASS-492): nothing failed, but the ticket's own work is incomplete — the change it still needs, what the new or existing merge request must hold, in one line (e.g. bump @scope/* to 1.0.0-preview.85 in package.json and the lockfile); the harness plans it on the ticket's merge request in missing-change-repository still Open or Not Created, else a new one, and sends the ticket back to Generate Solution; left out otherwise"
+                "description": "Project, own-branch true only: nothing failed, but the ticket's own work is incomplete — the change it still needs, what the new or existing merge request must hold, in one line (e.g. bump @scope/* to 1.0.0-preview.85 in package.json and the lockfile); the harness plans it on the ticket's merge request in missing-change-repository still Open or Not Created, else a new one, and sends the ticket back to Generate Solution; left out otherwise"
             },
             "missing-change-repository": {
                 "type": "string",
-                "description": "With missing-change only (ASS-492): the forge url of the project's repository (project.json's repositories) the change goes in; left out otherwise"
+                "description": "With missing-change only: the forge url of the project's repository (project.json's repositories) the change goes in; left out otherwise"
             },
             "ticket-branch-repository": {
                 "type": "string",
-                "description": "behind-base or numbered-file-taken only (ASS-509): the forge url of the repository whose branch is behind, or adds the taken number; left out otherwise"
+                "description": "behind-base or numbered-file-taken only: the forge url of the repository whose branch is behind, or adds the taken number; left out otherwise"
             },
             "ticket-branch": {
                 "type": "string",
-                "description": "behind-base or numbered-file-taken only (ASS-509): the ticket's branch there (change/<KEY>-<id>); left out otherwise"
+                "description": "behind-base or numbered-file-taken only: the ticket's branch there (change/<KEY>-<id>); left out otherwise"
             }
         },
         "required": [
             "issue",
             "reasoning"
         ]
+    },
+    "output-tickets": {
+        "issue": "dependency ASS-390; rate-limit ASS-391; credentials ASS-395 AC5; image ASS-392, narrowed by ASS-427; vm ASS-427; behind-base and numbered-file-taken ASS-509",
+        "own-branch": "ASS-384; merged merge requests ASS-423; missing-change ASS-492",
+        "human-action": "credentials ASS-395",
+        "dependency-merge-request": "ASS-390",
+        "missing-change": "ASS-492",
+        "missing-change-repository": "ASS-492",
+        "ticket-branch-repository": "ASS-509",
+        "ticket-branch": "ASS-509"
     }
 }

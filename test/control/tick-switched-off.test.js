@@ -21,8 +21,8 @@ const to = (target, condition = { 'turn-complete': true }) => ({ condition, 'mov
 // run's sign.
 function switchedOff(off = { 'is-active': false }) {
   const f = controlFixture();
-  edit(join(f.dir, 'harness.json'), h => Object.assign(h, { 'max-tickets-in-progress': null, 'max-tickets-in-planning': null }));
-  edit(join(f.dir, 'engines', 'example-development', 'state-engine.json'), e => { e.steps = [
+  f.seats(Infinity);   // ASS-528: seats not limited
+  edit(join(f.dir, 'engines', 'example-development', 'workflow.yaml'), e => { e.steps = [
     { id: 'start', sequence: 1, action: { type: 'none' }, 'exit-events': [to('write', { always: true })] },
     { id: 'write', sequence: 2, ...off, action: { type: 'prompt', prompt: 'test' }, 'exit-events': [to('ask')] },
     { id: 'ask', sequence: 3, ...off, action: { type: 'human' }, 'exit-events': [to('check', { 'human-review': 'Approved' }), to('write', { 'human-review': 'Rejected' })] },
@@ -30,7 +30,7 @@ function switchedOff(off = { 'is-active': false }) {
     { id: 'done', sequence: 5, 'is-done': true, action: { type: 'none' } },
   ]; });
   mkdirSync(join(f.dir, 'engines', 'gate'));
-  writeFileSync(join(f.dir, 'engines', 'gate', 'state-engine.json'), JSON.stringify({ steps: [
+  writeFileSync(join(f.dir, 'engines', 'gate', 'workflow.yaml'), JSON.stringify({ steps: [
     { id: 'begin', sequence: 1, action: { type: 'none' }, 'exit-events': [to('think', { always: true })] },
     { id: 'think', sequence: 2, ...off, action: { type: 'prompt', prompt: 'test' }, 'exit-events': [to('sign')] },
     { id: 'sign', sequence: 3, ...off, action: { type: 'human' }, 'exit-events': [to('end', { 'human-review': 'Approved' })] },

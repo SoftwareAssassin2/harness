@@ -58,8 +58,8 @@ test('AC3: a non-blocking open question never holds the ticket', async () => {
 
 test('AC2: a ticket held by a blocking question takes no seat — the next ticket gets the in-progress slot', async () => {
   const f = controlFixture();
-  // ABC-3 and ABC-4 both at review-plan's step past planning, one in-progress slot (the fixture's max-tickets-in-progress 1).
-  edit(join(f.dir, 'engines', 'example-development', 'state-engine.json'), e => { delete e.steps.find(s => s.id === 'plan')['is-planning-stage']; });
+  // ABC-3 and ABC-4 both at review-plan's step past planning, one seat (the fixture's one seat on the Mac, ASS-528).
+  edit(join(f.dir, 'engines', 'example-development', 'workflow.yaml'), e => { delete e.steps.find(s => s.id === 'plan')['is-planning-stage']; });
   edit(sprintFile(f), s => {
     s.features[0].variations[0]['harness-status'] = hs('plan');
     s.features[0]['ticket-system-status'] = 'In Progress';

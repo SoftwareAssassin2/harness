@@ -29,7 +29,7 @@ export const COLUMNS = [
 ];
 
 // statusCategories(engines) — { [status]: 'planning' | 'in-progress' | 'qa' |
-// 'done' } from the project's engines, each a state-engine.json (or just its
+// 'done' } from the project's engines, each a workflow.yaml's engine (or just its
 // steps array) (ASS-410 AC1). A step paired with a status makes it done
 // (is-done), qa (is-qa), planning (is-planning-stage) or in-progress (any other
 // step). A step in the quarantine area (blocked, self-healing) is ignored, so a
@@ -178,7 +178,7 @@ const memberName = m => m['ticket-system-name'] ?? m['git-name'] ?? m['git-usern
 //   sprints        analytics/sprints.json, parsed ({ sprints: [ … ] })
 //   mergeRequests  analytics/merge-requests.json, parsed ({ 'merge-requests': { … } })
 //   team           team.json, parsed ({ members: [ … ] })
-//   engines        the project's state engines (state-engine.json objects or their steps arrays)
+//   engines        the project's state engines (workflow.yaml engines, as engine-file.js reads them, or their steps arrays)
 //   span           { start, end } dates (YYYY-MM-DD), optional: the active sprint by default
 //   now            the current moment (Date, ms or ISO)
 //   timeZone       the zone whose calendar days make the span (default UTC)

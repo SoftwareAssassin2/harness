@@ -19,10 +19,10 @@ const AGENT = join(import.meta.dirname, '..', '..', 'agent.sh');
 function projects() {
   const dir = mkdtempSync(join(tmpdir(), 'gw-'));
   mkdirSync(join(dir, 'engines', 'e'), { recursive: true });
-  writeFileSync(join(dir, 'engines', 'e', 'state-engine.json'), JSON.stringify({ steps: [{ id: 'a', sequence: 1 }, { id: 'b', sequence: 2 }, { id: 'c', sequence: 3, action: { type: 'state-engine', engine: 'sub' } }] }));
+  writeFileSync(join(dir, 'engines', 'e', 'workflow.yaml'), JSON.stringify({ steps: [{ id: 'a', sequence: 1 }, { id: 'b', sequence: 2 }, { id: 'c', sequence: 3, action: { type: 'state-engine', engine: 'sub' } }] }));
   for (const name of ['sub', 'other']) {
     mkdirSync(join(dir, 'engines', name));
-    writeFileSync(join(dir, 'engines', name, 'state-engine.json'), JSON.stringify({ steps: [{ id: 'x', sequence: 1 }, { id: 'y', sequence: 2 }] }));
+    writeFileSync(join(dir, 'engines', name, 'workflow.yaml'), JSON.stringify({ steps: [{ id: 'x', sequence: 1 }, { id: 'y', sequence: 2 }] }));
   }
   mkdirSync(join(dir, 'p', 'sprints', 'sprint-10'), { recursive: true });
   writeFileSync(join(dir, 'p', 'project.json'), JSON.stringify({ name: 'P', 'execution-state-engine': 'e' }));

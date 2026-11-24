@@ -9,8 +9,24 @@ set -euo pipefail
 #   { project, image, status: current | building | failed, exit-code, log, run-log }
 # Reads, never builds; fails, naming why, when the project or its
 # definition is missing.
-source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/golden.bash"
+#
+# ASS-534: a project declaring a Substrate sandbox (sandbox/services.yaml) is
+# reported with its sandbox images, one per declared architecture
+# (sandbox-image.bash sandbox_status) —
+#   { …, status, "vm-status": <the VM image's>, "sandbox-images": { <arch>: { image, arch, status, digest, ref, built-at, exit-code, log, … } } }
+# — and status is the golden environment's as a whole: building while the VM
+# image or a sandbox image builds (or the started run lives); else current
+# when every one of them is; else failed. So a rebuild ticket's Await the
+# Golden Build (vm:golden-ready) and Test judge both. A project declaring
+# none prints exactly the VM image's, as before.
+source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../substrate/sandbox-image.bash"
 
 [[ $# -eq 1 ]] || { echo "usage: vm:golden-status <project>" >&2; exit 1; }
-golden_definition vm:golden-status "$1"
-golden_status "$1"
+sandbox_definition vm:golden-status "$1"
+vm="$(golden_status "$1")"
+if [[ "$declared" != true ]]; then echo "$vm"; exit 0; fi
+jq -c --argjson s "$(sandbox_statuses "$1")" '
+  .status as $vm | [$s[].status] as $all
+  | . + { status: (if $vm == "building" or any($all[]; . == "building") then "building"
+                   elif $vm == "current" and all($all[]; . == "current") then "current" else "failed" end),
+          "vm-status": $vm, "sandbox-images": $s }' <<<"$vm"

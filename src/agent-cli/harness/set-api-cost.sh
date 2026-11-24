@@ -7,7 +7,7 @@ set -euo pipefail
 # claude-usage.json: what control last read of the API organization's spend
 # this UTC month from the Cost Admin API, about hourly (ASS-153,
 # src/control/api-cost.js checkApiCost), `usd` in dollars, `as-of` now. The
-# dashboard shows it in the models box. A plain overwrite: keeping the last
+# dashboard shows it on the footer's third line (ASS-566; the models box before). A plain overwrite: keeping the last
 # value when a read fails is control's to do, by not calling this. Fails,
 # writing nothing, unless the month is YYYY-MM and the amount a number of
 # dollars (0 or more).

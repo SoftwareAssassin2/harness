@@ -13,7 +13,7 @@ import { promisify } from 'node:util';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, chmodSync, cpSync, readdirSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { until, LOADED_MS } from '../support/until.js';
+import { until, within, LOADED_MS } from '../support/until.js';
 // untilBuilt — until() for a detached build's end: a whole build of fakes, ~20 steps of processes, which on a busy
 // machine (other test files alongside) took past until()'s 30s (ASS-291: one run in 30); one that ends returns at once.
 const untilBuilt = check => until(check, 3 * LOADED_MS);
@@ -431,9 +431,9 @@ test('ASS-151 AC3: vm:golden-status says current for an image built from its inp
 
 test('ASS-151 AC3: vm:build-golden-start starts the build detached and returns at once — building until it ends, then current; started again while it runs, or once current, it does nothing', async () => {
   const s = setup(), gate = gated(s);
-  const started = Date.now();
-  assert.deepEqual(await golden(s, 'vm:build-golden-start', gate), { project: 'p', image: 'golden-p', status: 'building', started: true, 'exit-code': null, ...LOGS(s) });
-  assert.ok(Date.now() - started < 10_000, 'returned while the build waits');
+  // ASS-545: returned while the build waits — the build cannot end before the gate opens (below), so a start that
+  // waited for it would never return; within() is a hang guard only, in place of a 10 s limit.
+  assert.deepEqual(await within(golden(s, 'vm:build-golden-start', gate)), { project: 'p', image: 'golden-p', status: 'building', started: true, 'exit-code': null, ...LOGS(s) });
   assert.equal((await golden(s, 'vm:golden-status')).status, 'building');
   assert.deepEqual(await golden(s, 'vm:build-golden-start', gate), { project: 'p', image: 'golden-p', status: 'building', started: false, 'exit-code': null, ...LOGS(s) });
   writeFileSync(join(s.dir, 'go'), '');

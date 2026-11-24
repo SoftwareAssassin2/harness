@@ -8,7 +8,7 @@ set -euo pipefail
 # key the project's project.json names (api-cost-admin-keychain-service,
 # ASS-221): what control last read of it this UTC month, about hourly
 # (src/control/api-cost.js checkApiCost). The dashboard shows it in the
-# project's models box. A plain overwrite. Fails, writing nothing, unless the
+# project's footer line (ASS-566; its models box before). A plain overwrite. Fails, writing nothing, unless the
 # project has a project.json, the month is YYYY-MM and the amount a number of
 # dollars (0 or more).
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../json-file.bash"

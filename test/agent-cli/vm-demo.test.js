@@ -38,7 +38,7 @@ test('vm:start starts a VM without a display â€” whatever a demo left it with â€
 async function demo() {
   const l = lima();
   l.mount();
-  edit(join(l.f.dir, 'engines', 'example-development', 'state-engine.json'), e => { e.steps.push({ id: 'stuck', sequence: 0, area: 'quarantine', 'is-blocked-state': true, action: { type: 'human' } }); });
+  edit(join(l.f.dir, 'engines', 'example-development', 'workflow.yaml'), e => { e.steps.push({ id: 'stuck', sequence: 0, area: 'quarantine', 'is-blocked-state': true, action: { type: 'human' } }); });
   await l.cli('vm:create', 'p', 'ABC-3', 'A');
   const log = l.vmFile('desktop.log');
   l.v.inVm('systemctl', `echo "systemctl $*" >> "${log}"`);

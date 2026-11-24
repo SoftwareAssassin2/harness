@@ -5,7 +5,7 @@
 // and exit code work as on the host. A step
 // without run-location runs on the host; a state-engine step always does
 // (only its sub-engine's steps run in one place or the other).
-import { machineOf } from './machine.js';
+import { machineOf, SUBSTRATE_RUN_TARGETS } from './machine.js';
 
 // What runs in a VM, and what it is asked, goes through the machine layer
 // (machine.js, ASS-432: machineCommand, stopMarked, machineStatuses, …);
@@ -30,8 +30,11 @@ export const runsInVm = step => step?.['run-location'] === 'vm' && step.action?.
 // (machine.js machineOf: its Lima name); throws, naming `who`, when it has
 // none (its Create VM step has not run), so the step is held and tried again
 // as any failing dispatch or script is.
-export function vmOf(variation, who) {
-  const name = machineOf(variation);
+// ASS-535: `target`, the run target it holds this tick, when given — on a substrate one its sandbox, thrown when it has
+// none yet (sandboxes.js makes it before the step starts).
+export function vmOf(variation, who, target) {
+  const name = machineOf(variation, target);
+  if (!name && SUBSTRATE_RUN_TARGETS.has(target)) throw new Error(`${who} runs in its Substrate sandbox, and the variation has none yet: substrate:sandbox-up has not made it`);
   if (!name) throw new Error(`${who} runs in its VM, and the variation has none: its Create VM step (vm:create) has not run`);
   return name;
 }

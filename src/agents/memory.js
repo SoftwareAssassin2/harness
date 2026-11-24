@@ -17,13 +17,14 @@ const VM_HOST = 'host.lima.internal';
 // memoryPort(project) — the port of the project's Hindsight ({ id, json }), or null when it has none.
 export const memoryPort = project => project?.json?.hindsight?.port ?? null;
 
-// memoryMcpConfig(project, { vm }) — the --mcp-config of the project's
-// agents: its bank's endpoint, at host.lima.internal for an agent in a VM;
-// undefined for a project with no Hindsight.
-export function memoryMcpConfig(project, { vm = false } = {}) {
+// memoryMcpConfig(project, { vm, host }) — the --mcp-config of the project's
+// agents: its bank's endpoint, at host.lima.internal for an agent in a VM, at
+// `host` when given (ASS-536: a Substrate sandbox's name for the Mac,
+// machine-substrate.js macHost); undefined for a project with no Hindsight.
+export function memoryMcpConfig(project, { vm = false, host } = {}) {
   const port = memoryPort(project);
   if (port == null) return undefined;
-  return { mcpServers: { hindsight: { type: 'http', url: `http://${vm ? VM_HOST : HOST}:${port}/mcp/${project.id}/` } } };
+  return { mcpServers: { hindsight: { type: 'http', url: `http://${host ?? (vm ? VM_HOST : HOST)}:${port}/mcp/${project.id}/` } } };
 }
 
 // memoryAnswers(port, ms) — whether the Hindsight on the port answers its health check, in `ms`.

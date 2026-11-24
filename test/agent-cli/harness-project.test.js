@@ -7,6 +7,7 @@ import assert from 'node:assert/strict';
 import { join } from 'node:path';
 import { mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync, chmodSync } from 'node:fs';
 import { fixture, run, SELF_HEALING_ENGINE } from './harness-fixture.js';
+import { readEngine } from '../../src/workflow/engine-file.js';
 
 const OFF_BOARD = join(import.meta.dirname, '..', '..', 'off-board.sh');
 const write = (file, content) => { mkdirSync(join(file, '..'), { recursive: true }); writeFileSync(file, typeof content === 'string' ? content : JSON.stringify(content, null, 4)); };
@@ -24,13 +25,13 @@ async function withHarness() {
   write(at('projects', 'h', 'sprints', 'sprint-1', 'sprint.json'), { number: 1, features: [], bugs: [], spikes: [] });
   write(at('projects', 'q', 'project.json'), { name: 'Q', 'execution-state-engine': 'example-development', 'work-sources': [] });
   write(at('harness.json'), { ...JSON.parse(readFileSync(at('harness.json'), 'utf8')), 'harness-project': 'h' });   // h is named the harness project
-  const engine = JSON.parse(readFileSync(at('engines', 'example-development', 'state-engine.json'), 'utf8'));
+  const engine = readEngine(at('engines', 'example-development', 'workflow.yaml'));
   engine.steps.unshift(
     { id: 'self-healing', sequence: 0, area: 'quarantine', 'paired-ticket-system-status': 'In Progress', action: { type: 'state-engine', engine: 'self-healing-fix' } },
     { id: 'blocked-for-human', sequence: 0, 'is-blocked-state': true, 'paired-ticket-system-status': 'In Progress', action: { type: 'human' } },
     { id: 'backlog', sequence: 0, 'paired-ticket-system-status': 'Backlog', action: { type: 'none' } },
   );
-  write(at('engines', 'example-development', 'state-engine.json'), engine);
+  write(at('engines', 'example-development', 'workflow.yaml'), engine);
   await run(OFF_BOARD, ['ticket:create', 'p', 'Bug', 'Raised from p'], { env: f.env });
   const sprint = project => JSON.parse(readFileSync(at('projects', project, 'sprints', project === 'h' ? 'sprint-1' : 'sprint-10', 'sprint.json'), 'utf8'));
   const keys = project => Object.values(sprint(project)).filter(Array.isArray).flat().map(t => t.key);

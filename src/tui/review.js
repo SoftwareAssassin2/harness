@@ -16,6 +16,10 @@ const read = path => readFileSync(path, 'utf8');
 // A variation's name has no hyphen, so root-cause-analysis-review-A.md is no plan.
 const DOCUMENTS = [['execution-plan', 'Execution plan'], ['test-plan', 'Test plan'], ['root-cause-analysis', 'Root cause analysis'], ['risk-assessment', 'Risk assessment']];
 const DOCUMENT = new RegExp(`^(${DOCUMENTS.map(([stem]) => stem).join('|')})(-[^-]+)?\\.md$`);
+// ASS-559: the files the ticket screen's Acceptance criteria tab points to as each criterion's evidence, each [stem,
+// the status it backs]: the Test step's test results (testing-status), the code review and the change log (dev-status).
+export const EVIDENCE = [['test-results', 'testing'], ['code-review', 'dev'], ['change-log', 'dev']];
+const EVIDENCE_FILE = new RegExp(`^(${EVIDENCE.map(([stem]) => stem).join('|')})(-[^-]+)?\\.md$`);
 
 // preExistingFailures(results) — the failures automated-tests:verify-success
 // (ASS-99) named in automated-test-results-<variation>.md as failing on
@@ -34,7 +38,8 @@ export function preExistingFailures(results) {
 // the ticket's own), as paths; and split, its split-proposal.json (ASS-252,
 // ticket:propose-split), when it reads as JSON; and documents, the paths of
 // its plans, root cause analysis and risk assessment by file name (ASS-261,
-// see ticketDocuments), from the listing already made, nothing more read. A
+// see ticketDocuments), from the listing already made, nothing more read; and (ASS-559) evidence, the paths of its
+// test results, code reviews and change logs by file name (EVIDENCE), only when it has one. A
 // folder with none of these has no review.
 export function loadReviews(projectDir) {
   const work = resolve(projectDir, 'work');
@@ -45,6 +50,7 @@ export function loadReviews(projectDir) {
     const review = { explanations: {}, risks: {}, preExisting: {}, screenshots: {}, documents: {} };
     for (const file of readdirSync(folder).toSorted()) {
       if (DOCUMENT.test(file)) review.documents[file] = join(folder, file);
+      if (EVIDENCE_FILE.test(file)) (review.evidence ??= {})[file] = join(folder, file);   // ASS-559, only when there is one
       const [, kind, variation] = /^(explanation|risk-assessment|automated-test-results)(?:-(.+))?\.md$/.exec(file) ?? [];
       if (kind === 'explanation' && variation) review.explanations[variation] = read(join(folder, file));
       else if (kind === 'risk-assessment') review.risks[variation ?? ''] = read(join(folder, file));

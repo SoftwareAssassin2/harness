@@ -1,0 +1,344 @@
+steps:
+  - id: enrich-ac
+    sequence: 1
+    name: Extract Acceptance Criteria
+    description: Extracting acceptance criteria from the ticket
+    is-planning-stage: true
+    max-visits: 3
+    on-max-visits: blocked
+    action:
+      type: prompt
+      prompt: enrich-ac-grouped
+      agent-count: 1
+      run-in-dev-container: false
+      model: claude-opus-5-5
+    exit-events:
+      - condition:
+          all:
+            - turn-complete: true
+            - structured-ticket-variation-array-check:
+                member-name: acceptance-criteria
+                min-length: 1
+        move-to-state: root-cause-analysis
+    run-location: vm
+    worktree: true
+  - id: root-cause-analysis
+    sequence: 2
+    name: Root Cause Analysis
+    description: Analyzing the root cause of issues
+    is-planning-stage: true
+    max-visits: 3
+    on-max-visits: blocked
+    action:
+      type: prompt
+      prompt: root-cause-analysis-grouped
+      agent-count: 1
+      run-in-dev-container: true
+      model: claude-opus-5-5
+    exit-events:
+      - condition:
+          all:
+            - turn-complete: true
+            - file-updated:
+                file: root-cause-analysis.md
+                since: turn-start
+        move-to-state: review-root-cause-analysis
+      - condition:
+          all:
+            - turn-complete: true
+            - not:
+                file-updated:
+                  file: root-cause-analysis.md
+                  since: turn-start
+        move-to-state: root-cause-analysis
+    run-location: vm
+    worktree: true
+  - id: review-root-cause-analysis
+    sequence: 3
+    name: Review Root Cause Analysis
+    description: Reviewing the root cause analysis
+    is-planning-stage: true
+    max-visits: 3
+    on-max-visits: blocked
+    action:
+      type: prompt
+      prompt: review-root-cause-analysis-grouped
+      agent-count: 1
+      run-in-dev-container: false
+      model: claude-sonnet-5
+    exit-events:
+      - condition:
+          all:
+            - turn-complete: true
+            - structured-output:
+                is-approved: true
+        move-to-state: write-execution-plan
+      - condition:
+          all:
+            - turn-complete: true
+            - structured-output:
+                is-approved: false
+        move-to-state: root-cause-analysis
+    run-location: vm
+    worktree: true
+  - id: record-plan-objections
+    sequence: 4
+    name: Record the Plan Objections
+    description: "Review Plan rejected the plan: its review is added to plan-objections-<variation>.md, every objection so far, and the plan goes back to the step the review named (revise-from). The third rejection, the one that would end Plan at its max visits, goes to Record the Objections for a Stronger Plan instead (ASS-399)"
+    is-planning-stage: true
+    max-visits: 2
+    on-max-visits: record-objections-for-stronger-plan
+    action:
+      type: script
+      command: ./agent.sh plan:record-objections {project} {ticket} {variation}
+    exit-events:
+      - condition:
+          exit-code: 0
+        move-to-state-from-structured-output: revise-from
+        move-to-state: write-execution-plan
+      - condition:
+          not:
+            exit-code: 0
+        move-to-state: blocked
+  - id: record-objections-for-stronger-plan
+    sequence: 5
+    name: Record the Objections for a Stronger Plan
+    description: "The plan was rejected until Plan's visits ran out: its review is added to plan-objections-<variation>.md, and Write Execution Plan runs once more on the stronger model, every objection so far its input. Rejected again, the operator is asked (ASS-399)"
+    is-planning-stage: true
+    max-visits: 1
+    on-max-visits: ask-operator-about-plan
+    action:
+      type: script
+      command: ./agent.sh plan:record-objections {project} {ticket} {variation}
+    exit-events:
+      - condition:
+          exit-code: 0
+        move-to-state: write-execution-plan-stronger
+      - condition:
+          not:
+            exit-code: 0
+        move-to-state: blocked
+  - id: ask-operator-about-plan
+    sequence: 6
+    name: Ask the Operator About the Plan
+    description: "The stronger re-plan was rejected too: its review is added to plan-objections-<variation>.md and the operator gets a blocking question listing the open objections and asking how to proceed, instead of the ticket going to Blocked (ASS-399). ASS-418: on the host, so its VM is stopped here (started again, by the lifecycle, at the next step that needs it)"
+    vm: stopped
+    is-planning-stage: true
+    action:
+      type: script
+      command: ./agent.sh plan:ask-about-objections {project} {ticket} {variation}
+    exit-events:
+      - condition:
+          exit-code: 0
+        move-to-state: awaiting-plan-answer
+      - condition:
+          not:
+            exit-code: 0
+        move-to-state: blocked
+  - id: awaiting-plan-answer
+    sequence: 7
+    name: Awaiting the Plan Answer
+    description: "Rests while a blocking question on the ticket is open; once the operator has answered, Write Execution Plan runs again with the answer, every step's visits counted afresh (ASS-399). ASS-418: a wait for the operator, so its VM is stopped here (started again, by the lifecycle, at the next step that needs it)"
+    vm: stopped
+    is-planning-stage: true
+    restarts-visit-count: true
+    action:
+      type: human
+      instructions: "Answer the ticket's question about its rejected plan on its screen: which objections to resolve and how, or which to drop."
+    exit-events:
+      - condition:
+          open-questions: false
+        move-to-state: write-execution-plan
+  - id: write-execution-plan
+    sequence: 8
+    name: Write Execution Plan
+    description: Planning the work to be done
+    is-planning-stage: true
+    max-visits: 3
+    on-max-visits: blocked
+    action:
+      type: prompt
+      prompt: write-execution-plan-grouped
+      agent-count: 1
+      run-in-dev-container: false
+      model: claude-opus-5-5
+    exit-events:
+      - condition:
+          all:
+            - turn-complete: true
+            - file-updated:
+                file: execution-plan.md
+                since: turn-start
+        move-to-state: write-test-plan
+      - condition:
+          all:
+            - turn-complete: true
+            - not:
+                file-updated:
+                  file: execution-plan.md
+                  since: turn-start
+        move-to-state: write-execution-plan
+    run-location: vm
+    worktree: true
+  - id: write-execution-plan-stronger
+    sequence: 9
+    name: Write Execution Plan on a Stronger Model
+    description: Planning the work once more on the stronger model (harness.json's stronger-model, else its first, strongest, Claude model), every reviewer objection so far its input (ASS-399)
+    is-planning-stage: true
+    max-visits: 2
+    on-max-visits: blocked
+    action:
+      type: prompt
+      prompt: write-execution-plan-grouped
+      agent-count: 1
+      run-in-dev-container: false
+      model: stronger
+    exit-events:
+      - condition:
+          all:
+            - turn-complete: true
+            - file-updated:
+                file: execution-plan.md
+                since: turn-start
+        move-to-state: write-test-plan
+      - condition:
+          all:
+            - turn-complete: true
+            - not:
+                file-updated:
+                  file: execution-plan.md
+                  since: turn-start
+        move-to-state: write-execution-plan-stronger
+    run-location: vm
+    worktree: true
+  - id: write-test-plan
+    sequence: 10
+    name: Write Test Plan
+    description: Planning the test strategy
+    is-planning-stage: true
+    max-visits: 4
+    on-max-visits: blocked
+    action:
+      type: prompt
+      prompt: write-test-plan-grouped
+      agent-count: 1
+      run-in-dev-container: false
+      model: claude-opus-5-5
+    exit-events:
+      - condition:
+          all:
+            - turn-complete: true
+            - file-updated:
+                file: test-plan.md
+                since: turn-start
+        move-to-state: enrich-automated-test-data
+      - condition:
+          all:
+            - turn-complete: true
+            - not:
+                file-updated:
+                  file: test-plan.md
+                  since: turn-start
+        move-to-state: write-test-plan
+    run-location: vm
+    worktree: true
+  - id: enrich-automated-test-data
+    sequence: 11
+    name: Enrich Automated Test Data
+    description: Enriching the automated test data
+    is-planning-stage: true
+    max-visits: 4
+    on-max-visits: blocked
+    action:
+      type: prompt
+      prompt: enrich-automated-test-data-grouped
+      agent-count: 1
+      run-in-dev-container: false
+      model: claude-opus-5-5
+    exit-events:
+      - condition:
+          all:
+            - turn-complete: true
+        move-to-state: review-plan
+    run-location: vm
+    worktree: true
+  - id: review-plan
+    sequence: 12
+    name: Review Plan
+    description: Reviewing the build and test plans
+    is-planning-stage: true
+    max-visits: 4
+    on-max-visits: blocked
+    action:
+      type: prompt
+      prompt: review-plan-grouped
+      agent-count: 1
+      run-in-dev-container: false
+      model: claude-sonnet-5
+    exit-events:
+      - condition:
+          all:
+            - turn-complete: true
+            - structured-output:
+                is-approved: true
+        move-to-state: choose-work-mode
+      - condition:
+          all:
+            - turn-complete: true
+            - structured-output:
+                is-approved: false
+        move-to-state: record-plan-objections
+    run-location: vm
+    worktree: true
+  - id: choose-work-mode
+    sequence: 13
+    name: Choose Where to Work
+    description: "After the plans are approved, decides whether the variation is built in a worktree or on a full machine (a Substrate sandbox, a Lima VM, a workstation or cloud VM), from the plan: its points, the files and lines it touches, its risk, whether meaningful tests run without the app stack, the contracts others depend on, and Hindsight's recall of similar tickets and their CI (ASS-556)"
+    is-planning-stage: true
+    max-visits: 3
+    on-max-visits: blocked
+    action:
+      type: prompt
+      prompt: choose-work-mode-grouped
+      agent-count: 1
+      run-in-dev-container: false
+      model: claude-opus-5-5
+    exit-events:
+      - condition:
+          turn-complete: true
+        move-to-state: record-work-mode
+    run-location: vm
+    worktree: true
+  - id: record-work-mode
+    sequence: 14
+    name: Record Where to Work
+    description: "Records the variation's work mode, worktree or full, with its reasons: the project's forced rules (project.json work-mode) over Choose Where to Work's answer; an escalated or operator-set mode kept (ticket:choose-work-mode, ASS-556). On the host, so its VM is stopped here"
+    vm: stopped
+    is-planning-stage: true
+    max-visits: 3
+    on-max-visits: blocked
+    action:
+      type: script
+      command: ./agent.sh ticket:choose-work-mode {project} {ticket} {variation} {run}
+    exit-events:
+      - condition:
+          exit-code: 0
+        move-to-state: done
+      - condition:
+          not:
+            exit-code: 0
+        move-to-state: blocked
+  - id: done
+    name: Done
+    description: The group is finished; its parent step moves on
+    is-done: true
+    action:
+      type: none
+    sequence: 15
+  - id: blocked
+    name: Blocked
+    description: A step failed or looped too many times; the parent step sends the ticket to Blocked, which returns it to the start of this group
+    is-done: true
+    action:
+      type: none
+    sequence: 16

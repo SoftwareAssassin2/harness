@@ -6,12 +6,15 @@
 #   workspace_of <command> <project>              # the project's local-pc folder (project.json local-environments), a git checkout
 #   branch_name <ticket-key> <variation>          # change/<KEY> for variation A, change/<KEY>.<variation> for another
 #   worktree_folder <workspace> <ticket-key> <variation>   # <workspace>/.worktrees/<KEY> (or <KEY>.<variation>)
+#   harness_clone <command> <project>             # ASS-553: the harness's own clone of the workspace's repository (below)
+#   worktree_repo <folder>                        # the checkout a worktree belongs to (its main working tree)
+#   remove_worktree <folder>                      # the worktree removed from the checkout it belongs to (--force)
 #   default_branch <workspace>                    # origin's default branch (origin/HEAD), else master
 #   find_branch <workspace> <name>                # the branch as named locally or on origin, matched in any case; nothing when none
 #   repo_url <workspace>                          # origin's URL as https://host/group/project
 #   repo_path <workspace>                         # group/project, for glab --repo
 #   build_of <command> <project> <ticket-key> <variation>   # the variation's build object, as JSON
-#   vm_of <command> <project> <ticket-key> <variation>      # the variation's VM (ASS-74), as machine.bash names a machine (ASS-432); nothing when it has none
+#   vm_of <command> <project> <ticket-key> <variation>      # the variation's VM (ASS-74), as machine.bash names a machine (ASS-432); nothing when it has none, or (ASS-540) on a Mac run target
 #   set_build <command> <project> <ticket-key> <variation> '<json object>'   # merged into the variation's build
 #   ticket_field <command> <project> <ticket-key> <field>   # a field of the ticket (title, url, …)
 #   ticket_reference <command> <project> <ticket-key>       # [KEY](url) for a web url; else, an off-board ticket's file:// or none, KEY: title (ASS-86)
@@ -37,6 +40,36 @@ workspace_of() {
   [[ -d "$folder" ]] && git -C "$folder" rev-parse --git-dir >/dev/null 2>&1 || { echo "$command: the workspace $folder is not a git checkout" >&2; return 1; }
   echo "$folder"
 }
+
+# ASS-553: local-worktree makes its worktrees from the harness's own clone of the project's repository on the Mac, never
+# from the operator's checkout (the workspace, which may be the one they work in): harness_clone prints it,
+# data/projects/<project>/checkouts/<repo> (under data/, so gitignored; PROJECTS_DIR's in tests), cloned once from the
+# workspace's origin URL (read from the workspace, which is otherwise left alone) under checkouts.lock, so two at once
+# never clone twice; fetched by its callers as they need (code:hand-over, code:create-branch --harness-clone). Its
+# worktrees are <clone>/.worktrees/<KEY>[.<variation>] (worktree_folder of it), as the workspace's were. A worktree
+# made before the switch, in the workspace's .worktrees/, is kept and goes on being used while the variation records
+# it (build.worktree-folder): worktree_repo finds the checkout any worktree belongs to.
+harness_clone() {
+  local command="$1" project="$2" workspace url name dir
+  workspace="$(workspace_of "$command" "$project")" || return 1
+  url="$(git -C "$workspace" remote get-url origin)" || { echo "$command: the workspace $workspace has no origin to clone" >&2; return 1; }
+  name="$(basename "$url")"; name="${name%.git}"
+  dir="$projects/$project/checkouts/$name"
+  if [[ ! -d "$dir/.git" ]]; then
+    mkdir -p "$projects/$project/checkouts"
+    lock_on 6 "$projects/$project/checkouts.lock" "$command" "${CLONE_LOCK_TIMEOUT:-600}" || return 1
+    if [[ ! -d "$dir/.git" ]]; then
+      rm -rf "$dir.part"
+      git clone --quiet "$url" "$dir.part" >&2 || { rm -rf "$dir.part"; exec 6>&-; echo "$command: could not clone $url into $dir" >&2; return 1; }
+      mv "$dir.part" "$dir"
+      echo "$command: cloned $url into $dir (the harness's own checkout for its worktrees)" >&2
+    fi
+    exec 6>&-
+  fi
+  echo "$dir"
+}
+worktree_repo() { local common; common="$(git -C "$1" rev-parse --path-format=absolute --git-common-dir)" || return 1; (cd "$(dirname "$common")" && pwd -P); }
+remove_worktree() { local repo; repo="$(worktree_repo "$1")" || return 1; git -C "$repo" worktree remove --force "$1"; }
 
 upper() { tr '[:lower:]' '[:upper:]' <<< "$1"; }
 ticket_slug() { if [[ "$2" == A ]]; then upper "$1"; else echo "$(upper "$1").$2"; fi; }
@@ -77,7 +110,10 @@ variation_field() {
     || { echo "$command: no $ticket variation $variation in $project's active sprint" >&2; return 1; }
 }
 build_of() { variation_field '.build // {}' "$@"; }
-vm_of() { variation_field "$machine_of" "$@" | jq -r .; }
+# ASS-540: a step control runs on a Mac run target (HARNESS_RUN_TARGET local-worktree or local-workspace, steps.js
+# scriptEnv) works on the Mac's checkout, not in the variation's machine: its VM is none for it, so a command that falls
+# back to the host (automated-tests:verify-*) works in the worktree or the workspace.
+vm_of() { if [[ "${HARNESS_RUN_TARGET:-}" == local-worktree || "${HARNESS_RUN_TARGET:-}" == local-workspace ]]; then variation_field '.name' "$@" > /dev/null; return; fi; variation_field "$machine_of" "$@" | jq -r .; }
 
 set_build() {
   local command="$1" project="$2" ticket="$3" variation="$4" fields="$5"

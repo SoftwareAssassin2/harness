@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+# sandbox-rootfs-exec <rootfs> <program> [<arg>…] — runs <program>, a path
+# inside <rootfs> (a service image's whole filesystem copied into the sandbox
+# image, services.yaml paths { from: /, to: <rootfs> }, ASS-534), with that
+# image's own libraries, so a service runs exactly as its image built it,
+# extensions and all, without chroot (which a sandbox's capabilities may not
+# allow) and without its libraries mixing into the sandbox's own.
+#
+# - A static program (no ELF interpreter) runs as it is.
+# - A dynamic one runs under the rootfs's own loader (glibc's ld-linux, or
+#   Alpine's ld-musl), given the rootfs's library folders: an older or newer
+#   C library than the sandbox's is never mixed with the sandbox's loader.
+# - When the rootfs's glibc is the sandbox's own release (the same x.y as
+#   its loader reports, Debian trixie's 2.41), its library folders also go on LD_LIBRARY_PATH and its
+#   bin folders first on PATH, so the programs it starts (initdb starting
+#   postgres, say) find them too; a script runs that way as well.
+# SANDBOX_ROOTFS is set to <rootfs> for scripts that want paths inside it.
+set -euo pipefail
+[[ $# -ge 2 ]] || { echo "usage: sandbox-rootfs-exec <rootfs> <program> [<arg>…]" >&2; exit 1; }
+rootfs="${1%/}" program="$2"; shift 2
+[[ -d "$rootfs" ]] || { echo "sandbox-rootfs-exec: no rootfs at $rootfs" >&2; exit 1; }
+[[ "$program" == /* ]] || program="/$program"
+target="$rootfs$program"
+[[ -e "$target" ]] || { echo "sandbox-rootfs-exec: no $program in $rootfs" >&2; exit 1; }
+export SANDBOX_ROOTFS="$rootfs"
+libs=""
+for d in lib usr/lib usr/local/lib lib/x86_64-linux-gnu usr/lib/x86_64-linux-gnu lib/aarch64-linux-gnu usr/lib/aarch64-linux-gnu lib64 usr/lib64; do
+  [[ -d "$rootfs/$d" && ! -L "$rootfs/$d" ]] && libs+="${libs:+:}$rootfs/$d"
+done
+# The rootfs's own file at <path>, an absolute symlink inside it followed inside it.
+inside() {
+  local p="$1" n=0 link
+  while [[ -L "$rootfs$p" && $n -lt 10 ]]; do
+    link="$(readlink "$rootfs$p")"
+    if [[ "$link" == /* ]]; then p="$link"; else p="$(dirname "$p")/$link"; fi
+    n=$((n + 1))
+  done
+  [[ -f "$rootfs$p" ]] && echo "$rootfs$p"
+}
+# glibc's release as a loader reports it ("… release version 2.41."), empty for none.
+release() { "$1" --version 2>/dev/null | sed -n '1s/.*release version \([0-9]*\.[0-9]*\).*/\1/p'; }
+same_glibc=false
+for l in /lib64/ld-linux-x86-64.so.2 /lib/ld-linux-aarch64.so.1; do
+  own="$(inside "$l" || true)"
+  [[ -n "$own" && -e "$l" ]] || continue
+  mine="$(release "$own")"
+  [[ -n "$mine" && "$mine" == "$(release "$l")" ]] && same_glibc=true
+done
+if [[ "$same_glibc" == true ]]; then
+  export LD_LIBRARY_PATH="$libs${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+  export PATH="$rootfs/usr/local/bin:$rootfs/usr/bin:$rootfs/bin:$PATH"
+  exec "$target" "$@"
+fi
+# Its interpreter, as the ELF header names it (the PT_INTERP string sits in the first page).
+interp="$(head -c 4096 "$target" | tr -c '[:print:]' '\n' | grep -m1 -E '^/lib(64)?/ld-(linux|musl)[^ ]*\.so\.[0-9]+$' || true)"
+[[ -n "$interp" ]] || exec "$target" "$@"   # static, or a script
+loader="$(inside "$interp" || true)"
+[[ -n "$loader" ]] || { echo "sandbox-rootfs-exec: $rootfs has no loader $interp for $program" >&2; exit 1; }
+exec "$loader" --library-path "$libs" "$target" "$@"

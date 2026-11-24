@@ -16,10 +16,11 @@ import { controlFixture } from './control-fixture.js';
 import { tick } from '../../src/control/tick.js';
 import { hs } from '../agent-cli/harness-fixture.js';
 import { engineDir } from '../support/engine-walk.js';
+import { readEngine } from '../../src/workflow/engine-file.js';
 
 const edit = (file, change) => { const json = JSON.parse(readFileSync(file, 'utf8')); change(json); writeFileSync(file, JSON.stringify(json)); };
 const sprint = f => join(f.dir, 'projects', 'p', 'sprints', 'sprint-10', 'sprint.json');
-const grouped = JSON.parse(readFileSync(join(engineDir('grouped-blocked'), 'state-engine.json'), 'utf8'));
+const grouped = readEngine(join(engineDir('grouped-blocked'), 'workflow.yaml'));
 const KEPT = ['own-branch-or-human', 'done', 'retry', 'blocked-for-human'];
 const FIXED = { 'own-branch-fix': true, 'own-branch-why': 'db/V27__x.sql is one the branch change/EX-1 in api adds or changes', 'plan-revised': 'execution-plan-A.md',
   'resume-at': 'build', 'resume-source': 'declared', 'resume-why': 'Blocked\'s own-branch fix (ASS-384) declares resume-at generate-solution (in build)', 'resume-ignored': [],
@@ -29,7 +30,7 @@ const FIXED = { 'own-branch-fix': true, 'own-branch-why': 'db/V27__x.sql is one 
 // ASS-423 (qa): blocked from a QA step after Local Testing instead — a person's step with its own Jira status, as a project's QA is.
 function fixture(answer, { qa = false } = {}) {
   const f = controlFixture();
-  edit(join(f.dir, 'engines', 'example-development', 'state-engine.json'), e => {
+  edit(join(f.dir, 'engines', 'example-development', 'workflow.yaml'), e => {
     e['check-health-interval-seconds'] = 1e9;
     if (qa) {
       e.steps.find(s => s.id === 'local-testing')['exit-events'][0]['move-to-state'] = 'qa';
@@ -46,7 +47,7 @@ function fixture(answer, { qa = false } = {}) {
     });
   });
   mkdirSync(join(f.dir, 'engines', 'own'), { recursive: true });
-  writeFileSync(join(f.dir, 'engines', 'own', 'state-engine.json'), JSON.stringify({ steps: grouped.steps.filter(s => KEPT.includes(s.id)).map(({ vm, ...s }) => s) }));
+  writeFileSync(join(f.dir, 'engines', 'own', 'workflow.yaml'), JSON.stringify({ steps: grouped.steps.filter(s => KEPT.includes(s.id)).map(({ vm, ...s }) => s) }));
   const was = (from, to) => ({ 'state-engine': 'example-development', 'from-state': from, 'to-state': to, timestamp: '2026-11-11T19:00:00Z', 'agent-dispatch-log': [], 'work-is-done': true });
   edit(sprint(f), s => {
     s.features[0]['ticket-system-status'] = 'Blocked';

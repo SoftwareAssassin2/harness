@@ -5,7 +5,7 @@
 //
 // Input, gathered by the .sh: { project, ticket, variation (the variation's
 // JSON), engine (the project's execution engine's name), engineFiles (every
-// state-engine.json the project sees, engines/'s first, its own after) }.
+// workflow.yaml the project sees (ASS-524: read by engine-file.js readEngine), engines/'s first, its own after) }.
 //
 // Prints { at, engine, step, command, argv } — the check to re-run: the step
 // the variation was at when it was blocked, "/"-joined from the top level down
@@ -45,6 +45,7 @@
 import { readFileSync } from 'node:fs';
 import { basename, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { readEngine } from '../../workflow/engine-file.js';
 
 // The commands whose run changes something beyond re-checking (merges, restarts, VMs, forge writes): never re-run as a check.
 const OUTWARD = new Set(['merge-request:merge', 'merge-request:merge-in-turn', 'merge-request:ensure-auto-merge', 'merge-request:create', 'merge-request:create-fix', 'code:take-out-of-draft-mode',
@@ -54,7 +55,7 @@ const FILLED = ['project', 'ticket', 'work-item', 'variation'];
 // engines(files) — { [name]: its JSON }, each file's folder its name, a later file over an earlier one.
 function engines(files = []) {
   const all = {};
-  for (const file of files) try { all[basename(dirname(file))] = JSON.parse(readFileSync(file, 'utf8')); } catch { /* unreadable: left out */ }
+  for (const file of files) try { all[basename(dirname(file))] = readEngine(file); } catch { /* unreadable: left out */ }
   return all;
 }
 const stepOf = (engine, id) => (engine?.steps ?? []).find(s => s.id === id);

@@ -6,7 +6,7 @@
 //
 // Input, gathered by the .sh: { project, ticket, variation (the variation's
 // JSON), engine (the project's execution engine's name), engineFiles (every
-// state-engine.json the project sees, engines/'s first, its own after),
+// workflow.yaml the project sees (ASS-524: read by engine-file.js readEngine), engines/'s first, its own after),
 // fix (the key it waits on, or null), declared (the fix ticket's resume-at,
 // or null), changed (the files its "<KEY>:" commits changed, repository
 // paths), earlier (ASS-347: each earlier landed fix in the variation's
@@ -39,6 +39,7 @@
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { readEngine } from '../../workflow/engine-file.js';
 import { returnTo, whyNotResume } from '../../control/engine.js';
 import { levelChanges } from '../../control/moves.js';
 
@@ -48,7 +49,7 @@ const KNOWN_DATA = [{ file: 'automated-tests-{variation}.json', step: 'generate-
 // engines(files) — { [name]: its JSON }, each file's folder its name, a later file over an earlier one.
 function engines(files = []) {
   const all = {};
-  for (const file of files) try { all[basename(dirname(file))] = JSON.parse(readFileSync(file, 'utf8')); } catch { /* unreadable: left out */ }
+  for (const file of files) try { all[basename(dirname(file))] = readEngine(file); } catch { /* unreadable: left out */ }
   return all;
 }
 

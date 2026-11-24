@@ -16,6 +16,7 @@ import { tick } from '../../src/control/tick.js';
 import { fakeVm } from '../support/fake-vm.js';
 import { until } from '../support/until.js';
 import { engineDir } from '../support/engine-walk.js';
+import { readEngine } from '../../src/workflow/engine-file.js';
 
 const OFF_BOARD = join(import.meta.dirname, '..', '..', 'off-board.sh');
 const sha = text => createHash('sha256').update(text).digest('hex');
@@ -30,7 +31,7 @@ function setup() {
   const edit = (path, change) => { const file = at(...path); const json = JSON.parse(readFileSync(file, 'utf8')); change(json); writeFileSync(file, JSON.stringify(json, null, 4)); };
   Object.assign(f.env, { OFF_BOARD_DIR: at('off-board'), LIMA_HOME: at('lima'), GOLDEN_IMAGE_SHARED: at('shared') });
   edit(['harness.json'], h => { h['harness-project'] = 'p'; });
-  edit(['engines', 'example-development', 'state-engine.json'], e => {
+  edit(['engines', 'example-development', 'workflow.yaml'], e => {
     e.steps.unshift({ id: 'committed', sequence: 0, 'paired-ticket-system-status': 'Committed', action: { type: 'none' } });
     e.steps.unshift({ id: 'backlog', sequence: 0, 'paired-ticket-system-status': 'Backlog', action: { type: 'none' } });
   });
@@ -204,7 +205,7 @@ function rebuildControl() {
   const edit = (path, change) => { const file = at(...path); const json = JSON.parse(readFileSync(file, 'utf8')); change(json); writeFileSync(file, JSON.stringify(json, null, 4)); };
   Object.assign(f.env, { LIMA_HOME: at('lima'), GOLDEN_IMAGE_SHARED: at('shared') });
   cpSync(join(import.meta.dirname, '..', '..', 'engines', 'v2-local-testing'), at('engines', 'v2-local-testing'), { recursive: true });
-  edit(['engines', 'example-development', 'state-engine.json'], e => { e.steps.find(s => s.id === 'local-testing').action.engine = 'v2-local-testing'; });
+  edit(['engines', 'example-development', 'workflow.yaml'], e => { e.steps.find(s => s.id === 'local-testing').action.engine = 'v2-local-testing'; });
   for (const prompt of ['test-grouped', 'take-screenshots-grouped']) { mkdirSync(at('prompts', prompt), { recursive: true }); writeFileSync(at('prompts', prompt, 'prompt.txt'), `${prompt} {ticket}\n`); }
   edit(['projects', 'p', 'project.json'], j => { j['golden-image'] = { folder: 'projects/p/golden-image' }; j.repositories = [{ url: 'https://github.com/o/p' }]; });
   mkdirSync(at('projects', 'p', 'golden-image'), { recursive: true });
@@ -241,7 +242,7 @@ function rebuildControl() {
 
 test('ASS-157 AC2: while golden-p builds, Test\'s run waits at Await the Golden Build, a timer step polling vm:golden-ready about every 10 seconds — no agent, no move to Build, no failure counted — and the build ending is seen at the next poll, seconds later', async () => {
   const f = rebuildControl();
-  const step = JSON.parse(readFileSync(join(engineDir('v2-local-testing'), 'state-engine.json'), 'utf8')).steps[0];
+  const step = readEngine(join(engineDir('v2-local-testing'), 'workflow.yaml')).steps[0];
   assert.deepEqual([step.id, step.action.command, step.action.mode], ['await-golden-build', './agent.sh vm:golden-ready {project} {work-item}', 'timer']);
   assert.ok(Math.abs(step.action['timer-minutes'] * 60 - 10) < 1, 'about 10 seconds');
   const polls = () => f.lines.filter(l => /await-golden-build: script exited/.test(l)).length;

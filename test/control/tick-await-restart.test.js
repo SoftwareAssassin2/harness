@@ -12,11 +12,12 @@ import { controlFixture } from './control-fixture.js';
 import { tick } from '../../src/control/tick.js';
 import { hs } from '../agent-cli/harness-fixture.js';
 import { engineDir } from '../support/engine-walk.js';
+import { readEngine } from '../../src/workflow/engine-file.js';
 
 const ROOT = join(import.meta.dirname, '..', '..');
 const edit = (file, change) => { const json = JSON.parse(readFileSync(file, 'utf8')); change(json); writeFileSync(file, JSON.stringify(json)); };
 const sprint = f => join(f.dir, 'projects', 'p', 'sprints', 'sprint-10', 'sprint.json');
-const grouped = JSON.parse(readFileSync(join(engineDir('grouped-release-harness'), 'state-engine.json'), 'utf8'));
+const grouped = readEngine(join(engineDir('grouped-release-harness'), 'workflow.yaml'));
 const KEPT = ['await-restart', 'done', 'blocked'];
 
 // The control fixture with ABC-3 A at local-testing, which runs grouped-release-harness's own await-restart
@@ -24,14 +25,14 @@ const KEPT = ['await-restart', 'done', 'blocked'];
 // await-restart; harness:restarted faked, exiting each of `codes` in turn, then 0. Release keeps its max-visits 3.
 function fixture(codes) {
   const f = controlFixture();
-  edit(join(f.dir, 'engines', 'example-development', 'state-engine.json'), e => {
+  edit(join(f.dir, 'engines', 'example-development', 'workflow.yaml'), e => {
     e['check-health-interval-seconds'] = 1e9;
     Object.assign(e.steps.find(s => s.id === 'local-testing'), { action: { type: 'state-engine', engine: 'release' }, 'exit-events': [
       { condition: { all: [{ 'is-done': true }, { 'sub-engine-ended-at': 'blocked' }] }, 'move-to-state': 'blocked' },
       { condition: { 'is-done': true }, 'move-to-state': 'done' }] });
   });
   mkdirSync(join(f.dir, 'engines', 'release'), { recursive: true });
-  writeFileSync(join(f.dir, 'engines', 'release', 'state-engine.json'), JSON.stringify({ steps: grouped.steps.filter(s => KEPT.includes(s.id)) }));
+  writeFileSync(join(f.dir, 'engines', 'release', 'workflow.yaml'), JSON.stringify({ steps: grouped.steps.filter(s => KEPT.includes(s.id)) }));
   edit(sprint(f), s => {
     s.features[0]['ticket-system-status'] = 'In Progress';
     s.features[0].variations[0]['harness-status'] = hs('local-testing');

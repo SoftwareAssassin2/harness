@@ -70,7 +70,8 @@ test('AC1: a cloud VM missing a field, with a bad one, or with an id a workstati
 
 // A project in `mode` on workstation ws-1 and cloud VMs vm-1, vm-2 (the pool), `vms` VM seats, live data `live`.
 const pool = (mode, { vms = 1, live = {}, seats = [] } = {}) => ({
-  id: 'p', json: { 'max-tickets-in-progress': vms }, workstations: live, seats,
+  id: 'p', json: {}, seatBudget: { seats: vms },   // ASS-528: its VM seats, the seat budget's
+  workstations: live, seats,
   devEnvironments: devEnvironments(project({ mode, workstations: [{ ...ws, id: 'ws-1' }], 'cloud-vms': [{ ...vm, id: 'vm-1' }, { ...vm, id: 'vm-2' }] }), env),
 });
 const r = (key, variation = 'A') => ({ key, variation });

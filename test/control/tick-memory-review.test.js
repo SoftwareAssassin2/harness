@@ -24,11 +24,11 @@ const esc = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 // gh and glab the fakes.
 function reviewFixture({ repositories = ['https://github.com/o/app'], background = true, steps = true } = {}) {
   const f = controlFixture();
-  edit(join(f.dir, 'engines', 'example-development', 'state-engine.json'), e => {
+  edit(join(f.dir, 'engines', 'example-development', 'workflow.yaml'), e => {
     if (steps) e['check-memory-steps'] = [{ id: 'check-memory', sequence: 1, action: { type: 'state-engine', engine: 'check-memory' }, 'exit-events': [{ condition: { 'is-done': true } }] }];
   });
   mkdirSync(join(f.dir, 'engines', 'check-memory'), { recursive: true });
-  writeFileSync(join(f.dir, 'engines', 'check-memory', 'state-engine.json'), JSON.stringify({ steps: [
+  writeFileSync(join(f.dir, 'engines', 'check-memory', 'workflow.yaml'), JSON.stringify({ steps: [
     { id: 'clean-memory', sequence: 1, action: { type: 'prompt', prompt: 'clean-memory', 'agent-count': 1, 'run-in-dev-container': false }, 'exit-events': [{ condition: { 'turn-complete': true }, 'move-to-state': 'done' }] },
     { id: 'done', sequence: 2, 'is-done': true, action: { type: 'none' } },
   ] }));

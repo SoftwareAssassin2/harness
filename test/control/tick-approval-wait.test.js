@@ -20,11 +20,12 @@ import { controlFixture } from './control-fixture.js';
 import { tick } from '../../src/control/tick.js';
 import { fakeForge } from '../support/fake-forge.js';
 import { EXAMPLE_ENGINES } from '../support/engine-walk.js';
+import { readEngine } from '../../src/workflow/engine-file.js';
 
 const AGENT = join(import.meta.dirname, '..', '..', 'agent.sh');
 const APP = 'https://gitlab.com/g/app', LIB = 'https://gitlab.com/g/lib';
 const edit = (file, change) => { const json = JSON.parse(readFileSync(file, 'utf8')); change(json); writeFileSync(file, JSON.stringify(json, null, 4)); };
-const EXAMPLE = JSON.parse(readFileSync(join(EXAMPLE_ENGINES, 'grouped-release-example', 'state-engine.json'), 'utf8'));
+const EXAMPLE = readEngine(join(EXAMPLE_ENGINES, 'grouped-release-example', 'workflow.yaml'));
 
 // The downstream project's release engine as it is: the example's without
 // ASS-351's approval-wait routing (its exit, record-script-output and done step).
@@ -81,8 +82,8 @@ function fixture(release, mrs) {
   const f = controlFixture();
   const engines = join(f.dir, 'engines');
   mkdirSync(join(engines, 'release'), { recursive: true });
-  writeFileSync(join(engines, 'release', 'state-engine.json'), JSON.stringify(release, null, 4));
-  edit(join(engines, 'example-development', 'state-engine.json'), e => {
+  writeFileSync(join(engines, 'release', 'workflow.yaml'), JSON.stringify(release, null, 4));
+  edit(join(engines, 'example-development', 'workflow.yaml'), e => {
     e['check-health-interval-seconds'] = 1e9;
     e.steps.unshift({ id: 'blocked-for-human', sequence: 0, 'is-blocked-state': true, 'follow-return-to-state': true, action: { type: 'human' },
       'exit-events': [{ condition: { 'human-review': 'Resolved' }, 'follow-return-to-state': true }] });

@@ -12,8 +12,11 @@
 # The record, data/projects/<project>/master-test-failures.json, holds
 # { "<name>": { ticket, "raised-at", "raised-by" } } for every test raised. A
 # name in it is never raised again; the rest are raised together, one ticket.
-# Its one writer is the gate, which holds the project's merge lock while it
-# runs, so two gates never raise the same test at once. Where it goes is the
+# Its one writer is the gate. ASS-560: gates of different tickets run side by
+# side now (no project-wide merge lock), so the read, the raise and the write
+# hold a lock of their own, master-test-failures.lock beside it (descriptor
+# 7, for at most JSON_LOCK_TIMEOUT or 120 seconds: a raise is a ticket
+# create): two gates never raise the same test at once. Where it goes is the
 # existing rule for a project issue (ASS-163, project:check-on-master): only
 # a failure on the latest master — which the gate has just run — and in the
 # project's own ticket system, through the commands create-ticket-grouped's
@@ -27,6 +30,16 @@ source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/ticket-system.bash"
 master_failures_here="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
 
 raise_master_failures() {
+  local command="$1" project="$2" names="$3" context="$4"
+  local status=0
+  lock_on 7 "$projects/$project/master-test-failures.lock" "$command" "${JSON_LOCK_TIMEOUT:-120}" || return 1
+  raise_master_failures_locked "$command" "$project" "$names" "$context" || status=$?
+  exec 7>&-
+  return $status
+}
+
+# raise_master_failures_locked — raise_master_failures' work, its lock held.
+raise_master_failures_locked() {
   local command="$1" project="$2" names="$3" context="$4"
   local registry="$projects/$project/master-test-failures.json" fresh key='' body out title
   [[ -s "$registry" ]] || echo '{}' | replace_file "$registry"

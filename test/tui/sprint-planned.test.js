@@ -26,12 +26,13 @@ const ticket = (key, state, sub) => ({ key, title: `Ticket ${key}`, variations: 
 const features = [ticket('A-1', 'build'), ticket('A-2', 'plan', 'finished'), ticket('A-3', 'plan', 'draft')];
 const state = initialState({ projects: [{ id: 'p', name: 'P', stateEngine: 'e', sprint: { number: 10, start: '2026-09-18', end: '2026-10-01', features, bugs: [], spikes: [] } }], workflows, assignments: [] });
 
-test('ASS-362 AC6: a finished plan\'s row says it waits for a build seat, with no 💺; the others keep theirs', () => {
+// ASS-559: a seat holder's Machine and Runs in say where it runs (here its Lima VM on the Mac); one holding none, blank.
+test('ASS-362 AC6: a finished plan\'s row says it waits for a build seat, on no machine; the others keep theirs', () => {
   const out = render(state, wide).map(strip);
   const rowAt = key => out.findIndex(l => l.includes(`${key}: Ticket`));
   const row = key => out[rowAt(key)];
-  assert.ok(!row('A-2').includes('💺'), row('A-2'));
-  for (const key of ['A-1', 'A-3']) assert.ok(row(key).includes('💺'), row(key));
+  assert.ok(!/Mac|Lima VM/.test(row('A-2')), row('A-2'));
+  for (const key of ['A-1', 'A-3']) assert.match(row(key), /│? Mac +Lima VM /, row(key));
   // Its Status: the chain, then the line saying so beneath it.
   const below = out.slice(rowAt('A-2'), rowAt('A-2') + 3).join('\n');
   assert.match(below, /Plan › Finished/);

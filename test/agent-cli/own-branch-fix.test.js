@@ -34,14 +34,14 @@ function setup(output = FOUND, { vm = 'abc-3-a', mrs = null, env = null } = {}) 
   const at = (...rest) => join(l.f.dir, ...rest);
   const write = (file, json) => { mkdirSync(join(file, '..'), { recursive: true }); writeFileSync(file, JSON.stringify(json)); };
   const group = (id, sequence, engine) => ({ id, sequence, 'return-to-state': id, action: { type: 'state-engine', engine }, 'exit-events': [{ condition: { 'is-done': true }, 'move-to-state': 'done' }] });
-  write(at('engines', 'dev', 'state-engine.json'), { steps: [
+  write(at('engines', 'dev', 'workflow.yaml'), { steps: [
     { id: 'blocked', sequence: 0, 'follow-return-to-state': true, action: { type: 'state-engine', engine: 'grouped-blocked' }, 'exit-events': [{ condition: { 'is-done': true }, 'follow-return-to-state': true }] },
     { id: 'committed', sequence: 1, action: { type: 'none' } },
     group('plan', 2, 'sub-plan'), group('build', 3, 'sub-build'), group('test', 4, 'sub-test'),
     { id: 'done', sequence: 5, 'is-done': true, action: { type: 'none' } },
   ] });
   for (const [name, prompt] of [['sub-plan', 'write-execution-plan-grouped'], ['sub-build', 'generate-solution-grouped'], ['sub-test', 'test-grouped']]) {
-    write(at('engines', name, 'state-engine.json'), { steps: [
+    write(at('engines', name, 'workflow.yaml'), { steps: [
       { id: prompt.replace(/-grouped$/, ''), sequence: 1, action: { type: 'prompt', prompt } },
       { id: 'done', sequence: 2, 'is-done': true, action: { type: 'none' } },
     ] });

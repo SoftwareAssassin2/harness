@@ -255,7 +255,7 @@ export function vmMemoryBytes(ctx, project) {
 
 // projectVms(ctx, project) — the names of the project's VMs (ASS-404): its
 // inventory's (vms.json) and those its sprint's variations record.
-function projectVms(ctx, project) {
+export function projectVms(ctx, project) {
   const names = new Set();
   try { for (const name of Object.keys(JSON.parse(readFileSync(join(ctx.paths.projects, project.id, 'vms.json'), 'utf8')))) names.add(name); } catch { /* none */ }
   for (const t of project.tickets ?? []) for (const v of t.variations ?? []) if (v.vm?.name && v.vm.kind !== 'workstation' && v.vm.kind !== 'cloud-vm') names.add(v.vm.name);   // ASS-435: a workstation is no VM of the Mac's; ASS-481: nor a cloud VM

@@ -26,12 +26,13 @@ function workspaceFixture() {
   for (const key of ['ABC-3', 'ABC-4']) { git(ws, 'branch', `change/${key}`); git(ws, 'worktree', 'add', '-q', join(ws, '.worktrees', key), `change/${key}`); }
   git(ws, 'checkout', '-q', '--detach');
   const build = key => ({ branch: `change/${key}`, 'branch-url': null, worktree: key, 'worktree-folder': join(ws, '.worktrees', key) });
-  edit(join(f.dir, 'engines', 'example-development', 'state-engine.json'), e => { e.steps = e.steps.map(s => (s.id === 'plan' ? { ...s, action: { ...s.action, 'run-in-dev-container': true } } : s)); });
+  edit(join(f.dir, 'engines', 'example-development', 'workflow.yaml'), e => { e.steps = e.steps.map(s => (s.id === 'plan' ? { ...s, action: { ...s.action, 'run-in-dev-container': true } } : s)); });
   edit(join(f.dir, 'projects', 'p', 'project.json'), p => { p['local-environments'] = [{ name: 'local-pc', type: 'local-pc', folder: ws, 'active-branch': null }]; });
   edit(join(f.dir, 'projects', 'p', 'sprints', 'sprint-10', 'sprint.json'), s => {
     s.features[0].variations[0].build = build('ABC-3');
     s.features.push({ key: 'ABC-4', 'ticket-system-status': 'Backlog', variations: [{ name: 'A', 'harness-status': hs('backlog'), 'state-changes': [], build: build('ABC-4') }] });
   });
+  f.seats(3);   // ASS-528: room for both tickets in planning
   return { ...f, ws, active: () => JSON.parse(readFileSync(join(f.dir, 'projects', 'p', 'project.json'), 'utf8'))['local-environments'][0]['active-branch'], at: key => f.sprint().features.find(t => t.key === key).variations[0]['harness-status'].state };
 }
 

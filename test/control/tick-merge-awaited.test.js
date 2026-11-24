@@ -19,12 +19,13 @@ import { tick } from '../../src/control/tick.js';
 import { hs } from '../agent-cli/harness-fixture.js';
 import { engineDir } from '../support/engine-walk.js';
 import { fakeForge } from '../support/fake-forge.js';
+import { readEngine } from '../../src/workflow/engine-file.js';
 
 const AGENT = join(import.meta.dirname, '..', '..', 'agent.sh');
 
 const edit = (file, change) => { const json = JSON.parse(readFileSync(file, 'utf8')); change(json); writeFileSync(file, JSON.stringify(json)); };
 const sprint = f => join(f.dir, 'projects', 'p', 'sprints', 'sprint-10', 'sprint.json');
-const read = name => JSON.parse(readFileSync(join(engineDir(name), 'state-engine.json'), 'utf8'));
+const read = name => readEngine(join(engineDir(name), 'workflow.yaml'));
 const KEPT = ['generate-solution', 'address-merge-request-feedback', 'merge-awaited', 'await-dependencies', 'refresh-before-testing', 'done', 'blocked', 'blocked-for-human'];
 // A step as the fixture runs it: on the host, its agent the fixture's test prompt.
 const onHost = s => { const { 'run-location': _, vm: __, ...rest } = s; return rest.action.type === 'prompt' ? { ...rest, action: { ...rest.action, prompt: 'test', 'run-in-dev-container': false } } : rest; };
@@ -35,7 +36,7 @@ const onHost = s => { const { 'run-location': _, vm: __, ...rest } = s; return r
 // Each script faked by its command (answers: [pattern, { exitCode, stdout }], the first matching), each call kept with its env.
 function fixture(flagged, answers) {
   const f = controlFixture();
-  edit(join(f.dir, 'engines', 'example-development', 'state-engine.json'), e => {
+  edit(join(f.dir, 'engines', 'example-development', 'workflow.yaml'), e => {
     e['check-health-interval-seconds'] = 1e9;
     e.steps.unshift({ id: 'blocked-for-human', sequence: 0, 'is-blocked-state': true, 'paired-ticket-system-status': 'Blocked', action: { type: 'human' } });
     Object.assign(e.steps.find(s => s.id === 'local-testing'), { ...(flagged ? { 'merges-awaited': true } : {}), action: { type: 'state-engine', engine: 'build' }, 'exit-events': [
@@ -50,7 +51,7 @@ function fixture(flagged, answers) {
   });
   for (const [name, engine] of [['build', { steps }], ['grouped-merge', { steps: read('grouped-merge').steps.map(onHost) }]]) {
     mkdirSync(join(f.dir, 'engines', name), { recursive: true });
-    writeFileSync(join(f.dir, 'engines', name, 'state-engine.json'), JSON.stringify(engine));
+    writeFileSync(join(f.dir, 'engines', name, 'workflow.yaml'), JSON.stringify(engine));
   }
   edit(sprint(f), s => {
     s.features[0]['ticket-system-status'] = 'In Progress';

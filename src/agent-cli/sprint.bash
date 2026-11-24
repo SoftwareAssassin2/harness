@@ -99,7 +99,7 @@ engine_steps() {
   [[ "$project" =~ ^[A-Za-z0-9_-]+$ ]] || { echo "$command: invalid project '$project'" >&2; return 1; }
   engine="$(jq -r '.["execution-state-engine"] // empty' "$projects/$project/project.json" 2>/dev/null || true)"
   if [[ -n "$engine" ]] && file="$(engine_path "$engine" "$project")"; then
-    jq -c '.steps // []' "$file"
+    engine_json "$file" | jq -c '.steps // []'
   else
     echo '[]'
   fi
@@ -109,7 +109,7 @@ refinement_engine() {
   local command="$1" project="$2" engine name="" file
   [[ "$project" =~ ^[A-Za-z0-9_-]+$ ]] || { echo "$command: invalid project '$project'" >&2; return 1; }
   engine="$(jq -r '.["execution-state-engine"] // empty' "$projects/$project/project.json" 2>/dev/null || true)"
-  [[ -n "$engine" ]] && file="$(engine_path "$engine" "$project")" && name="$(jq -r 'first(.["backlog-refinement-steps"] // [] | .[] | .action.engine // empty) // empty' "$file")"
+  [[ -n "$engine" ]] && file="$(engine_path "$engine" "$project")" && name="$(engine_json "$file" | jq -r 'first(.["backlog-refinement-steps"] // [] | .[] | .action.engine // empty) // empty')"
   [[ -n "$name" ]] || { echo "$command: $project's execution engine names no backlog refinement engine" >&2; return 1; }
   echo "$name"
 }

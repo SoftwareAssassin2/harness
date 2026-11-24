@@ -13,7 +13,8 @@ set -euo pipefail
 #     golden-image.folder "projects/<project>/golden-image", as the harness
 #     keeps them relative to data/;
 #   - copies golden-image/, engines/ (the project's own state engines,
-#     ASS-276) and the merge-request notes into data/projects/<project>/,
+#     ASS-276, each its workflow.yaml: an older bundle's state-engine.json
+#     converted, ASS-524) and the merge-request notes into data/projects/<project>/,
 #     a folder the bundle has replacing the installed one;
 #   - sets lima-home (ASS-273) in the untracked harness.local.json (ASS-281:
 #     a machine's own settings, so the tracked harness.json never changes) to
@@ -47,6 +48,7 @@ set -euo pipefail
 root="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../.." && pwd -P)"
 source "$root/src/agent-cli/engine.bash"      # engines_dir
 source "$root/src/agent-cli/json-file.bash"   # update_json, replace_file
+source "$root/src/harness-cli/node-modules.bash"   # ensure_node_modules (ASS-524: the yaml package, which converts an older bundle's engines)
 projects_dir="${PROJECTS_DIR:-$root/data/projects}"
 harness_file="${HARNESS_FILE:-$root/data/harness.json}"
 local_file="${HARNESS_LOCAL_FILE:-$(dirname "$harness_file")/harness.local.json}"
@@ -83,6 +85,7 @@ absolute() {
 
 # 1. The bundle: a gzipped tarball, every entry inside it and none a link.
 [[ -f "$bundle" ]] || fail "no bundle $bundle"
+ensure_node_modules "$root" || fail "the harness's npm dependencies could not be installed (npm ci)"
 stage="$(mktemp -d "${TMPDIR:-/tmp}/install-project.XXXXXX")"
 trap 'rm -rf "$stage"' EXIT
 b="$stage/bundle"; mkdir "$b"
@@ -113,13 +116,20 @@ for file in project.json vm-credentials.template.json; do
 done
 
 # 3. The state engines: each the project's own (in the bundle) or this harness's.
+#    ASS-524: an engine is its workflow.yaml; a bundle made before (each
+#    engines/<name>/state-engine.json) is converted here, in a copy of its
+#    engines/ that is what gets installed, so a failed conversion changes nothing.
 own=" $(jq -r '(.["project-engines"] // [])[]' "$b/manifest.json" | tr '\n' ' ')"
 for engine in $own; do
-  [[ "$engine" =~ ^[A-Za-z0-9_-]+$ && -f "$b/engines/$engine/state-engine.json" ]] || fail "$bundle lacks engines/$engine/state-engine.json, which its manifest lists"
+  [[ "$engine" =~ ^[A-Za-z0-9_-]+$ && ( -f "$b/engines/$engine/workflow.yaml" || -f "$b/engines/$engine/state-engine.json" ) ]] || fail "$bundle lacks engines/$engine/workflow.yaml, which its manifest lists"
 done
+if [[ -d "$b/engines" ]]; then
+  cp -R "$b/engines" "$stage/engines"
+  converted="$(node "$engine_cli" convert "$stage/engines")" || fail "$bundle's engines could not be converted to workflow.yaml: $(grep '^error' <<< "$converted")"
+fi
 while IFS= read -r engine; do
   [[ "$engine" =~ ^[A-Za-z0-9_-]+$ ]] || fail "$bundle's manifest names a bad state engine"
-  [[ "$own" == *" $engine "* || -f "$engines_dir/$engine/state-engine.json" ]] \
+  [[ "$own" == *" $engine "* || -f "$engines_dir/$engine/workflow.yaml" ]] \
     || fail "$project uses state engine $engine, which is neither in the bundle's engines/ nor this harness's engines/"
 done < <(jq -r '(.["state-engines"] // [])[]' "$b/manifest.json")
 
@@ -167,9 +177,10 @@ jq --arg p "$project" --arg folder "$project_root" '
 # --- Every check has passed: the writes. ---
 mkdir -p "$target"
 for folder in golden-image engines; do
-  [[ -d "$b/$folder" ]] || continue
+  from="$b/$folder"; [[ "$folder" != engines ]] || from="$stage/engines"   # engines/ as converted above (ASS-524)
+  [[ -d "$from" ]] || continue
   rm -rf "$target/$folder"
-  cp -R "$b/$folder" "$target/$folder"
+  cp -R "$from" "$target/$folder"
 done
 for note in merge-request-area-of-interest.md merge-request-considerations.md; do
   [[ -f "$b/$note" ]] && cp "$b/$note" "$target/$note"

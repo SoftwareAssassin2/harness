@@ -11,6 +11,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { validateStateEngine } from '../../src/workflow/validate.js';
 import { ROOT } from '../support/engine-walk.js';
+import { readEngine } from '../../src/workflow/engine-file.js';
 
 const REVIEW_PROMPTS = new Set(['code-review', 'code-review-grouped', 'security-review', 'security-review-grouped', 'review-plan', 'review-plan-grouped',
   'review-root-cause-analysis', 'review-root-cause-analysis-grouped', 'review-work']);
@@ -24,8 +25,8 @@ const claudeOf = file => JSON.parse(readFileSync(file, 'utf8'))['agentic-command
 // Every prompt step of an engine, wherever its lists hold them (steps and every *-steps / *-trigger list).
 const promptSteps = engine => Object.entries(engine).filter(([key, list]) => /(^|-)(steps|trigger)$/.test(key) && Array.isArray(list))
   .flatMap(([, list]) => list).filter(s => s.action?.type === 'prompt');
-const engines = readdirSync(join(ROOT, 'engines')).filter(d => existsSync(join(ROOT, 'engines', d, 'state-engine.json'))).toSorted()
-  .map(name => ({ name, engine: JSON.parse(readFileSync(join(ROOT, 'engines', name, 'state-engine.json'), 'utf8')) }));
+const engines = readdirSync(join(ROOT, 'engines')).filter(d => existsSync(join(ROOT, 'engines', d, 'workflow.yaml'))).toSorted()
+  .map(name => ({ name, engine: readEngine(join(ROOT, 'engines', name, 'workflow.yaml')) }));
 
 test('ASS-452 AC1: a prompt step\'s model may name any of harness.json\'s claude models, or "stronger"', () => {
   for (const model of [...claudeOf(join(ROOT, 'data', 'harness.json')), 'stronger'])

@@ -61,39 +61,47 @@ test('checkUsage: a reading with no weekly window (a plan with no weekly cap) re
   assert.equal(usage(f).weekly, null);
 });
 
-test('checkUsage: a refused (401) reading leaves the last claude-usage as it was, logged once per cause; the check goes on', async () => {
-  const { f, calls, later } = checking([reading(7, '2026-10-15T13:00:00Z'), refused, refused, noToken]);
+test('checkUsage (ASS-571 AC2): a refused (401) reading keeps the last figures and their as-of, records failure { why, at } once per cause, logged once; the next good reading clears it', async () => {
+  const { f, calls, later } = checking([reading(7, '2026-10-15T13:00:00Z'), refused, refused, noToken, reading(9, '2026-10-15T13:00:00Z')]);
   await checkUsage(f.ctx, f.ctx.load());
-  const kept = usage(f);
+  const good = usage(f);
   later(120_000);
   await checkUsage(f.ctx, f.ctx.load());
+  const failed = usage(f);
+  assert.deepEqual({ ...failed, failure: null }, { ...good, failure: null });             // figures, account and as-of kept
+  assert.equal(failed.failure.why, 'the token was refused (401)');
+  assert.match(failed.failure.at, /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$/);
   later(120_000);
   await checkUsage(f.ctx, f.ctx.load());
-  assert.deepEqual(usage(f), kept);                                      // as-of too: nothing rewritten
-  assert.equal(calls.length, 1);
+  assert.deepEqual(usage(f), failed);                                    // the same cause: nothing rewritten
+  assert.deepEqual(calls.slice(1), ['project:set-claude-usage-failure p the token was refused (401) fake@example.com claude.ai Fake Org']);
   assert.equal(f.lines.filter(l => l === 'usage p: the Claude session usage cannot be read (the token was refused (401)); the last reading stays').length, 1, f.lines.join('\n'));
   later(120_000);
   await checkUsage(f.ctx, f.ctx.load());
   assert.equal(f.lines.filter(l => /^usage p: .*\(no token\)/.test(l)).length, 1, f.lines.join('\n'));   // a new cause, logged
+  assert.equal(usage(f).failure.why, 'no token');
+  assert.equal(usage(f)['as-of'], good['as-of']);
+  later(120_000);
+  await checkUsage(f.ctx, f.ctx.load());
+  assert.equal(usage(f).failure, undefined);                             // a good reading clears it
+  assert.equal(usage(f).session.percent, 9);
 });
 
-test('checkUsage: a project with no token and no reading yet gets its email, the session left null', async () => {
+test('checkUsage: a project with no token and no reading yet gets its email and the failure, the session left null', async () => {
   const { f, calls } = checking([noToken]);
   await checkUsage(f.ctx, f.ctx.load());
-  assert.deepEqual(calls, ['project:set-claude-usage p fake@example.com - - - - claude.ai Fake Org']);
+  assert.deepEqual(calls, ['project:set-claude-usage-failure p no token fake@example.com claude.ai Fake Org']);
   assert.deepEqual(usage(f).session, { percent: null, 'resets-at': null });
   assert.equal(usage(f).weekly, null);
+  assert.equal(usage(f)['as-of'], undefined);
 });
 
-test('checkUsage: a failed reading under a new email writes the email and passes the last session and weekly back', async () => {
+test('checkUsage: a failed reading under a new email records the email, the last session, weekly and as-of kept', async () => {
   const { f, calls } = checking([refused]);
   writeFileSync(usageFile(f), JSON.stringify({ email: 'old@example.com', session: { percent: 42, 'resets-at': '2026-10-15T13:00:00Z' }, weekly: { percent: 89, 'resets-at': '2026-10-18T03:00:00Z' }, 'as-of': '2026-10-15T09:58:00Z' }));
   await checkUsage(f.ctx, f.ctx.load());
-  assert.deepEqual(calls, ['project:set-claude-usage p fake@example.com 42 2026-10-15T13:00:00Z 89 2026-10-18T03:00:00Z claude.ai Fake Org']);
-  const g = checking([refused]);                                         // one recorded before ASS-65: no weekly, passed back as -
-  writeFileSync(usageFile(g.f), JSON.stringify({ email: 'old@example.com', session: { percent: 42, 'resets-at': '2026-10-15T13:00:00Z' }, 'as-of': '2026-10-15T09:58:00Z' }));
-  await checkUsage(g.f.ctx, g.f.ctx.load());
-  assert.deepEqual(g.calls, ['project:set-claude-usage p fake@example.com 42 2026-10-15T13:00:00Z - - claude.ai Fake Org']);
+  assert.deepEqual(calls, ['project:set-claude-usage-failure p the token was refused (401) fake@example.com claude.ai Fake Org']);
+  assert.deepEqual({ ...usage(f), failure: null }, { email: 'fake@example.com', session: { percent: 42, 'resets-at': '2026-10-15T13:00:00Z' }, weekly: { percent: 89, 'resets-at': '2026-10-18T03:00:00Z' }, 'auth-method': 'claude.ai', org: 'Fake Org', 'as-of': '2026-10-15T09:58:00Z', failure: null });
 });
 
 test('checkUsage: a login that is not logged in gets email and session null, the endpoint never asked', async () => {

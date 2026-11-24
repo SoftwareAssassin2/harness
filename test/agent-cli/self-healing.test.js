@@ -4,6 +4,7 @@
 // for Human.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { until } from '../support/until.js';
 import { join } from 'node:path';
 import { readFileSync, writeFileSync, realpathSync } from 'node:fs';
 import { spawn } from 'node:child_process';
@@ -58,7 +59,9 @@ test('self-healing:start records what it will pause before it pauses anything, s
   const f = withFix({ summary: 'Fix', 'ticket-url': null, 'pause-tickets': ['ABC-3'] });
   const holder = await hold(t, join(f.dir, 'projects', 'p', 'sprints', 'sprint-10', 'sprint.json'));
   const starting = f.agent('self-healing:start', 'p', 'ABC-9');
-  await settle();                                                              // waiting to pause the first variation
+  // ASS-545: the record waited for (until(): LOADED_MS a hang guard only), not a fixed second a loaded Mac outlasted;
+  // the sprint stays locked meanwhile, so nothing is paused yet whenever it is seen.
+  await until(() => f.assignments()['self-healing']?.['ABC-9']?.paused?.length > 0);
   assert.deepEqual(f.assignments()['self-healing']?.['ABC-9']?.paused.map(p => p.variation), ['A', 'B', 'C']);
   holder.kill('SIGKILL');
   await starting;
@@ -151,7 +154,7 @@ async function offBoard() {
   f.env.OFF_BOARD_DIR = join(f.dir, 'off-board');
   const edit = (path, change) => { const file = join(f.dir, ...path); const json = JSON.parse(readFileSync(file, 'utf8')); change(json); writeFileSync(file, JSON.stringify(json, null, 4)); };
   edit(['projects', 'p', 'project.json'], p => p['work-sources'].push({ name: 'Harness', type: 'off-board', folder: 'p', 'key-prefix': 'HD' }));
-  edit(['engines', 'example-development', 'state-engine.json'], e => {
+  edit(['engines', 'example-development', 'workflow.yaml'], e => {
     e.steps.unshift({ id: 'blocked-for-human', sequence: 0, 'is-blocked-state': true, 'paired-ticket-system-status': 'In Progress', action: { type: 'human' } });
     e.steps.unshift({ id: 'backlog', sequence: 0, 'paired-ticket-system-status': 'Backlog', action: { type: 'none' } });
     e.steps.unshift({ id: 'self-healing', sequence: 0, 'paired-ticket-system-status': 'In Progress', action: { type: 'state-engine', engine: 'self-healing-fix' } });

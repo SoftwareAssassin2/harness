@@ -1,0 +1,282 @@
+#!/usr/bin/env bash
+# sandbox-services — starts, stops and reports a sandbox's declared services
+# (ASS-534), and brings up the project's whole stack in it (ASS-542), from
+# /etc/sandbox/services.json: the project's data/projects/<project>/sandbox/
+# services.yaml, normalized (src/substrate/services.js), baked into its
+# sandbox image.
+#
+#   sandbox-services up                the whole stack, as a ticket's sandbox first starts it (ASS-542):
+#                                      the host map, every service and job in `after` order, the CA
+#                                      trusted once its service is up, the app answering at its URL; one
+#                                      JSON line (below), exit 3 when a service or job fails
+#   sandbox-services start [<name>…]   each named (all without names), what it names in `after` first:
+#                                      a job run to its end (a failed one stops the start), a service
+#                                      started detached and, with a `ready` check, waited for
+#                                      (its ready-seconds, else SANDBOX_READY_SECONDS, 180) before what
+#                                      comes after it; without one, until each of its ports answers
+#   sandbox-services stop [<name>…]    SIGTERM to each running service, in reverse order
+#   sandbox-services status            a JSON line per service: { name, kind, version, running, pid, done }
+#   sandbox-services hosts             the host map written: every service's name and aliases and the
+#                                      declared hosts → 127.0.0.1 in /etc/hosts
+#   sandbox-services trust             the declared CA trusted: the system's store, NODE_EXTRA_CA_CERTS
+#                                      (/etc/profile.d), the agent's NSS database (Chromium)
+#   sandbox-services login [--check]   sandbox-login with the declared login's env: the agent's headless
+#                                      browser signs in as the seeded user (its session kept); --check:
+#                                      the kept session still loads the app signed in
+#   sandbox-services suite <name>      a declared suite run against the stack (what it names up first),
+#                                      `docker` on its PATH the compose stand-in (sandbox-docker) when it
+#                                      says docker: true; its output to suite-<name>.log; its exit code
+#
+# A service runs as its `user` (agent by default; sudo -u, the sandbox's
+# capabilities allowing), in its `workdir`, with its `env`; its output goes to
+# /var/log/sandbox/<name>.log, its pid to /run/sandbox/<name>.pid. A
+# toolchain is files only and starts nothing. A job runs once per sandbox
+# (ASS-542): done, it leaves /var/lib/sandbox/stack/jobs/<name>.done, and a
+# later start — after a resume, a restarted sandbox, a second `up` — skips it;
+# a failed one leaves none and runs again next time. A sandbox hibernated and
+# resumed keeps its processes, so `up` then finds every service running and
+# only checks the app.
+#
+# `up` prints, and keeps as /var/lib/sandbox/stack/stack.json,
+#   { state: "up"|"failed", at, seconds, services: { <name>: { kind, seconds, ran|skipped } },
+#     app: { url, status } | null, failed: { name, kind, why, log } | null }
+# — the Mac copies the logs and this out to the ticket's folder
+# (substrate:stack-up).
+#
+# HARNESS_VM_ROOT, when set, is a test's stand-in for the sandbox's / (as for a
+# workstation's folder and test/support/fake-command-server.js): every path
+# above is under it, and services run as the caller (the fake drops sudo -u).
+set -euo pipefail
+# lines_into <array> — stdin's lines into the array (mapfile, which bash 3.2 lacks).
+lines_into() { local __l; eval "$1=()"; while IFS= read -r __l; do eval "$1+=(\"\$__l\")"; done; }
+R="${HARNESS_VM_ROOT-}"
+declaration="${SANDBOX_SERVICES:-$R/etc/sandbox/services.json}"
+logs="${SANDBOX_LOGS:-$R/var/log/sandbox}" run="${SANDBOX_RUN:-$R/run/sandbox}" state="${SANDBOX_STATE:-$R/var/lib/sandbox/stack}"
+mkdir -p "$logs" "$run" "$state/jobs" "$state/suites" 2>/dev/null || sudo install -d -o "$(id -un)" "$logs" "$run" "$state" "$state/jobs" "$state/suites"
+
+entry() { jq -c --arg n "$1" '.services[] | select(.name == $n)' "$declaration"; }
+running() { [[ -f "$run/$1.pid" ]] && kill -0 "$(cat "$run/$1.pid")" 2>/dev/null; }
+now() { date +%s.%N | cut -c1-14; }
+since() { awk -v a="$1" -v b="$(now)" 'BEGIN { printf "%.1f", b - a }'; }
+answers() { (exec 3<>"/dev/tcp/127.0.0.1/$1") 2>/dev/null; }
+# with_limit <seconds> <argv…> — argv, ended after <seconds> (coreutils timeout; perl's alarm where there is none).
+with_limit() { local s="$1"; shift; if command -v timeout >/dev/null; then timeout --kill-after=30 "$s" "$@"; else perl -e 'alarm shift; exec @ARGV' "$s" "$@"; fi; }
+as_root() { if [[ -n "$R" || "$(id -u)" == 0 ]]; then "$@"; else sudo "$@"; fi; }
+
+# as <entry> — its start's argv, run as its user in its workdir with its env (exec'd).
+launch() {
+  local e="$1" user workdir
+  user="$(jq -r .user <<<"$e")" workdir="$R$(jq -r .workdir <<<"$e")"
+  lines_into envs < <(jq -r '.env | to_entries[] | "\(.key)=\(.value)"' <<<"$e")
+  lines_into argv < <(jq -r '.start[]' <<<"$e")
+  if [[ -n "$R" || "$user" == "$(id -un)" ]]; then cd "$workdir" && exec env ${envs[@]+"${envs[@]}"} "${argv[@]}"
+  else exec sudo -u "$user" -- env -C "$workdir" ${envs[@]+"${envs[@]}"} "${argv[@]}"
+  fi
+}
+
+# What `up` records: each service's { kind, seconds, ran|skipped }, and the failure.
+# Per name, in variables of their own (bash 3.2 has no associative arrays: a test's Mac runs it with /bin/bash):
+# done_<n> (visited), took_<n> (seconds), how_<n> (ran|skipped); `seen` the names that took any time, in order.
+seen=()
+var() { printf '%s_%s' "$1" "${2//[^A-Za-z0-9]/_}"; }
+put() { printf -v "$(var "$1" "$2")" '%s' "$3"; }
+get() { local v; v="$(var "$1" "$2")"; printf '%s' "${!v-}"; }
+timed() { put took "$1" "$3"; put how "$1" "$2"; seen+=("$1"); }
+failed_name="" failed_why=""
+fail() { failed_name="$1" failed_why="$2"; echo "sandbox-services: $1: $2 — see $logs/$1.log" >&2; return 1; }
+
+start_one() {
+  local name="$1" e kind ready waited=0 dep t0 limit port
+  [[ -z "$(get done_ "$name")" ]] || return 0
+  e="$(entry "$name")"
+  [[ -n "$e" ]] || { echo "sandbox-services: no service $name in $declaration" >&2; failed_name="$name" failed_why="not declared"; return 1; }
+  for dep in $(jq -r '.after[]' <<<"$e"); do start_one "$dep" || return 1; done
+  put done_ "$name" 1
+  kind="$(jq -r .kind <<<"$e")" t0="$(now)"
+  case "$kind" in
+    toolchain) return 0 ;;
+    job)
+      if [[ -f "$state/jobs/$name.done" ]]; then timed "$name" skipped 0; return 0; fi
+      echo "sandbox-services: running $name"
+      ( launch "$e" ) >> "$logs/$name.log" 2>&1 < /dev/null || { fail "$name" "the job failed (exit $?)"; return 1; }
+      date -u +%Y-%m-%dT%H:%M:%SZ > "$state/jobs/$name.done"
+      timed "$name" ran "$(since "$t0")" ;;
+    service)
+      # One running already (a resumed sandbox's, an earlier start's) is not started again, but still waited for.
+      local how=skipped
+      if ! running "$name"; then
+        echo "sandbox-services: starting $name"
+        ( launch "$e" ) >> "$logs/$name.log" 2>&1 < /dev/null &
+        echo $! > "$run/$name.pid"
+        how=ran
+      fi
+      waited=$SECONDS   # the clock, not the tries: one ready check can take seconds (a JVM's or an escript's start)
+      ready="$(jq -r '.ready // empty' <<<"$e")"
+      limit="$(jq -r '.["ready-seconds"] // empty' <<<"$e")"; limit="${limit:-${SANDBOX_READY_SECONDS:-180}}"
+      if [[ -n "$ready" ]]; then
+        until bash -c "$ready" >/dev/null 2>&1; do
+          running "$name" || { fail "$name" "it exited before it was ready"; return 1; }
+          (( SECONDS - waited < limit )) || { fail "$name" "not ready after ${limit}s"; return 1; }
+          sleep 1
+        done
+      else
+        # No ready check: each port it declares answering (a service that declares none is up once started).
+        for port in $(jq -r '.ports[]' <<<"$e"); do
+          until answers "$port"; do
+            running "$name" || { fail "$name" "it exited before port $port answered"; return 1; }
+            (( SECONDS - waited < limit )) || { fail "$name" "port $port not answering after ${limit}s"; return 1; }
+            sleep 1
+          done
+        done
+      fi
+      if [[ "$how" == skipped ]]; then timed "$name" skipped 0; else timed "$name" ran "$(since "$t0")"; fi ;;
+  esac
+}
+
+# hosts — the host map in /etc/hosts, between markers, replacing an earlier one (idempotent).
+hosts() {
+  local file="$R/etc/hosts" tmp
+  tmp="$(mktemp)"
+  { [[ -f "$file" ]] && sed '/^# sandbox-services hosts (ASS-542)$/,/^# end sandbox-services hosts$/d' "$file"
+    echo '# sandbox-services hosts (ASS-542)'
+    jq -r '(.hosts // [])[] | "127.0.0.1 \(.)"' "$declaration"
+    echo '# end sandbox-services hosts'
+  } > "$tmp"
+  # In place (cat >), not a rename: /etc/hosts may be a mount point.
+  as_root bash -c 'mkdir -p "$(dirname "$2")" && cat "$1" > "$2"' _ "$tmp" "$file"
+  rm -f "$tmp"
+}
+
+# trust — the declared CA (its cert file, waited for: its service writes it at first start) in the system's store,
+# for node (NODE_EXTRA_CA_CERTS in /etc/profile.d) and in the agent's NSS database, which Chromium reads.
+trust() {
+  local cert i home
+  cert="$(jq -r '.ca.cert // empty' "$declaration")"
+  [[ -n "$cert" ]] || return 0
+  # Read as root: a service running as root keeps its CA where only root reads it (Caddy's pki folder is 0700).
+  for ((i = 0; i < 60; i++)); do as_root test -s "$R$cert" && break; sleep 1; done
+  as_root test -s "$R$cert" || { failed_name=ca failed_why="no CA certificate at $cert"; echo "sandbox-services: ca: no certificate at $cert" >&2; return 1; }
+  as_root bash -c 'mkdir -p "$(dirname "$2")" && cp "$1" "$2" && chmod 0644 "$2"' _ "$R$cert" "$R/usr/local/share/ca-certificates/sandbox-local-ca.crt"
+  as_root bash -c 'mkdir -p "$1" && printf "export NODE_EXTRA_CA_CERTS=%s\n" "$2" > "$1/sandbox-ca.sh"' _ "$R/etc/profile.d" /usr/local/share/ca-certificates/sandbox-local-ca.crt
+  [[ -n "$R" ]] && return 0
+  sudo update-ca-certificates >/dev/null 2>&1 || { failed_name=ca failed_why="update-ca-certificates failed"; return 1; }
+  if command -v certutil >/dev/null; then
+    home="$(getent passwd agent | cut -d: -f6)"
+    sudo -u agent bash -c 'd="$1/.pki/nssdb"; mkdir -p "$d"; [[ -f "$d/cert9.db" ]] || certutil -N -d "sql:$d" --empty-password; certutil -D -d "sql:$d" -n sandbox-local-ca >/dev/null 2>&1 || true; certutil -A -d "sql:$d" -t "C,," -n sandbox-local-ca -i "$2"' _ "$home" /usr/local/share/ca-certificates/sandbox-local-ca.crt \
+      || { failed_name=ca failed_why="the CA could not be put in the agent's NSS database"; return 1; }
+  fi
+}
+
+# app — the declared app answering at its URL (a status below 500; https through the trusted CA, never -k).
+app_status=""
+app() {
+  local url limit i code
+  url="$(jq -r '.app.url // empty' "$declaration")"
+  [[ -n "$url" ]] || return 0
+  limit="$(jq -r '.app["ready-seconds"] // 600' "$declaration")"
+  for ((i = 0; i <= limit; i += 2)); do
+    code="$(curl -sS -o /dev/null -m 10 -w '%{http_code}' "$url" 2>>"$logs/app.log" || true)"
+    if [[ "$code" =~ ^[1-4][0-9][0-9]$ ]]; then app_status="$code"; return 0; fi
+    sleep 2
+  done
+  failed_name=app failed_why="$url did not answer within ${limit}s (last status ${code:-none})"
+  echo "sandbox-services: app: $failed_why — see $logs/app.log" >&2
+  return 1
+}
+
+# record <state> <t0> — stack.json written and printed (see the header).
+record() {
+  local s="$1" t0="$2" services="{}" n kind log=""
+  for n in ${seen[@]+"${seen[@]}"}; do
+    kind="$(jq -r --arg n "$n" '.services[] | select(.name == $n) | .kind' "$declaration")"
+    services="$(jq -c --arg n "$n" --arg k "$kind" --arg s "$(get took "$n")" --arg h "$(get how "$n")" '.[$n] = { kind: $k, seconds: ($s | tonumber), ($h): true }' <<<"$services")"
+  done
+  [[ -z "$failed_name" || ! -f "$logs/$failed_name.log" ]] || log="$logs/$failed_name.log"
+  jq -nc --arg s "$s" --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg sec "$(since "$t0")" --argjson svc "$services" \
+    --arg url "$(jq -r '.app.url // empty' "$declaration")" --arg code "$app_status" \
+    --arg fn "$failed_name" --arg fw "$failed_why" --arg log "${log#"$R"}" \
+    --arg fk "$(jq -r --arg n "$failed_name" '.services[] | select(.name == $n) | .kind' "$declaration" 2>/dev/null)" '
+    { state: $s, at: $at, seconds: ($sec | tonumber), services: $svc,
+      app: (if $url == "" then null else { url: $url, status: ($code | tonumber? // null) } end),
+      failed: (if $fn == "" then null else { name: $fn, kind: (if $fk == "" then $fn else $fk end), why: $fw, log: (if $log == "" then null else $log end) } end) }' \
+    | tee "$state/stack.json.new"
+  mv -f "$state/stack.json.new" "$state/stack.json"
+}
+
+up() {
+  local t0 name ca_after trusted=false
+  t0="$(now)"
+  hosts || { failed_name=hosts failed_why="/etc/hosts could not be written"; record failed "$t0"; exit 3; }
+  ca_after="$(jq -r '.ca.after // empty' "$declaration")"
+  for name in $(jq -r '.services[] | select(.kind != "toolchain") | .name' "$declaration"); do
+    start_one "$name" || { record failed "$t0"; exit 3; }
+    if [[ -n "$ca_after" && "$trusted" == false && -n "$(get done_ "$ca_after")" ]]; then
+      trust || { record failed "$t0"; exit 3; }
+      trusted=true
+    fi
+  done
+  [[ "$trusted" == true ]] || trust || { record failed "$t0"; exit 3; }
+  app || { record failed "$t0"; exit 3; }
+  record up "$t0"
+}
+
+# suite <name> — see the header.
+suite() {
+  local s name="$1" workdir limit t0 code=0 shim dep
+  s="$(jq -c --arg n "$name" '(.suites // [])[] | select(.name == $n)' "$declaration")"
+  [[ -n "$s" ]] || { echo "sandbox-services: no suite $name in $declaration" >&2; exit 1; }
+  for dep in $(jq -r '.after[]' <<<"$s"); do start_one "$dep" || exit 3; done
+  workdir="$R$(jq -r .workdir <<<"$s")" limit="$(jq -r '.["timeout-seconds"]' <<<"$s")" t0="$(now)"
+  lines_into envs < <(jq -r '.env | to_entries[] | "\(.key)=\(.value)"' <<<"$s")
+  shim=""
+  if [[ "$(jq -r .docker <<<"$s")" == true ]]; then
+    shim="$state/suites/bin"; mkdir -p "$shim"
+    ln -sf "$(command -v sandbox-docker)" "$shim/docker"
+  fi
+  echo "sandbox-services: suite $name in $workdir: $(jq -r .run <<<"$s")" | tee "$logs/suite-$name.log"
+  # A login shell in the sandbox (the agent's PATH, NODE_EXTRA_CA_CERTS: /etc/profile.d), then the suite's env and
+  # the docker stand-in first on PATH; a test's stand-in root runs a plain one.
+  local shell=-lc; [[ -z "$R" ]] || shell=-c
+  set +e
+  (
+    cd "$workdir" || exit 1
+    with_limit "$limit" bash "$shell" 'for kv in "$@"; do export "$kv"; done; [[ -z "$SANDBOX_SHIM" ]] || export PATH="$SANDBOX_SHIM:$PATH"; eval "$SANDBOX_RUN_SUITE"' _ ${envs[@]+"${envs[@]}"}
+  ) < /dev/null 2>&1 | tee -a "$logs/suite-$name.log"
+  code="${PIPESTATUS[0]}"
+  set -e
+  jq -nc --arg n "$name" --argjson c "$code" --arg s "$(since "$t0")" --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg log "$logs/suite-$name.log" \
+    '{ suite: $n, "exit-code": $c, seconds: ($s | tonumber), at: $at, log: $log }' | tee "$state/suites/$name.json" >&2
+  exit "$code"
+}
+
+case "${1-}" in
+  up) up ;;
+  start)
+    shift
+    [[ $# -gt 0 ]] || set -- $(jq -r '.services[].name' "$declaration")
+    for name; do start_one "$name" || exit 1; done ;;
+  stop)
+    shift
+    [[ $# -gt 0 ]] || set -- $(jq -r '.services | reverse | .[].name' "$declaration")
+    for name; do running "$name" && kill -TERM "$(cat "$run/$name.pid")" && echo "sandbox-services: stopped $name"; rm -f "$run/$name.pid"; done ;;
+  status)
+    jq -r '.services[] | [.name, .kind, .version] | @tsv' "$declaration" | while IFS=$'\t' read -r name kind version; do
+      pid=null; ! running "$name" || pid="$(cat "$run/$name.pid")"
+      done=false; [[ ! -f "$state/jobs/$name.done" ]] || done=true
+      jq -nc --arg n "$name" --arg k "$kind" --arg v "$version" --argjson pid "$pid" --argjson d "$done" '{ name: $n, kind: $k, version: $v, running: ($pid != null), pid: $pid, done: $d }'
+    done ;;
+  hosts) hosts ;;
+  trust) trust ;;
+  login)
+    shift
+    lines_into envs < <(jq -r '(.login.env // {}) | to_entries[] | "\(.key)=\(.value)"' "$declaration")
+    exec env ${envs[@]+"${envs[@]}"} SANDBOX_SERVICES="$declaration" sandbox-login "$@" ;;
+  suite)
+    [[ $# -eq 2 ]] || { echo "usage: sandbox-services suite <name>" >&2; exit 1; }
+    export SANDBOX_RUN_SUITE
+    SANDBOX_RUN_SUITE="$(jq -r --arg n "$2" '(.suites // [])[] | select(.name == $n) | .run' "$declaration")"
+    export SANDBOX_SHIM=""
+    [[ "$(jq -r --arg n "$2" '(.suites // [])[] | select(.name == $n) | .docker' "$declaration")" != true ]] || SANDBOX_SHIM="$state/suites/bin"
+    suite "$2" ;;
+  *) echo "usage: sandbox-services up | start|stop [<name>…] | status | hosts | trust | login [--check] | suite <name>" >&2; exit 1 ;;
+esac

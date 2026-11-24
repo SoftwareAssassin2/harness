@@ -1906,6 +1906,25 @@ test('ASS-513 AC2: a Merged MR with a stale build-failed-head is ignored — not
   assert.equal(out.merged, true);
 });
 
+// ASS-556 AC6: merge-request:check records the CI results for the work-mode metrics: a failure once per head (as it is
+// sent), the merge once (a pass), each with the variation's work mode then ("unset" before one is chosen).
+test('ASS-556 AC6: merge-request:check appends a CI failure once per head and a merge once to the variation\'s ci-results, with its work mode', async () => {
+  const f = await single(RED);
+  const results = () => (variationOf(f)['ci-results'] ?? []).map(c => [c.mr, c.key, c.head, c.result, c.mode]);
+  await checked(f);
+  await checked(f);   // polled at the same head: nothing new
+  assert.deepEqual(results(), [[1, '!7', HEAD, 'failed', 'unset']]);
+  view(f, 'app', 7, { ...RED, sha: NEW });
+  await checked(f);
+  assert.deepEqual(results(), [[1, '!7', HEAD, 'failed', 'unset'], [1, '!7', NEW, 'failed', 'unset']]);
+  view(f, 'app', 7, { ...RED, sha: NEW, state: 'merged' });
+  await checked(f);
+  await checked(f);
+  assert.deepEqual(results().at(-1), [1, '!7', NEW, 'passed', 'unset']);
+  assert.equal(results().length, 3);
+  assert.ok((variationOf(f)['ci-results'] ?? []).every(c => /^\d{4}-\d\d-\d\dT/.test(c.at)));
+});
+
 // ASS-508: a GitLab thread a reviewer holds open (only they may resolve it)
 // that the harness answered last, its review gate (project.json
 // "review-gate-jobs", ["review-gate"] by default) failing on it, needs no

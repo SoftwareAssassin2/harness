@@ -1,25 +1,26 @@
 // The frame around every screen's body (ASS-201): the header — banner, health-check
-// agents, project menu, sprint and its tiles — and the platform boxes and the lines
-// under them; the flow screens (S, B) take a one-line header and no platform boxes
+// agents, project menu, sprint and its tiles — and the footer's three status lines (ASS-566; the platform boxes
+// before) and the lines under them; the flow screens (S, B) take a one-line header and no footer lines
 // (ASS-187). Every screen sizes itself against it, so it sits below them all.
-import { boxRow } from '../boxes.js';
 import { kindOfAccount } from '../../agents/account.js';
 import { providerOf, repoPath, commonOwner } from '../../agents/forge.js';
 import { blockText } from '../font.js';
 import { duration } from '../metrics.js';
-import { visible, link } from '../text.js';
-import { utcDate } from '../../downloader/cycle.js';
+import { visible, link, clip, pad } from '../text.js';
 import { flattenSprint } from '../../control/rank.js';
 import { spendRecords, daySpend, sprintSpend, spendText } from '../../control/spend.js';
-import { usesVms, usesWorkstations, cloudVmsOf, workstationsOf } from '../../control/dev-environments.js';
-import { workstationState, cloudVmState } from '../../control/workstation-machines.js';
-import { lostWhy, seatCapacity } from '../../control/seat-kinds.js';
-import { ellipsis, refining, agentLine, projectAssignments, liveAssignments, viewedSprint, operatorNeeded, restartFixes, markDot, ICONS, since, indent, center, middle, color, green, red, gold, timestamp, sprintTickets, runsScript, GLYPHS, gray, seatPlan } from './shared.js';
+import { cloudVmsOf } from '../../control/dev-environments.js';
+import { planningFocusOn } from '../../control/planning-focus-file.js';
+import { imageBuildFailed } from '../../control/substrate-config.js';
+import { SUBSTRATE_STALE_MS, SUBSTRATE_TROUBLE, MEMORY_PROBLEMS, noGolden, snapshotTrouble, machineGroups } from '../machine-health.js';
+import { BLOCK_AFTER } from '../../control/backoff.js';
+import { ellipsis, refining, agentLine, projectAssignments, liveAssignments, viewedSprint, operatorNeeded, restartFixes, markDot, ICONS, indent, center, middle, color, green, red, gold, timestamp, sprintTickets, runsScript, gray, yellow } from './shared.js';
+export { SUBSTRATE_STALE_MS };   // ASS-566: machine-health.js's now, read here by the tests
 
 // Screens where space pauses and releases the agents.
 export const PAUSABLE = new Set(['s', 'S', 'b', 'B', 'c', 'a', 'A']);
 
-// The lines under the platform boxes: the legend and, once data has loaded,
+// The lines under the footer's status lines: the legend and, once data has loaded,
 // when the selected project's data last changed (updatedAt, ms by project;
 // a single ms, from before ASS-10, for every project).
 export const updatedOf = state => (typeof state.updatedAt === 'object' && state.updatedAt ? state.updatedAt[state.projects[state.project]?.id] : state.updatedAt);
@@ -60,8 +61,10 @@ function idle(state) {
 // what to do; `after` the ms it must stay up before it notifies (No work in
 // progress: IDLE_AFTER_MS). The chips, in the order they show: the project held
 // by its credentials (ASS-395), the gcloud login to renew, a workstation whose
-// setup failed (ASS-434), the glab login to renew, background work off
-// (ASS-127), the memory and disk holds (ASS-398: any project's
+// setup failed (ASS-434), a Substrate cluster broken (ASS-533) and, ASS-539, its template with no golden snapshot,
+// its Docker memory low and its snapshot disk use high, a sandbox image build failed, a sandbox that could not be set
+// up, the glab login to renew, background work off
+// (ASS-127), the focus on planning (ASS-531), the memory and disk holds (ASS-398: any project's
 // memory-hold.json, the disk hold of ASS-288), the landed fixes a restart would
 // load (ASS-393), then idleness (ASS-59), then the analytics' Jira API token
 // rejected (ASS-475: the downloader's jira-token-rejected.json; it holds no
@@ -80,8 +83,13 @@ export function headerWarnings(state, now = Date.now()) {
     project?.credentialsHold && warning('credentials', 'Project blocked by credentials', firstFix?.fix ? `Run ${firstFix.fix}` : 'Fix the credentials the dashboard lists for this project', { chip: true }),
     project?.gcloudReauthentication && gcloudWarning(warning, project.gcloudLogins),
     ...setupWarnings(warning, project),
+    ...substrateWarnings(warning, project, now, state.disk),
+    ...sandboxImageWarnings(warning, project),   // ASS-539
+    ...sandboxSetupWarnings(warning, project),   // ASS-539
     project?.glabReauthentication && warning('glab-login', "run 'glab auth login' asap", 'Run glab auth login in a terminal', { chip: true }),
     project?.backgroundWorkOff && warning('background-work-off', 'Background work off', 'Turn background work back on when you want it', { chip: true, operator: true }),
+    // ASS-531: the operator's own switch, a reminder to turn it off before leaving the AI to build.
+    planningFocusOn(project) && warning('planning-focus', 'Focus on planning', 'Press P on the sprint screen to turn it off when the planning is done', { chip: true, operator: true }),
     state.projects.some(p => p.memoryHold) && warning('out-of-memory', 'Out of memory', 'Free memory on the Mac: no new VM starts until there is enough', { chip: true, scope: 'harness' }),
     state.disk?.level === 'hold' && warning('out-of-disk-space', 'Out of disk space', `Free disk space: nothing new starts until ${state.disk['warn-bytes'] / 1e9} GB is free`, { chip: true, scope: 'harness' }),
     fixes.length > 0 && warning('restart', restartNotice(fixes.length), `Restart the harness to load ${fixes.join(', ')}`, { chip: true, scope: 'harness' }),
@@ -158,6 +166,79 @@ function setupWarnings(warning, project) {
       return warning(`workstation-setup:${id}`, `${what} ${id} setup failed`, `Fix ${what.toLowerCase()} ${id}'s setup (nothing is dispatched to it meanwhile): ${e.setup.error ?? 'see control\'s log'}`, { chip: true });
     });
 }
+// substrateWarnings(warning, project, now, disk) — ASS-533 AC4, ASS-539 AC2: the chips for each of the project's
+// Substrate clusters, from its substrate.json (control's last check, src/control/substrate.js; health's problems, each
+// { what, why, repair }, on-machine/substrate.sh), each naming its machine and saying its fix — one per kind of trouble,
+// each its own id, so each notifies once (src/notify/warnings.js) and a second trouble on the same machine notifies too:
+// - cluster down (substrate:<machine>): broken, missing, Docker down or not checked for any problem but the three below
+//   — "Substrate mac broken", "Substrate ada-dev cluster missing" — saying whether control restarts it (every problem
+//   one substrate:up fixes: its `repair`) or what the operator must fix (Docker, a check that cannot run);
+// - a template with no golden snapshot (substrate-template:<machine>): its `templates` problem a restart cannot fix,
+//   with ate-api-server's reason (health reads it from its log), and the two fixes: a template too big for its worker
+//   ("no worker has room for the actor": the cluster entry's worker-memory-gib), else the image (substrate:build-image);
+// - memory low (substrate-memory:<machine>): Docker's memory under what the cluster needs, or its containers over 90% of
+//   it ("docker memory": on the Mac Docker Desktop's VM — "Docker Desktop memory low", fixed in its Settings, Resources,
+//   Memory), or a remote machine short of memory ("host memory");
+// - snapshot disk use high (substrate-snapshots:<machine>): the disk its hibernation snapshots live on (the cluster
+//   node's /var: Docker's disk) below the harness's disk warning level (disk-space.json's warn-bytes, harness.json's
+//   disk-free-warn-gb, 50 GB) while the project has snapshots there, saying when one more sandbox's snapshot would take
+//   it below the hold level (hold-bytes, 15 GB: no new seat for its sandboxes, ASS-537 AC3).
+// A check older than SUBSTRATE_STALE_MS (nobody checks it now: the machine stopped, or control is down) shows none.
+// (A nested Lima VM — Substrate's microVM path, ASS-532 — is not used: the harness runs its clusters on gVisor only, so
+// there is no such VM to watch.)
+const problemText = list => list.map(p => `${p.what}: ${p.why}`).join('; ');
+function substrateWarnings(warning, project, now = Date.now(), disk = null) {
+  const id = project?.id;
+  return Object.entries(project?.substrate ?? {})
+    .filter(([, e]) => e && now - Date.parse(e['checked-at'] ?? 0) < SUBSTRATE_STALE_MS)
+    .flatMap(([machine, e]) => {
+      const problems = Array.isArray(e.problems) ? e.problems : [];
+      const templates = problems.filter(noGolden), memory = problems.filter(p => MEMORY_PROBLEMS.has(p.what));
+      const rest = problems.filter(p => !noGolden(p) && !MEMORY_PROBLEMS.has(p.what));
+      const out = [];
+      if (SUBSTRATE_TROUBLE[e.state] && (e.state !== 'broken' || rest.length || !problems.length)) {
+        const fixes = rest.filter(p => !p.repair);
+        const todo = fixes.length
+          ? `Fix the Substrate cluster on ${machine}: ${problemText(fixes)}`
+          : `Control restarts the Substrate cluster on ${machine} (substrate:up ${id} ${machine}); if it stays ${e.state}: ${problemText(rest) || 'see control\'s log'}`;
+        out.push(warning(`substrate:${machine}`, `Substrate ${machine} ${SUBSTRATE_TROUBLE[e.state]}`, todo, { chip: true }));
+      }
+      if (templates.length) {
+        out.push(warning(`substrate-template:${machine}`, `Substrate ${machine} template: no golden snapshot`,
+          `No sandbox can be made from it: ${templates.map(p => p.why).join('; ')}. If ate-api-server says no worker has room for the actor, raise worker-memory-gib in ${id}'s dev-environments.substrate.clusters entry for ${machine} and run ./agent.sh substrate:up ${id} ${machine}; else fix the sandbox image and rebuild it: ./agent.sh substrate:build-image ${id}`, { chip: true }));
+      }
+      if (memory.length) {
+        const mac = machine === 'mac';
+        out.push(warning(`substrate-memory:${machine}`, mac ? 'Docker Desktop memory low' : `${machine} Docker memory low`,
+          `${mac ? 'Give Docker Desktop more memory (Settings, Resources, Memory, then Apply & restart)' : `Free memory on ${machine} (fewer tickets on it: its max-memory-percent), or give it more`}: ${problemText(memory)}`, { chip: true }));
+      }
+      const snap = snapshotTrouble(e, disk);
+      if (snap) {
+        out.push(warning(`substrate-snapshots:${machine}`, `Substrate ${machine} snapshot disk high`,
+          `Its sandboxes' snapshots take ${gib(snap.bytes)} GiB of ${machine === 'mac' ? 'Docker Desktop\'s' : `${machine}'s Docker`} disk, which has ${gib(snap.free)} GiB free (below the ${snap.warn / 1e9} GB warning level)${snap.full ? `; no new seat for its sandboxes until it is above ${snap.hold / 1e9} GB with room for one more` : ''}: delete the sandboxes no ticket needs (./agent.sh substrate:sandbox-delete ${id} <KEY> <variation>), or give ${machine === 'mac' ? 'Docker Desktop more disk (Settings, Resources, Disk usage limit)' : `${machine} more disk`}`, { chip: true }));
+      }
+      return out;
+    });
+}
+
+// sandboxImageWarnings(warning, project) — ASS-539 AC2: a chip for each architecture whose sandbox image's last build
+// failed and has not been built since (substrate-config.js imageBuildFailed, from the files substrate:build-image writes),
+// pointing at its log and the command that builds it again. No new sandbox gets the image meanwhile (those there keep
+// the one they were made from).
+function sandboxImageWarnings(warning, project) {
+  return Object.entries(project?.sandboxImages ?? {}).filter(([, image]) => imageBuildFailed(image)).map(([arch, image]) =>
+    warning(`sandbox-image:${arch}`, `Sandbox image ${arch} build failed`,
+      `The last build of ${project.id}'s ${arch} sandbox image exited ${image.run['exit-code']} at ${String(image.run['ended-at']).replace('T', ' ').replace(/Z$/, ' UTC')}: read ${image.log}, fix what it says, then build it again: ./agent.sh substrate:build-image ${project.id} --arch ${arch}`, { chip: true }));
+}
+
+// sandboxSetupWarnings(warning, project) — ASS-539 AC2: a chip for each ticket variation whose sandbox could not be
+// made or resumed (control's sandbox-failures.json, sandboxes.js recordSandboxFailures): its step waits meanwhile,
+// control tries again with the step's backoff and sends the ticket to Blocked after BLOCK_AFTER failures in a row.
+function sandboxSetupWarnings(warning, project) {
+  return (project?.sandboxFailures ?? []).filter(f => f?.sandbox).map(f =>
+    warning(`sandbox-setup:${f.sandbox}`, `Sandbox ${f.sandbox} setup failed`,
+      `${f.key} ${f.variation}'s sandbox on ${f.machine} could not be ${f.what ?? 'made'} (${f.failures ?? 1} in a row; control tries again, and sends the ticket to Blocked after ${BLOCK_AFTER}): ${f.error || 'see control\'s log'}. Check ./agent.sh substrate:health ${project.id} ${f.machine} and control's log; ./agent.sh substrate:sandbox-up ${project.id} ${f.key} ${f.variation} ${f.machine} tries it by hand`, { chip: true }));
+}
 // The sprint header's white-on-red boxes (sprintLines): headerWarnings' chips' texts, in its order (ASS-412).
 const warnings = (state, now) => headerWarnings(state, now).filter(w => w.chip).map(w => w.text);
 // ASS-393: one notice for every landed harness fix the running control has not loaded (restartFixes), never one per ticket.
@@ -228,228 +309,137 @@ export const headerLines = (state, columns, now) => (state.screen === 'S' || sta
   '',
 ]);
 
-// The platform boxes above the legend, and a blank line under them: the
-// selected project's control process, then its models. Each box is titled
-// and lists its fields as "field: value"; control adds 🤖 to the title when
-// an assignment has control true. ASS-368: project.json's local-environments
-// (local-pc, dev-container) get no box — tickets run in VMs now.
-// The control box is built from the control the dashboard started
-// (state.controls, ASS-310): its status — Draining while it drains,
-// Restarting through a restart, else Online — its process id and its uptime,
-// so it shows for as long as that control runs; it then shows where the
-// project's code goes — its repository provider, repository and push account
-// (forgeLines, ASS-307); the DOWN box has neither. A control that has ended
-// (controlsDown) is a red "control DOWN" box with its exit code and the line
-// before it. Either ends with the machine's lines and the project's
-// Hindsight (machineLines, ASS-292, ASS-293). The models
-// box, always there for a project, has a "model 🤖xN" line per model its
-// assignments use, most first, then (ASS-469, vm+workstation mode) its VM
-// seats used of its VM seats (vmSeatLines), then what the project spent (spendLines,
-// ASS-430: moved here from the header's tiles), then how the project is
-// billed (billingLines, ASS-221), ending with the account. ASS-436: then, in
-// vm+workstation or workstation mode, the gcp workstations box
-// (workstationLines); ASS-481: then the cloud virtual machines box
-// (cloudVmBox); ASS-486: then, rightmost, in vm or vm+workstation mode, the
-// local virtual machines box (localVmBox; ASS-491: its build and planning seats). Each box is one entry of `boxes`,
-// so another goes in as one more entry.
+// The footer (ASS-566; a row of boxes before — control, models, queue, the machine boxes): three status lines above the
+// legend, for the project on screen, and a blank line under them. The flow screens (S, B) take none (ASS-187).
+// 1. control and accounts (controlSegments): control's state, uptime and pid — or, down, red, its exit code and its
+//    restart countdown or "given up … press R" — then its Hindsight (hindsightLine), the forge provider and the account
+//    its code pushes as (forgeLines), and the Claude account;
+// 2. machine health (healthSegments): one summary per machine group the project has (machine-health.js machineGroups):
+//    "local", "gcp workstations", "cloud VMs" — "healthy", or its healthy and unhealthy machines counted, the unhealthy
+//    red with why;
+// 3. usage and spend (usageSegments): Claude's 5-hour session and weekly use with their resets (red while rate limited),
+//    or, billed by API key, the billing and the API budget's figures; the free disk; the repositories; today's and the
+//    sprint's spend.
+// Where the old boxes' other lines went: the machine boxes and the golden image to the compute network screen (n,
+// network.js), with the agents per model; the queue to the sprint screen's q overlay (queue.js).
 export function platform(state, columns, now) {
   if (state.screen === 'S' || state.screen === 'B') return []; // the flow screens give the diagram the room (ASS-187)
   const project = state.projects[state.project];
-  const control = state.controls?.[project?.id];
-  const models = Map.groupBy(projectAssignments(state), a => a.model);
-  const box = (title, fields) => [title, ...Object.entries(fields).map(([field, value]) => `${field}: ${value}`)];
-  const status = state.draining?.[project?.id] != null ? 'Draining' : state.restart ? 'Restarting' : state.dataWaiting?.[project?.id] ? red('Waiting for its data') : 'Online';
-  // ASS-460: a control started again after a crash is shown running, its outage kept until it is back (app.js controlBack).
-  const down = state.controlsDown?.[project?.id]?.restarted ? null : state.controlsDown?.[project?.id];
-  const restartLine = d => (d.restartAt ? [`restart: in ${Math.max(0, Math.ceil((d.restartAt - now) / 1000))}s (crash ${d.crashes})`] : d.gaveUp ? [red(`restart: given up after ${d.crashes} crashes`), 'press R to start it'] : d.code === 0 ? ['press R to start it'] : []);
-  const boxes = [
-    ...(down ? [[red('control DOWN'), `exited: code ${down.code}`, `last: ${ellipsis(down.line, 60)}`, ...restartLine(down), ...machineLines(state.disk, project, state.memoryHealth)]] : []),
-    ...(control && !down ? [[...box(projectAssignments(state).some(a => a.control === true) ? 'control 🤖' : 'control', { status, 'process-id': control.pid, uptime: since(control.startTime, now) }), ...forgeLines(project), ...machineLines(state.disk, project, state.memoryHealth)]] : []),
-    ...(project ? [['models', ...[...models]
-      .toSorted(([a, x], [b, y]) => y.length - x.length || String(a).localeCompare(String(b)))
-      .map(([model, list]) => `${model} 🤖x${list.length}`), ...vmSeatLines(project), ...spendLines(state, now), ...billingLines(project, now)]] : []),
-    ...workstationBox(state, project),
-  ];
-  // ASS-481 AC5: the cloud virtual machines box directly after them, and (ASS-486 AC1/AC5) the local virtual machines
-  // box after it, rightmost — each on the row before it while that row still fits the screen, else starting a row of its
-  // own under it, so the footer fits the TUI's minimum width (120 columns) with all five boxes.
-  const rows = [boxes];
-  for (const tail of [...cloudVmBox(state, project), ...localVmBox(state, project)]) {
-    const last = rows.at(-1);
-    if (!last.length || visible(boxRow([...last, tail], columns)[0]) <= columns) last.push(tail);
-    else rows.push([tail]);
+  if (!project) return [];
+  return [controlSegments(state, project, now), healthSegments(state, project, now), usageSegments(state, project, now)]
+    .map(segments => statusLine(segments, columns)).concat('');
+}
+
+// statusLine(segments, columns) — one footer line: the segments GAP columns apart, more (up to MAX_GAP) on a wider
+// screen, centred, never wrapped. While they don't fit: GAP_MIN apart, then the segments marked to go first ({ text,
+// short?, cut: n }, the lowest n first — the least telling: the repositories' group, the reset times, the accounts)
+// take their short form when they have one (the repository count alone, the use without its reset, none for the
+// provider), else are cut with
+// an ellipsis to no less than MIN_PART, then the widest; what still doesn't fit is cut at the screen's edge.
+const GAP = 3, GAP_MIN = 2, MAX_GAP = 6, MIN_PART = 14;
+export function statusLine(segments, columns) {
+  const list = segments.filter(Boolean).map(s => (typeof s === 'string' ? { text: s, cut: Infinity } : s)).filter(s => s.text);
+  if (!list.length) return '';
+  const parts = list.map(s => s.text);
+  const width = () => parts.reduce((n, p) => n + visible(p), 0);
+  const fits = width() + GAP * (parts.length - 1) <= columns;
+  const room = () => columns - GAP_MIN * (parts.filter(Boolean).length - 1);
+  const over = () => !fits && width() > room();
+  const undo = [];   // each cut, [i, what it was], so what still fits afterwards is put back
+  const cutTo = i => {
+    undo.push([i, parts[i]]);
+    if (list[i].short != null && parts[i] !== list[i].short) { parts[i] = list[i].short; return; }   // '' drops it
+    const target = Math.max(MIN_PART, visible(parts[i]) - (width() - room()));
+    if (target < visible(parts[i])) parts[i] = ellipsis(parts[i], target);
+  };
+  for (const i of list.map((s, i) => i).filter(i => Number.isFinite(list[i].cut)).toSorted((x, y) => list[x].cut - list[y].cut)) if (over()) cutTo(i);
+  while (over()) {
+    // The widest, a kept segment ({ keep: true }: control, Hindsight, the spend) only once every other is as short as it goes.
+    const cuttable = parts.map((p, n) => n).filter(n => !list[n].keep && visible(parts[n]) > MIN_PART);
+    const pool = cuttable.length ? cuttable : parts.map((p, n) => n);
+    const i = pool.reduce((w, n) => (visible(parts[n]) > visible(parts[w]) ? n : w), pool[0]);
+    const before = visible(parts[i]);
+    cutTo(i);
+    if (visible(parts[i]) >= before) break;
   }
-  const row = rows.flatMap(r => boxRow(r, columns));
-  return row.length ? [...row, ''] : row;
+  // A cut that turned out not to be needed (a later one freed enough) is put back, the last first.
+  for (const [i, was] of undo.toReversed()) { const now = parts[i]; parts[i] = was; if (over()) parts[i] = now; }
+  const shown = parts.filter(Boolean).length - 1;
+  const gap = shown > 0 ? Math.min(MAX_GAP, Math.max(GAP_MIN, Math.floor((columns - width()) / shown))) : 0;
+  const line = parts.filter(Boolean).join(' '.repeat(gap));
+  return visible(line) > columns ? ellipsis(line, columns) : center(line, columns);
 }
 
-// workstationBox(state, project) — ASS-436: the "gcp workstations" box, after
-// models, while the project's dev-environments (load.js devEnvironments,
-// ASS-431) run tickets on workstations (usesWorkstations: vm+workstation or
-// workstation mode) and list at least one; none in vm mode, with an empty
-// list or while the setting is wrong (null), so the footer is as before. One
-// line per workstation, in the list's order, built by remoteLine and
-// machineLine (ASS-485 AC6). An id longer than WS_ID is cut to it with an
-// ellipsis, so the box stays narrow beside control and models: the longest
-// line, WS_ID + "🤖x99 💻 sign in needed seat lost", fits the footer's 120
-// columns with both.
-// ASS-481: the pool's cloud VMs are not workstations: workstationsOf leaves
-// them to cloudVmBox, so a project listing cloud VMs alone has no
-// "gcp workstations" box.
-const WS_ID = 20;
-function workstationBox(state, project) {
-  const settings = project?.devEnvironments;
-  const list = workstationsOf(settings);
-  if (!settings || !usesWorkstations(settings.mode) || !list.length) return [];
-  return [['gcp workstations', ...list.map(remoteLine(state, project, workstationState))]];
+// controlSegments(state, project, now) — the first line: control, built from the control the dashboard started
+// (state.controls, ASS-310) — "control: up (<uptime>, pid: <pid>)", "draining" while it drains, "restarting" through a
+// restart, "waiting for its data" in red (ASS-457), 🤖 after "control" while an assignment has control true; a control
+// that has ended (controlsDown, ASS-460) red: "control: DOWN (exit <code>, restart in <n>s, crash <n>)", "… given up
+// after <n> crashes, press R", "… ended, press R" for one that exited 0 (its last line is the header's CONTROL DOWN
+// line); none started yet a gray "not running". Then hindsightLine, the provider and push account (forgeLines), and
+// the Claude account (claude-usage's email).
+function controlSegments(state, project, now) {
+  const control = state.controls?.[project.id];
+  // ASS-460: a control started again after a crash is shown running, its outage kept until it is back (app.js controlBack).
+  const down = state.controlsDown?.[project.id]?.restarted ? null : state.controlsDown?.[project.id];
+  const label = projectAssignments(state).some(a => a.control === true) ? 'control 🤖' : 'control';
+  let text;
+  if (down) {
+    const next = down.restartAt ? `restart in ${Math.max(0, Math.ceil((down.restartAt - now) / 1000))}s, crash ${down.crashes}`
+      : down.gaveUp ? `given up after ${down.crashes} crashes, press R` : down.code === 0 ? 'ended, press R' : '';
+    text = red(`${label}: DOWN (exit ${down.code ?? 'by signal'}${next ? `, ${next}` : ''})`);
+  } else if (control) {
+    const waiting = state.dataWaiting?.[project.id];
+    const word = state.draining?.[project.id] != null ? 'draining' : state.restart ? 'restarting' : waiting ? 'waiting for its data' : 'up';
+    const line = `${label}: ${word} (${duration(Math.max(0, now - new Date(control.startTime).getTime()))}, pid: ${control.pid})`;
+    // ASS-573: coloured like Hindsight's — green up, amber while draining or restarting (passing), red waiting.
+    text = waiting ? red(line) : word === 'up' ? green(line) : yellow(line);
+  } else text = gray(`${label}: not running`);
+  const forge = forgeLines(project);
+  // When the line is full the provider goes first (its account names it too), then the Claude account is cut, then the push account.
+  return [{ text, keep: true }, { text: hindsightLine(project, state.memoryHealth?.[project.id]), keep: true }, ...(forge ? [{ text: `provider: ${forge.provider}`, short: '', cut: 1 }, { text: forge.account, cut: 3 }] : []), { text: `claude account: ${project.claudeUsage?.email ?? '—'}`, cut: 2 }];
 }
 
-// machineLine({ id, agents, script, state, lost }) — ASS-485 AC6: the one line
-// builder of the footer's machine boxes (gcp workstations, cloud virtual
-// machines and, ASS-486, local virtual machines): "<id> <activity> <state>", then
-// "seat lost" in red when `lost`. The id is cut to WS_ID with an ellipsis;
-// activity is "🤖x<agents>" only when agents > 0, then GLYPHS.script (💻) only
-// when `script`, nothing when idle; the state word running in green, sign in
-// needed, setup failed and start timed out in red. No seat count.
-// e.g. "ws-1 💻 running", "harness-vm-1 🤖x1 running", "ws-1 running".
-const RED_STATES = new Set(['sign in needed', 'setup failed', 'start timed out']);
-export function machineLine({ id, agents = 0, script = false, state, lost = false }) {
-  const shade = state === 'running' ? green : RED_STATES.has(state) ? red : text => text;
-  const activity = [agents > 0 ? `🤖x${agents}` : '', script ? GLYPHS.script : ''].filter(Boolean);
-  return [ellipsis(String(id), WS_ID), ...activity, shade(state), ...(lost ? [red('seat lost')] : [])].join(' ');
-}
-
-// remoteLine(state, project, stateOf) — machineLine's facts for the remote
-// { id } of the gcp workstations box or (ASS-481) the cloud virtual machines
-// box, from its live data (project.workstations[id]):
-// - agents and script: the activity (variationActivity) of the variation its
-//   holder holds, none with no holder;
-// - state: `stateOf`'s word (workstationState, cloudVmState; 'stopped' with
-//   no live data yet);
-// - lost: while it can't be used (seat-kinds.js lostWhy, ASS-469 AC5).
-const sameKey = (a, b) => String(a ?? '').toUpperCase() === String(b ?? '').toUpperCase();
-const remoteLine = (state, project, stateOf) => {
-  const activity = variationActivity(state);
-  return ({ id }) => {
-    const entry = project.workstations?.[id], holder = entry?.holder;
-    const { agents, script } = holder ? activity(holder.ticket, holder.variation) : { agents: 0, script: false };
-    return machineLine({ id, agents, script, state: stateOf(entry), lost: Boolean(lostWhy(entry)) });
-  };
-};
-
-// variationActivity(state)(ticket, variation) — what a machine's variation is
-// doing, for machineLine (ASS-485; ASS-486 the local VMs too):
-// - agents: the project's assignments (projectAssignments, as the models box
-//   counts them) on the variation (ASS-435: same ticket, case-insensitive,
-//   and variation);
-// - script (ASS-485 AC1-AC3): the ticket in the sprint on show, found as the
-//   sprint screen finds it (sprintTickets) and matched as the agent count
-//   matches it, runs a script step by runsScript — the sprint screen's own
-//   rule: none at a gate, held, on an agent step, or on a past day.
-const variationActivity = state => {
-  const assignments = projectAssignments(state);
-  const { tickets } = sprintTickets(state);
-  return (ticket, variation) => ({
-    agents: assignments.filter(a => sameKey(a['work-item'], ticket) && a.variation === variation).length,
-    script: tickets.some(t => sameKey(t.key, ticket) && t.variation?.name === variation && runsScript(state, t)),
+// healthSegments(state, project, now) — the second line: each machine group's health (machine-health.js), "local:
+// healthy" or red "local: unhealthy (<why>)" for the Mac; "<group>: <n> healthy" for the remote groups, or with
+// red "<n> unhealthy (<id> <why>; …)".
+function healthSegments(state, project, now) {
+  return machineGroups(state, project, now).map(({ name, machines }) => {
+    const bad = machines.filter(m => m.troubles.length), good = machines.length - bad.length;
+    if (name === 'local') return bad.length ? red(`local: unhealthy (${bad[0].troubles.join(', ')})`) : 'local: healthy';
+    if (!bad.length) return `${name}: ${good} healthy`;
+    return `${name}: ${good ? `${good} healthy, ` : ''}${red(`${bad.length} unhealthy (${bad.map(m => `${m.id} ${m.troubles.join(', ')}`).join('; ')})`)}`;
   });
-};
-
-// cloudVmBox(state, project) — ASS-481 AC5: the "cloud virtual machines" box
-// (ASS-485 AC7: retitled from "virtual machines"), directly after the gcp
-// workstations box (after models without one), while the project's
-// dev-environments run tickets on its remote pool (vm+workstation or
-// workstation mode) and list at least one cloud VM; none in vm mode, with no
-// cloud VMs, or while the setting is wrong. One line per cloud VM, in list
-// order, built by remoteLine and machineLine as the workstations' are
-// (ASS-485 AC6), its state cloudVmState's word — running, stopped, starting,
-// connecting, sign in needed, setup failed, start timed out. Its id is cut to
-// WS_ID: the longest line, WS_ID + "🤖x99 💻 start timed out seat lost", fits
-// the footer's 120 columns beside control, models and gcp workstations.
-function cloudVmBox(state, project) {
-  const settings = project?.devEnvironments;
-  const list = cloudVmsOf(settings);
-  if (!settings || !usesWorkstations(settings.mode) || !list.length) return [];
-  return [['cloud virtual machines', ...list.map(remoteLine(state, project, cloudVmState))]];
 }
 
-// localVmBox(state, project) — ASS-486, ASS-489, ASS-491: the "local virtual
-// machines" box, the footer's rightmost (ASS-489 AC5, ASS-491 AC5), while the
-// project runs tickets on Lima VMs (vm or vm+workstation mode, usesVms); none
-// in workstation mode, where tickets have no VMs, or while the setting is
-// wrong (ASS-491 AC4). One line per seat that uses a local VM (ASS-491 AC1):
-// - the in-progress VM seats first, as ASS-489 has them (ASS-491 AC4): their
-//   holders, control's seats.json rows of kind 'vm' (project.seats), in their
-//   order (oldest first), never more lines than seats; then a gray "free build
-//   seat" (ASS-491 AC3) per VM seat left, up to the VM seat count
-//   (seatCapacity, as vmSeatLines counts it); with no limit (∞) only the holders;
-// - then the planning seats, every one a local VM's (planning always runs on
-//   Lima VMs, ASS-469), from seatPlan — the sprint screen's 💺 source, so the
-//   two agree: its `planning` holders ("<key> <variation>") in its order, then
-//   a gray "free planning seat" per free.planning (none with no planning
-//   limit, so only the holders).
-// A holder's line is machineLine's (ASS-491 AC2): the VM the vms.json row
-// (project.vms) with its ticket (case-insensitive) and variation, its name the
-// row's key cut to WS_ID (AC5), its activity variationActivity's, its state the
-// VM's own lowercased, "running" in green; with no row yet (still being
-// created) its expected name, lowercased key-variation (e.g. vm-1-a),
-// "creating" in gray (ASS-489 AC4). No lines at all: one gray "none". A VM
-// whose ticket holds no seat — at a gate, blocked, or in a workstation or
-// cloud-vm seat — is not listed (ASS-489 AC3).
-function localVmBox(state, project) {
-  const settings = project?.devEnvironments;
-  if (!settings || !usesVms(settings.mode)) return [];
-  const activity = variationActivity(state);
-  const vms = Object.entries(project.vms ?? {});
-  const holderLine = (key, variation) => {
-    const [id, vm] = vms.find(([, v]) => sameKey(v?.ticket, key) && v?.variation === variation) ?? [];
-    const { agents, script } = activity(key, variation);
-    if (!vm) return machineLine({ id: `${key}-${variation}`.toLowerCase(), agents, script, state: gray('creating') });
-    return machineLine({ id, agents, script, state: String(vm.state ?? 'stopped').toLowerCase() });
-  };
-  const holders = (project.seats ?? []).filter(s => s?.kind === 'vm').map(seat => holderLine(seat.key, seat.variation));
-  const { vm: seats } = seatCapacity({ json: project.limits?.project ?? {}, devEnvironments: settings, workstations: project.workstations });
-  const free = Number.isFinite(seats) ? Array.from({ length: Math.max(0, seats - holders.length) }, () => gray('free build seat')) : [];
-  const build = [...(Number.isFinite(seats) ? holders.slice(0, seats) : holders), ...free];
-  const plan = seatPlan(state);
-  const planning = [
-    ...plan.planning.map(name => { const at = name.indexOf(' '); return holderLine(name.slice(0, at), name.slice(at + 1)); }),
-    ...Array.from({ length: plan.free.planning }, () => gray('free planning seat')),
-  ];
-  const lines = [...build, ...planning];
-  return [['local virtual machines', ...(lines.length ? lines : [gray('none')])]];
+// usageSegments(state, project, now) — the third line: billingSegments (red while the project is rate limited,
+// limitFor), the free disk (diskSegment), the repositories (forgeLines' repo), today's and the sprint's spend (spendLines).
+function usageSegments(state, project, now) {
+  const limited = Boolean(limitFor(project, now).limit);
+  return [...billingSegments(project, now, limited), diskSegment(state.disk), forgeLines(project) && { text: forgeLines(project).repo, short: forgeLines(project).repoShort, cut: 1 }, ...spendLines(state, now)];
 }
 
-// vmSeatLines(project) — ASS-469: in the models box, in vm+workstation mode (where a ticket in progress sits in a VM
-// seat or a workstation seat), "vm seats: <used>/<project.json's max-tickets-in-progress>" — "∞" for no limit — as
-// control's seats.json records them; none in other modes (vm: every seat is a VM seat, the sprint's empty seat rows
-// show them, ASS-451; workstation: no VM seats).
-function vmSeatLines(project) {
-  if (project?.devEnvironments?.mode !== 'vm+workstation' || !project.devEnvironments.workstations?.length) return [];
-  const { vm } = seatCapacity({ json: project.limits?.project ?? {}, devEnvironments: project.devEnvironments, workstations: project.workstations });
-  return [`vm seats: ${(project.seats ?? []).filter(r => r.kind === 'vm').length}/${Number.isFinite(vm) ? vm : '∞'}`];
+// diskSegment(disk) — the disk's free space as control last read it (disk-space.json, ASS-288) in GiB, amber below
+// the warning level as diskText's line, "unknown" never read.
+function diskSegment(disk) {
+  const free = disk?.['free-bytes'] == null ? 'disk free: unknown' : `disk free: ${gib(disk['free-bytes'])} GiB`;
+  return disk?.level === 'warn' || disk?.level === 'hold' ? AMBER(free) : free;
 }
 
-// forgeLines(project) — ASS-307: in the control (not control DOWN) box, the
-// project's repository provider, its repository (or repository count) as a
-// link, and the account its code pushes as (project.pushAccount, from
-// data/projects/<p>/push-account.json, control's last check — see
-// src/control/push-account.js). `provider: GitHub`/`GitLab` (by the first
-// repository url's host, github.com → GitHub, else GitLab, including a
-// self-hosted GitLab); one repository → `repo: <owner>/<name>` linked to the
-// repository; several → `repos: <N> in <owner>` linked to the urls' longest
-// common group/owner page, or `repos: <N> in <host>` linked to the host when
-// there is none; `account: <login>` plain, `account: <reason>` in red on
-// failure, `account: …` plain while the lookup has not run or its record is
-// for another provider than the repositories' now. Every repository
-// project.json lists is counted, Active or not; a malformed url is dropped
-// from the count. Nothing — no provider, repo or account line — for a project
-// with no repositories (or none whose url parses).
+// forgeLines(project) — ASS-307: the project's repository provider, its repository (or repository count) as a link,
+// and the account its code pushes as (project.pushAccount, from data/projects/<p>/push-account.json, control's last
+// check — see src/control/push-account.js), as { provider, repo, repoShort, account } for the footer's first and third lines
+// (ASS-566). provider GitHub or GitLab (by the first repository url's host, github.com → GitHub, else GitLab,
+// including a self-hosted GitLab); one repository → `repo: <owner>/<name>` linked to the repository; several →
+// `repos: <N> in <owner>` linked to the urls' longest common group/owner page, or `repos: <N> in <host>` linked to the
+// host when there is none; `<provider> account: <login>` plain, `<provider> account: <reason>` in red on failure,
+// `… account: …` plain while the lookup has not run or its record is for another provider than the repositories'
+// now. Every repository project.json lists is counted, Active or not; a malformed url is dropped from the count.
+// null for a project with no repositories (or none whose url parses).
 function forgeLines(project) {
   const urls = (project.repositories ?? []).map(r => { try { return new URL(r.url).href; } catch { return null; } }).filter(Boolean);
-  if (!urls.length) return [];
+  if (!urls.length) return null;
   const { provider, host } = providerOf(urls[0]);
-  const repoLine = urls.length === 1
+  const repo = urls.length === 1
     ? `repo: ${link(repoPath(urls[0]), urls[0])}`
     : (() => {
       const owner = commonOwner(urls);
@@ -457,33 +447,17 @@ function forgeLines(project) {
         ? `repos: ${link(`${urls.length} in ${owner}`, `https://${host}/${owner}`)}`
         : `repos: ${link(`${urls.length} in ${host}`, `https://${host}`)}`;
     })();
+  const repoShort = urls.length === 1 ? undefined : `repos: ${urls.length}`;   // its short form, when the line is full
   const push = project.pushAccount;
-  const accountLine = !push || push.provider !== provider ? 'account: …'
-    : push.error ? red(`account: ${push.error}`)
-    : `account: ${push.account}`;
-  return [`provider: ${provider}`, repoLine, accountLine];
-}
-
-// machineLines(disk, project, health) — what the control box ends with (ASS-292): the
-// disk's free space as control last read it (disk-space.json, ASS-288) in
-// GiB, amber below the warning level as diskText's line, "unknown" never
-// read; then the project's golden image (load.js loadGolden), its name and
-// the UTC day it was built, saying UTC (ASS-294: "built 2026-11-07 UTC"),
-// "(not built)" never, or "none" without one;
-// then its Hindsight (hindsightLine, ASS-293).
-function machineLines(disk, project, health) {
-  const free = disk?.['free-bytes'] == null ? 'disk free: unknown' : `disk free: ${gib(disk['free-bytes'])} GiB`;
-  const golden = project?.golden;
-  return [
-    disk?.level === 'warn' || disk?.level === 'hold' ? AMBER(free) : free,
-    golden ? `golden image: ${golden.name} (${golden['built-at'] ? `built ${utcDate(new Date(golden['built-at']))} UTC` : 'not built'})` : 'golden image: none',
-    hindsightLine(project, health?.[project?.id]),
-  ];
+  const account = !push || push.provider !== provider ? `${provider} account: …`
+    : push.error ? red(`${provider} account: ${push.error}`)
+    : `${provider} account: ${push.account}`;
+  return { provider, repo, repoShort, account };
 }
 
 // hindsightLine(project, check) — the project's Hindsight as the dashboard
 // last checked it itself (ASS-293: memoryHealth, tui/memory.js — live while
-// control is down, so the control DOWN box shows it alike): "up (port <n>)"
+// control is down, so the footer shows it alike): "up (port <n>)"
 // green when /health answered healthy, "down (port <n>) since <time>" red,
 // since the first check that found it down; "checking" before the first check
 // of its port; "none" for a project without a hindsight in project.json.
@@ -494,8 +468,8 @@ function hindsightLine(project, check) {
   return check.healthy ? green(`hindsight: up (port ${port})`) : red(`hindsight: down (port ${port}) since ${timestamp(new Date(check.since))}`);
 }
 
-// spendLines(state, now) — the models box's spend (ASS-430; the header's Day
-// Spend and Sprint Spend tiles before, ASS-216): what the selected project
+// spendLines(state, now) — the footer's spend (ASS-430; the header's Day
+// Spend and Sprint Spend tiles before, ASS-216; the models box's until ASS-566): what the selected project
 // spent on the day on show and over its sprint (the viewed one) through that
 // day (shownAt) — its sprint's and backlog's dispatches, its ticket chats'
 // turns, its chat-screen turns (ASS-271) and its Hindsight's Claude calls
@@ -504,41 +478,65 @@ function spendLines(state, now) {
   const project = state.projects[state.project], sprint = viewedSprint(state), at = new Date(shownAt(state, now));
   const records = spendRecords([...flattenSprint(sprint ?? {}), ...(project?.backlog ?? [])], project?.collaborations, project?.chatSpend, project?.memorySpend ?? []);
   const dollars = usd => `$${usd.toFixed(2)}`;
-  return [`Day Spend: ${dollars(daySpend(records, at))}`, `Sprint Spend: ${dollars(sprintSpend(records, sprint?.start, at))}`];
+  return [{ text: `day spend: ${dollars(daySpend(records, at))}`, keep: true }, { text: `sprint spend: ${dollars(sprintSpend(records, sprint?.start, at))}`, keep: true }];
 }
 
-// The models box's billing lines (ASS-221), by the project's login as control
-// last read it (claude-usage's auth-method and org): an API-key login
-// (kindOfAccount 'anthropic') bills to its org's API key — "billing: API key
-// (<org>)", its org's spend (apiCostLines) or "API spend: unknown for <org>"
-// without a reading this month, then the account; any other its
-// subscription's usage (usageLines) with the project's org's spend, if any,
-// before the account. The spend is always the project's own (loadProjects'
-// apiCost), never another org's.
-function billingLines({ claudeUsage: usage, apiCost }, now) {
+// billingSegments(project, now, limited) — how the project is billed (ASS-221), by its login as control last read it
+// (claude-usage's auth-method and org): an API-key login (kindOfAccount 'anthropic') bills to its org's API key —
+// "billing: API key (<org>)", then its org's spend (apiCostLines) or "API spend: unknown for <org>" without a reading
+// this month; any other its subscription's usage (usageLines, red while `limited`) with the project's org's spend, if
+// any. The spend is always the project's own (loadProjects' apiCost), never another org's. (The account is the first
+// line's.)
+function billingSegments({ claudeUsage: usage, apiCost }, now, limited) {
   const spend = apiCostLines(apiCost, now);
-  if (kindOfAccount({ authMethod: usage?.['auth-method'] }) !== 'anthropic') return usageLines(usage, now).toSpliced(-1, 0, ...spend);
+  if (kindOfAccount({ authMethod: usage?.['auth-method'] }) !== 'anthropic') return [...usageLines(usage, now, limited ? red : undefined), ...spend];
   const org = usage.org ?? '—';
-  return [`billing: API key (${org})`, ...(spend.length ? spend : [`API spend: unknown for ${org}`]), `account: ${usage.email ?? '—'}`];
+  return [`billing: API key (${org})`, ...(spend.length ? spend : [`API spend: unknown for ${org}`])];
 }
 
-// The models box's last three lines (ASS-47, ASS-65), from the project's
-// claude-usage (control's last reading of its login): how much of the 5-hour
-// session, then of the 7-day week (`weekly`, null on a plan with no weekly
-// cap), is used, to the whole percent, and when each resets, counting down
-// (`… ago` once passed); and the account it is logged in to. A dash for what
-// it lacks.
-function usageLines(usage, now) {
-  const used = window => {
+// usageLines(usage, now) — ASS-47, ASS-65: from the project's claude-usage (control's last reading of its login): how
+// much of the 5-hour session, then of the 7-day week (`weekly`, null on a plan with no weekly cap), is used, to the
+// whole percent, and when each resets, counting down ("session: 21%, resets 1d 12h": compact, so the third line fits
+// 120 columns). A dash for what it lacks. ASS-571: a window whose reset has passed shows a gray dash — the percent is
+// of a window that is over, whatever it is now; a reading (`as-of`) more than USAGE_STALE_MS old adds its age in gray
+// ("as of 2d ago"), and a recorded failure (control could not read it, usage.js: `failure.why`) a red "usage
+// unreadable (<why, short>)" before it ("unreadable, read 2d ago" when the line is full) — so a reading that stopped
+// is never shown as if it were current.
+const USAGE_STALE_MS = 10 * 60e3;
+function usageLines(usage, now, shade = text => text) {
+  const used = (label, window, cut) => {
     const { percent, 'resets-at': at } = window ?? {};
     const left = Date.parse(at) - now;
-    const resets = Number.isNaN(left) ? '' : `, resets ${timestamp(new Date(at))} (${left >= 0 ? `in ${duration(left)}` : `${duration(-left)} ago`})`;
-    return percent == null ? '—' : `${Math.round(percent)}% used${resets}`;
+    if (percent == null) return { text: shade(`${label}: —`), cut };
+    if (left < 0) return { text: gray(`${label}: —`), cut };
+    const resets = Number.isNaN(left) ? '' : `, resets ${duration(left)}`;
+    return { text: shade(`${label}: ${Math.round(percent)}%${resets}`), short: shade(`${label}: ${Math.round(percent)}%`), cut };
   };
-  return [`session: ${used(usage?.session)}`, `weekly: ${used(usage?.weekly)}`, `account: ${usage?.email ?? '—'}`];
+  const age = now - Date.parse(usage?.['as-of']);
+  const old = age > USAGE_STALE_MS ? roughAge(age) : null;
+  const why = usage?.failure?.why;
+  // One segment, so a full line (120 columns) keeps both: the failure then its age, shortened together.
+  const note = why ? { text: red(`usage unreadable (${unreadable(why)})`) + (old ? gray(`, as of ${old} ago`) : ''), short: red('unreadable') + (old ? gray(`, read ${old} ago`) : ''), cut: 4 }
+    : old ? { text: gray(`as of ${old} ago`), cut: 4 } : null;
+  return [used('session', usage?.session, 3), used('weekly', usage?.weekly, 2), note].filter(Boolean);
 }
 
-// The models box's API line (ASS-153), from apiCost (control's last reading
+// roughAge(ms) — an age in its largest unit alone ("2d", "5h", "12m"): how old a reading is, not to the minute.
+const roughAge = ms => (ms >= 864e5 ? `${Math.floor(ms / 864e5)}d` : ms >= 36e5 ? `${Math.floor(ms / 36e5)}h` : `${Math.floor(ms / 6e4)}m`);
+
+// unreadable(why) — ASS-571: control's reason a usage reading failed (src/agents/usage.js, src/control/usage.js), as the
+// footer's few words: "token expired", "token refused", "no token", "endpoint unreachable", "endpoint unavailable";
+// anything else its first words.
+function unreadable(why) {
+  if (/expired/.test(why)) return 'token expired';
+  if (/refused|401/.test(why)) return 'token refused';
+  if (/no token/.test(why)) return 'no token';
+  if (/unreachable/.test(why)) return 'endpoint unreachable';
+  if (/unavailable/.test(why)) return 'endpoint unavailable';
+  return ellipsis(why, 24);
+}
+
+// The API line (ASS-153), from apiCost (control's last reading
 // of the project's API organization's spend, with its budget; see
 // loadProjects' apiCost): "API $12.34 this
 // month", or with a budget "API $12.34 / $50 this month", gold from 80% of
@@ -765,4 +763,22 @@ function besideRight(lines, tiles, columns) {
   if (lines.length < 2 || !right) return lines;
   const width = visible(right[0]);
   return lines.map((line, i) => (right[i - 1] == null ? line : line + ' '.repeat(columns - visible(line) - width) + right[i - 1]));
+}
+
+// ASS-526: the loop counter in the screen's bottom-right corner — the loops the
+// selected project's control has finished since it started (its loop-count.json,
+// src/control/loop-count.js; state.loopCounts by project id, main.js reading
+// them each second), modulo 100: 0 before its first loop, 99 straight to 0.
+// 0 for a project whose control has written none yet; a control that is down
+// leaves its file, so its last value stays (its CONTROL DOWN box says why).
+export const loopCount = state => {
+  const loops = state.loopCounts?.[state.projects?.[state.project]?.id];
+  return Number.isInteger(loops) && loops >= 0 ? loops % 100 : 0;
+};
+// withLoopCount(line, state, columns) — the bottom line with the counter at its
+// right end, right-aligned in two columns so it never jumps; the line itself
+// cut short should it reach that far. No line of its own: render passes the last.
+export function withLoopCount(line, state, columns) {
+  const count = String(loopCount(state)).padStart(2), room = Math.max(0, columns - count.length - 1);
+  return `${pad(clip(line, room), room)}\x1b[0m ${gray(count)}`;
 }

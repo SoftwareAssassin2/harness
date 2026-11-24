@@ -6,6 +6,7 @@ import assert from 'node:assert/strict';
 import { runCli, runScript, scriptSucceeds, SCRIPT_CHECK_TIMEOUT_MS, SLOW_CHECK_MS } from '../../src/control/cli.js';
 import { fixture } from '../agent-cli/harness-fixture.js';
 import { fakeVm } from '../support/fake-vm.js';
+import { within } from '../support/until.js';
 
 const ROOT = new URL('../..', import.meta.url).pathname.replace(/\/$/, '');
 const context = f => { const lines = []; return { ctx: { root: ROOT, env: f.env, log: (phase, text) => lines.push(`${phase} ${text}`) }, lines }; };
@@ -66,18 +67,21 @@ test('given a VM, scriptSucceeds runs a non-agent.sh command in it, but an agent
 
 test('scriptSucceeds never waits on a VM command that calls back to this process (the forwarder control serves): a VM step\'s agent.sh check completes (ASS-137)', async () => {
   const f = fixture(), vm = fakeVm(f.env);
-  const server = createServer((req, res) => res.end('ok'));
+  let calledBack = 0;
+  const server = createServer((req, res) => { calledBack++; res.end('ok'); });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   // The VM's agent.sh, as the real one: a call to the host's forwarder. Were it
   // run, it would call back to this process (blocked there before ASS-493); curl's
   // --max-time makes that a failure (false, and slow) rather than a hang.
   vm.inVm('agent.sh', `curl -sf --max-time 5 http://127.0.0.1:${server.address().port}/ >/dev/null`);
   const { ctx } = context({ env: vm.env });
-  const started = Date.now();
   try {
-    assert.equal(await scriptSucceeds(ctx, ['./agent.sh', '--help'], 'ass-137-a'), true);
-    assert.ok(Date.now() - started < 4000, `took ${Date.now() - started}ms`);
+    // ASS-545: the events themselves — the check ran on the Mac (no VM call) and nothing called back to this
+    // process — in place of a 4 s limit that ./agent.sh --help outlasted on a loaded Mac. within() is a hang
+    // guard only (LOADED_MS, 90 s: well above the check's normal second or two).
+    assert.equal(await within(scriptSucceeds(ctx, ['./agent.sh', '--help'], 'ass-137-a')), true);
     assert.deepEqual(vm.calls(), []);
+    assert.equal(calledBack, 0, 'the VM\'s agent.sh never ran, so nothing called back');
   } finally { server.close(); }
 });
 
@@ -87,11 +91,12 @@ test('ASS-493 AC4: a check is limited to SCRIPT_CHECK_TIMEOUT_MS (10 min), kille
   const { ctx, lines } = context(f);
   ctx.slowCheckMs = 100;
   assert.equal(await scriptSucceeds(ctx, ['sh', '-c', 'sleep 0.3'], undefined, 'ABC-3 A'), true);
-  assert.match(lines.at(-1), /^script sh -c "sleep 0.3" \(ABC-3 A\): exited 0 after 0\.\ds$/);
+  // ASS-545: the duration's figure itself is the machine's (a loaded Mac takes over a second for a 0.3 s sleep).
+  assert.match(lines.at(-1), /^script sh -c "sleep 0.3" \(ABC-3 A\): exited 0 after \d+\.\ds$/);
   ctx.checkTimeoutMs = 200;
-  const started = Date.now();
-  assert.equal(await scriptSucceeds(ctx, ['sh', '-c', 'sleep 30'], undefined, 'ABC-3 A'), false);
-  assert.ok(Date.now() - started < 10_000, `took ${Date.now() - started}ms`);
-  assert.ok(lines.includes('error script-succeeds check sh -c "sleep 30" (ABC-3 A) still running after 0.2s: killed, counted as not succeeded'), lines.join('\n'));
-  assert.match(lines.at(-1), /^script sh -c "sleep 30" \(ABC-3 A\): killed after 0\.\ds$/);
+  // ASS-545: a check left to run would sleep 600 s; within() fails it at LOADED_MS (90 s), a hang guard only, far
+  // above a killed check's fraction of a second however loaded the Mac — the kill itself is shown by the lines below.
+  assert.equal(await within(scriptSucceeds(ctx, ['sh', '-c', 'sleep 600'], undefined, 'ABC-3 A')), false);
+  assert.ok(lines.includes('error script-succeeds check sh -c "sleep 600" (ABC-3 A) still running after 0.2s: killed, counted as not succeeded'), lines.join('\n'));
+  assert.match(lines.at(-1), /^script sh -c "sleep 600" \(ABC-3 A\): killed after \d+\.\ds$/);
 });

@@ -69,6 +69,34 @@ wsv_set_up='.setup.ok == true and ((.setup["checked-at"] // "") >= (.["connected
 
 wsv_root() { echo "$1/harness"; }
 
+# ASS-529: a machine takes several of its project's tickets at once, each step in a folder of its own there — a slot.
+# Slot 0 is the shared root, <home>/harness, its holder the live data's `holder` (as before); slot n (1, 2, …) is
+# <home>/harness/slots/<n>, its holder `holders["<n>"]`. Each slot's folder stands in for a VM's root as the shared
+# root does (repos/, ticket/, mnt/, run/ — its repositories cloned once into it, cloned with the shared root's as a
+# reference when there, and kept clean on master between steps), so one ticket's steps never touch another's
+# checkout; and its machine, <kind>:<project>:<id>:<folder>, is its own, so its forwarder binding is too. The slot's
+# slot.env, sourced by every session there (machine-workstation.bash wsm_enter), depends on the project's
+# dev-environments ticket-isolation (wsv_isolation). one-at-a-time, the default: nothing is added to its sessions
+# (its test and CI steps run one at a time per machine, control's rule) — slot 0 has no slot.env, exactly as before
+# ASS-529; slot n's names only AGENT_TOKEN_FILE (its own forwarder token, agent-token-<n> in the runtime folder; slot
+# 0's stays agent-token). separate (opt-in): every slot's names HARNESS_TICKET, HARNESS_VARIATION, HARNESS_SLOT,
+# HARNESS_PORT_OFFSET (100 × the slot: the project's compose files and test scripts add it to the ports they bind),
+# COMPOSE_PROJECT_NAME harness-slot<n> (its containers, volumes, networks and so its databases named apart) and
+# AGENT_TOKEN_FILE. The credentials in the runtime folder
+# are the project's and shared (machines are never shared between projects); a step's end removes them only when no
+# other slot is held.
+#   $wsv_holders — a jq filter: a live data entry → its holders, [{ …, slot }], slot 0 first.
+# shellcheck disable=SC2016
+wsv_holders='[(if .holder then [.holder + { slot: (.holder.slot // 0) }] else [] end)[], ((.holders // {}) | to_entries | sort_by(.key | tonumber) | map(.value + { slot: (.value.slot // (.key | tonumber)) }))[]]'
+# wsv_isolation <project> — its dev-environments ticket-isolation: one-at-a-time (the default, unset) or separate.
+wsv_isolation() { jq -r '."dev-environments"."ticket-isolation" // "one-at-a-time"' "$projects/$1/project.json"; }
+# wsv_slot_root <home> <slot> — the slot's folder.
+wsv_slot_root() { if [[ "$2" == 0 ]]; then wsv_root "$1"; else echo "$(wsv_root "$1")/slots/$2"; fi; }
+# wsv_token_name <slot> — the slot's forwarder token file in the runtime folder.
+wsv_token_name() { if [[ "$1" == 0 ]]; then echo agent-token; else echo "agent-token-$1"; fi; }
+# wsv_on_holder <filter> — a jq filter (given $f, a slot's folder): <filter> applied to the holder of that folder.
+wsv_on_holder() { echo "if (.holder.folder // \"\") == \$f then .holder |= ($1) else .holders = ((.holders // {}) | with_entries(if .value.folder == \$f then .value |= ($1) else . end)) end"; }
+
 wsv_pool_lock() { lock_on 7 "$projects/$2/workstations-pool.lock" "$1" "${VM_LOCK_TIMEOUT:-600}"; }
 
 # wsv_busy <project> <key> <variation> — an assignment is on the variation: an agent of its step at work (or about to be).
@@ -132,34 +160,69 @@ wsv_set_on() {
         | if ((.vm.kind // "") | IN("workstation", "cloud-vm")) and .vm.name == $id then .vm.folder = $f else . end end)' >/dev/null
 }
 
+# ASS-553: a ticket's worktree on a workstation or cloud VM (run targets workstation-worktree, cloud-vm-worktree):
+# workstation:claim --workstation <id> --worktree ($wsv_worktree=1) takes a slot as above — a holder in `holders`, its
+# number (never 0: the shared root stays the plain steps') naming its forwarder token and slot.env — but its folder is
+# the variation's own, <home>/harness/worktrees/<KEY>[.<variation>] (wsv_worktree_root), kept between its steps and
+# never given to another ticket: its checkout (each repository cloned once, the shared root's as a reference) and what
+# its steps leave ignored there (dependencies, build caches) stay its own. The variation records it as one of its
+# `remote-worktrees` [{ name, project, kind, folder, since }], which workstation:remove-worktree removes once the ticket
+# is done (control: run-target-places.js removeDoneWorktrees). A step's end (wsv_release) ends it as any slot's: its
+# work committed and pushed, the folder kept.
+#   wsv_worktree_root <home> <key> <variation> — the variation's worktree folder on the machine.
+wsv_worktree_root() { if [[ "$3" == A ]]; then echo "$(wsv_root "$1")/worktrees/$2"; else echo "$(wsv_root "$1")/worktrees/$2.$3"; fi; }
+# $wsv_worktree_folder — a regex: a folder that is a worktree's (never removed by a step's end, nor taken as ASS-435's).
+wsv_worktree_folder='/harness/worktrees/[A-Za-z0-9][A-Za-z0-9._-]*$'
+
+# wsv_note_worktree <project> <key> <variation> <id> <folder> <kind> — the variation's remote-worktrees gets it (once).
+wsv_note_worktree() {
+  update_whole_ticket vm:workstation "$1" "$2" --arg name "$3" --arg id "$4" --arg f "$5" --arg p "$1" --arg k "$6" '
+    .variations |= map(if .name != $name or .["is-deleted"] then .
+      else .["remote-worktrees"] = (((.["remote-worktrees"] // []) | map(select(.name != $id or .folder != $f))) + [{ name: $id, project: $p, kind: $k, folder: $f, since: $at }]) end)' >/dev/null
+}
+
 wsv_claim() {
-  local project="$1" key="$2" variation="$3" only="${4:-}" ws id hk hv home w why=() chosen="" machine root summary kind rc=0 remote=workstation
+  local project="$1" key="$2" variation="$3" only="${4:-}" ws id entry holders home w why=() chosen="" machine root summary kind rc=0 remote=workstation slot=0
   wsv_pool_lock workstation:claim "$project"
   while IFS= read -r ws; do
     id="$(jq -r .id <<< "$ws")"
     [[ -z "$only" || "$id" == "$only" ]] || continue
-    IFS=$'\t' read -r hk hv < <(workstation_entry "$project" "$id" | jq -r '[.holder.ticket // "", .holder.variation // ""] | @tsv')
-    if [[ -n "$hk" ]]; then why+=("$id: held by $hk $hv"); continue; fi
+    entry="$(workstation_entry "$project" "$id")"
+    holders="$(jq -r "$wsv_holders"' | map("\(.ticket) \(.variation)") | join(", ")' <<< "$entry")"
+    if jq -e --arg k "$key" --arg v "$variation" "$wsv_holders"' | any(.ticket == $k and .variation == $v)' <<< "$entry" >/dev/null; then why+=("$id: $key $variation holds a step there already"); continue; fi
+    # ASS-529: --workstation (control's: the variation's seat is on it, its seats from its memory and CPU) takes a free
+    # slot beside the other tickets' steps there; without it, as before, only a machine nothing holds.
+    if [[ -n "$holders" && -z "$only" ]]; then why+=("$id: held by $holders"); continue; fi
     w="$(wsv_usable "$project" "$id")"
     [[ -z "$w" ]] || { why+=("$id: $w"); continue; }
-    home="$(workstation_entry "$project" "$id" | jq -r '.setup.home')"
-    root="$(wsv_root "$home")" chosen="$id" remote="$(workstation_kind "$ws")"
-    workstation_record "$project" "$id" --arg k "$key" --arg v "$variation" --arg f "$root" '.holder = { ticket: $k, variation: $v, folder: $f, since: $at }'
+    home="$(jq -r '.setup.home' <<< "$entry")"
+    slot="$(jq -r --argjson from "$([[ -n "${wsv_worktree:-}" ]] && echo 1 || echo 0)" "$wsv_holders"' | map(.slot) as $taken | first(range($from; 1000) | select(. as $n | $taken | any(.[]; . == $n) | not))' <<< "$entry")"
+    root="$(wsv_slot_root "$home" "$slot")" chosen="$id" remote="$(workstation_kind "$ws")"
+    [[ -z "${wsv_worktree:-}" ]] || root="$(wsv_worktree_root "$home" "$key" "$variation")"
+    if [[ "$slot" == 0 ]]; then workstation_record "$project" "$id" --arg k "$key" --arg v "$variation" --arg f "$root" '.holder = { ticket: $k, variation: $v, folder: $f, since: $at }'
+    else workstation_record "$project" "$id" --arg k "$key" --arg v "$variation" --arg f "$root" --argjson n "$slot" --arg wt "${wsv_worktree:-}" '.holders[($n | tostring)] = ({ ticket: $k, variation: $v, folder: $f, slot: $n, since: $at } + (if $wt == "" then {} else { worktree: true } end))'; fi
     break
   done < <(dev_environments_workstations workstation:claim "$project")
   exec 7>&-
   if [[ -z "$chosen" ]]; then wsv_why="no workstation of $project's is free: $(printf '%s; ' "${why[@]+"${why[@]}"}" | sed 's/; $//')"; return 4; fi
   id="$chosen" machine="$remote:$project:$chosen:$root"
-  echo "workstation:claim: $key $variation claimed $project's $remote $id for a step" >&2
-  # The shared root, standing in for a VM's: repos, the ticket's copy (and mnt/ticket to it), run/harness the runtime folder.
-  if wsv_set_on "$project" "$key" "$variation" "$id" "$root" "$remote" && workstation_ssh "$project" "$id" bash -c 'set -e; . "$HOME/harness/env"; f="$1"
-      mkdir -p "$f/repos" "$f/mnt" "$f/run" "$f/ticket"; ln -sfn ../ticket "$f/mnt/ticket"; ln -sfn "$HARNESS_RUNTIME" "$f/run/harness"' harness-ws "$root" </dev/null \
+  if [[ -n "${wsv_worktree:-}" ]]; then echo "workstation:claim: $key $variation claimed $project's $remote $id for a step in its worktree $root (its own, kept between its steps)" >&2
+  else echo "workstation:claim: $key $variation claimed $project's $remote $id for a step$([[ "$slot" == 0 ]] || echo " (its folder $root, beside the other tickets' steps there)")" >&2; fi
+  # The slot's folder, standing in for a VM's: repos, the ticket's copy (and mnt/ticket to it), run/harness the runtime
+  # folder; its slot.env (ASS-529).
+  if wsv_set_on "$project" "$key" "$variation" "$id" "$root" "$remote" && workstation_ssh "$project" "$id" bash -c 'set -e; . "$HOME/harness/env"; f="$1" n="$2" k="$3" v="$4" t="$5" i="$6"
+      mkdir -p "$f/repos" "$f/mnt" "$f/run" "$f/ticket"; ln -sfn ../ticket "$f/mnt/ticket"; ln -sfn "$HARNESS_RUNTIME" "$f/run/harness"
+      if [ "$i" = separate ]; then printf "%s\n" "HARNESS_TICKET=$k" "HARNESS_VARIATION=$v" "HARNESS_SLOT=$n" "HARNESS_PORT_OFFSET=$((n * 100))" "COMPOSE_PROJECT_NAME=harness-slot$n" "AGENT_TOKEN_FILE=$HARNESS_RUNTIME/$t" > "$f/slot.env"
+      elif [ "$n" != 0 ]; then printf "%s\n" "AGENT_TOKEN_FILE=$HARNESS_RUNTIME/$t" > "$f/slot.env"
+      else rm -f "$f/slot.env"; fi' \
+      harness-ws "$root" "$slot" "$key" "$variation" "$(wsv_token_name "$slot")" "$(wsv_isolation "$project")" </dev/null \
     && { kind="$(wsv_start "$project" "$key" "$variation" "$machine" | jq -r '.["credential-kind"] // ""')" || rc=$?; [[ $rc -eq 0 ]]; } \
     && summary="$(wsv_trees workstation:claim "$machine" start "$project" "$key" "$variation")"; then
-    jq -c --arg n "$id" --arg m "$machine" --arg k "$kind" '{ name: $n, machine: $m, "credential-kind": (if $k == "" then null else $k end) } + .' <<< "$summary"
+    [[ -z "${wsv_worktree:-}" ]] || wsv_note_worktree "$project" "$key" "$variation" "$id" "$root" "$remote"
+    jq -c --arg n "$id" --arg m "$machine" --arg k "$kind" --arg f "$root" --argjson s "$slot" --arg wt "${wsv_worktree:-}" '{ name: $n, machine: $m, "credential-kind": (if $k == "" then null else $k end), slot: $s, folder: $f } + (if $wt == "" then {} else { worktree: true } end) + .' <<< "$summary"
     return 0
   fi
-  wsv_release workstation:claim "$project" "$id" "its claim failed" >/dev/null || true
+  wsv_slot="$slot" wsv_release workstation:claim "$project" "$id" "its claim failed" >/dev/null || true
   # ASS-473 AC2: an image missing there fails the claim apart (5), its last line naming each with its error, for
   # control's Health; the workstation given back meanwhile, as for any failed claim.
   if [[ $rc -eq 5 ]]; then
@@ -171,11 +234,11 @@ wsv_claim() {
 }
 
 wsv_start() {
-  local project="$1" key="$2" variation="$3" machine="$4" entry kind token binding boot registry
+  local project="$1" key="$2" variation="$3" machine="$4" entry kind token binding boot registry slot
   wsm_parts "${machine#*:}" || exit 1
   [[ "$wsm_project" == "$project" ]] || { echo "vm:start: $key $variation's workstation machine is $wsm_project's, not $project's" >&2; return 1; }
-  workstation_entry "$project" "$wsm_id" | jq -e --arg k "$key" --arg v "$variation" '.holder.ticket == $k and .holder.variation == $v' >/dev/null \
-    || { echo "vm:start: $project's workstation $wsm_id is not held by $key $variation (control claims it for each of its steps: workstation:claim)" >&2; return 1; }
+  slot="$(workstation_entry "$project" "$wsm_id" | jq -r --arg k "$key" --arg v "$variation" --arg f "$wsm_folder" "$wsv_holders"' | map(select(.ticket == $k and .variation == $v and .folder == $f)) | first | .slot // empty')"
+  [[ -n "$slot" ]] || { echo "vm:start: $project's workstation $wsm_id is not held by $key $variation (control claims it for each of its steps: workstation:claim)" >&2; return 1; }
   wsv_ready "$project" "$wsm_id" || { echo "vm:start: $wsv_why" >&2; return 1; }
   workstation_ssh "$wsm_project" "$wsm_id" bash -c '. "$HOME/harness/env"; mkdir -p "$1/repos" "$1/run" && ln -sfn "$HARNESS_RUNTIME" "$1/run/harness"' harness-ws "$wsm_folder" </dev/null \
     || { echo "vm:start: could not link $wsm_folder/run/harness on workstation $wsm_id" >&2; return 1; }
@@ -199,7 +262,7 @@ wsv_start() {
     '{ project: $p, ticket: $k, variation: $v, "ticket-folder": $f, "token-sha256": $h, "issued-at": $at, machine: $m }')"
   mkdir -p "$(dirname "$tokens_file")"
   (umask 077; update_json --create "$tokens_file" --arg vm "$machine" --argjson b "$binding" '.[$vm] = $b')
-  printf '%s\n' "$token" | workstation_ssh "$wsm_project" "$wsm_id" bash -c 'set -e; umask 077; . "$HOME/harness/env"; IFS= read -r t; printf "%s\n" "$t" > "$HARNESS_RUNTIME/agent-token"' \
+  printf '%s\n' "$token" | workstation_ssh "$wsm_project" "$wsm_id" bash -c 'set -e; umask 077; . "$HOME/harness/env"; IFS= read -r t; printf "%s\n" "$t" > "$HARNESS_RUNTIME/$1"' harness-ws "$(wsv_token_name "$slot")" \
     || { echo "vm:start: could not give workstation $wsm_id its forwarder token" >&2; return 1; }
 
   wsm_sync_ticket "${machine#*:}" "$(ticket_folder vm:start "$project" "$key")" >/dev/null \
@@ -219,8 +282,8 @@ wsv_start() {
     else echo "vm:start: the images could not be pulled on workstation $wsm_id; they are tried again at its next step's claim" >&2; fi
   fi
 
-  workstation_record "$project" "$wsm_id" --arg k "$kind" \
-    '.holder += { "started-at": $at, "boot-id": (.setup["boot-id"] // null), "credential-kind": (if $k == "" then null else $k end) }'
+  workstation_record "$project" "$wsm_id" --arg k "$kind" --arg f "$wsm_folder" \
+    "(.setup[\"boot-id\"] // null) as \$boot | $(wsv_on_holder '. + { "started-at": $at, "boot-id": $boot, "credential-kind": (if $k == "" then null else $k end) }')"
   jq -nc --arg n "$wsm_id" --arg k "$kind" '{ name: $n, ip: null, "credential-kind": (if $k == "" then null else $k end) }'
 }
 
@@ -319,14 +382,16 @@ wsv_trees() {
 }
 
 wsv_release() {
-  local command="$1" project="$2" id="$3" why="${4:-}" holder key variation folder machine old="" summary rc=0 docker_out
-  holder="$(workstation_entry "$project" "$id" | jq -c '.holder // empty')"
+  local command="$1" project="$2" id="$3" why="${4:-}" holder key variation folder machine old="" summary rc=0 docker_out slot="${wsv_slot:-0}" others
+  # ASS-529: the holder of slot $wsv_slot (0, the shared root, by default); the others' steps there go on untouched.
+  holder="$(workstation_entry "$project" "$id" | jq -c --argjson n "$slot" "$wsv_holders"' | map(select(.slot == $n)) | first // empty')"
   [[ -n "$holder" ]] || { jq -nc '{ released: null }'; return 0; }
+  others="$(workstation_entry "$project" "$id" | jq -r --argjson n "$slot" "$wsv_holders"' | map(select(.slot != $n)) | length')"
   IFS=$'\t' read -r key variation folder < <(jq -r '[.ticket, .variation, (.folder // "")] | @tsv' <<< "$holder")
   summary='{"pushed":[],"push-failed":[],"committed":[],"discarded":[],"master-reset":[],"unclean":[],"set-aside":[]}'
   if [[ -n "$folder" ]]; then
     [[ "$folder" == /*/harness || "$folder" == /*/harness/* ]] && [[ "$folder" != *:* ]] || { echo "$command: $project's workstation $id records a folder outside ~/harness ($folder); not touched" >&2; return 1; }
-    [[ "$folder" == */harness ]] || old=old   # ASS-435's folder of its own (~/harness/<KEY>-<variation>): the migration (below)
+    [[ "$folder" == */harness || "$folder" =~ /harness/slots/[0-9]+$ || "$folder" =~ $wsv_worktree_folder ]] || old=old   # ASS-435's folder of its own (~/harness/<KEY>-<variation>): the migration (below); ASS-529's slots and ASS-553's worktrees are not
     workstation_alive "$project" "$id" || { echo "$command: $project's workstation $id has no open connection: $key $variation's step there cannot be ended yet" >&2; return 1; }
     machine="$(workstation_kind "$(dev_environments_workstation "$command" "$project" "$id" 2>/dev/null || echo '{}')"):$project:$id:$folder"   # ASS-481: cloud-vm:… for a cloud VM's
     # Its working trees (AC3, AC9, AC10): a completed step's leftovers committed on its branch ($wsv_completed, the caller's),
@@ -341,9 +406,9 @@ wsv_release() {
     # The step's containers — working in the shared repositories or the ticket's copy (the variation's folder, for one
     # from before ASS-468), or mounting anything there — their anonymous volumes, and their compose projects' named
     # volumes and networks.
-    docker_out="$(workstation_ssh "$project" "$id" bash -s "$folder" "$old" <<'EOF' 7>&-
+    docker_out="$(workstation_ssh "$project" "$id" bash -s "$folder" "$old" "$(wsv_token_name "$slot")" "$others" <<'EOF' 7>&-
 set -uo pipefail
-f="$1" old="$2"
+f="$1" old="$2" token="${3:-agent-token}" others="${4:-0}"
 [ -r "$HOME/harness/env" ] && . "$HOME/harness/env"
 if [ -n "$old" ]; then under=("$f"); else under=("$f/repos" "$f/ticket"); fi
 if command -v docker >/dev/null 2>&1 && ids="$(docker ps -aq 2>/dev/null)" && [ -n "$ids" ]; then
@@ -373,16 +438,20 @@ if [ -n "$old" ]; then
 else
   [ ! -e "$f/ticket" ] || { chmod -R u+w "$f/ticket" 2>/dev/null; rm -rf "$f/ticket"; mkdir -p "$f/ticket"; }
 fi
-# The credentials and forwarder token vm:start and vm:credentials put in the runtime folder; setup's agent-url stays.
+# The forwarder token vm:start put in the runtime folder for this slot (ASS-529: each slot its own), and the
+# credentials vm:credentials put there — the project's, shared by every slot, so only once no other slot is held;
+# setup's agent-url stays.
 R="${HARNESS_RUNTIME-}"
-[ -z "$R" ] || rm -rf "$R/env" "$R/gitconfig" "$R/npmrc" "$R/agent-token" "$R/gh" "$R/glab"
+[ -z "$R" ] || rm -f "$R/$token"
+[ -z "$R" ] || [ "$others" -gt 0 ] || rm -rf "$R/env" "$R/gitconfig" "$R/npmrc" "$R/gh" "$R/glab"
 EOF
 )" || { echo "$command: could not clean up after $key $variation's step on $project's workstation $id" >&2; return 1; }
     [[ -z "$docker_out" ]] || sed "s/^/$command: $key $variation: /" <<< "$docker_out" >&2
     [[ ! -f "$tokens_file" ]] || update_json "$tokens_file" --arg n "$machine" 'del(.[$n])'
   fi
   wsv_set_on "$project" "$key" "$variation" "$id" "" 2>/dev/null || true
-  workstation_record "$project" "$id" 'del(.holder)'
+  if [[ "$slot" == 0 ]]; then workstation_record "$project" "$id" 'del(.holder)'
+  else workstation_record "$project" "$id" --arg n "$slot" 'del(.holders[$n]) | if (.holders // {}) == {} then del(.holders) else . end'; fi
   echo "$command: $project's workstation $id freed: $key $variation's step ended there${old:+, its folder $folder removed (a holder from before ASS-468)}${why:+ ($why)}" >&2
   jq -c --arg k "$key" --arg v "$variation" --arg f "$folder" --arg old "$old" '{ released: { ticket: $k, variation: $v, folder: $f, migrated: ($old != "") } } + .' <<< "$summary"
 }

@@ -1,0 +1,22 @@
+# ASS-532 spike: a microVM WorkerPool for harness ticket sandboxes, sized like a
+# harness Lima VM (4 CPU / 4 GiB), plus 1 GiB for the microVM VMM and virtiofsd. __WORKER_IMAGE__ is the ateworker-microvm
+# image the install built (copy it from the counter-microvm demo's pool).
+apiVersion: v1
+kind: Namespace
+metadata: { name: harness-tickets }
+---
+apiVersion: ate.dev/v1
+kind: WorkerPool
+metadata:
+  name: harness-microvm
+  namespace: harness-tickets
+  labels: { workload: harness-microvm }
+spec:
+  replicas: __REPLICAS__
+  workerImage: __WORKER_IMAGE__
+  sandboxClasses:
+  - name: microvm
+  template:
+    resources:
+      limits: { cpu: "4", memory: 5Gi }
+      requests: { cpu: 500m, memory: 5Gi }

@@ -18,9 +18,10 @@ import { join } from 'node:path';
 import { stepOf, nextState, isHumanStep, isDoneStep } from '../../src/control/engine.js';
 import { validateStateEngine } from '../../src/workflow/validate.js';
 import { engineDir, EXAMPLE_ENGINES } from '../support/engine-walk.js';
+import { readEngine } from '../../src/workflow/engine-file.js';
 
 const ROOT = join(import.meta.dirname, '..', '..');
-const engine = name => JSON.parse(readFileSync(join(engineDir(name), 'state-engine.json'), 'utf8'));
+const engine = name => readEngine(join(engineDir(name), 'workflow.yaml'));
 const e = engine('example-github-backlog-refinement');
 const accepted = { questions: () => [{ status: 'Answer Accepted' }] };
 const next = (id, facts, changes) => nextState(stepOf(e, id), e, { ...accepted, ...facts }, changes);

@@ -13,12 +13,12 @@ import { promisify } from 'node:util';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fakeVm } from '../support/fake-vm.js';
+import { until } from '../support/until.js';
 
 const run = promisify(execFile);
 const MACHINE = join(import.meta.dirname, '..', '..', 'src', 'agent-cli', 'machine.bash');
 // bash(script, env) — the script run with machine.bash sourced: { code, out, err }.
 const bash = (script, env) => run('bash', ['-c', `source "${MACHINE}" && ${script}`], { env }).then(r => ({ code: 0, out: r.stdout, err: r.stderr }), e => ({ code: e.code, out: e.stdout, err: e.stderr }));
-const until = async (check, ms = 10000) => { for (const end = Date.now() + ms; Date.now() < end; await new Promise(r => setTimeout(r, 50))) if (check()) return true; return check(); };
 
 function lima() {
   const v = fakeVm({ ...process.env, LIMA_HOME: mkdtempSync(join(tmpdir(), 'lima-home-')) });
@@ -41,7 +41,7 @@ test('machine_backend: lima for a Lima name; a kind with no backend fails, namin
   assert.deepEqual(await bash('machine_backend workstation:p:ws-1:/home/me/harness/ASS-1-A', process.env), { code: 0, out: 'workstation\n', err: '' });   // ASS-435
   const refused = await bash('machine_run other:box-1 -- true', process.env);
   assert.equal(refused.code, 1);
-  assert.equal(refused.err, "box-1: no machine backend for its kind 'other' (there is: lima workstation cloud-vm)\n");
+  assert.equal(refused.err, "box-1: no machine backend for its kind 'other' (there is: lima workstation cloud-vm substrate)\n");
 });
 
 test('machine_run runs the command in the VM, in its workdir, its stdin, stdout and exit code passed through (limactl shell)', async () => {
@@ -52,15 +52,30 @@ test('machine_run runs the command in the VM, in its workdir, its stdin, stdout 
   assert.deepEqual(v.calls(), [{ vm: 'ass-74-a', workdir: '/repos/', argv: ['bash', '-c', 'read -r l; echo "$l in $(pwd)"; exit 4'] }, { vm: 'ass-74-a', workdir: null, argv: ['true'] }]);
 });
 
+// ASS-550: waits for events only — the command registered in the VM, the process there gone — under until()'s hang
+// guard (it was a 10-second limit, and calls() could read fake-limactl's log half-written); the command, unstopped,
+// would run 600 s, far past the guard. It checks the process in the VM itself (its pid, which it records): the local
+// machine_run ends either way here, as the fake limactl's own command line carries the marker too.
 test('machine_run --marker runs it under a marker of its own, and machine_stop_marked ends it in the VM, which a local signal never reaches', async () => {
-  const v = lima(), marker = `harness-step-test-${process.pid}-${Date.now()}`;
-  const child = spawn('bash', ['-c', `source "${MACHINE}" && machine_run --marker ${marker} ass-74-a -- sleep 60`], { env: v.env, stdio: 'ignore' });
-  assert.ok(await until(() => v.calls().length === 1));
-  assert.deepEqual(v.calls()[0].argv.slice(0, 2), ['bash', '-c']);
-  assert.deepEqual(v.calls()[0].argv.slice(3), [marker, 'sleep', '60']);
-  assert.equal((await bash(`machine_stop_marked ass-74-a ${marker}`, v.env)).code, 0);
-  assert.deepEqual(v.calls()[1], { vm: 'ass-74-a', workdir: null, argv: ['pkill', '-TERM', '-f', `[h]${marker.slice(1)}`] });
-  assert.ok(await until(() => child.exitCode !== null || child.signalCode !== null), 'the process in the VM ends');
+  const v = lima(), marker = `harness-step-test-${process.pid}-${Date.now()}`, pidFile = join(v.dir, 'in-vm.pid');
+  const command = ['bash', '-c', `echo $$ > ${pidFile}; exec sleep 600`];
+  const child = spawn('bash', ['-c', `source "${MACHINE}" && machine_run --marker ${marker} ass-74-a -- "$@"`, 'machine-run', ...command], { env: v.env, stdio: 'ignore' });
+  const alive = pid => { try { process.kill(pid, 0); return true; } catch { return false; } };
+  let pid;
+  try {
+    await until(() => v.calls().length === 1 && existsSync(pidFile) && readFileSync(pidFile, 'utf8').trim());
+    pid = Number(readFileSync(pidFile, 'utf8'));
+    assert.deepEqual(v.calls()[0].argv.slice(0, 2), ['bash', '-c']);
+    assert.deepEqual(v.calls()[0].argv.slice(3), [marker, ...command]);
+    assert.equal((await bash(`machine_stop_marked ass-74-a ${marker}`, v.env)).code, 0);
+    assert.deepEqual(v.calls()[1], { vm: 'ass-74-a', workdir: null, argv: ['pkill', '-TERM', '-f', `[h]${marker.slice(1)}`] });
+    await until(() => !alive(pid));   // the process in the VM ends
+    await until(() => child.exitCode !== null || child.signalCode !== null);
+  } finally {
+    // A failing run's own processes: the wrapper by its unique marker, and the command by the pid it recorded.
+    await bash(`pkill -KILL -f '[h]${marker.slice(1)}'; true`, process.env);
+    if (pid && alive(pid)) process.kill(pid, 'SIGKILL');
+  }
 });
 
 test('machine_run --timeout ends it past its seconds, exit 124 as timeout(1)\'s; within them, the command\'s own exit', async () => {

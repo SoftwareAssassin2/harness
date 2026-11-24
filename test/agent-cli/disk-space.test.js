@@ -58,8 +58,8 @@ test('ASS-288 AC1/AC6: harness:check-disk-space reads df for LIMA_HOME\'s volume
   const ok = await s.check();
   assert.match(ok['as-of'], STAMP);
   assert.deepEqual({ ...ok, 'as-of': null }, {
-    'as-of': null, level: 'ok', 'free-bytes': 1e9 * 1024, 'warn-bytes': 100000, 'hold-bytes': 30000, 'held-since': null,
-    volumes: [{ mount: '/Volumes/Big', 'free-bytes': 1e9 * 1024, paths: [s.limaHome, s.f.dir] }],
+    'as-of': null, level: 'ok', 'free-bytes': 1e9 * 1024, 'total-bytes': 999999999 * 1024, 'warn-bytes': 100000, 'hold-bytes': 30000, 'held-since': null,   // ASS-557: total-bytes, the volume's size
+    volumes: [{ mount: '/Volumes/Big', 'free-bytes': 1e9 * 1024, 'total-bytes': 999999999 * 1024, paths: [s.limaHome, s.f.dir] }],
   });
   assert.deepEqual(s.file(), ok, 'recorded as printed');
 
@@ -100,9 +100,10 @@ test('ASS-288 AC1: two volumes are each read, and the less free decides; the dat
   assert.equal(out.level, 'hold');
   assert.equal(out['free-bytes'], 25 * 1024);
   assert.deepEqual(out.volumes, [
-    { mount: '/Volumes/Big', 'free-bytes': 1e9 * 1024, paths: [s.limaHome] },
-    { mount: '/Volumes/Data', 'free-bytes': 25 * 1024, paths: [s.f.dir] },
+    { mount: '/Volumes/Big', 'free-bytes': 1e9 * 1024, 'total-bytes': 999999999 * 1024, paths: [s.limaHome] },
+    { mount: '/Volumes/Data', 'free-bytes': 25 * 1024, 'total-bytes': 999999999 * 1024, paths: [s.f.dir] },
   ]);
+  assert.equal(out['total-bytes'], 999999999 * 1024, "ASS-557: the size of the volume the free space is of");
 });
 
 test('ASS-288 AC1: without the thresholds in harness.json, 50 GB and 15 GB; df failing fails the check and leaves the record as it was', async () => {
@@ -143,7 +144,7 @@ test('ASS-288 AC4: vm:build-golden-start starts no golden build while the disk h
 function reclaim({ warn, hold = 1e-9 }) {
   const l = lima();
   const at = (...rest) => join(l.f.dir, ...rest);
-  edit(at('engines', 'example-development', 'state-engine.json'), e => { for (const step of e.steps) if (step.id !== 'done') step.vm = 'running'; });
+  edit(at('engines', 'example-development', 'workflow.yaml'), e => { for (const step of e.steps) if (step.id !== 'done') step.vm = 'running'; });
   edit(at('harness.json'), h => { h['vm-disk-limit-gb'] = 1; h['disk-free-warn-gb'] = warn; h['disk-free-hold-gb'] = hold; });
   const vm = (name, blocks, status = 'Stopped') => {
     if (!existsSync(join(l.v.instances, name))) l.v.instance(name, status);

@@ -18,6 +18,9 @@ source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../json-file.bash"
 # and the images it names go together, the index first: its size theirs, its
 # last pull its own; never one of its images alone, which would leave VMs an
 # index whose arm64 image is gone (an image another index names too stays).
+# ASS-534: an image a sandbox image label pins (data/projects/<project>/
+# sandbox-image-<arch>.json, substrate:build-image) is never deleted: it is
+# what the project's sandboxes and remote clusters run. Its older builds are.
 # Prints { size-bytes, max-bytes, deleted: ["<repo>@<digest>"] }.
 [[ $# -eq 1 ]] || { echo "usage: registry:sweep <project>" >&2; exit 1; }
 registry_config registry:sweep "$1"
@@ -40,6 +43,7 @@ fi
 size=$(( $(du -sk "$storage/images" | cut -f1) * 1024 ))
 max="$(jq -n --argjson gb "$max_gb" '$gb * 1000000000 | floor')"
 deleted=()
+pinned=" $(cat "$projects/$1"/sandbox-image-*.json 2>/dev/null | jq -r 'select(.repository and .digest) | "\(.repository)@\(.digest)"' 2>/dev/null | tr '\n' ' ' || true) "
 if (( size > max )); then
   # Every image as "<last pull> <size it names> <repo> <digest>", oldest first.
   while IFS= read -r index; do
@@ -58,6 +62,7 @@ if (( size > max )); then
           blob="$storage/images/$repo/blobs/sha256/${digest#sha256:}"
           [[ -f "$blob" ]] || continue
           [[ "$kids" != *" $digest"* ]] || continue   # goes with its index
+          [[ "$pinned" != *" $repo@$digest "* ]] || continue   # a sandbox image's pinned build
           last="$(jq -r --arg d "$repo@$digest" --arg t "$repo@$tag" '[.[$d], .[$t]] | map(select(.)) | max // empty' "$pulls")"
           size="$(jq '[.config.size // 0, (.layers // [])[].size] | add' "$blob")" with=()
           if [[ -n "$kids" ]] && jq -e '.manifests' "$blob" >/dev/null 2>&1; then

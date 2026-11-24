@@ -6,7 +6,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { join } from 'node:path';
 import { readFileSync, writeFileSync, readdirSync } from 'node:fs';
-import { controlFixture } from './control-fixture.js';
+import { controlFixture, macSeats } from './control-fixture.js';
 import { tick } from '../../src/control/tick.js';
 import { fakeVm } from '../support/fake-vm.js';
 import { until } from '../support/until.js';
@@ -21,7 +21,7 @@ const planned = (id, repository) => ({ id, repository, branch: `change/ABC-3-${i
 function repoFixture({ repo, where = 'vm', plan = [] }) {
   const f = controlFixture();
   const at = (...rest) => join(f.dir, ...rest);
-  edit(at('engines', 'example-development', 'state-engine.json'), e => { e.steps = e.steps.map(s => (s.id === 'plan' ? { ...s, 'run-location': where, ...(repo ? { 'run-in-repository': repo } : {}) } : s)); });
+  edit(at('engines', 'example-development', 'workflow.yaml'), e => { e.steps = e.steps.map(s => (s.id === 'plan' ? { ...s, 'run-location': where, ...(repo ? { 'run-in-repository': repo } : {}) } : s)); });
   edit(at('projects', 'p', 'project.json'), p => { p.repositories = [{ url: HARNESS, description: 'The harness itself.' }, { url: CORPUS, description: 'The corpus.' }]; });
   edit(at('projects', 'p', 'sprints', 'sprint-10', 'sprint.json'), s => { Object.assign(s.features[0].variations[0], { vm: VM, 'merge-request': plan }); });
   writeFileSync(at('prompts', 'review-plan', 'prompt.txt'), 'Review {ticket} in {folder}.\nCode: {project-code-folder}.\n{where}\n');
@@ -111,12 +111,12 @@ test('a step in each repository is passed over, by its first exit, when the tick
   assert.ok(f.lines.some(l => l === 'dispatch ABC-3 A plan: the ticket touches no repository; the step is passed over to build'), f.lines.join('\n'));
 });
 
-test('ASS-126 AC1: a step passed over waits, as any move, for a slot in the step it would pass to', async () => {
+test('ASS-126 AC1, ASS-528: a step passed over moves on as any move does — holding the one seat of the one pool, it takes it along into Build', async () => {
   const f = repoFixture({ repo: 'each' });
-  edit(join(f.dir, 'harness.json'), h => { h['max-tickets-in-progress'] = 0; });
+  macSeats(f.ctx, 1);
   await tick(f.ctx);
-  assert.deepEqual(f.variation()['state-changes'].map(c => c['to-state']), ['committed', 'plan'], f.lines.join('\n'));
-  assert.ok(f.lines.some(l => l === 'dispatch ABC-3 A plan: waits for an in-progress slot to move to build'), f.lines.join('\n'));
+  assert.deepEqual(f.variation()['state-changes'].map(c => c['to-state']), ['committed', 'plan', 'build'], f.lines.join('\n'));
+  assert.ok(!f.lines.some(l => /waits for an in-progress slot/.test(l)), f.lines.join('\n'));
 });
 
 test('a step that declares no repository runs as before: its VM agent in /repos/, told every repository', async () => {
@@ -131,7 +131,7 @@ test('a step that declares no repository runs as before: its VM agent in /repos/
 
 test('a sub-engine run\'s step in each repository runs once per repository too, before the run moves on', async () => {
   const f = repoFixture({ plan: [planned(1, HARNESS), planned(2, CORPUS)] });
-  edit(join(f.dir, 'engines', 'test', 'state-engine.json'), e => { e.steps[0] = { ...e.steps[0], 'run-location': 'vm', 'run-in-repository': 'each' }; });
+  edit(join(f.dir, 'engines', 'test', 'workflow.yaml'), e => { e.steps[0] = { ...e.steps[0], 'run-location': 'vm', 'run-in-repository': 'each' }; });
   f.ctx.env.FAKE_OUTPUT = '{"is-approved":true}';
   await tick(f.ctx);
   await f.agent();

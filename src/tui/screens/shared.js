@@ -3,7 +3,7 @@
 import { sinceResolution, visitsInto, statusOf, changePath, isOpenQuestion, blocksTicket, markOff, switchOff, isHeld, isBlockedState, waitsOnHuman, isDoneStep } from '../../control/engine.js';
 import { rankBacklog, flattenSprint } from '../../control/rank.js';
 import { dependencyHold, dependencyRows } from '../../control/dependencies.js';
-import { seatsOf, inMotion } from '../../control/plan.js';
+import { seatsOf, nextPlacement } from '../../control/plan.js';
 import { switchedOffStepErrors } from '../../workflow/validate.js';
 import { stateOf, levelChanges, enginesOf, refinementSteps as refinementStepsOf } from '../status.js';
 import { lastStart } from '../table.js';
@@ -139,7 +139,7 @@ export const needMark = (marks, key) => (markKind(marks, key) ? `${markDot('●'
 // columns one cell right. The ticket screen, backlog and agent tiles keep ICONS.
 // agent and script (ASS-456; ⚉, one cell, before it) are the exception: 🤖 and
 // 💻, the progress bar's and the S floor's own, emoji two cells wide (text.js
-// visible counts them so), like the seat column's 💺, in one two-cell column.
+// visible counts them so), in one two-cell column (the seat column's 💺 beside it went with ASS-559).
 export const GLYPHS = { step: '█', features: '✦', bugs: '✘', spikes: '⌕', hand: '☛', fast: '↯', mark: '⦿', agent: '🤖', script: '💻' };
 export const sprintMark = (marks, t) => {
   const kind = t['pending-requirements-change'] ? 'change' : markKind(marks, t.key);
@@ -314,41 +314,49 @@ export const seatHolders = state => seatPlan(state).holders;
 
 // seatPlan(state) — the selected project's seats as seatHolders asks the planner (seatsOf): `holders`, the
 // "<key> <variation>" holding an in-progress or a planning seat (seatHolders'), `progress` and `planning` those of
-// each kind, `free`, { progress, planning }, the empty seats of each kind (ASS-451: freeSeats), and `kinds` (ASS-469)
-// "<key> <variation>" → 'vm' or 'workstation', the kind of in-progress seat control recorded it in (seats.json). A past day
-// (or no project): nobody, none free — seats are live state.
+// each kind, `free`, { progress, planning }, the empty seats of each kind (ASS-451: freeSeats), and what the sprint
+// screen's Machine and Runs in columns read (ASS-559, places.js placeOf): `local` the holders on a Mac target
+// (local-worktree, local-workspace: no seat), `targets` "<key> <variation>" → the planner's run target for every
+// holder, and `records` control's seats.json records — its seats, planning and local lists — with their `target` and
+// machine (`workstation`). A past day (or no project): nobody, none free — seats are live state.
+// (ASS-559: the per-kind `kinds` and `sandboxes` maps the old 💺 ⛅ 🌐 📦 marks read are gone.)
 export function seatPlan(state) {
   const selected = state.projects[state.project];
-  if (state.day || !selected) return { holders: new Set(), progress: [], planning: [], free: { progress: 0, planning: 0 }, kinds: new Map() };
-  const projects = state.projects.map(p => planProject(state, p));
-  const plan = {
-    projects, allProjects: projects, assignments: state.assignments ?? [], harness: selected.limits?.harness ?? {}, running: {},
-    engines: enginesOf(state.workflows.filter(w => w.project == null)),
-  };
-  const seats = seatsOf(plan, projects[state.project]);
-  // Every other project's seats, counted against harness.json's limits as planFor counts them (inMotion: its
-  // reservedElsewhere and planningElsewhere).
-  const elsewhere = inMotion(projects.filter(p => p.id !== projects[state.project].id), plan.engines, plan);
-  // ASS-469: the kind of each in-progress seat, as control recorded it (seats.json): 'vm' or 'workstation'.
-  const kinds = new Map((selected.seats ?? []).map(r => [`${r.key} ${r.variation}`, r.kind]).filter(([k]) => seats['in-progress'].includes(k)));
-  return { holders: new Set([...seats['in-progress'], ...seats['in-planning']]), progress: seats['in-progress'], planning: seats['in-planning'], free: freeSeats(seats, elsewhere), kinds };
+  if (state.day || !selected) return { holders: new Set(), progress: [], planning: [], free: { progress: 0, planning: 0 }, local: new Set(), targets: new Map(), records: [] };
+  const plan = plannerState(state);
+  const seats = seatsOf(plan, plan.projects[state.project]);
+  const holding = new Set([...seats['in-progress'], ...seats['in-planning']]);
+  const targets = new Map(Object.entries(seats.targets ?? {}));
+  const local = new Set([...targets].filter(([, t]) => t === 'local-worktree' || t === 'local-workspace').map(([id]) => id));
+  const records = [...(selected.seats ?? []), ...(selected.planningSeats ?? []), ...(selected.localSeats ?? [])].filter(r => r?.key != null);
+  return { holders: holding, progress: seats['in-progress'], planning: seats['in-planning'], free: freeSeats(seats), local, targets, records };
 }
 
-// freeSeats(seats, elsewhere) — { progress, planning }: of seatsOf's answer, the empty seats of each kind (ASS-451),
-// as many as the planner would still grant (planDispatch's `free`: a slot must fit both limits): project.json's
-// limit less the seats of that kind the project holds now, and harness.json's — every project together — less those
-// and the ones the other projects hold (`elsewhere`, inMotion's { progress, planning }, planFor's reservedElsewhere
-// and planningElsewhere); the smaller when both are set, either alone when only it is; 0 for no limit, or none left
-// (at or over the limits).
-const SEAT_LIMITS = { progress: ['max-tickets-in-progress', 'in-progress'], planning: ['max-tickets-in-planning', 'in-planning'] };
-const limitOf = n => (n != null && Number.isFinite(Number(n)) ? Number(n) : null);
-export function freeSeats(seats, elsewhere = {}) {
-  const free = (kind, [limit, held]) => {
-    const own = limitOf(seats.limits?.project?.[limit]), all = limitOf(seats.limits?.harness?.[limit]);
-    const caps = [own, all == null ? null : all - (elsewhere[kind] ?? 0)].filter(n => n != null);
-    return caps.length ? Math.max(0, Math.min(...caps) - (seats[held]?.length ?? 0)) : 0;
+// plannerState(state) — the dashboard's projects as control's loadState lists them (planProject), what plan.js planFor
+// reads, the selected project's limits for harness.json's.
+function plannerState(state) {
+  const projects = state.projects.map(p => planProject(state, p));
+  return {
+    projects, allProjects: projects, assignments: state.assignments ?? [], harness: state.projects[state.project]?.limits?.harness ?? {}, running: {},
+    engines: enginesOf(state.workflows.filter(w => w.project == null)),
   };
-  return { progress: free('progress', SEAT_LIMITS.progress), planning: free('planning', SEAT_LIMITS.planning) };
+}
+
+// nextPlace(state) — ASS-572: where the selected project's next ticket would go now, the planner's own answer
+// (plan.js nextPlacement: { target, machine, choice, rooms? }, target null when nothing has room), for the compute
+// network screen's headline; null without a project. Live state, whatever day the sprint screen shows.
+export function nextPlace(state) {
+  if (!state.projects[state.project]) return null;
+  const plan = plannerState(state);
+  return nextPlacement(plan, plan.projects[state.project]);
+}
+
+// freeSeats(seats) — { progress, planning }: of seatsOf's answer, the empty seats (ASS-451), as many as the planner
+// would still grant. ASS-528: planning and building are one pool, so they are all counted once, as in-progress ones
+// (planning 0); 0 for no limit (the seat budget unknown), or none left.
+export function freeSeats(seats) {
+  const free = seats?.seats?.free;
+  return { progress: Number.isFinite(free) ? Math.max(0, free) : 0, planning: 0 };
 }
 
 // planProject(state, p) — a dashboard project as control's loadState lists it,
@@ -360,14 +368,18 @@ export function freeSeats(seats, elsewhere = {}) {
 // questions-and-answers.json holds, as loadState's openBlocking, ASS-248), and
 // what control's heldBy reads to skip a variation its dependencies hold
 // (ASS-355): json's wait-for-dependencies, backlog and outside — the same
-// loaded data holdingOf gives dependencyHold, so a held row has no 💺 — and
+// loaded data holdingOf gives dependencyHold, so a held row runs on no machine (ASS-559: no Machine; no 💺 before) — and
 // memoryHold (ASS-404: control's memory-hold.json, whose held variations
 // hold no seat while their VMs wait for memory) and memoryWait (ASS-420:
 // control's memory-wait.json, the variations refused a seat for want of
-// memory for their VMs: no 💺; their Health says so, control's ai-feedback),
+// memory for their VMs: no Machine (ASS-559; no 💺 before); their Health says so, control's ai-feedback),
 // and (ASS-469) devEnvironments, workstations and seats — its seats of both
 // kinds (control/seat-kinds.js: its VM seats and one per usable workstation)
-// and who holds which, seats.json's records kept seated first, as planFor counts them.
+// and who holds which, seats.json's records kept seated first, as planFor counts them — with (ASS-528) its
+// planning holders (planningSeats) and its seat budget (seatBudget, control's seat-budget.json: its Mac seats), (ASS-572)
+// its run targets as control reads them (runTargets: load.js runTargetPlan) and its remote seats (remoteBudget), and
+// (ASS-531) its focus-on-planning switch (planningFocus), and (ASS-559) its Mac-target holders (localSeats, seats.json's
+// `local`, which control's seatedIn reads too), so the seats shown are given as control gives them.
 function planProject(state, p) {
   const seen = enginesOf(state.workflows.filter(w => w.project == null || w.project === p.id).toReversed());   // its own listed first: last wins
   const engines = switchOff(seen, (p.switchedOffSteps ?? []).filter(e => !switchedOffStepErrors(e, seen).length));
@@ -375,7 +387,10 @@ function planProject(state, p) {
   const asking = new Set(tickets.filter(t => t['ticket-system-status'] !== 'Done' && (p.questions ?? []).some(q => q.source === t.key && blocksTicket(q))).map(t => t.key));
   const json = { ...p.limits?.project, ...(p.waitForDependencies === true ? { 'wait-for-dependencies': true } : {}) };
   return { id: p.id, json, engines, engine: engines[p.stateEngine], tickets, backlog: p.backlog ?? [], outside: p.outside ?? [], asking, memoryHold: p.memoryHold ?? null, memoryWait: p.memoryWait ?? null,
-    devEnvironments: p.devEnvironments ?? null, workstations: p.workstations ?? {}, seats: p.seats ?? [] };
+    devEnvironments: p.devEnvironments ?? null, workstations: p.workstations ?? {}, seats: p.seats ?? [], planningSeats: p.planningSeats ?? [], localSeats: p.localSeats ?? [], seatBudget: p.seatBudget ?? null, planningFocus: p.planningFocus ?? null,
+    // ASS-572: its run targets as control reads them (projectRunTargets: list, mode, pool choice) and its remote
+    // machines' seats (remote-seats.json), so the planner places as control does.
+    ...(p.runTargetPlan ? { runTargets: p.runTargetPlan } : {}), remoteBudget: p.remoteBudget ?? null };
 }
 
 // Which of two sprint tickets is closer to done: the higher step sequence at
@@ -403,7 +418,7 @@ export const statusText = (t, steps) => {
 };
 
 // What a Status adds for a variation whose plan is finished (ASS-362: control's
-// statusOf `planned`): it holds no seat — no 💺 on its row — and only waits for
+// statusOf `planned`): it holds no seat — no Machine on its row (ASS-559; no 💺 before) — and only waits for
 // an in-progress one to move on to Build.
 export const PLANNED = 'Planned, waiting for a build seat';
 

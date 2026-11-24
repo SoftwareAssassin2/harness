@@ -14,14 +14,14 @@ import { writeFileSync, readFileSync, renameSync, mkdtempSync, mkdirSync } from 
 import { tmpdir } from 'node:os';
 import { controlFixture } from './control-fixture.js';
 import { tick, startDrain, drained } from '../../src/control/tick.js';
-import { readJson, troubleOf } from '../../src/control/read.js';
+import { readJson, troubleOf, READ_RETRY_MS } from '../../src/control/read.js';
 import { readEngines } from '../../src/control/state.js';
 import { stopStarted } from '../../src/control/stop.js';
 import { until } from '../support/until.js';
 
 const step = f => f.variation()['harness-status'].state;
 const working = f => f.assignments().assignments.map(a => a['work-item']).toSorted();
-const engineFile = f => join(f.dir, 'engines', 'example-development', 'state-engine.json');
+const engineFile = f => join(f.dir, 'engines', 'example-development', 'workflow.yaml');
 // The fixture with its agents held at work (FAKE_HOLD) while fn runs (as tick-drain.test.js).
 async function held(fn) {
   const f = controlFixture();
@@ -52,17 +52,21 @@ test('ASS-460 AC3, ASS-458 AC1: readJson reads again a file caught empty, half-w
   [seen, read] = reads([gone(), gone()]);
   assert.throws(() => readJson(file, [1, 1], read), { code: 'ENOENT' });
   assert.equal(seen.length, 1);
-  // Real files: the default delays add up to 200 ms at most.
+  // Real files: the default delays add up to 200 ms at most. ASS-545: shown by the delays themselves and the reads
+  // they make — the default delays read a real empty file three times — not by timing a run on a loaded Mac.
+  assert.deepEqual(READ_RETRY_MS, [50, 150]);
+  assert.ok(READ_RETRY_MS.reduce((a, b) => a + b, 0) <= 200);
   writeFileSync(file, '');
-  const began = Date.now();
+  let realReads = 0;
+  assert.throws(() => readJson(file, undefined, f => { realReads++; return readFileSync(f, 'utf8'); }), SyntaxError);
+  assert.equal(realReads, 1 + READ_RETRY_MS.length);
   assert.throws(() => readJson(file), SyntaxError);
-  assert.ok(Date.now() - began < 1000);
 });
 
 test('ASS-460 AC3, ASS-458 AC4: an engine that fails to read is its last good copy, marked stale; one never read well throws', () => {
   const dir = mkdtempSync(join(tmpdir(), 'engines-'));
   mkdirSync(join(dir, 'e'));
-  const file = join(dir, 'e', 'state-engine.json');
+  const file = join(dir, 'e', 'workflow.yaml');
   writeFileSync(file, JSON.stringify({ steps: [{ id: 'one' }] }));
   assert.deepEqual(readEngines(dir), { e: { steps: [{ id: 'one' }] } });
   writeFileSync(file, '');                                               // a merge rewriting it in place
@@ -73,7 +77,7 @@ test('ASS-460 AC3, ASS-458 AC4: an engine that fails to read is its last good co
   writeFileSync(file, JSON.stringify({ steps: [{ id: 'two' }] }));        // only a change that parses replaces it
   assert.deepEqual(readEngines(dir, [], []), { e: { steps: [{ id: 'two' }] } });
   mkdirSync(join(dir, 'new'));
-  writeFileSync(join(dir, 'new', 'state-engine.json'), '{"steps": [');
+  writeFileSync(join(dir, 'new', 'workflow.yaml'), '{"steps": [');
   assert.throws(() => readEngines(dir), SyntaxError);
 });
 

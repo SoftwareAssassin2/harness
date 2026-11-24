@@ -14,7 +14,7 @@ import { until } from '../support/until.js';
 
 const turnsEnd = ctx => until(() => [...ctx.agents.values()].every(a => a.result));
 const sprintFile = f => join(f.dir, 'projects', 'p', 'sprints', 'sprint-10', 'sprint.json');
-const engineFile = (f, name) => join(f.dir, 'engines', name, 'state-engine.json');
+const engineFile = (f, name) => join(f.dir, 'engines', name, 'workflow.yaml');
 const edit = (file, change) => { const json = JSON.parse(readFileSync(file, 'utf8')); change(json); writeFileSync(file, JSON.stringify(json)); };
 // ABC-3 A at build, whose script moves it into local-testing (the test engine) — by `exit` when given.
 const atBuild = (f, exit = {}) => {
@@ -370,4 +370,53 @@ test('tick: a run whose step no longer exists — its step gone, or its steps li
   assert.ok(f.lines.includes('steps run example-development/check-health-old-steps b65bb2c0 ended (its step check-health no longer exists)'), f.lines.join('\n'));
   assert.ok(f.lines.includes('steps run test 400ca560 ended (its step await-approval no longer exists)'), f.lines.join('\n'));
   assert.ok(!f.lines.some(l => /no such step/.test(l)), f.lines.join('\n'));
+});
+
+// ASS-552: a step removed from a sub-engine (grouped-build's CI Checks) with
+// removed-steps-move-to naming where it went: a ticket still at it is not
+// stranded — its run, or its sub-status with no run, goes on to that step.
+const TEST_STEPS = [
+  { id: 'test', sequence: 1, action: { type: 'prompt', prompt: 'test', 'agent-count': 1 }, 'exit-events': [{ condition: complete, 'move-to-state': 'take-screenshots' }] },
+  { id: 'take-screenshots', sequence: 2, action: { type: 'prompt', prompt: 'take-screenshots', 'agent-count': 1 }, 'exit-events': [{ condition: complete, 'move-to-state': 'done' }] },
+  { id: 'done', sequence: 3, 'is-done': true, action: { type: 'none' } },
+];
+const OLD_CHECK = { id: 'old-check', sequence: 2, action: { type: 'human' }, 'exit-events': [{ condition: { 'human-review': 'Go' }, 'move-to-state': 'take-screenshots' }] };
+const withoutOldCheck = f => writeFileSync(engineFile(f, 'test'), JSON.stringify({ 'removed-steps-move-to': { 'old-check': 'take-screenshots' }, steps: TEST_STEPS }));
+const atOldCheck = f => edit(sprintFile(f), s => { s.features[0].variations[0]['harness-status'] = { ...hs('local-testing'), 'sub-status': { state: 'old-check', 'state-engine': 'test' } }; s.features[0]['ticket-system-status'] = 'In Progress'; });
+
+test('ASS-552 AC2: a run at a step since removed from its engine moves on to the step removed-steps-move-to names, the ticket with it — not ended, not stranded', async () => {
+  const f = controlFixture();
+  writeFileSync(engineFile(f, 'test'), JSON.stringify({ steps: [TEST_STEPS[0], OLD_CHECK, ...TEST_STEPS.slice(1)] }));
+  atOldCheck(f);
+  try {
+    await tick(f.ctx);
+    const [run] = f.assignments()['transient-state-engines'];
+    assert.equal(run.state, 'old-check', f.lines.join('\n'));
+    withoutOldCheck(f);   // the change lands: old-check gone
+    await tick(f.ctx);
+    const runs = f.assignments()['transient-state-engines'];
+    assert.deepEqual(runs.map(r => [r.id, r.state]), [[run.id, 'take-screenshots']], f.lines.join('\n'));
+    assert.deepEqual(f.variation()['harness-status'], { ...hs('local-testing'), 'sub-status': { state: 'take-screenshots', 'state-engine': 'test' } });
+    assert.deepEqual(subChanges(f.variation()).at(-1), { 'state-engine': 'test', 'from-state': 'old-check', 'to-state': 'take-screenshots' });
+    assert.ok(f.lines.includes(`steps run test ${run.id.slice(0, 8)} old-check: its step was removed from test; moves on to take-screenshots`), f.lines.join('\n'));
+    assert.ok(!f.lines.some(l => /no longer exists/.test(l)), f.lines.join('\n'));
+  } finally {
+    f.ctx.stopAgents();
+  }
+});
+
+test('ASS-552 AC2: a ticket whose sub-status is at a removed step, with no run, starts its run at the step removed-steps-move-to names and moves there', async () => {
+  const f = controlFixture();
+  withoutOldCheck(f);
+  atOldCheck(f);
+  try {
+    await tick(f.ctx);
+    const runs = f.assignments()['transient-state-engines'];
+    assert.deepEqual(runs.map(r => [r['state-engine'], r.state]), [['test', 'take-screenshots']], f.lines.join('\n'));
+    assert.deepEqual(f.variation()['harness-status'], { ...hs('local-testing'), 'sub-status': { state: 'take-screenshots', 'state-engine': 'test' } });
+    assert.deepEqual(subChanges(f.variation()).at(-1), { 'state-engine': 'test', 'from-state': 'old-check', 'to-state': 'take-screenshots' });
+    assert.ok(f.lines.some(l => /started a test run at take-screenshots \(its old-check was removed from test\)/.test(l)), f.lines.join('\n'));
+  } finally {
+    f.ctx.stopAgents();
+  }
 });

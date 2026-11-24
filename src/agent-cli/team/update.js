@@ -5,7 +5,7 @@
 //   node update.js < input.json
 //
 // Input, gathered by the .sh: { dir (data/projects/<project>), engineFiles
-// (every state-engine.json the project runs), today (YYYY-MM-DD) }. Reads
+// (every workflow.yaml the project runs, ASS-524), today (YYYY-MM-DD) }. Reads
 // dir's team.json (missing: no members yet) and analytics/tickets.json and
 // analytics/merge-requests.json (missing: nothing in them). Prints { team,
 // changed, lines }: the team.json to write, whether it differs from the one
@@ -16,6 +16,7 @@
 import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { updateTeam, memberName } from '../../analytics/team.js';
+import { readEngine } from '../../workflow/engine-file.js';
 
 const input = JSON.parse(readFileSync(0, 'utf8'));
 const read = (file, what) => {
@@ -30,7 +31,10 @@ if (team !== null && !Array.isArray(team?.members)) {
   process.stderr.write('team:update: team.json is not { members: [ … ] }\n');
   process.exit(1);
 }
-const engines = (input.engineFiles ?? []).map(file => read(file, file)).filter(Boolean);
+// ASS-524: an engine is YAML, read by engine-file.js (its error names the file and line).
+const engines = (input.engineFiles ?? []).filter(file => existsSync(file)).map(file => {
+  try { return readEngine(file); } catch (err) { process.stderr.write(`team:update: ${err.message}\n`); process.exit(1); }
+});
 const result = updateTeam({
   team,
   tickets: read(join(input.dir, 'analytics', 'tickets.json'), 'analytics/tickets.json'),

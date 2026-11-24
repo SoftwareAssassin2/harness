@@ -13,10 +13,11 @@ import { stepOf, nextState } from '../../src/control/engine.js';
 import { firstStepId } from '../../src/control/moves.js';
 import { validateStateEngine } from '../../src/workflow/validate.js';
 import { working, inOrder, engineDir, engineNames, EXAMPLE_ENGINES } from '../support/engine-walk.js';
+import { readEngine } from '../../src/workflow/engine-file.js';
 
 const ROOT = join(import.meta.dirname, '..', '..');
-const engines = Object.fromEntries(engineNames().filter(d => existsSync(join(engineDir(d), 'state-engine.json')))
-  .map(d => [d, JSON.parse(readFileSync(join(engineDir(d), 'state-engine.json'), 'utf8'))]));
+const engines = Object.fromEntries(engineNames().filter(d => existsSync(join(engineDir(d), 'workflow.yaml')))
+  .map(d => [d, readEngine(join(engineDir(d), 'workflow.yaml'))]));
 const prompt = name => readFileSync(join(ROOT, 'prompts', name, 'prompt.txt'), 'utf8');
 const ids = name => engines[name].steps.map(s => s.id);
 const subEngineOf = (top, id) => stepOf(engines[top], id).action.engine;
@@ -25,8 +26,8 @@ const hasInOrder = (actual, expected, message = '') => assert.ok(inOrder(actual,
 
 const GROUPS = {
   setup: ['check-setup-complete', 'create-vm', 'mark-setup-complete'],
-  plan: ['enrich-ac', 'root-cause-analysis', 'review-root-cause-analysis', 'write-execution-plan', 'write-test-plan', 'enrich-automated-test-data', 'review-plan'],
-  build: ['refresh-repositories', 'generate-automated-tests', 'generate-solution', 'await-dependencies', 'refresh-before-testing', 'check-numbered-files', 'automated-testing', 'ci-checks', 'code-review', 'security-review'],   // check-numbered-files: ASS-385
+  plan: ['enrich-ac', 'root-cause-analysis', 'review-root-cause-analysis', 'write-execution-plan', 'write-test-plan', 'enrich-automated-test-data', 'review-plan', 'choose-work-mode', 'record-work-mode'],   // ASS-556: where to work, once approved
+  build: ['refresh-repositories', 'generate-automated-tests', 'generate-solution', 'await-dependencies', 'refresh-before-testing', 'check-numbered-files', 'automated-testing', 'code-review', 'security-review'],   // check-numbered-files: ASS-385; ci-checks removed (ASS-552)
   test: ['local-testing', 'steps-to-test'],
   document: ['update-documentation', 'update-merge-request-details', 'check-merge-request-details', 'add-screenshots-to-merge-request'],
   review: ['explain-the-change', 'risk-assessment', 'token-expense-check', 'payment-gate', 'variation-selection'],   // ASS-314: Human Review gone, risk-assessment straight on to the token expense check
@@ -95,8 +96,8 @@ test('AC1: every step of the current engines is mirrored in its group — action
 });
 
 // The steps that review code or need awareness of the code or product run in the VM (ASS-68 Q2); every other runs on the host.
-const VM = ['enrich-ac', 'root-cause-analysis', 'review-root-cause-analysis', 'write-execution-plan', 'write-execution-plan-stronger', 'write-test-plan','enrich-automated-test-data', 'review-plan',
-  'generate-automated-tests', 'generate-solution', 'automated-testing', 'ci-checks', 'code-review', 'security-review', 'test', 'take-screenshots', 'write-steps-to-test',
+const VM = ['enrich-ac', 'root-cause-analysis', 'review-root-cause-analysis', 'write-execution-plan', 'write-execution-plan-stronger', 'write-test-plan','enrich-automated-test-data', 'review-plan', 'choose-work-mode',
+  'generate-automated-tests', 'generate-solution', 'automated-testing', 'code-review', 'security-review', 'test', 'take-screenshots', 'write-steps-to-test',
   'update-documentation', 'update-merge-request-details', 'add-screenshots-to-merge-request', 'explain-the-change', 'risk-assessment', 'token-expense-check', 'address-merge-request-feedback', 'troubleshoot', 'repair-environment', 'repair-project',
   'revise-acceptance-criteria', 'judge'];
 
@@ -519,37 +520,33 @@ test('ASS-224 AC2: the flat example-development\'s Team Code Review keeps its ex
   assert.ok(!JSON.stringify(flat).includes('"merged"'));
 });
 
-// ASS-249: CI Checks runs the project's declared merge-request CI checks
-// (ci-checks:verify) in the VM between Automated Testing and Code Review: 0
-// goes on, 3 (could not run, or the declaration malformed) to Blocked, any
-// other (a new failure) back to Generate Solution. grouped-build is shared,
-// so a project declaring none passes it with nothing run (the command's own
-// tests: test/agent-cli/ci-checks.test.js); the flat engines have no such step.
-const CI_CHECKS = './agent.sh ci-checks:verify {project} {ticket} {variation}';
-
-test('ASS-249 AC4: grouped-build\'s CI Checks step — the ci-checks:verify script, in the VM, max-visits 3 then Blocked — sits between Automated Testing and Code Review: 0 to Code Review, 3 to Blocked, any other to Generate Solution; the flat engines have none', () => {
-  const build = engines['grouped-build'], step = stepOf(build, 'ci-checks');
-  assert.deepEqual([step.action, step['run-location'], step['max-visits'], step['on-max-visits']], [{ type: 'script', command: CI_CHECKS }, 'vm', 3, 'blocked']);
-  assert.equal(nextState(stepOf(build, 'automated-testing'), build, { exitCode: 0 }).to, 'ci-checks');
-  assert.equal(nextState(step, build, { exitCode: 0 }).to, 'code-review');
-  assert.equal(nextState(step, build, { exitCode: 3 }).to, 'blocked');
-  for (const exitCode of [1, 2, 4, 127]) assert.equal(nextState(step, build, { exitCode }).to, 'generate-solution', String(exitCode));
+// ASS-249 put a CI Checks step (ci-checks:verify, the project's declared
+// merge-request CI checks run in the VM) between Automated Testing and Code
+// Review; ASS-552 removed it: the project's own CI runs those checks on the
+// merge request, which the merge steps wait for. Automated Testing's exits are
+// as before, its success straight on to Code Review (where CI Checks' success
+// led); no shipped engine runs ci-checks:verify; and a ticket still at the
+// removed step goes on to Code Review (removed-steps-move-to, steps.js; tested
+// in test/control/tick-sub-engines.test.js).
+test('ASS-552 AC1: no shipped engine step runs ci-checks:verify; grouped-build\'s Automated Testing goes on to Code Review, its other exits as before; a ticket at the removed CI Checks moves on to Code Review', () => {
+  const build = engines['grouped-build'], testing = stepOf(build, 'automated-testing');
+  assert.equal(stepOf(build, 'ci-checks'), undefined);
+  assert.equal(nextState(testing, build, { exitCode: 0 }).to, 'code-review');
+  assert.equal(nextState(testing, build, { exitCode: 3 }).to, 'blocked');
+  assert.equal(nextState(testing, build, { exitCode: 4 }).to, 'generate-automated-tests');
+  for (const exitCode of [1, 2, 127]) assert.equal(nextState(testing, build, { exitCode }).to, 'generate-solution', String(exitCode));
+  assert.deepEqual(build['removed-steps-move-to'], { 'ci-checks': 'code-review' });
   const seq = id => stepOf(build, id).sequence;
-  assert.ok(seq('automated-testing') < seq('ci-checks') && seq('ci-checks') < seq('code-review'));
+  assert.equal(seq('code-review'), seq('automated-testing') + 1, 'the sequences closed up');
+  assert.deepEqual(build.steps.map(s => s.sequence), build.steps.map((_, i) => i + 1));
+  for (const [name, engine] of Object.entries(engines))
+    assert.ok(!JSON.stringify(engine).includes('ci-checks:verify'), name);
   for (const top of Object.keys(CURRENT)) {
-    // A new failure once: back round Generate Solution, then on; always failing: Blocked; could not run: Blocked.
-    let runs = 0;
     const released = top.startsWith('example') ? { 'grouped-release-example/team-code-review': MERGED, 'grouped-qa/qa-testing': { ticketSystemStatus: 'Done' } } : {};
-    const once = walk(top, { ...released, 'grouped-build/ci-checks': { get exitCode() { return runs++ === 0 ? 1 : 0; } } });
-    assert.deepEqual(after(once, 'grouped-build/automated-testing').slice(0, 8), ['grouped-build/ci-checks', 'grouped-build/generate-solution', 'grouped-build/await-dependencies', 'grouped-build/refresh-before-testing', 'grouped-build/check-numbered-files', 'grouped-build/automated-testing', 'grouped-build/ci-checks', 'grouped-build/code-review'], top);
-    assert.equal(tops(once).at(-1), 'done', top);
-    const blocked = walk(top, { 'grouped-build/ci-checks': { exitCode: 3 } });
-    assert.deepEqual(blocked.slice(-3), ['grouped-build/ci-checks', 'grouped-build/blocked', `${top}/blocked`], top);
-    const red = walk(top, { 'grouped-build/ci-checks': { exitCode: 1 } });
-    assert.equal(red.filter(p => p === 'grouped-build/ci-checks').length, 3, top);
-    assert.equal(red.at(-1), `${top}/blocked`, top);
+    const trail = walk(top, released);
+    assert.deepEqual(after(trail, 'grouped-build/automated-testing').slice(0, 2), ['grouped-build/code-review', 'grouped-build/security-review'], top);
+    assert.equal(tops(trail).at(-1), 'done', top);
   }
-  for (const flat of [...Object.values(CURRENT), 'blocked']) assert.ok(!engines[flat].steps.some(s => s.id === 'ci-checks' || JSON.stringify(s.action).includes('ci-checks')), flat);
 });
 
 // ASS-255: harness:restarted's "not yet" (exit 1) is Await the Restart's waiting exit — polled again on its timer,

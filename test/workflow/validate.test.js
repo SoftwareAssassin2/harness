@@ -4,7 +4,9 @@ import { readdirSync, readFileSync, existsSync, mkdtempSync, mkdirSync, writeFil
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { validateStateEngine, switchedOffStepErrors, promptWriteErrors } from '../../src/workflow/validate.js';
+import { SCRIPT_COMMANDS, unknownScriptCommand } from '../../src/control/machine-steps.js';
 import { engineDir, engineNames, EXAMPLE_ENGINES } from '../support/engine-walk.js';
+import { readEngine } from '../../src/workflow/engine-file.js';
 
 const ROOT = join(import.meta.dirname, '..', '..');
 
@@ -257,10 +259,22 @@ test('ready-tickets-join-sprint-at must be a string naming an existing step id, 
   assertError({ ...base(), 'ready-tickets-join-sprint-at': '' }, /ready-tickets-join-sprint-at/);
 });
 
+// ASS-552: removed-steps-move-to maps a step taken out of the engine to the one a ticket still at it goes on to.
+test('removed-steps-move-to maps steps the engine no longer has to steps it has', () => {
+  const base = () => engine([
+    step('a', 1, { 'exit-events': [{ condition: { always: true }, 'move-to-state': 'b' }] }),
+    step('b', 2, { 'is-done': true }),
+  ]);
+  assert.deepEqual(errorsFor({ ...base(), 'removed-steps-move-to': { gone: 'b' } }), []);
+  assertError({ ...base(), 'removed-steps-move-to': { gone: 'nope' } }, /removed-steps-move-to moves "gone" to unknown step "nope"/);
+  assertError({ ...base(), 'removed-steps-move-to': { a: 'b' } }, /removed-steps-move-to names "a", which is still a step/);
+  assertError({ ...base(), 'removed-steps-move-to': ['gone'] }, /removed-steps-move-to is not a map/);
+});
+
 test('ready-tickets-join-sprint-at is only on engines/harness-development, its grouped copy (ASS-68), harness-development-v2 (ASS-110) and its example GitHub copy, naming "committed" (ASS-44)', () => {
   const carriers = {};
-  for (const name of engineNames().filter(d => existsSync(join(engineDir(d), 'state-engine.json')))) {
-    const value = JSON.parse(readFileSync(join(engineDir(name), 'state-engine.json'), 'utf8'))['ready-tickets-join-sprint-at'];
+  for (const name of engineNames().filter(d => existsSync(join(engineDir(d), 'workflow.yaml')))) {
+    const value = readEngine(join(engineDir(name), 'workflow.yaml'))['ready-tickets-join-sprint-at'];
     if (value !== undefined) carriers[name] = value;
   }
   assert.deepEqual(carriers, { 'harness-development': 'committed', 'harness-development-grouped': 'committed', 'harness-development-v2': 'committed', 'example-github-development': 'committed' });
@@ -292,9 +306,38 @@ test('a script step\'s command must resolve to a script with something in it: an
   mkdirSync(join(root, 'src', 'agent-cli', 'code'), { recursive: true });
   writeFileSync(join(root, 'src', 'agent-cli', 'code', 'empty.sh'), '');
   writeFileSync(join(root, 'src', 'agent-cli', 'code', 'real.sh'), '#!/usr/bin/env bash\necho hi\n');
-  const scripted = command => validateStateEngine(engine([step('a', 1, { action: { type: 'script', command }, 'exit-events': [{ condition: { 'exit-code': 0 }, 'move-to-state': 'b' }, { condition: { not: { 'exit-code': 0 } }, 'move-to-state': 'b' }] }), step('b', 2, { 'is-done': true })]), root);
+  // (ASS-527: these made-up commands are declared nowhere — that error is its own test's, below.)
+  const scripted = command => validateStateEngine(engine([step('a', 1, { action: { type: 'script', command }, 'exit-events': [{ condition: { 'exit-code': 0 }, 'move-to-state': 'b' }, { condition: { not: { 'exit-code': 0 } }, 'move-to-state': 'b' }] }), step('b', 2, { 'is-done': true })]), root).filter(e => !/SCRIPT_COMMANDS/.test(e));
   assert.deepEqual(scripted('./agent.sh code:empty {ticket}'), ['step "a" has an empty script for "./agent.sh code:empty"']);
   assert.deepEqual(scripted('./agent.sh code:real {ticket}'), []);
+});
+
+// ASS-527 AC4: whether a script step uses the ticket's machine is declared once (src/control/machine-steps.js
+// SCRIPT_COMMANDS); a script step whose command it does not declare fails validation; every shipped engine passes.
+test('ASS-527 AC4: a script step whose command SCRIPT_COMMANDS does not declare (in-machine or host) is an error; declared ones are not', () => {
+  const root = mkdtempSync(join(tmpdir(), 'vs-'));
+  mkdirSync(join(root, 'src', 'agent-cli', 'code'), { recursive: true });
+  writeFileSync(join(root, 'src', 'agent-cli', 'code', 'brand-new.sh'), '#!/usr/bin/env bash\necho hi\n');
+  writeFileSync(join(root, 'src', 'agent-cli', 'code', 'create-branch.sh'), '#!/usr/bin/env bash\necho hi\n');
+  const scripted = command => validateStateEngine(engine([step('a', 1, { action: { type: 'script', command }, 'exit-events': [{ condition: { 'exit-code': 0 }, 'move-to-state': 'b' }, { condition: { not: { 'exit-code': 0 } }, 'move-to-state': 'b' }] }), step('b', 2, { 'is-done': true })]), root);
+  assert.deepEqual(scripted('./agent.sh code:brand-new {ticket}'), ['step "a" runs agent.sh code:brand-new, which src/control/machine-steps.js SCRIPT_COMMANDS does not declare as in-machine or host']);
+  assert.deepEqual(scripted('./agent.sh code:create-branch {project} {ticket} {variation}'), []);
+});
+
+test('ASS-527 AC4: SCRIPT_COMMANDS declares the in-machine commands of the ticket, and every script step of every shipped engine is declared', () => {
+  for (const name of ['automated-tests:verify-success', 'ci-checks:verify', 'ticket:catch-up-base', 'vm:refresh-repositories', 'merge-request:check-numbered-files', 'merge-request:conflicting-tickets', 'vm:create']) {
+    assert.equal(SCRIPT_COMMANDS['agent.sh'][name], 'machine', name);
+  }
+  // ASS-540: the code:* commands run with control on the Mac's checkout, never in the ticket's machine.
+  for (const name of ['code:create-branch', 'code:create-worktree', 'code:update-workspace', 'merge-request:create', 'merge-request:check', 'merge-request:await-dependencies', 'ticket:fix-landed', 'harness:restarted']) assert.equal(SCRIPT_COMMANDS['agent.sh'][name], 'host', name);
+  for (const enginesDir of [join(import.meta.dirname, '..', '..', 'engines'), EXAMPLE_ENGINES]) for (const name of readdirSync(enginesDir)) {
+    const file = join(enginesDir, name, 'workflow.yaml');
+    if (!existsSync(file)) continue;
+    const json = readEngine(file);
+    for (const list of Object.entries(json).filter(([k]) => /(^|-)(steps|trigger)$/.test(k)).map(([, v]) => v)) {
+      for (const s of list) if (s.action?.type === 'script') assert.equal(unknownScriptCommand(s.action.command), null, `${name}/${s.id}: ${s.action.command}`);
+    }
+  }
 });
 
 // run-location (ASS-74): where a step runs — on the host (the default) or in the variation's VM.
@@ -353,8 +396,8 @@ test('a step\'s run-in-repository names a repository a project running the engin
   const json = (file, value) => { mkdirSync(join(file, '..'), { recursive: true }); writeFileSync(file, JSON.stringify(value)); };
   json(join(root, 'data', 'projects', 'p', 'project.json'), { 'execution-state-engine': 'top', repositories: [{ url: 'https://gitlab.com/g/example-corpus.git' }, { url: 'https://github.com/o/harness' }] });
   json(join(root, 'data', 'projects', 'q', 'project.json'), { 'execution-state-engine': 'other', repositories: [{ url: 'https://gitlab.com/g/elsewhere' }] });
-  json(join(root, 'engines', 'top', 'state-engine.json'), { steps: [step('s', 1, { action: { type: 'state-engine', engine: 'sub' } })] });
-  json(join(root, 'engines', 'sub', 'state-engine.json'), { steps: [] });
+  json(join(root, 'engines', 'top', 'workflow.yaml'), { steps: [step('s', 1, { action: { type: 'state-engine', engine: 'sub' } })] });
+  json(join(root, 'engines', 'sub', 'workflow.yaml'), { steps: [] });
   const at = (where, action = { type: 'prompt', prompt: 'x' }, name = 'sub') => validateStateEngine(engine([step('a', 1, { 'is-done': true, 'run-in-repository': where, action })]), root, name);
   assert.deepEqual(at('example-corpus'), [], 'a repository of p, whose engine reaches sub');
   assert.deepEqual(at('harness', undefined, 'top'), []);
@@ -370,7 +413,7 @@ test('a step\'s run-in-repository names a repository a project running the engin
 });
 
 test('ASS-144: a backlog refinement engine may loop back into its first step — groomed there only once due — and its question conditions are known; the same loop in an engine no backlog-refinement-steps runs needs a cap', () => {
-  const e = JSON.parse(readFileSync(join(engineDir('example-backlog-refinement'), 'state-engine.json'), 'utf8'));
+  const e = readEngine(join(engineDir('example-backlog-refinement'), 'workflow.yaml'));
   assert.deepEqual(validateStateEngine(e, ROOT, 'example-backlog-refinement', EXAMPLE_ENGINES), []);
   assert.ok(validateStateEngine(e, ROOT, 'not-a-refinement-engine', EXAMPLE_ENGINES).includes('step "estimate" loops back to "groom", which has no max-visits'));
 });
@@ -516,7 +559,7 @@ test('ASS-303 AC1-AC3: the grouped create-ticket prompt states the bare-command-
 
 test('ASS-277: given a project\'s own engines folder, the validator finds the engines its steps run there before engines/ — a sub-engine, its start step and its done steps, and the refinement engine it runs — as control does for that project', () => {
   const own = mkdtempSync(join(tmpdir(), 'own-'));
-  const put = (name, json) => { mkdirSync(join(own, name), { recursive: true }); writeFileSync(join(own, name, 'state-engine.json'), JSON.stringify(json)); };
+  const put = (name, json) => { mkdirSync(join(own, name), { recursive: true }); writeFileSync(join(own, name, 'workflow.yaml'), JSON.stringify(json)); };
   put('own-sub', { steps: [{ id: 'first', sequence: 1, action: { type: 'none' }, 'exit-events': [{ condition: { always: true }, 'move-to-state': 'end' }] }, { id: 'end', sequence: 2, 'is-done': true, action: { type: 'none' } }] });
   const top = { steps: [
     { id: 'run', sequence: 1, action: { type: 'state-engine', engine: 'own-sub' }, 'exit-events': [{ condition: { 'sub-engine-ended-at': 'end' }, 'move-to-state': 'done' }] },
@@ -527,7 +570,7 @@ test('ASS-277: given a project\'s own engines folder, the validator finds the en
   const without = validateStateEngine(top, ROOT, 'top');
   assert.ok(without.includes('step "run" has unknown state engine "own-sub"'), without.join('\n'));
   // The example project's own engines validate as its own.
-  for (const name of readdirSync(EXAMPLE_ENGINES)) assert.deepEqual(validateStateEngine(JSON.parse(readFileSync(join(EXAMPLE_ENGINES, name, 'state-engine.json'), 'utf8')), ROOT, name, EXAMPLE_ENGINES), [], name);
+  for (const name of readdirSync(EXAMPLE_ENGINES)) assert.deepEqual(validateStateEngine(readEngine(join(EXAMPLE_ENGINES, name, 'workflow.yaml')), ROOT, name, EXAMPLE_ENGINES), [], name);
 });
 
 // ASS-450 AC3: the ticket health check is removed; an engine still declaring its keys — as the family and
@@ -536,7 +579,7 @@ test('ASS-277: given a project\'s own engines folder, the validator finds the en
 test('ASS-450 AC3: check-ticket-health-sample-every and check-ticket-health-steps are ignored by the validator, the engine they run gone', () => {
   assert.ok(!existsSync(join(ROOT, 'engines', 'check-ticket-health-grouped')) && !existsSync(join(ROOT, 'engines', 'check-ticket-health')));
   const name = 'harness-development-grouped';
-  const real = JSON.parse(readFileSync(join(engineDir(name), 'state-engine.json'), 'utf8'));
+  const real = readEngine(join(engineDir(name), 'workflow.yaml'));
   const old = { ...real, 'check-ticket-health-sample-every': 5,
     'check-ticket-health-steps': [{ id: 'check-ticket-health', sequence: 1, name: 'Check Ticket Health', action: { type: 'state-engine', engine: 'check-ticket-health-grouped' }, 'exit-events': [{ condition: { 'is-done': true } }] }] };
   assert.deepEqual(validateStateEngine(old, ROOT, name, EXAMPLE_ENGINES), []);

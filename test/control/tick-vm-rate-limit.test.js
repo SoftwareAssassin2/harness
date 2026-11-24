@@ -32,8 +32,8 @@ const STOPPED = `vm p abc-3-a: stopped (ABC-3 A at build; rate-limited until ${R
 function lifecycle(variations, limits = SUBSCRIPTION) {
   const f = controlFixture();
   const file = (...rest) => join(f.dir, ...rest);
-  writeFileSync(file('harness.json'), JSON.stringify({ ...JSON.parse(readFileSync(file('harness.json'), 'utf8')), 'max-tickets-in-progress': null }));
-  for (const name of engineNames()) if (!existsSync(file('engines', name)) && existsSync(join(engineDir(name), 'state-engine.json'))) cpSync(engineDir(name), file('engines', name), { recursive: true });
+  f.seats(Infinity);   // ASS-528: seats not limited
+  for (const name of engineNames()) if (!existsSync(file('engines', name)) && existsSync(join(engineDir(name), 'workflow.yaml'))) cpSync(engineDir(name), file('engines', name), { recursive: true });
   const project = file('projects', 'p', 'project.json');
   writeFileSync(project, JSON.stringify({ ...JSON.parse(readFileSync(project, 'utf8')), 'execution-state-engine': ENGINE }));
   if (limits) writeFileSync(file('projects', 'p', 'rate-limit.json'), JSON.stringify(limits));

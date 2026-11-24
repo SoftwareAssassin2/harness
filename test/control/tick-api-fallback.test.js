@@ -11,7 +11,7 @@ import { test, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { join } from 'node:path';
 import { readFileSync, writeFileSync, mkdirSync, rmSync } from 'node:fs';
-import { controlFixture } from './control-fixture.js';
+import { controlFixture, macSeats } from './control-fixture.js';
 import { tick } from '../../src/control/tick.js';
 import { fakeVm } from '../support/fake-vm.js';
 import { until } from '../support/until.js';
@@ -258,7 +258,7 @@ test('ASS-217 AC6: once the subscription resets, new dispatches go back to it wh
   const [first] = at(f, 'plan');
   assert.equal(first?.['payment-method'], 'api', f.lines.join('\n'));
   // A second ticket arrives; the limit has reset.
-  edit(join(f.dir, 'harness.json'), h => { h['max-tickets-in-progress'] = 2; });
+  macSeats(f.ctx, 2);   // ASS-528: two seats on the Mac
   edit(join(f.dir, 'projects', 'p', 'sprints', 'sprint-10', 'sprint.json'), s => { s.features.push({ ...structuredClone(s.features[0]), key: 'ABC-4' }); });
   f.ctx.now = () => new Date(resetsAt + 1000);
   await tick(f.ctx);
@@ -285,7 +285,7 @@ test('ASS-217 AC7: a project with no .claude-api runs as before — no payment-m
 function vmFixture(kind) {
   const f = controlFixture();
   const file = (...rest) => join(f.dir, ...rest);
-  edit(file('engines', 'example-development', 'state-engine.json'), e => { e.steps = e.steps.map(s => (s.id === 'plan' ? { ...s, 'run-location': 'vm' } : s)); });
+  edit(file('engines', 'example-development', 'workflow.yaml'), e => { e.steps = e.steps.map(s => (s.id === 'plan' ? { ...s, 'run-location': 'vm' } : s)); });
   edit(file('projects', 'p', 'sprints', 'sprint-10', 'sprint.json'), s => { s.features[0].variations[0].vm = { name: 'abc-3-a', ip: '192.168.64.9', 'created-at': '2026-10-19T00:00:00Z' }; });
   writeFileSync(file('projects', 'p', 'vms.json'), JSON.stringify({ 'abc-3-a': { ticket: 'ABC-3', variation: 'A', state: 'Running', 'disk-bytes': 0, 'last-accessed': '2026-10-19T00:00:00Z', 'credential-kind': kind } }));
   const v = fakeVm(f.env);

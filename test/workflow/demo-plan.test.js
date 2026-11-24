@@ -7,10 +7,11 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { validateStateEngine } from '../../src/workflow/validate.js';
 import { engineDir, EXAMPLE_ENGINES } from '../support/engine-walk.js';
+import { readEngine } from '../../src/workflow/engine-file.js';
 
 const ROOT = join(import.meta.dirname, '..', '..');
 const prompt = name => readFileSync(join(ROOT, 'prompts', name, 'prompt.txt'), 'utf8');
-const engine = name => JSON.parse(readFileSync(join(engineDir(name), 'state-engine.json'), 'utf8'));
+const engine = name => readEngine(join(engineDir(name), 'workflow.yaml'));
 const promptAt = (name, id) => engine(name).steps.find(s => s.id === id).action.prompt;
 const PLANNING = ['harness-development', 'example-development', 'grouped-plan'];
 

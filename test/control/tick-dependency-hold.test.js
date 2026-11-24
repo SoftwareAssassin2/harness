@@ -29,10 +29,10 @@ const at = (key, state, extra = {}, sub) => ({ key, title: key, 'ticket-system-s
 const outsider = (key, status, assignee = 'A Teammate') => ({ key, title: `Outside ${key}`, url: `https://example.test/browse/${key}`, 'ticket-system-status': status, 'ticket-system-assignment': assignee });
 
 // The control fixture with p's sprint `sprint`, its outside-tickets.json
-// `outside`, wait-for-dependencies on, and harness.json's `limits`.
-function holding({ sprint = [], outside = [], limits = {} } = {}) {
+// `outside`, wait-for-dependencies on, and `seats` on the Mac (ASS-528; five by default).
+function holding({ sprint = [], outside = [], seats = 5 } = {}) {
   const f = controlFixture();
-  edit(join(f.dir, 'harness.json'), h => Object.assign(h, { 'max-tickets-in-planning': 5 }, limits));
+  f.seats(seats);
   edit(join(f.dir, 'projects', 'p', 'project.json'), p => { p['wait-for-dependencies'] = true; });
   const sprintFile = join(f.dir, 'projects', 'p', 'sprints', 'sprint-10', 'sprint.json');
   edit(sprintFile, s => { s.features = sprint; });
@@ -69,7 +69,7 @@ test('ASS-355 AC1, AC2: a ticket at plan whose outside dependency is not done ge
 });
 
 test('ASS-355 AC1: a ticket at a script step (build) is held there — no script started — and one at a sub-engine step starts no run', async () => {
-  const f = holding({ sprint: [at('ABC-1', 'build', { dependencies: ['EX-1'] }), at('ABC-2', 'local-testing', { dependencies: ['EX-1'] })], outside: [outsider('EX-1', 'To Do')], limits: { 'max-tickets-in-progress': 5 } });
+  const f = holding({ sprint: [at('ABC-1', 'build', { dependencies: ['EX-1'] }), at('ABC-2', 'local-testing', { dependencies: ['EX-1'] })], outside: [outsider('EX-1', 'To Do')], seats: 5 });
   try {
     await f.ticks(2);
     assert.equal(f.stateOf('ABC-1'), 'build', f.lines.join('\n'));
@@ -82,7 +82,7 @@ test('ASS-355 AC1: a ticket at a script step (build) is held there — no script
 });
 
 test('ASS-355 AC2 (release, scope 5): the outside dependency turning done releases the dependent at its step on the next tick — the script runs once, no step re-run, no visit spent', async () => {
-  const f = holding({ sprint: [at('ABC-1', 'build', { dependencies: ['EX-1'] })], outside: [outsider('EX-1', 'In Review')], limits: { 'max-tickets-in-progress': 5 } });
+  const f = holding({ sprint: [at('ABC-1', 'build', { dependencies: ['EX-1'] })], outside: [outsider('EX-1', 'In Review')], seats: 5 });
   try {
     await f.ticks(2);
     const before = f.variationOf('ABC-1')['state-changes'].length;
@@ -111,7 +111,7 @@ test('ASS-355 AC2 (release, scope 5): a prompt step held then released gets its 
 test('ASS-355 AC3: done is the status the engine\'s is-done step pairs — an engine pairing "Released" holds on "Done" and lifts on "Released"', async () => {
   const f = holding({ sprint: [at('ABC-1', 'plan', { dependencies: ['EX-1', 'ABC-2'] }), at('ABC-2', 'build', { 'ticket-system-status': 'Done' })], outside: [outsider('EX-1', 'Done')] });
   try {
-    edit(join(f.dir, 'engines', 'example-development', 'state-engine.json'), e => { e.steps.find(s => s.id === 'done')['paired-ticket-system-status'] = 'Released'; });
+    edit(join(f.dir, 'engines', 'example-development', 'workflow.yaml'), e => { e.steps.find(s => s.id === 'done')['paired-ticket-system-status'] = 'Released'; });
     await f.ticks();
     assert.equal(f.dispatched('ABC-1'), 0, f.lines.join('\n'));
     assert.equal(f.calls(/ABC-1 A plan: waits on EX-1, ABC-2$/).length, 1, f.lines.join('\n'));
@@ -123,7 +123,7 @@ test('ASS-355 AC3: done is the status the engine\'s is-done step pairs — an en
 });
 
 test('ASS-355 AC4: an agent running when the hold begins finishes its turn — not killed — its finish moves the ticket on, and the next step waits', async () => {
-  const f = holding({ sprint: [at('ABC-1', 'plan')], limits: { 'max-tickets-in-progress': 5 } });
+  const f = holding({ sprint: [at('ABC-1', 'plan')], seats: 5 });
   const hold = join(f.dir, 'hold');
   writeFileSync(hold, '');
   process.env.FAKE_HOLD = hold;
@@ -157,7 +157,7 @@ test('ASS-355 AC4: an agent running when the hold begins finishes its turn — n
 
 test('ASS-355 AC6: a held variation frees its planning slot — the next ticket gets it; without the hold it would not', async () => {
   for (const held of [true, false]) {
-    const f = holding({ sprint: [at('ABC-1', 'plan', { dependencies: ['EX-1'] }), at('ABC-2', 'committed')], outside: [outsider('EX-1', held ? 'In Progress' : 'Done')], limits: { 'max-tickets-in-planning': 1 } });
+    const f = holding({ sprint: [at('ABC-1', 'plan', { dependencies: ['EX-1'] }), at('ABC-2', 'committed')], outside: [outsider('EX-1', held ? 'In Progress' : 'Done')], seats: 1 });
     try {
       await f.ticks();
       assert.equal(f.stateOf('ABC-2'), held ? 'plan' : 'committed', `${held}\n${f.lines.join('\n')}`);
@@ -168,7 +168,7 @@ test('ASS-355 AC6: a held variation frees its planning slot — the next ticket 
 });
 
 test('ASS-355 AC6: a held variation frees its in-progress slot — the next ticket\'s run gets the agent; a held run already there gets none until released', async () => {
-  const f = holding({ sprint: [at('ABC-1', 'local-testing', { dependencies: ['EX-1'] }), at('ABC-2', 'local-testing')], outside: [outsider('EX-1', 'Done')], limits: { 'max-tickets-in-progress': 1 } });
+  const f = holding({ sprint: [at('ABC-1', 'local-testing', { dependencies: ['EX-1'] }), at('ABC-2', 'local-testing')], outside: [outsider('EX-1', 'Done')], seats: 1 });
   try {
     // No agent yet (max-agents 0): ABC-1 ranks first and holds the one in-progress slot; ABC-2, seatless, waits —
     // its run not made until it gets the seat (ASS-522 AC2), so only ABC-1's run is.
@@ -212,8 +212,8 @@ const ENGINE = 'example-development-grouped';
 function vmHeld(status) {
   const f = controlFixture();
   const file = (...rest) => join(f.dir, ...rest);
-  for (const name of engineNames()) if (!existsSync(file('engines', name)) && existsSync(join(engineDir(name), 'state-engine.json'))) cpSync(engineDir(name), file('engines', name), { recursive: true });
-  edit(file('harness.json'), h => { h['max-tickets-in-progress'] = null; });
+  for (const name of engineNames()) if (!existsSync(file('engines', name)) && existsSync(join(engineDir(name), 'workflow.yaml'))) cpSync(engineDir(name), file('engines', name), { recursive: true });
+  f.seats(Infinity);   // ASS-528: seats not limited
   edit(file('projects', 'p', 'project.json'), p => { p['execution-state-engine'] = ENGINE; p['wait-for-dependencies'] = true; });
   const v = fakeVm(f.env);
   v.instance('abc-3-a', 'Running');
