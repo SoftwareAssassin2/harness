@@ -301,3 +301,13 @@ test('ASS-355 AC2: fetchTicketsByKey with views false reads each ticket\'s statu
   assert.equal(fake.calls.length, 1);
   assert.deepEqual([ticket.key, ticket['ticket-system-status'], ticket['ticket-system-assignment'], 'points' in ticket, 'dependencies' in ticket], ['EX-301', 'In Review', 'A Teammate', false, false]);
 });
+
+// ASS-562 AC1: a ticket carries its status's category key (Jira's new, indeterminate or done) beside its name, so an
+// outside fix ticket in a status the engine does not pair is still known Done; a status with no category, none.
+test('ASS-562: a ticket carries its status category key as ticket-system-status-category; none when Jira gives no category', async () => {
+  const fake = acli([issue('EX-301', { status: { name: 'Closed', statusCategory: { key: 'done', name: 'Done' } } }), issue('EX-302')]);
+  const [closed, plain] = await fetchTicketsByKey({ site: board.site, keys: ['EX-301', 'EX-302'], views: false }, fake.run);
+  assert.equal(closed['ticket-system-status'], 'Closed');
+  assert.equal(closed['ticket-system-status-category'], 'done');
+  assert.equal('ticket-system-status-category' in plain, false);
+});

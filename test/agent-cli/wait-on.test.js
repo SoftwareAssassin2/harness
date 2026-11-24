@@ -8,6 +8,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { AGENT, fixture } from './harness-fixture.js';
+import { outsideTicket, pairDone, writeOutside } from './outside-fixture.js';
 
 const fails = (promise, message) => assert.rejects(promise, e => message.test(e.stderr));
 const exitOf = promise => promise.then(() => 0, e => e.code);
@@ -502,4 +503,93 @@ test('ASS-393 AC4: a fix in another project, or with no commit control recorded,
   f.home('q');
   rmSync(join(f.dir, 'control-commit-p'));                                                     // no commit recorded: as before ASS-393
   assert.equal(await landed(), 0);
+});
+
+// ASS-562: a fix ticket outside the sprint and backlog — a Jira ticket another team holds, say — is judged from
+// projects/<p>/outside-tickets.json (ticket:sync-outside's): Done by the engine's paired done status, or by the
+// ticket system's done status category, has landed (exit 0); anything else, or nothing known, waits (exit 1);
+// never exit 3 (no merge step or commit of the harness's to look for). In-sprint and backlog keys as before (AC3).
+const pSprint = f => join(f.dir, 'projects', 'p', 'sprints', 'sprint-10', 'sprint.json');
+function outside(waitsOn = 'ABC-77') {
+  const f = fixture();
+  pairDone(f.dir);
+  const s = JSON.parse(readFileSync(pSprint(f), 'utf8'));
+  s.features[0].variations.find(v => v.name === 'A')['waits-on'] = { project: 'p', ticket: waitsOn };
+  writeFileSync(pSprint(f), JSON.stringify(s));
+  const result = () => f.agent('ticket:fix-landed', 'p', 'ABC-3', 'A').then(r => ({ code: 0, out: JSON.parse(r.stdout) }), e => ({ code: e.code, out: e.stdout ? JSON.parse(e.stdout) : null }));
+  return { ...f, result };
+}
+
+test('ASS-562 AC1: an outside fix ticket not in outside-tickets.json, or with no file, is unknown and not landed (exit 1)', async () => {
+  const f = outside();
+  assert.deepEqual(await f.result(), { code: 1, out: { 'waits-on': { project: 'p', ticket: 'ABC-77' }, status: 'unknown', landed: false } });
+  writeOutside(f.dir, 'p', [outsideTicket('ABC-78', 'Done')]);
+  assert.deepEqual(await f.result(), { code: 1, out: { 'waits-on': { project: 'p', ticket: 'ABC-77' }, status: 'unknown', landed: false } });
+  writeOutside(f.dir, 'p', [outsideTicket('ABC-77', null)]);
+  const nul = await f.result();
+  assert.equal(nul.code, 1);
+  assert.equal(nul.out.status, 'unknown');
+});
+
+test('ASS-562 AC1: an outside fix ticket In Progress waits (exit 1); Done, the engine\'s paired status, landed (exit 0)', async () => {
+  const f = outside();
+  writeOutside(f.dir, 'p', [outsideTicket('ABC-77', 'In Progress')]);
+  assert.deepEqual(await f.result(), { code: 1, out: { 'waits-on': { project: 'p', ticket: 'ABC-77' }, status: 'In Progress', landed: false } });
+  writeOutside(f.dir, 'p', [outsideTicket('ABC-77', 'Done')]);
+  assert.deepEqual(await f.result(), { code: 0, out: { 'waits-on': { project: 'p', ticket: 'ABC-77' }, status: 'Done', landed: true } });
+});
+
+test('ASS-562 AC1: an unpaired status name lands only with the done status category; never exit 3', async () => {
+  const f = outside();
+  writeOutside(f.dir, 'p', [outsideTicket('ABC-77', 'Closed', { 'ticket-system-status-category': 'done' })]);
+  assert.equal((await f.result()).code, 0);
+  writeOutside(f.dir, 'p', [outsideTicket('ABC-77', 'Closed')]);
+  assert.equal((await f.result()).code, 1);
+  writeOutside(f.dir, 'p', [outsideTicket('ABC-77', 'Closed', { 'ticket-system-status-category': 'indeterminate' })]);
+  assert.equal((await f.result()).code, 1);
+  writeOutside(f.dir, 'p', [outsideTicket('ABC-77', 'Done', { 'ticket-system-status-category': 'indeterminate' })]);
+  assert.notEqual((await f.result()).code, 3);
+});
+
+test('ASS-562 AC1: an outside key is matched whatever its case', async () => {
+  const f = outside('abc-77');
+  writeOutside(f.dir, 'p', [outsideTicket('ABC-77', 'Done')]);
+  assert.equal((await f.result()).code, 0);
+});
+
+test('ASS-562 AC1: with the engine unreadable, Done lands only by its category', async () => {
+  const f = outside();
+  const project = join(f.dir, 'projects', 'p', 'project.json');
+  writeFileSync(project, JSON.stringify({ ...JSON.parse(readFileSync(project, 'utf8')), 'execution-state-engine': 'no-such-engine' }));
+  writeOutside(f.dir, 'p', [outsideTicket('ABC-77', 'Done')]);
+  assert.equal((await f.result()).code, 1);
+  writeOutside(f.dir, 'p', [outsideTicket('ABC-77', 'Done', { 'ticket-system-status-category': 'done' })]);
+  assert.equal((await f.result()).code, 0);
+});
+
+test('ASS-562 AC1: a corrupt outside-tickets.json is not landed (exit 1), not a crash', async () => {
+  const f = outside();
+  writeOutside(f.dir, 'p', '{ not json');
+  assert.equal((await f.result()).code, 1);
+});
+
+test('ASS-562 AC3: a sprint fix ticket is judged from the sprint, whatever outside-tickets.json says', async () => {
+  const f = waiting();
+  pairDone(f.dir);
+  await f.agent('ticket:wait-on', 'p', 'ABC-3', 'A', 'Q-1');
+  for (const project of ['p', 'q']) writeOutside(f.dir, project, [outsideTicket('Q-1', 'Done', { 'ticket-system-status-category': 'done' })]);
+  const landed = () => exitOf(f.agent('ticket:fix-landed', 'p', 'ABC-3', 'A'));
+  f.fix({ 'ticket-system-status': 'In Progress' });
+  assert.equal(await landed(), 1);
+  doneUnmerged(f);
+  assert.equal(await landed(), 3);                                                             // the sprint's Done without a merge wins
+});
+
+test('ASS-562 AC3: a backlog fix ticket is judged from the backlog, whatever outside-tickets.json says', async () => {
+  const f = waiting();
+  pairDone(f.dir);
+  writeFileSync(join(f.dir, 'projects', 'q', 'backlog.json'), JSON.stringify({ tickets: [{ key: 'Q-2', 'ticket-system-status': 'In Progress', variations: [] }] }));
+  await f.agent('ticket:wait-on', 'p', 'ABC-3', 'A', 'Q-2');
+  for (const project of ['p', 'q']) writeOutside(f.dir, project, [outsideTicket('Q-2', 'Done', { 'ticket-system-status-category': 'done' })]);
+  assert.equal(await exitOf(f.agent('ticket:fix-landed', 'p', 'ABC-3', 'A')), 1);
 });

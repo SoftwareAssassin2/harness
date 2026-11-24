@@ -57,3 +57,9 @@ test('ASS-355: ticket:sync-outside refuses a bad project, a missing file or a pa
   await assert.rejects(f.sync(JSON.stringify({ keys: ['EX-1'], tickets: [{ title: 'no key' }] })), /is not \{ keys/);
   assert.equal(existsSync(f.file), false);
 });
+
+test('ASS-562: ticket:sync-outside keeps a ticket\'s status category when given, and leaves it out when not', async () => {
+  const f = fixture();
+  await f.sync(['EX-1', 'EX-2'], [outside('EX-1', 'Closed', { 'ticket-system-status-category': 'done' }), outside('EX-2', 'To Do')]);
+  assert.deepEqual(f.read().tickets, [kept('EX-1', 'Closed', { 'ticket-system-status-category': 'done' }), kept('EX-2', 'To Do')]);
+});

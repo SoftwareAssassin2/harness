@@ -607,3 +607,51 @@ test('ASS-355 AC2: with the real adapter on a fake acli and the real agent.sh, a
   assert.deepEqual(outside.tickets, [{ key: 'EX-301', title: 'Summary EX-301', url: 'https://x.atlassian.net/browse/EX-301', 'ticket-system-status': 'In Review', 'ticket-system-assignment': 'Bea Other' }]);
   assert.equal(r.acli.filter(c => / view /.test(c)).length, 0, 'no per-ticket view');
 });
+
+// ASS-562 AC2: a key a live variation waits on (Blocked's fix ticket, ticket:wait-on) that neither the sprint
+// nor the backlog holds is read by key too, beside the dependencies, so fix-landed can judge it from
+// outside-tickets.json; its status category carried when Jira gives one.
+async function outsideCycle(features, backlog = [], read = []) {
+  const dir = root({ last: ISO, offBoard: false });
+  const p = join(dir, 'data', 'projects', 'p');
+  writeFileSync(join(p, 'sprints', 'sprint-10', 'sprint.json'), JSON.stringify({ name: 'S10', features, bugs: [], spikes: [] }));
+  writeFileSync(join(p, 'backlog.json'), JSON.stringify({ tickets: backlog }));
+  const a = adapters(), asked = [], calls = [];
+  a.jira.fetchSprintTickets = async () => features.map(t => ({ key: t.key }));
+  a.jira.fetchTicketsByKey = async opts => { asked.push(opts.keys); return read; };
+  const exec = async (file, args) => { calls.push([args[0], ...(args.at(-1)?.endsWith?.('.json') && existsSync(args.at(-1)) ? [JSON.parse(readFileSync(args.at(-1), 'utf8'))] : [])]); return ''; };
+  await runCycle({ root: dir, project: 'p', now: new Date(ISO), adapters: a, exec, log: () => {} });
+  return { asked, payload: calls.find(c => c[0] === 'ticket:sync-outside')?.[1] };
+}
+const waitsOn = (ticket, project = 'p', extra = {}) => ({ name: 'A', 'waits-on': { project, ticket, ...extra } });
+
+test('ASS-562 AC2: a key a variation waits on, with no dependency link, is read by key and handed to ticket:sync-outside', async () => {
+  const { asked, payload } = await outsideCycle([{ key: 'EX-1', dependencies: [], variations: [waitsOn('EX-77')] }]);
+  assert.deepEqual(asked, [['EX-77']]);
+  assert.deepEqual(payload.keys, ['EX-77']);
+});
+
+test('ASS-562 AC2: a lower-case waited-on key is upper-cased and read once with a dependency on the same key', async () => {
+  const { asked } = await outsideCycle([{ key: 'EX-1', dependencies: ['EX-301'], variations: [waitsOn('ex-301')] }]);
+  assert.deepEqual(asked, [['EX-301']]);
+});
+
+test('ASS-562 AC2: no read for a wait on a merge request, on another project\'s ticket, on a held key, or of a deleted variation or ticket', async () => {
+  const { asked, payload } = await outsideCycle([
+    { key: 'EX-1', dependencies: [], variations: [waitsOn('EX-71', 'p', { 'merge-request': 'https://x/mr/1' }), { ...waitsOn('EX-72'), name: 'B', 'is-deleted': true }] },
+    { key: 'EX-2', dependencies: [], variations: [waitsOn('Q-1', 'q'), { ...waitsOn('EX-1'), name: 'B' }] },
+    { key: 'EX-5', 'is-deleted': true, dependencies: [], variations: [waitsOn('EX-75')] },
+  ], [{ key: 'EX-9', variations: [waitsOn('EX-1')] }]);
+  assert.deepEqual(asked, []);
+  assert.equal(payload, undefined);
+});
+
+test('ASS-562 AC2: the waited-on ticket\'s status category goes to ticket:sync-outside when Jira gives one, and is left out when not', async () => {
+  const read = [
+    { key: 'EX-77', title: 'Fix', url: 'https://x.atlassian.net/browse/EX-77', 'ticket-system-status': 'Closed', 'ticket-system-status-category': 'done', 'ticket-system-assignment': 'A Teammate' },
+    { key: 'EX-78', title: 'Other', url: 'https://x.atlassian.net/browse/EX-78', 'ticket-system-status': 'To Do', 'ticket-system-assignment': null },
+  ];
+  const { payload } = await outsideCycle([{ key: 'EX-1', dependencies: ['EX-78'], variations: [waitsOn('EX-77')] }], [], read);
+  assert.deepEqual(payload.tickets.find(t => t.key === 'EX-77')['ticket-system-status-category'], 'done');
+  assert.equal('ticket-system-status-category' in payload.tickets.find(t => t.key === 'EX-78'), false);
+});

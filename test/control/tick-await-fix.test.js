@@ -10,6 +10,7 @@ import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { controlFixture } from './control-fixture.js';
 import { tick } from '../../src/control/tick.js';
 import { hs } from '../agent-cli/harness-fixture.js';
+import { outsideTicket, pairDone, writeOutside } from '../agent-cli/outside-fixture.js';
 import { engineDir } from '../support/engine-walk.js';
 import { until } from '../support/until.js';
 import { readEngine } from '../../src/workflow/engine-file.js';
@@ -179,4 +180,42 @@ test('ASS-343 AC3: a landed fix whose resume-at is the blocked step itself resum
   assert.equal(state(f), 'local-testing', f.lines.join('\n'));
   assert.deepEqual(topTrail(f).slice(3), ['local-testing→blocked', 'blocked→local-testing'], f.lines.join('\n'));
   assert.ok(f.lines.some(l => /^steps ABC-3 A blocked: the fix landed; resumes at local-testing: /.test(l)), f.lines.join('\n'));
+});
+
+// ASS-562 AC4: the fix is a ticket outside the sprint and backlog (ABC-77, kept in outside-tickets.json by
+// ticket:sync-outside): not Done, await-fix keeps waiting, no failure counted; once Done, Blocked clears back
+// to the step it blocked at, the change marked "fix-landed".
+function outsideFix(status) {
+  const f = fixture();
+  edit(join(f.dir, 'engines', 'example-development', 'workflow.yaml'), e => Object.assign(e.steps.find(s => s.id === 'blocked'), {
+    'follow-return-to-state': true, 'exit-events': [{ condition: { 'is-done': true }, 'follow-return-to-state': true }],
+  }));
+  pairDone(f.dir);
+  const was = (from, to) => ({ 'state-engine': 'example-development', 'from-state': from, 'to-state': to, timestamp: '2026-10-29T20:00:00Z', 'agent-dispatch-log': [], 'work-is-done': true });
+  edit(sprint(f), s => {
+    s.features.pop();                                                             // no ABC-9: the fix is outside the sprint
+    Object.assign(s.features[0].variations[0], { 'waits-on': { project: 'p', ticket: 'ABC-77' }, 'state-changes': [was('plan', 'build'), was('build', 'blocked')] });
+  });
+  writeOutside(f.dir, 'p', [outsideTicket('ABC-77', status)]);
+  return f;
+}
+const clearedTo = f => f.variation()['state-changes'].find(c => c['from-state'] === 'blocked' && !c['sub-state-change']);
+
+test('ASS-562 AC4: an outside fix ticket In Progress keeps await-fix waiting, no failure; Done, Blocked clears back to Build, cause fix-landed', async () => {
+  const f = outsideFix('In Progress');
+  for (let i = 0; i < 3; i++) { await tick(f.ctx); f.now += 5 * 60e3 + 1e3; }
+  assert.equal(state(f), 'blocked', f.lines.join('\n'));
+  assert.equal(run(f)?.state, 'await-fix', f.lines.join('\n'));
+  assert.equal(f.variation()['last-script-failure'], undefined, 'no failure recorded');
+  writeOutside(f.dir, 'p', [outsideTicket('ABC-77', 'Done')]);
+  for (let i = 0; i < 4 && state(f) === 'blocked'; i++) { await tick(f.ctx); f.now += 5 * 60e3 + 1e3; }
+  assert.equal(clearedTo(f)?.['to-state'], 'build', f.lines.join('\n'));
+  assert.equal(clearedTo(f)?.cause, 'fix-landed', f.lines.join('\n'));
+});
+
+test('ASS-562 AC4: an outside fix ticket already Done at the first poll resumes the ticket at once', async () => {
+  const f = outsideFix('Done');
+  for (let i = 0; i < 4 && state(f) === 'blocked'; i++) { await tick(f.ctx); f.now += 5 * 60e3 + 1e3; }
+  assert.equal(clearedTo(f)?.['to-state'], 'build', f.lines.join('\n'));
+  assert.equal(clearedTo(f)?.cause, 'fix-landed', f.lines.join('\n'));
 });
