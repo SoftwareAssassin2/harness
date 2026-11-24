@@ -137,6 +137,26 @@ test('ASS-428 AC2: every host prompt gives agent.sh its content by a staged file
   assert.deepEqual(problems, []);
 });
 
+// ASS-592 AC3, AC4: Update MR Details gives merge-request:update its description by a temp file (--from <file>), a bare
+// call the guard lets through and the sandbox runs outside it — never a heredoc, which the guard refuses on the host.
+test('ASS-592 AC3, AC4: the Update MR Details prompt has the description written to a temp file and passed with --from <file>, a bare agent.sh line the guard allows; no heredoc', () => {
+  const text = readFileSync(join(ROOT, 'prompts', 'update-merge-request-details-grouped', 'prompt.txt'), 'utf8');
+  assert.doesNotMatch(text, /heredoc/);
+  assert.doesNotMatch(text, /<</);
+  assert.ok(text.includes('`{agent-sh} merge-request:update {project} {ticket} {variation} <id> --from <file> "<title>"`'), text);
+  assert.match(text, /temp file/);
+  assert.match(text, /Bash call of its own/);
+  const root = realpathSync(ROOT);
+  const template = [...text.matchAll(/`(\{agent-sh\} merge-request:update [^`]*)`/g)].map(m => m[1]).find(c => c.includes('--from'));
+  assert.ok(template, text);
+  const call = template.replace('{agent-sh}', join(root, 'agent.sh')).replace('{project} {ticket} {variation}', 'harness ASS-592 A')
+    .replace('<id>', '1').replace('<file>', '/tmp/d.md').replace('"<title>"', '"T"');
+  assert.equal(call, `${join(root, 'agent.sh')} merge-request:update harness ASS-592 A 1 --from /tmp/d.md "T"`);
+  assert.equal(guard(call, { root }), null);
+  assert.equal(runsUnsandboxed(hostAgentSettings(ROOT), call), true);
+  assert.notEqual(guard(`${call} <<'EOF'`, { root }), null);   // the old form is refused: the check can fail
+});
+
 // ASS-463 AC4: the messages control and other agents send an agent while it works — its dispatch's wrapper, the status
 // check-in (supervise.js's nag: agent:request-status-update), a paired agent's message, the shut-down — as each engine
 // names them, filled for a host agent exactly as agent.sh fills them: every agent.sh call in them is one the host-agent

@@ -546,7 +546,8 @@ test('ASS-238 AC1: merge-request:update <id> - [<title>] sets the description fr
     'api projects/g%2Fapp/merge_requests/7 --hostname gitlab.com -X PUT -f description=Only the description',
     'api projects/g%2Fapp/merge_requests/7 --hostname gitlab.com -X PUT -f description=Same title -f title=Draft: ABC-5: Close the account']);
   await assert.rejects(piped(f, '  \n', 'merge-request:update', 'p', 'ABC-5', 'A', '1', '-'), e => /nothing on stdin/.test(e.stderr));
-  await assert.rejects(piped(f, 'x', 'merge-request:update', 'p', 'ABC-5', 'A', '1', 'desc.md'), e => /usage: merge-request:update <project> <ticket-key> <variation> <id> - \[<title>\]/.test(e.stderr));
+  // ASS-592: the usage names both forms, stdin's and --from <file>'s.
+  await assert.rejects(piped(f, 'x', 'merge-request:update', 'p', 'ABC-5', 'A', '1', 'desc.md'), e => /usage: merge-request:update <project> <ticket-key> <variation> <id> .*- \[<title>\]/.test(e.stderr) && /--from <file> \[<title>\]/.test(e.stderr));
   assert.equal(writes().length, 4);
 });
 
@@ -557,6 +558,55 @@ test('ASS-238 AC1: merge-request:update <id> on GitHub edits the pull request\'s
   assert.equal((await piped(f, 'Body\n', 'merge-request:update', 'p', 'ABC-5', 'A', '1', '-', 'ABC-5: Close the account')).stdout, 'https://github.com/o/h/pull/12\n');
   await piped(f, 'Body only', 'merge-request:update', 'p', 'ABC-5', 'A', '1', '-');
   assert.deepEqual(f.forge.log('gh'), ['pr edit 12 --repo o/h --body Body --title ABC-5: Close the account', 'pr edit 12 --repo o/h --body Body only']);
+});
+
+// ASS-592: a host agent in the sandbox can't pipe or heredoc into agent.sh (agent-sh-guard.js), so merge-request:update
+// also takes its description from a file: <id> --from <file> [<title>], the file's bytes sent as they are.
+test('ASS-592 AC1: merge-request:update <id> --from <file> [<title>] sends the file\'s content as the description on GitLab, the title as with "-"; no title, no title field and no pipeline', async () => {
+  const f = await planned([{ id: 1, repository: APP }]);
+  f.record({ 1: { status: 'Open', key: '!7', base: 'master' } });
+  view(f, 'app', 7, {});
+  f.forge.route('glab', /^api projects\/g%2Fapp\/merge_requests\/7 --hostname gitlab.com -X PUT /, { out: mr(7) });
+  f.forge.route('glab', /^api projects\/g%2Fapp\/merge_requests\/7\/pipelines --hostname gitlab.com -X POST$/, { out: { id: 51 } });
+  const file = join(f.dir, 'd.md');
+  writeFileSync(file, '## Summary\nA "quoted" line with $dollars\n- and `ticks`');
+  const { stdout } = await f.agent('merge-request:update', 'p', 'ABC-5', 'A', '1', '--from', file, 'ABC-5: Close the account (app)');
+  assert.equal(stdout, `${APP}/-/merge_requests/7\n`);
+  const writes = () => f.forge.log('glab').filter(l => / -X (PUT|POST)/.test(l));
+  assert.deepEqual(writes(), [
+    'api projects/g%2Fapp/merge_requests/7 --hostname gitlab.com -X PUT -f description=## Summary\nA "quoted" line with $dollars\n- and `ticks` -f title=Draft: ABC-5: Close the account (app)',
+    'api projects/g%2Fapp/merge_requests/7/pipelines --hostname gitlab.com -X POST']);
+  await f.agent('merge-request:update', 'p', 'ABC-5', 'A', '1', '--from', file);   // no title: the file's path is never taken for one
+  assert.deepEqual(writes().slice(2), ['api projects/g%2Fapp/merge_requests/7 --hostname gitlab.com -X PUT -f description=## Summary\nA "quoted" line with $dollars\n- and `ticks`']);
+});
+
+test('ASS-592 AC1: merge-request:update <id> --from <file> [<title>] on GitHub edits the pull request\'s body to the file\'s content with gh --repo, --title only with a title', async () => {
+  const f = await planned([{ id: 1, repository: HUB }]);
+  f.record({ 1: { status: 'Open', key: '#12', base: 'main' } });
+  f.forge.route('gh', /^pr edit 12 --repo o\/h /, { out: 'https://github.com/o/h/pull/12' });
+  const file = join(f.dir, 'd.md');
+  writeFileSync(file, 'Body "one"\n$two\n');
+  assert.equal((await f.agent('merge-request:update', 'p', 'ABC-5', 'A', '1', '--from', file, 'T')).stdout, 'https://github.com/o/h/pull/12\n');
+  await f.agent('merge-request:update', 'p', 'ABC-5', 'A', '1', '--from', file);
+  assert.deepEqual(f.forge.log('gh'), ['pr edit 12 --repo o/h --body Body "one"\n$two --title T', 'pr edit 12 --repo o/h --body Body "one"\n$two']);
+});
+
+test('ASS-592 AC2: merge-request:update --from a missing or empty file fails naming it, before any forge call; --from without a file, or an extra argument, gets the usage', async () => {
+  const f = await planned([{ id: 1, repository: APP }]);
+  f.record({ 1: { status: 'Open', key: '!7', base: 'master' } });
+  const forgeCalls = () => f.forge.log('glab').filter(l => / -X (PUT|POST)|merge_requests\/7/.test(l)).length + f.forge.log('gh').length;
+  const missing = join(f.dir, 'never-written.md');
+  await fails(f.agent('merge-request:update', 'p', 'ABC-5', 'A', '1', '--from', missing, 'T'), new RegExp(missing.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+  for (const [name, content] of [['blank.md', '  \n'], ['zero.md', '']]) {
+    const file = join(f.dir, name);
+    writeFileSync(file, content);
+    await assert.rejects(f.agent('merge-request:update', 'p', 'ABC-5', 'A', '1', '--from', file), e => e.stderr.includes(file) && /empty/.test(e.stderr), name);
+  }
+  const file = join(f.dir, 'd.md');
+  writeFileSync(file, 'D');
+  await fails(f.agent('merge-request:update', 'p', 'ABC-5', 'A', '1', '--from'), /usage: merge-request:update /);
+  await fails(f.agent('merge-request:update', 'p', 'ABC-5', 'A', '1', '--from', file, 'T', 'extra'), /usage: merge-request:update /);
+  assert.equal(forgeCalls(), 0);
 });
 
 test('ASS-238 AC1: merge-request:upload-image <id> - <name> uploads a PNG from stdin to the GitLab project\'s uploads and prints the markdown to embed; not a PNG, or a bad name, is refused before any forge call', async () => {
