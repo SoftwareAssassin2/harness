@@ -31,6 +31,8 @@
 // prompts), its output polled out with wait, its exit code the process's own (128 + the signal for one a signal
 // ended, as a shell says it; -1 when it could not start).
 //
+// ASS-587: as PID 1 it reaps the orphans a job leaves (reap_linux.go): its own children it waits on itself, by pid.
+//
 // Jobs' output lives under $JOBS_DIR (/var/lib/sandbox/jobs by default), so a
 // hibernated and resumed sandbox still has it. PORT is the port (80).
 package main
@@ -86,7 +88,28 @@ var (
 	jobsDir = envOr("JOBS_DIR", "/var/lib/sandbox/jobs")
 	mu      sync.Mutex
 	jobs    = map[string]*job{}
+	// startMu: a command started and its pid tracked as one step, which the reaper's scan also holds (ASS-587), so
+	// it never takes for an orphan a child of the server's own that exits at once.
+	startMu sync.Mutex
+	tracked = map[int]bool{}
 )
+
+// startTracked — cmd started, its pid tracked (the reaper leaves it to cmd.Wait) until untrack.
+func startTracked(cmd *exec.Cmd) error {
+	startMu.Lock()
+	defer startMu.Unlock()
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	tracked[cmd.Process.Pid] = true
+	return nil
+}
+
+func untrack(pid int) {
+	startMu.Lock()
+	delete(tracked, pid)
+	startMu.Unlock()
+}
 
 func envOr(name, fallback string) string {
 	if v := os.Getenv(name); v != "" {
@@ -96,6 +119,7 @@ func envOr(name, fallback string) string {
 }
 
 func main() {
+	startReaper()
 	if err := os.MkdirAll(jobsDir, 0o755); err != nil {
 		log.Fatalf("jobs folder %s: %v", jobsDir, err)
 	}
@@ -162,7 +186,11 @@ func handleProcess(w http.ResponseWriter, r *http.Request) {
 	cmd, _ := command(ctx, req)
 	var stdout, stderr strings.Builder
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
-	err := cmd.Run()
+	err := startTracked(cmd)
+	if err == nil {
+		err = cmd.Wait()
+		untrack(cmd.Process.Pid)
+	}
 	resp := processResponse{Stdout: stdout.String(), Stderr: stderr.String()}
 	if err != nil {
 		resp.Error = err.Error()
@@ -221,7 +249,7 @@ func handleStart(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if err := cmd.Start(); err != nil {
+	if err := startTracked(cmd); err != nil {
 		stdout.Close()
 		stderr.Close()
 		reply(w, http.StatusUnprocessableEntity, processResponse{ExitCode: -1, Error: err.Error()})
@@ -233,6 +261,7 @@ func handleStart(w http.ResponseWriter, r *http.Request) {
 	mu.Unlock()
 	go func() {
 		err := cmd.Wait()
+		untrack(j.pid)
 		stdout.Close()
 		stderr.Close()
 		code := exitCode(err)

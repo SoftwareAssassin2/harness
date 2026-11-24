@@ -29,7 +29,9 @@
 #
 # A service runs as its `user` (agent by default; sudo -u, the sandbox's
 # capabilities allowing), in its `workdir`, with its `env`; its output goes to
-# /var/log/sandbox/<name>.log, its pid to /run/sandbox/<name>.pid. A
+# /var/log/sandbox/<name>.log, its pid to /run/sandbox/<name>.pid, with its start
+# time (ps lstart) on a second line: a pid file outlives its process, and a stale
+# pid may name a zombie or another process since (ASS-587). A
 # toolchain is files only and starts nothing. A job runs once per sandbox
 # (ASS-542): done, it leaves /var/lib/sandbox/stack/jobs/<name>.done, and a
 # later start — after a resume, a restarted sandbox, a second `up` — skips it;
@@ -55,7 +57,20 @@ logs="${SANDBOX_LOGS:-$R/var/log/sandbox}" run="${SANDBOX_RUN:-$R/run/sandbox}" 
 mkdir -p "$logs" "$run" "$state/jobs" "$state/suites" 2>/dev/null || sudo install -d -o "$(id -un)" "$logs" "$run" "$state" "$state/jobs" "$state/suites"
 
 entry() { jq -c --arg n "$1" '.services[] | select(.name == $n)' "$declaration"; }
-running() { [[ -f "$run/$1.pid" ]] && kill -0 "$(cat "$run/$1.pid")" 2>/dev/null; }
+# pid_of <name> — its pid file's pid (line 1); started_of <pid> — that process's start time (ps lstart), none once gone.
+pid_of() { head -n 1 "$run/$1.pid"; }
+started_of() { local s; s="$(ps -o lstart= -p "$1" 2>/dev/null)" || return 0; s="${s#"${s%%[![:space:]]*}"}"; printf '%s' "${s%"${s##*[![:space:]]}"}"; }
+# running <name> — its recorded process alive: not a zombie, and started when its pid file says (ASS-587; an older
+# image's one-line pid file: not a zombie alone).
+running() {
+  local pid recorded stat
+  [[ -f "$run/$1.pid" ]] || return 1
+  pid="$(pid_of "$1")" recorded="$(sed -n 2p "$run/$1.pid")"
+  [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null || return 1
+  stat="$(ps -o stat= -p "$pid" 2>/dev/null)" || return 1
+  [[ "${stat// /}" != Z* ]] || return 1
+  [[ -z "$recorded" || "$(started_of "$pid")" == "$recorded" ]]
+}
 now() { date +%s.%N | cut -c1-14; }
 since() { awk -v a="$1" -v b="$(now)" 'BEGIN { printf "%.1f", b - a }'; }
 answers() { (exec 3<>"/dev/tcp/127.0.0.1/$1") 2>/dev/null; }
@@ -107,7 +122,7 @@ start_one() {
       if ! running "$name"; then
         echo "sandbox-services: starting $name"
         ( launch "$e" ) >> "$logs/$name.log" 2>&1 < /dev/null &
-        echo $! > "$run/$name.pid"
+        printf '%s\n%s\n' "$!" "$(started_of $!)" > "$run/$name.pid"
         how=ran
       fi
       waited=$SECONDS   # the clock, not the tries: one ready check can take seconds (a JVM's or an escript's start)
@@ -258,10 +273,10 @@ case "${1-}" in
   stop)
     shift
     [[ $# -gt 0 ]] || set -- $(jq -r '.services | reverse | .[].name' "$declaration")
-    for name; do running "$name" && kill -TERM "$(cat "$run/$name.pid")" && echo "sandbox-services: stopped $name"; rm -f "$run/$name.pid"; done ;;
+    for name; do running "$name" && kill -TERM "$(pid_of "$name")" && echo "sandbox-services: stopped $name"; rm -f "$run/$name.pid"; done ;;
   status)
     jq -r '.services[] | [.name, .kind, .version] | @tsv' "$declaration" | while IFS=$'\t' read -r name kind version; do
-      pid=null; ! running "$name" || pid="$(cat "$run/$name.pid")"
+      pid=null; ! running "$name" || pid="$(pid_of "$name")"
       done=false; [[ ! -f "$state/jobs/$name.done" ]] || done=true
       jq -nc --arg n "$name" --arg k "$kind" --arg v "$version" --argjson pid "$pid" --argjson d "$done" '{ name: $n, kind: $k, version: $v, running: ($pid != null), pid: $pid, done: $d }'
     done ;;
