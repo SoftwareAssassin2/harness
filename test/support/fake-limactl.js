@@ -26,6 +26,9 @@
 //   `delete -f` removes it; `copy -r <from> <to>` copies a file or folder,
 //   either side `<vm>:<path>`, the path under $FAKE_VM_ROOT (ASS-432; exit 1
 //   when the instance or the source is missing).
+// - ASS-577: with FAKE_LIMA_REFUSE_STOPPED=1, a `shell` or `copy` into an
+//   instance whose status is not Running fails as Lima's does (exit 1, its
+//   "is stopped, run `limactl start …`" line), and `shell` into a missing one too.
 // Under test/support/, which npm test's pattern leaves alone.
 import { spawn } from 'node:child_process';
 import { appendFileSync, cpSync, mkdirSync, existsSync, readFileSync, writeFileSync, readdirSync, rmSync } from 'node:fs';
@@ -43,11 +46,19 @@ const pin = (vm, port) => {
   writeFileSync(at(vm, 'lima.yaml'), `vmType: vz\nssh:\n  localPort: ${port}\n  loadDotSSHPubKey: false\n`);
 };
 
+// refuseStopped(vm) — ASS-577: as Lima refuses a shell or copy into an instance that is not running (opt-in, above).
+function refuseStopped(vm) {
+  if (process.env.FAKE_LIMA_REFUSE_STOPPED !== '1') return;
+  if (!existsSync(join(instances, vm))) { console.error(`time="x" level=fatal msg="instance \`${vm}\` does not exist, run \`limactl create ${vm}\` to create a new instance"`); process.exit(1); }
+  if (read(vm, 'status') !== 'Running') { console.error(`time="x" level=fatal msg="instance \`${vm}\` is stopped, run \`limactl start ${vm}\` to start the instance"`); process.exit(1); }
+}
+
 if (args[0] === 'shell') {
   let i = 1, workdir = null;
   if (args[i] === '--workdir') { workdir = args[i + 1]; i += 2; }
   const vm = args[i], argv = args.slice(args.indexOf('--', i) + 1);
   log({ vm, workdir, argv });
+  refuseStopped(vm);
   if (existsSync(at(vm, 'unreachable'))) {
     console.error(`ssh: connect to host 127.0.0.1 port ${read(vm, 'ssh-port')}: Connection refused`);
     process.exit(255);
@@ -94,6 +105,7 @@ if (args[0] === 'shell') {
       const m = /^([^/:]+):(.*)$/.exec(p);
       if (!m) return p;
       if (!existsSync(join(instances, m[1]))) { console.error(`instance ${m[1]} not found`); process.exit(1); }
+      refuseStopped(m[1]);
       return join(process.env.FAKE_VM_ROOT ?? process.cwd(), m[2]);
     });
     if (!existsSync(from)) { console.error(`${from}: No such file or directory`); process.exit(1); }

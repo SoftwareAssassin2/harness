@@ -487,7 +487,12 @@ commits anything left, pushes the branch from where the last step ran and
 pulls it where the next one runs (the worktree made, the workspace taken, or
 the machine's checkout brought up to date). Between two machine targets
 nothing moves beyond what their steps already push, unless one of them is a
-Substrate sandbox: its branches then move through the Mac (ASS-535). A step's agent on a Mac
+Substrate sandbox: its branches then move through the Mac (ASS-535). A ticket's
+Lima VM is stopped between steps, so a hand-over that reads from it (or brings
+the branch into it) starts it with `vm:start`, does its work and stops it again
+(ASS-577); while the Mac is out of memory the step waits instead (no failure
+counted). A VM that no longer exists is said so, the branches are taken from
+the forge, and what could not be recovered is logged. A step's agent on a Mac
 target runs on the host in that folder, and its scripts are told
 `HARNESS_RUN_TARGET`, so commands that fall back to the host work there.
 `seats.json` records each holder's `target`, and the Mac-target holders in its

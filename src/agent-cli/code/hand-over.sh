@@ -53,8 +53,23 @@ set -euo pipefail
 #   bundles, checked out); a workstation or cloud VM it leaves has pushed
 #   already, and one it goes to claims as before; a Mac target's side is as
 #   above. The sandbox (or VM) gone to must be there: control makes it first.
+# - ASS-577: a ticket's Lima VM is stopped between its steps (ASS-527), so the
+#   VM a hand-over reads its branches out of (or brings them into) is
+#   normally stopped, and Lima refuses a shell into a stopped instance. Found
+#   stopped, it is started here (vm:start: credentials in, so it can push),
+#   the branches bundled or pushed, and stopped again (vm:stop) — on failure
+#   too — only when this started it. Control asks the memory hold (ASS-398,
+#   run-target-places.js handOverWaits) before running a hand-over that would
+#   start one: under it the hand-over is not run at all (it waits, no failure
+#   counted). A VM the variation records that no longer exists (deleted, or
+#   reclaimed for disk) is said so plainly, and its branches are taken from the
+#   forge: whatever change/<KEY>… branches origin has (the last step's push),
+#   the rest of what the VM held named as lost — never retried forever.
 #
-# Prints { "from", "to", "branch", "folder" } (folder: the Mac place, or null).
+# Prints { "from", "to", "branch", "folder" } (folder: the Mac place, or null),
+# ASS-577: with "started-vm" (the Lima VM this started) and "stopped-again"
+# (whether it was stopped again) when it started one, and "missing-vm" (the VM
+# found gone) and "lost" (what of it could not be recovered) when one was gone.
 # Fails, recording nothing, when a push or a fast-forward fails (diverged), the
 # workspace is held by another ticket or has uncommitted changes, or the
 # project, ticket or variation is missing; control holds the step and tries
@@ -81,19 +96,80 @@ record() {
   update_whole_ticket "$command" "$project" "$key" --arg name "$variation" --arg to "$to" --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '
     .variations |= map(if .name == $name and (.["is-deleted"] | not) then .["run-target"] = { target: $to, at: $at } else . end)'
 }
-done_with() { jq -nc --arg f "$from" --arg t "$to" --arg b "${1:-}" --arg d "${2:-}" '{ from: (if $f == "" then null else $f end), to: $t, branch: (if $b == "" then null else $b end), folder: (if $d == "" then null else $d end) }'; }
+done_with() {
+  stop_started
+  jq -nc --arg f "$from" --arg t "$to" --arg b "${1:-}" --arg d "${2:-}" --arg s "${started_vm:-}" --arg again "${stopped_again:-}" --arg m "${missing_vm:-}" --arg l "${lost:-}" '
+    def n: if . == "" then null else . end;
+    { from: ($f | n), to: $t, branch: ($b | n), folder: ($d | n) }
+    + (if $s == "" then {} else { "started-vm": $s, "stopped-again": ($again == "yes") } end)
+    + (if $m == "" then {} else { "missing-vm": $m, lost: ($l | n) } end)'
+}
+
+# ASS-577: the ticket's Lima VM, stopped between steps, started for the hand-over and stopped again (see above).
+source "$here_code/../substrate/relay.bash"
+started_vm="" stopped_again="" missing_vm="" lost=""
+# stop_started — the VM this started, stopped again (once); a stop that fails is said, and left to control's VM lifecycle.
+stop_started() {
+  [[ -n "$started_vm" && -z "$stopped_again" ]] || return 0
+  if "$here_code/../../../agent.sh" vm:stop "$project" "$started_vm" >/dev/null; then stopped_again=yes
+  else stopped_again=no; echo "$command: could not stop $started_vm again; control's VM lifecycle stops it" >&2; fi
+}
+trap stop_started EXIT
+# lima_ready <vm> — the machine ready for the hand-over: a Lima VM (no kind: prefix) found stopped is started (vm:start);
+# 0 ready (or not a Lima VM: nothing to do), 3 when there is no such VM (no instance under LIMA_HOME); exits, saying
+# why, when it won't start or its state can't be read.
+lima_ready() {
+  local vm="$1" status
+  [[ -n "$vm" && "$vm" != *:* ]] || return 0
+  # Gone only when Lima has no instance folder for it either: a limactl that fails for another reason is no reason to
+  # take the forge's branches over what the VM holds.
+  if ! status="$(machine_status "$vm" 2>/dev/null)"; then
+    [[ ! -e "$(lima_home)/$vm" ]] || { echo "$command: could not read the state of $key $variation's Lima VM $vm" >&2; exit 1; }
+    return 3
+  fi
+  [[ "$status" != Running ]] || return 0
+  "$here_code/../../../agent.sh" vm:start "$project" "$key" "$variation" >/dev/null \
+    || { echo "$command: could not start $key $variation's stopped Lima VM $vm to hand its branches over" >&2; exit 1; }
+  started_vm="$vm"
+}
+# forge_branches — "<repo>\t<branch>" for each of the variation's own branches (relay.bash relay_slug) on the origin of
+# each of the project's repositories.
+forge_branches() {
+  local url name re
+  re="$(relay_slug "$key" "$variation")"
+  while IFS= read -r url; do
+    [[ -n "$url" ]] || continue
+    name="$(basename "${url%.git}")"
+    git ls-remote --heads "$url" 2>/dev/null | awk '{ sub("^refs/heads/", "", $2); print $2 }' | { grep -E "$re" || true; } | sed "s|^|$name"$'\t'"|"
+  done < <(jq -r '.repositories[]?.url // empty' "$projects/$project/project.json")
+}
+# forge_fallback <vm> — the VM the variation records is gone: said plainly; its branches are those on the forge, and what
+# could not be recovered is said (lost) — so the hand-over goes on, never retried for a VM that will not come back.
+forge_fallback() {
+  local found
+  missing_vm="$1"; found="$(forge_branches)"
+  if [[ -n "$found" ]]; then
+    lost="whatever $1 held that was never pushed (on the forge: $(awk -F '\t' '{ printf "%s%s %s", (NR > 1 ? ", " : ""), $1, $2 }' <<< "$found"))"
+  else lost="all of $key $variation's work in $1: none of its branches is on the forge"; fi
+  echo "$command: $key $variation's Lima VM $1 no longer exists; its branches are taken from the forge instead; lost: $lost" >&2
+}
 
 # ASS-535: machine to machine with a sandbox on either side: the branches relayed through the Mac.
 if [[ "$from" != "$to" ]] && { on_sandbox "$to" || on_sandbox "$from"; } && ! on_mac "$to" && { [[ -z "$from" ]] || ! on_mac "$from"; }; then
-  source "$here_code/../substrate/relay.bash"
-  moved="" vm=""
+  moved="" vm="" ready=0
   if [[ "$from" == local-vm ]] || on_sandbox "$from"; then
     vm="$(machine_at "$from")"
-    [[ -z "$vm" ]] || moved="$(relay_out "$command" "$project" "$key" "$variation" "$vm" "$from")" || exit 1
+    if [[ -n "$vm" ]]; then
+      lima_ready "$vm" || ready=$?
+      if [[ $ready -eq 3 ]]; then forge_fallback "$vm"   # ASS-577: relay_in below fetches them from origin
+      else moved="$(relay_out "$command" "$project" "$key" "$variation" "$vm" "$from")" || exit 1; fi
+      [[ "$vm" != "$started_vm" ]] || stop_started
+    fi
   fi
   if [[ "$to" == local-vm ]] || on_sandbox "$to"; then
     vm="$(machine_at "$to")"
     [[ -n "$vm" ]] || { echo "$command: $key $variation has no machine on $to to hand over to (control makes its sandbox first)" >&2; exit 1; }
+    lima_ready "$vm" || { echo "$command: $key $variation's Lima VM $vm no longer exists to hand over to (vm:create makes it)" >&2; exit 1; }
     moved+=$'\n'"$(relay_in "$command" "$project" "$key" "$variation" "$vm")" || exit 1
   fi
   record; done_with "$(awk -F '\t' 'NF > 1 { print $2; exit }' <<< "$moved")"; exit 0
@@ -135,7 +211,6 @@ elif [[ "$from" == local-workspace ]]; then
   update_json "$projects/$project/project.json" '.["local-environments"] |= map(if .type == "local-pc" then del(.["active-branch"], .["return-to"]) else . end)'
 elif on_sandbox "$from"; then
   # ASS-535: out of a sandbox through the Mac (relay.bash); the workspace's repository's branch is the one the Mac uses.
-  source "$here_code/../substrate/relay.bash"
   vm="$(machine_at "$from")"
   [[ -n "$vm" ]] || { echo "$command: $key $variation ran on $from but has no sandbox to hand over from" >&2; exit 1; }
   moved="$(relay_out "$command" "$project" "$key" "$variation" "$vm" "$from")" || exit 1
@@ -144,6 +219,12 @@ elif on_sandbox "$from"; then
 elif [[ -n "$from" ]]; then
   vm="$(vm_of "$command" "$project" "$key" "$variation")"
   [[ -n "$vm" ]] || { echo "$command: $key $variation ran on $from but has no machine to hand over from" >&2; exit 1; }
+  ready=0; lima_ready "$vm" || ready=$?
+  if [[ $ready -eq 3 ]]; then
+    # ASS-577: its Lima VM gone: the branch the Mac uses is the one recorded, else the workspace repository's on the forge.
+    forge_fallback "$vm"
+    [[ -n "$branch" ]] || branch="$(awk -F '\t' -v r="$repo" '$1 == r { print $2; exit }' <<< "$(forge_branches)")"
+  else
   # In the machine's checkout: leftovers committed, its branch pushed; it names the branch.
   b="$(machine_run --workdir "/repos/$repo" "$vm" -- bash -c '
     set -e; b="$(git symbolic-ref --quiet --short HEAD)"; [ -n "$b" ] && [ "$b" != "$1" ] || { echo "on ${b:-a detached HEAD}, not a ticket branch" >&2; exit 1; }
@@ -152,6 +233,8 @@ elif [[ -n "$from" ]]; then
     || { echo "$command: could not push the branch from $vm (/repos/$repo)" >&2; exit 1; }
   branch="$b"
   set_build "$command" "$project" "$key" "$variation" "$(jq -nc --arg b "$branch" '{ branch: $b }')"
+  fi
+  [[ "$vm" != "$started_vm" ]] || stop_started
 fi
 
 # Onto the next. ASS-553: the checkout it is brought into — the workspace for local-workspace; a worktree the variation
@@ -204,7 +287,6 @@ case "$to" in
     ;;
   *-substrate)
     # ASS-535: into a sandbox through the Mac (relay.bash): it fetches nothing itself.
-    source "$here_code/../substrate/relay.bash"
     vm="$(machine_at "$to")"
     [[ -n "$vm" ]] || { echo "$command: $key $variation has no sandbox to hand over to ($to; control makes it first)" >&2; exit 1; }
     relay_in "$command" "$project" "$key" "$variation" "$vm" >/dev/null || exit 1
@@ -213,6 +295,7 @@ case "$to" in
   *)
     vm="$(vm_of "$command" "$project" "$key" "$variation")"
     [[ -n "$vm" ]] || { echo "$command: $key $variation has no machine to hand over to ($to)" >&2; exit 1; }
+    lima_ready "$vm" || { echo "$command: $key $variation's Lima VM $vm no longer exists to hand over to (vm:create makes it)" >&2; exit 1; }
     # ASS-554: nothing of the branch on origin (a worktree step's branch with no work of its own, not pushed): nothing
     # to bring; the machine's checkout stays as it is.
     if ! git -C "$repo_dir" show-ref --verify --quiet "refs/remotes/origin/$branch"; then record; done_with "$branch" ""; exit 0; fi

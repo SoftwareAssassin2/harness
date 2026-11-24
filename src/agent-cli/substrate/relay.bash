@@ -116,7 +116,9 @@ for r in */; do r="${r%/}"; [ -e "$r/.git" ] || continue
   printf "%s\t%s\t%s\n" "$r" "$(git -C "$r" remote get-url origin)" "$( [ -n "$d" ] && git -C "$r" rev-parse -q --verify "$d^{commit}" 2>/dev/null)"
 done'
 
-# What runs in the machine to take the bundles in /tmp/harness-relay-in ($@: "<repo>\t<branch>" pairs).
+# What runs in the machine to take the bundles in /tmp/harness-relay-in ($@: "<repo>\t<branch>" pairs). ASS-577: the
+# bundles' folder is left when it can't be removed — in a real sandbox machine_copy_in writes it as root and this runs as
+# its agent, so `rm` was refused and a move whose branches had all been checked out failed (the next copy overwrites it).
 # shellcheck disable=SC2016
 relay_in_script='set -e; i="${HARNESS_VM_ROOT-}/tmp/harness-relay-in"
 for p in "$@"; do IFS="$(printf "\t")" read -r r b <<< "$p"; g="${HARNESS_VM_ROOT-}/repos/$r"
@@ -129,7 +131,7 @@ for p in "$@"; do IFS="$(printf "\t")" read -r r b <<< "$p"; g="${HARNESS_VM_ROO
     git -C "$g" checkout --quiet -b "$b" "origin/$b"
   fi
 done
-rm -rf "$i"'
+rm -rf "$i" 2>/dev/null || true'
 
 relay_in() {
   local command="$1" project="$2" key="$3" variation="$4" machine="$5" list r url basis relay b tmp pairs=() re

@@ -18,7 +18,7 @@ import { firstStepId, levelChanges, contextOf, ticketPath, found, moveTicket, mo
 import { skipsForStack, workModeNews } from './work-mode.js';
 import { failed, waiting, held as heldFor, ticketKey, runKey, cleared, BLOCK_AFTER, FAILED_STARTS } from './backoff.js';
 import { runsInVm, vmOf } from './vm.js';
-import { runsOnMachine, readyTarget, heldElsewhere } from './run-target-places.js';
+import { runsOnMachine, readyTarget, heldElsewhere, handOverWaits } from './run-target-places.js';
 import { onMacTarget, onSubstrateTarget, targetOf } from './seat-kinds.js';
 import { sandboxWaits, syncSandboxTicket, machineWork } from './sandboxes.js';
 import { machineOf } from './machine.js';
@@ -162,10 +162,12 @@ function scriptEnv(state, project, variation, key) {
   return Object.keys(env).length ? env : undefined;
 }
 
-// handedOver(ctx, project, ticket, variation, held, who) — ASS-540: the variation's branch handed over to its run
+// handedOver(ctx, state, project, ticket, variation, held, who) — ASS-540: the variation's branch handed over to its run
 // target before its script starts (run-target-places.js readyTarget); false, the step held a while (backoff.js) and
-// the failure logged, when that fails.
-async function handedOver(ctx, project, ticket, variation, held, who) {
+// the failure logged, when that fails. ASS-577: false too, nothing run and no failure counted, while the hand-over would
+// start its stopped Lima VM and the Mac is out of memory (handOverWaits).
+async function handedOver(ctx, state, project, ticket, variation, held, who) {
+  if (await handOverWaits(ctx, state, project, ticket, variation, who)) return false;
   try { await readyTarget(ctx, project, ticket, variation); return true; } catch (error) {
     const { until } = failed(ctx.memory, held, ctx.now().getTime(), error.message);
     ctx.log(PHASE, `${who}: could not hand its branch over to its run target: ${error.message}; tried again in ${Math.round((until - ctx.now().getTime()) / 1000)}s`);
@@ -371,7 +373,7 @@ async function runVariation(ctx, state, project, key, name) {
           if (!backlog && stepWaits(ctx, state, project, ticket, variation, step, who)) return;   // ASS-468: a workstation (or its VM) claimed for the step first
           if (!backlog && sandboxWaits(ctx, state, project, ticket, variation, step, who, held)) return;   // ASS-535: its Substrate sandbox up first (ASS-537: a failure the step's)
           if (!scriptDue(ctx, who, running, visit, step, ctx.now().getTime())) return;
-          if (!backlog && !await handedOver(ctx, project, ticket, variation, held, who)) { ctx.memory.ran.delete(visit); return; }   // ASS-540 (ASS-567: not run, so tried again this visit)
+          if (!backlog && !await handedOver(ctx, state, project, ticket, variation, held, who)) { ctx.memory.ran.delete(visit); return; }   // ASS-540 (ASS-567: not run, so tried again this visit)
           if (!backlog && !await ticketCopied(ctx, project, ticket, variation, step, held, who)) { ctx.memory.ran.delete(visit); return; }   // ASS-535 (ASS-567: likewise)
           startScript(ctx, running, visit, trackMachineScript(ctx, project.id, ticket.key, variation.name, step, usingMachine(ctx, project.id, ticket.key, variation.name, step, runScriptStep(ctx, step, values, who, variation, backlog ? undefined : scriptEnv(state, project, variation, ticket.key)))), who);   // ASS-527 AC2: its VM kept while it runs
           wait = ctx.scriptWait ?? SCRIPT_WAIT;
@@ -554,7 +556,7 @@ async function runTransient(ctx, state, id) {
           if (ticket && variation && !backlog && stepWaits(ctx, state, project, ticket, variation, step, who)) return;   // ASS-468
           if (ticket && variation && !backlog && sandboxWaits(ctx, state, project, ticket, variation, step, who, held)) return;   // ASS-535 (ASS-537: a failure the step's)
           if (!scriptDue(ctx, who, running, visit, step, ctx.now().getTime())) return;
-          if (ticket && variation && !backlog && !await handedOver(ctx, project, ticket, variation, held, who)) { ctx.memory.ran.delete(visit); return; }   // ASS-540 (ASS-567: not run, so tried again this visit)
+          if (ticket && variation && !backlog && !await handedOver(ctx, state, project, ticket, variation, held, who)) { ctx.memory.ran.delete(visit); return; }   // ASS-540 (ASS-567: not run, so tried again this visit)
           if (ticket && variation && !backlog && !await ticketCopied(ctx, project, ticket, variation, step, held, who)) { ctx.memory.ran.delete(visit); return; }   // ASS-535 (ASS-567: likewise)
           const scriptRun = runScriptStep(ctx, step, values, who, variation, ticket && variation && !backlog ? scriptEnv(state, project, variation, ticket.key) : undefined);
           startScript(ctx, running, visit, ticket && variation && !backlog ? trackMachineScript(ctx, project.id, ticket.key, variation.name, step, usingMachine(ctx, project.id, ticket.key, variation.name, step, scriptRun)) : scriptRun, who);   // ASS-527 AC2

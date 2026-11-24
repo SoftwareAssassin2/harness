@@ -155,7 +155,15 @@ const scriptKey = (project, key, variation) => `${project}/${String(key).toUpper
 // trackMachineScript(ctx, project, key, variation, step, running) — `running` (a script step's run), counted as
 // running on the variation's machine until it settles, when the step uses its machine; returned as it is.
 export function trackMachineScript(ctx, project, key, variation, step, running) {
-  if (!usesMachine(step) || key == null || variation == null) return running;
+  if (!usesMachine(step)) return running;
+  return trackMachineWork(ctx, project, key, variation, running);
+}
+
+// trackMachineWork(ctx, project, key, variation, running) — `running` counted as an in-machine script of the variation
+// until it settles, whatever its step (ASS-577: code:hand-over reading branches out of a Lima VM it started, so the VM
+// lifecycle does not stop that VM under it); returned as it is.
+export function trackMachineWork(ctx, project, key, variation, running) {
+  if (key == null || variation == null) return running;
   const k = scriptKey(project, key, variation), m = machineScripts(ctx);
   m.set(k, (m.get(k) ?? 0) + 1);
   const done = () => { const n = (m.get(k) ?? 1) - 1; if (n > 0) m.set(k, n); else m.delete(k); };

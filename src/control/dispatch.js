@@ -29,7 +29,7 @@ import { found, contextOf, ticketPath, isPaused, levelChanges, moveTicket, moveR
 import { problemOf, ticketOf, blockHistory, questionsOf } from './facts.js';
 import { failed, waiting, held, ticketKey, runKey } from './backoff.js';
 import { runsInVm, vmOf } from './vm.js';
-import { runsOnMachine, readyTarget, heldElsewhere } from './run-target-places.js';
+import { runsOnMachine, readyTarget, heldElsewhere, handOverWaits } from './run-target-places.js';
 import { targetOf, onSubstrateTarget } from './seat-kinds.js';
 import { sandboxWaits, syncSandboxTicket } from './sandboxes.js';
 import { macHost } from './machine-substrate.js';
@@ -759,6 +759,7 @@ export async function dispatch(ctx, state) {
     // ASS-468: a workstation (or, in vm+workstation mode, its VM) claimed for the step before its agent goes there.
     if (!waits.backlog && stepWaits(ctx, state, project, waits.ticket, waits.variation, step, `run ${run['state-engine']} ${run.id.slice(0, 8)} ${run.state}`)) continue;
     if (!waits.backlog && sandboxWaits(ctx, state, project, waits.ticket, waits.variation, step, `run ${run['state-engine']} ${run.id.slice(0, 8)} ${run.state}`, key)) continue;   // ASS-535 (ASS-537: a failure the step's)
+    if (!waits.backlog && await handOverWaits(ctx, state, project, waits.ticket, waits.variation, `run ${run['state-engine']} ${run.id.slice(0, 8)} ${run.state}`)) continue;   // ASS-577: its hand-over would start its Lima VM, out of memory
     // The ticket it works for (the fix ticket once made); the variation only when that is the context's own,
     // and in the run's own project (a harness run about another project's ticket logs no dispatch on it).
     const ticket = ticketOf(run, state.transient);
@@ -824,6 +825,7 @@ export async function dispatch(ctx, state) {
       if (stepWaits(ctx, state, project, at.ticket, at.variation, step, who)) continue;   // ASS-468: a workstation (or its VM) claimed for the step first
       if (heldElsewhere(project, item.key, item.variation, planned)) continue;   // ASS-565, ASS-567: not yet placed where the planner puts it: placed next tick
       if (sandboxWaits(ctx, state, project, at.ticket, at.variation, step, who, key)) continue;   // ASS-535: its Substrate sandbox up first (ASS-537: a failure the step's)
+      if (await handOverWaits(ctx, state, project, at.ticket, at.variation, who)) continue;   // ASS-577: its hand-over would start its Lima VM, out of memory
       const done = dispatching(ctx, project.id, item.key, item.variation);
       await ctx.attempt(PHASE, `${item.key} ${item.variation}`, heldOnFailure(ctx, key, async () => {
         const { ticket, variation } = at;
