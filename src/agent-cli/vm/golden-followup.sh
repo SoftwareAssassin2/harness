@@ -42,6 +42,7 @@ source "$here_vm/work.bash"
 command=vm:golden-followup title="Rebuild the Source"
 [[ $# -eq 1 || $# -eq 3 ]] || { echo "usage: $command <project> [<ticket-key> <variation>]" >&2; exit 1; }
 project="$1" key="" variation=""
+lima_use "$project" || exit 1   # ASS-578: its Lima folder, for every limactl below
 [[ $# -eq 1 ]] || { key="$(tr '[:lower:]' '[:upper:]' <<< "$2")" variation="$3"; variation_exists "$command" "$project" "$key" "$variation"; }
 golden_definition "$command" "$project"
 dir="$projects/$project" golden="golden-$project"

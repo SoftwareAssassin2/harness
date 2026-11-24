@@ -188,8 +188,8 @@ glab_run() {
 # container is missing, stopped, unreachable or does not mount the folder.
 # Given <vm> (a variation's, ASS-74), it runs in that VM instead, <folder> a
 # folder there, through the machine layer (machine.bash machine_run,
-# ASS-432; for a Lima VM, limactl shell under lima-home.bash's LIMA_HOME,
-# ASS-273): the VM holds the project's dependencies.
+# ASS-432; for a Lima VM, limactl shell with the folder holding it as
+# LIMA_HOME, lima-home.bash lima_vm_home: ASS-273, ASS-578): the VM holds the project's dependencies.
 IN_PROJECT_SHIM='f="$(mktemp)"; trap '"'"'rm -f "$f"'"'"' EXIT; cat > "$f"; [ -s "$f" ] && export NPM_CONFIG_USERCONFIG="$f"; bash -c "$1"; s=$?; rm -f "$f"; exit $s'
 in_project() {
   local command="$1" project="$2" folder="$3" run="$4" vm="${5:-}" container state inside input=/dev/null k v

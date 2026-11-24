@@ -8,7 +8,8 @@
 // 2. One card per machine (boxes.js card), in placement order: the next ticket's machine first, then the others that can
 //    take work in the order the project's pool choice would try them (pool-choice.js macRoom / machineRoom: most room
 //    first for remote-first and most-room — remote machines before the Mac for remote-first — run-target order for
-//    first), then those that can't. Two cards a row from 120 columns, one a row narrower. Each card:
+//    first), then those that can't, the Mac last when the project can't run work on it (ASS-580: its card is always
+//    shown, with its gray "no work" verdict, counted in the headline but never its next machine). Two cards a row from 120 columns, one a row narrower. Each card:
 //    - its title: the machine and its kind ("mac · shared by N projects" for the Mac, while other projects use it too),
 //      and its status: ● running (green), ● starting / connecting (amber), ○ stopped (gray: started on demand),
 //      ● unreachable / setup failed / sign-in needed / start timed out (red); a stopped or not freshly measured
@@ -26,10 +27,13 @@
 //      counts it as lost, and so does the dashboard's planner: shared.js planProject's bootWaitOver, so the headline never
 //      names it), "no work: <why it can't be used>"…;
 //    - Cluster: its Substrate cluster's state and the project's part of it (memory, CPU), red with its troubles;
+//    - Image (ASS-580): the sandbox image its cluster runs for the project (the Mac's architecture on the Mac, amd64 on
+//      a remote machine): built <day> UTC, building (amber), build failed (red), none (gray);
 //    - On it: the project's tickets there (machine-tickets.js ticketsOn), at most ON_IT, then "+N more";
 //    - the Mac's Share line(s): the project's share of the harness's budget, its allotment, its use, what it lends or
 //      borrows (seat-budget.json).
-// 3. The project line: its agents per model, its golden image (name, the day it was built), its sandbox images.
+// 3. The project line: its agents per model, its golden image (name, the day it was built), and any sandbox image no
+//    card shows (never one twice on the screen).
 // 4. The legend, gray.
 // On a terminal too short for every card the cards are cut a row at a time from the bottom, and a gray "+N machines
 // below" says how many are hidden; the headline and the legend always show. Read-only, no keys of its own; it
@@ -74,7 +78,7 @@ const bootWords = project => `up to ${minutes(Number(project.bootWaits?.['wait-s
 
 // ===== The machines' facts =====
 
-// usesMac(project) — whether the project can run work on the Mac, so gets a Mac card: Lima VMs (its mode), a run target
+// usesMac(project) — whether the project can run work on the Mac, so gets a usable Mac card: Lima VMs (its mode), a run target
 // on the Mac, or a Substrate cluster declared there — or its dev-environments unread or wrong (the Mac is where work
 // then goes). Its own here (ASS-572), not the footer's machine-health groups, which ask another question.
 const MAC_TARGETS = new Set(['local-workspace', 'local-worktree', 'local-substrate']);
@@ -88,6 +92,7 @@ export function usesMac(project) {
 // macMachine(state, project, now) — the Mac's card facts for `project`: the whole Mac's CPU, RAM and disk; the
 // project's seats there, its verdict and share.
 function macMachine(state, project) {
+  const usable = usesMac(project);
   const budget = project.seatBudget ?? null;
   const mac = (budget?.mac ?? (state.projects ?? []).map(p => p.seatBudget?.mac).find(Boolean)) ?? {}, over = mac.over ?? [];
   const disk = state.disk;
@@ -123,8 +128,12 @@ function macMachine(state, project) {
     disk: has(disk?.['free-bytes']) ? { free: disk['free-bytes'], total: disk['total-bytes'] ?? null, hold: disk['hold-bytes'] ?? null, warn: disk['warn-bytes'] ?? null, held: diskHeld, low: disk.level === 'warn' } : null,
     seats: seated ? { held, possible } : null, verdict, canTake, room: macRoom(budget),
     cpuCapacity: capacity ?? null,
-    cluster: clusterFacts(project.substrate?.mac, budget?.used?.substrate, state.disk, capacity),
-    share: budget ? shareFacts(budget, capacity) : { missing: true },
+    // ASS-580: a project that can't run work on the Mac still gets its card (the Mac runs control, the forwarder,
+    // Hindsight and the registry for every project), with its gray verdict, the whole Mac's gauges and no Share line.
+    noWork: !usable,
+    cluster: usable || project.substrate?.mac ? clusterFacts(project.substrate?.mac, usable ? budget?.used?.substrate : null, state.disk, capacity) : null,
+    share: !usable ? null : budget ? shareFacts(budget, capacity) : { missing: true },
+    images: machineImages(project, 'mac', macArch()),
   };
 }
 
@@ -194,7 +203,22 @@ function remoteMachine(project, w, now) {
     seats: { held, possible }, verdict, boot, canTake: usable && room > 0, room: usable ? machineRoom(b) : 0,
     cpuCapacity: capacity,
     cluster: clusterFacts(project.substrate?.[w.id], b?.substrate, null, capacity, now),
+    images: machineImages(project, w.id, REMOTE_ARCH),
   };
+}
+
+// macArch(arch) — ASS-580: the Mac's own architecture as the sandbox images name it (arm64 on Apple silicon, amd64 on
+// Intel): the image its cluster runs. Remote machines run the amd64 one (substrate:deliver-image).
+export const macArch = (arch = process.arch) => (arch === 'x64' ? 'amd64' : 'arm64');
+const REMOTE_ARCH = 'amd64';
+
+// machineImages(project, id, arch) — ASS-580: the sandbox images a machine's cluster runs for the project, for its card:
+// [{ arch, image }] (image null when none was built) while the project has a Substrate cluster on the machine; the Mac
+// also shows its architecture's image when one was built for a cluster not declared (yet, or any more). [] otherwise.
+function machineImages(project, id, arch) {
+  const image = project.sandboxImages?.[arch] ?? null;
+  const cluster = (project.substrateMachines ?? []).includes(id);
+  return cluster || (id === 'mac' && image) ? [{ arch, image }] : [];
 }
 
 // clusterFacts(live, use, disk, capacity, now) — a machine's Substrate cluster for its card: its last check's state
@@ -213,14 +237,15 @@ function shareFacts(b, capacity) {
   return { share: b.share ?? null, split: b['share-source'] === 'split', allotment: b.allotment?.seats ?? null, allotted: fig(b.allotment), uses: b.used?.seats ?? 0, used: fig(b.used), lends: fig(b.lends), borrows: fig(b.borrows) };
 }
 
-// machines(state, now) — the project on screen's machines' card facts, in its pool's order: the Mac while the project
-// can use it (machine-health.js usesMac), then its workstations and cloud VMs (dev-environments order). Machines are
-// never shared between projects, so no other project's appear. [] without a project.
+// machines(state, now) — the project on screen's machines' card facts, in its pool's order: the Mac, always (ASS-580:
+// a project that can't run work there gets it with its "no work" verdict), then its workstations and cloud VMs
+// (dev-environments order). Remote machines are never shared between projects, so no other project's appear. []
+// without a project.
 export function machines(state, now = Date.now()) {
   const project = state.projects?.[state.project];
   if (!project) return [];
   const remote = (project.devEnvironments?.workstations ?? []).map(w => remoteMachine(project, w, now));
-  return [...(usesMac(project) ? [macMachine(state, project)] : []), ...remote];
+  return [macMachine(state, project), ...remote];
 }
 
 // placed(list, next, project) — the machines in placement order (see the module comment).
@@ -232,7 +257,7 @@ export function placed(list, next, project) {
   const key = m => (choice === 'first' ? [order(m), 0] : [choice === 'remote-first' && m.kind === 'mac' ? 1 : 0, -rank(m.room)]);
   const able = list.filter(m => m.canTake).map((m, i) => ({ m, i })).toSorted((a, b) => { const [x, y] = [key(a.m), key(b.m)]; return x[0] - y[0] || x[1] - y[1] || a.i - b.i; }).map(e => e.m);
   const nextId = nextMachineId(next);
-  const all = [...able, ...list.filter(m => !m.canTake)];
+  const all = [...able, ...list.filter(m => !m.canTake && !m.noWork), ...list.filter(m => !m.canTake && m.noWork)];   // a Mac it can't use last (ASS-580)
   const first = all.find(m => m.id === nextId);
   return first ? [first, ...all.filter(m => m !== first)] : all;
 }
@@ -253,7 +278,7 @@ export function headline(project, list, next, columns) {
   if (!list.length) tail = gray('no machines: its run targets name none');
   else if (!next?.target) {
     // A machine with a free seat now whose seats the planner gives to tickets already waiting: says so first.
-    const why = [...(next?.ahead ? [`the free seats go to ${plural(next.ahead, 'ticket')} already waiting`] : []), ...list.filter(m => !m.canTake).map(m => `${m.id} ${m.verdict.short ?? m.verdict.text}`)];
+    const why = [...(next?.ahead ? [`the free seats go to ${plural(next.ahead, 'ticket')} already waiting`] : []), ...list.filter(m => !m.canTake && !m.noWork).map(m => `${m.id} ${m.verdict.short ?? m.verdict.text}`)];
     tail = red(`nothing can take work${why.length ? `: ${why.join(', ')}` : ''}`);
   } else {
     const m = list.find(x => x.id === id);
@@ -381,6 +406,7 @@ export function machineCard(state, project, m, width) {
       gaugeLine('Disk', diskGauge(m), inner, stale),
       seatsLine(m),
       ...(m.cluster ? [clusterLine(m.cluster)] : []),
+      ...(m.images ?? []).map(({ arch, image }) => `${'Image'.padEnd(LABEL)}${imageText(arch, image)}`),
       ...onLines.map((l, i) => `${(i ? '' : 'On it').padEnd(LABEL)}${l}`).flatMap(l => wrapLine(l, inner, LABEL + 3)),   // a ticket's line wraps under its key
       ...(m.share ? shareLines(m.share).flatMap(parts => pack(parts.filter(p => p.trim()), inner)) : []),
     ].flatMap(l => wrapLine(l, inner, LABEL)),
@@ -389,8 +415,9 @@ export function machineCard(state, project, m, width) {
 
 // ===== The project line and the legend =====
 
-// projectLines(state, columns) — "agents: <model> 🤖x<n>, … · golden image <name> built <day> UTC · sandbox image <arch>
-// built <day>" (ASS-566's project line: the footer's models box and golden image before), packed into lines.
+// projectLines(state, columns) — "agents: <model> 🤖x<n>, … · golden image <name> built <day> UTC" (ASS-566's project
+// line: the footer's models box and golden image before), packed into lines; then any sandbox image no card shows
+// (ASS-580: each image is on the cards of the machines that run it, never twice on the screen).
 export function projectLines(state, columns) {
   const project = state.projects?.[state.project];
   if (!project) return [];
@@ -401,23 +428,29 @@ export function projectLines(state, columns) {
   const parts = [
     models.length ? `agents: ${models.join(', ')}` : 'no agents',
     golden ? `golden image ${golden.name} ${golden['built-at'] ? `built ${utcDate(new Date(golden['built-at']))} UTC` : 'not built'}` : 'golden image: none',
-    ...sandboxImageParts(project),
+    ...sandboxImageParts(project, machines(state)),
   ];
   return wrapParts(parts.map((p, i) => (i < parts.length - 1 ? `${p} ·` : p)), columns);
 }
 
-// sandboxImageParts(project) — each architecture's sandbox image: building (a build started, not ended), build failed
-// (red: substrate-config.js imageBuildFailed, the header chip's rule), or built <day>; "sandbox image: none" for a
-// project with a Substrate cluster and no image; nothing for one with neither.
-function sandboxImageParts(project) {
+// imageText(arch, image) — one sandbox image: building (amber: a build started, not ended), build failed (red:
+// substrate-config.js imageBuildFailed, the header chip's rule), built <day> UTC, or none (never built).
+function imageText(arch, image) {
+  if (!image) return gray(`sandbox image ${arch}: none`);
+  if (imageBuildFailed(image)) return red(`sandbox image ${arch} build failed`);
+  if (image.run?.['started-at'] && !image.run['ended-at']) return AMBER(`sandbox image ${arch} building`);
+  const at = image.label?.['built-at'];
+  return `sandbox image ${arch} ${at ? `built ${utcDate(new Date(at))} UTC` : 'not built'}`;
+}
+
+// sandboxImageParts(project, list) — the project line's sandbox images: those no machine's card shows (an amd64 image
+// with no remote cluster, say); "sandbox image: none" for a project with a Substrate cluster on no card and no image.
+function sandboxImageParts(project, list) {
+  const onCards = new Set(list.flatMap(m => (m.images ?? []).map(i => i.arch)));
   const images = Object.entries(project.sandboxImages ?? {});
-  if (!images.length) return (project.substrateMachines ?? []).length ? ['sandbox image: none'] : [];
-  return images.map(([arch, image]) => {
-    if (imageBuildFailed(image)) return red(`sandbox image ${arch} build failed`);
-    if (image.run?.['started-at'] && !image.run['ended-at']) return AMBER(`sandbox image ${arch} building`);
-    const at = image.label?.['built-at'];
-    return `sandbox image ${arch} ${at ? `built ${utcDate(new Date(at))} UTC` : 'not built'}`;
-  });
+  const ids = new Set(list.map(m => m.id));
+  if (!images.length) return (project.substrateMachines ?? []).some(id => !ids.has(id)) ? ['sandbox image: none'] : [];
+  return images.filter(([arch]) => !onCards.has(arch)).map(([arch, image]) => imageText(arch, image));
 }
 
 export const LEGEND = `■ seat in use  □ seat free  │ limit  ● running  ○ stopped   ${ICONS.sandbox} sandbox  ${ICONS.worktree} worktree  ${ICONS.vm} Lima VM  ${ICONS.slot} slot  ${ICONS.workspace} workspace`;

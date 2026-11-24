@@ -34,6 +34,7 @@ source "$here_vm/work.bash"
 command=vm:image-recheck title="Verify the Repaired Image"
 [[ $# -eq 3 ]] || { echo "usage: $command <project> <ticket-key> <variation>" >&2; exit 1; }
 project="$1" key="$(tr '[:lower:]' '[:upper:]' <<< "$2")" variation="$3"
+lima_use "$project" || exit 1   # ASS-578: its Lima folder, for every limactl below
 variation_exists "$command" "$project" "$key" "$variation"
 golden_definition "$command" "$project"
 golden="golden-$project"

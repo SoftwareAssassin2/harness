@@ -152,12 +152,16 @@ export function parseVzProcesses(text) {
 // resident bytes, instance name → bytes: `lsof -Fpn` lists the files each
 // process holds open, and a VM process holds its instance's (<home>/<name>/disk,
 // cidata.iso, serialv.log …); Lima's own folders (_config, _cache) are not instances.
+// ASS-578: home may be a list — every Lima folder in use (machine-lima.js
+// limaHomes: the harness-wide one and each project's own) — an instance in any of them counted.
 export function matchInstances(lsof, home, procs) {
-  const vms = new Map(), root = `${home.replace(/\/+$/, '')}/`;
+  const vms = new Map(), roots = [home].flat().map(h => `${h.replace(/\/+$/, '')}/`);
   let pid = null;
   for (const line of lsof.split('\n')) {
     if (line.startsWith('p')) pid = Number(line.slice(1));
-    else if (line.startsWith('n') && procs.has(pid) && line.slice(1).startsWith(root)) {
+    else if (line.startsWith('n') && procs.has(pid)) {
+      const root = roots.find(r => line.slice(1).startsWith(r));
+      if (!root) continue;
       const name = line.slice(1 + root.length).split('/')[0];
       if (name && !name.startsWith('_') && !vms.has(name)) vms.set(name, procs.get(pid));
     }
@@ -194,6 +198,9 @@ async function footprints(procs) {
   } catch (error) { return { procs, measure: 'resident', error: error.message }; }
 }
 
+// realHomes(home) — the Lima folder(s), each through its real path (lsof names the files so); one not there kept as given.
+export const realHomes = home => [home].flat().map(h => { try { return realpathSync(h); } catch { return h; /* not there: no instance matches */ } });
+
 const run = (command, args) => new Promise((resolve, reject) => execFile(command, args, { timeout: 10_000, maxBuffer: 16 * 2 ** 20 }, (error, stdout) => {
   if (error && !stdout) reject(new Error(`${command}: ${error.message}`));   // lsof exits 1 when a file is not listable, its listing given all the same
   else resolve(stdout);
@@ -205,7 +212,7 @@ const run = (command, args) => new Promise((resolve, reject) => execFile(command
 // (ASS-422: vm_stat's, parseVmStat; reclaimableBytes null when it could not
 // be read, vmStatError saying why), vms (Lima instance
 // name → its VM process's footprint bytes, ASS-419, for the instances in
-// `home`, LIMA_HOME; null when they could not be measured, vmsError saying
+// `home`, a Lima folder or a list of them (ASS-578: every one in use, limaHomes); null when they could not be measured, vmsError saying
 // why), measure (ASS-419: 'footprint', or 'resident' when only ps rss could
 // be read, footprintError saying why) } — sysctl, ps, footprint and lsof,
 // each well under a second.
@@ -223,8 +230,7 @@ export const readHostMemory = home => async () => {
     const measured = await footprints(parseVzProcesses(await run('ps', ['-axo', 'pid=,rss=,comm=']))), procs = measured.procs;
     reading.measure = measured.measure;
     if (measured.error) reading.footprintError = measured.error;
-    let real = home;
-    try { real = realpathSync(home); } catch { /* not there: no instance matches */ }
+    const real = realHomes(home);
     reading.vms = procs.size ? matchInstances(await run('lsof', ['-nP', '-Fpn', '-p', [...procs.keys()].join(',')]), real, procs) : new Map();
   } catch (error) {
     reading.vms = null;

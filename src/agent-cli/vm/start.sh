@@ -71,6 +71,7 @@ source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../registry/registry.bas
 [[ $# -eq 3 || ( $# -eq 4 && "$4" == --display ) ]] || { echo "usage: vm:start <project> <ticket-key> <variation> [--display]" >&2; exit 1; }
 display=none; [[ $# -eq 3 ]] || display=vz
 project="$1" key="$(tr '[:lower:]' '[:upper:]' <<< "$2")" variation="$3"
+lima_use "$project" || exit 1   # ASS-578: its Lima folder, for every limactl below
 variation_exists vm:start "$project" "$key" "$variation"
 recorded="$(recorded_vm vm:start "$project" "$key" "$variation" 2>/dev/null || true)"
 if machine_remote "$recorded"; then   # ASS-481: a cloud VM's (cloud-vm:…) as a workstation's

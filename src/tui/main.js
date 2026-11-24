@@ -298,7 +298,8 @@ const log = text => {
 };
 // ASS-417: on a quit (not a restart), once control and the downloader have
 // stopped, a golden image build still running is interrupted and every
-// running VM under the harness's LIMA_HOME (limaEnv) stopped (vmStopper),
+// running VM in every Lima folder in use (the harness's LIMA_HOME, limaEnv, and
+// each project's own lima-home, ASS-578) stopped (vmStopper),
 // each given harness.json's vm-stop-timeout-seconds (60) before it is
 // force-stopped; the legend counts them down (state.vmsStopping), and Q
 // again force-stops the rest at once (end.force).

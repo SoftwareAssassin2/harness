@@ -13,8 +13,7 @@
 // memory reading is: a test's control never reads the real Mac. Tests replace
 // ctx.hostCpu.
 import { execFile } from 'node:child_process';
-import { realpathSync } from 'node:fs';
-import { matchInstances } from './host-memory.js';
+import { matchInstances, realHomes } from './host-memory.js';
 
 export const CPU_READ_EVERY = 15e3;
 export const CPU_WINDOW_MS = 5 * 60e3;
@@ -41,15 +40,14 @@ const run = (command, args) => new Promise((resolve, reject) => execFile(command
 }));
 
 // readHostCpu(home) — a reading now: { ncpu, totalPercent, vms (Lima instance name → its VM process's %cpu, for the
-// instances in `home`, LIMA_HOME; null when they could not be matched, vmsError saying why) }.
+// instances in `home`, a Lima folder or a list of them (ASS-578: every one in use, limaHomes); null when they could not be matched, vmsError saying why) }.
 export const readHostCpu = home => async () => {
   const ncpu = Number(String(await run('sysctl', ['-n', 'hw.ncpu'])).trim());
   if (!(ncpu > 0)) throw new Error('sysctl hw.ncpu: unexpected output');
   const { totalPercent, vz } = parsePsCpu(await run('ps', ['-axo', 'pid=,%cpu=,comm=']));
   const reading = { ncpu, totalPercent };
   try {
-    let real = home;
-    try { real = realpathSync(home); } catch { /* not there: no instance matches */ }
+    const real = realHomes(home);
     reading.vms = vz.size ? matchInstances(await run('lsof', ['-nP', '-Fpn', '-p', [...vz.keys()].join(',')]), real, vz) : new Map();
   } catch (error) {
     reading.vms = null;

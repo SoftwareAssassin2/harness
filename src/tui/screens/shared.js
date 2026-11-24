@@ -315,22 +315,22 @@ export const seatHolders = state => seatPlan(state).holders;
 
 // seatPlan(state) — the selected project's seats as seatHolders asks the planner (seatsOf): `holders`, the
 // "<key> <variation>" holding an in-progress or a planning seat (seatHolders'), `progress` and `planning` those of
-// each kind, `free`, { progress, planning }, the empty seats of each kind (ASS-451: freeSeats), and what the sprint
-// screen's Machine and Runs in columns read (ASS-559, places.js placeOf): `local` the holders on a Mac target
+// each kind, and what the sprint screen's Machine and Runs in columns read (ASS-559, places.js placeOf): `local` the holders on a Mac target
 // (local-worktree, local-workspace: no seat), `targets` "<key> <variation>" → the planner's run target for every
 // holder, and `records` control's seats.json records — its seats, planning and local lists — with their `target` and
-// machine (`workstation`). A past day (or no project): nobody, none free — seats are live state.
-// (ASS-559: the per-kind `kinds` and `sandboxes` maps the old 💺 ⛅ 🌐 📦 marks read are gone.)
+// machine (`workstation`). A past day (or no project): nobody — seats are live state.
+// (ASS-559: the per-kind `kinds` and `sandboxes` maps the old 💺 ⛅ 🌐 📦 marks read are gone; ASS-579: `free`, the
+// empty seat rows' count, too.)
 export function seatPlan(state) {
   const selected = state.projects[state.project];
-  if (state.day || !selected) return { holders: new Set(), progress: [], planning: [], free: { progress: 0, planning: 0 }, local: new Set(), targets: new Map(), records: [] };
+  if (state.day || !selected) return { holders: new Set(), progress: [], planning: [], local: new Set(), targets: new Map(), records: [] };
   const plan = plannerState(state);
   const seats = seatsOf(plan, plan.projects[state.project]);
   const holding = new Set([...seats['in-progress'], ...seats['in-planning']]);
   const targets = new Map(Object.entries(seats.targets ?? {}));
   const local = new Set([...targets].filter(([, t]) => t === 'local-worktree' || t === 'local-workspace').map(([id]) => id));
   const records = [...(selected.seats ?? []), ...(selected.planningSeats ?? []), ...(selected.localSeats ?? [])].filter(r => r?.key != null);
-  return { holders: holding, progress: seats['in-progress'], planning: seats['in-planning'], free: freeSeats(seats), local, targets, records };
+  return { holders: holding, progress: seats['in-progress'], planning: seats['in-planning'], local, targets, records };
 }
 
 // plannerState(state) — the dashboard's projects as control's loadState lists them (planProject), what plan.js planFor
@@ -350,14 +350,6 @@ export function nextPlace(state, now = Date.now()) {
   if (!state.projects[state.project]) return null;
   const plan = plannerState(state, now);
   return nextPlacement(plan, plan.projects[state.project]);
-}
-
-// freeSeats(seats) — { progress, planning }: of seatsOf's answer, the empty seats (ASS-451), as many as the planner
-// would still grant. ASS-528: planning and building are one pool, so they are all counted once, as in-progress ones
-// (planning 0); 0 for no limit (the seat budget unknown), or none left.
-export function freeSeats(seats) {
-  const free = seats?.seats?.free;
-  return { progress: Number.isFinite(free) ? Math.max(0, free) : 0, planning: 0 };
 }
 
 // planProject(state, p) — a dashboard project as control's loadState lists it,

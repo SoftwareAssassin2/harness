@@ -7,7 +7,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { initialState, handleKey, render } from '../../src/tui/app.js';
-import { view, machines, placed, cardWidth, LEGEND } from '../../src/tui/screens/network.js';
+import { view, machines, placed, cardWidth, macArch, LEGEND } from '../../src/tui/screens/network.js';
 import { nextPlace } from '../../src/tui/screens/shared.js';
 import { nextPlacement } from '../../src/control/plan.js';
 import { visible } from '../../src/tui/text.js';
@@ -59,7 +59,7 @@ test('AC1: all full — the headline says in red why nothing can take work, mach
   const p = full(remoteOnly());
   const s = onN([p]);
   assert.equal(nextPlace(s).target, null);
-  assert.equal(head(s), 'Orbit · 2 machines · 0 can take work · 3 of 3 seats in use · nothing can take work: ws-east full (memory), vm-west full (memory)');
+  assert.equal(head(s), 'Orbit · 3 machines · 0 can take work · 3 of 3 seats in use · nothing can take work: ws-east full (memory), vm-west full (memory)');
   assert.ok(out(s).slice(0, 2).join('').includes(`${RED}nothing can take work`));
   // Seats free on a machine, but the planner gives them to tickets already waiting: said first.
   const q = remoteOnly();
@@ -73,7 +73,7 @@ test('AC1: all stopped — a stopped machine still takes the next ticket (it is 
   const s = onN([stopped(remoteOnly())]);
   const next = nextPlace(s);
   assert.equal(next.machine, 'vm-west', 'equal room: the run targets\' order (cloud-vm-substrate first)');
-  assert.match(head(s), /2 machines · 2 can take work · 0 of 2 seats in use · next ticket → vm-west \(sandbox; remote first, most room\) · it is stopped: starts on demand$/);
+  assert.match(head(s), /3 machines · 2 can take work · 0 of 2 seats in use · next ticket → vm-west \(sandbox; remote first, most room\) · it is stopped: starts on demand$/);
   const p = stopped(remoteOnly());
   for (const id of ['ws-east', 'vm-west']) p.workstations[id]['last-error'] = { at: iso(NOW - 60e3), message: 'IAP tunnel refused' };
   assert.match(head(onN([p])), /nothing can take work: ws-east unreachable, vm-west unreachable$/);
@@ -208,11 +208,9 @@ test('AC3: a stopped or unreachable machine\'s last figures are dimmed, their ag
 
 // ===== AC4: the Mac's card =====
 
-test('AC4: the Mac\'s card only when the project can use the Mac: whole-Mac gauges, this project\'s seats, tickets and share', () => {
-  assert.equal(cardOf(out(onN([remoteOnly(), atlas()])), 'mac'), null, 'no Mac run target, no Mac cluster: no Mac card');
-  assert.deepEqual(titles(out(onN([remoteOnly()]))), ['ws-east', 'vm-west']);
+test('AC4: the Mac\'s card: whole-Mac gauges, this project\'s seats, tickets and share (ASS-580: for every project, see below)', () => {
   const withCluster = remoteOnly({ ...orbit(), substrateMachines: ['mac', 'ws-east'] });
-  assert.ok(cardOf(out(onN([withCluster])), 'mac'), 'a Mac Substrate cluster: a Mac card');
+  assert.ok(line(cardOf(out(onN([withCluster])), 'mac'), 'Share'), 'a Mac Substrate cluster: a Share line');
   // Both projects see the same whole Mac, each its own seats, tickets and share.
   const o = cardOf(out(onN([orbit(), atlas()], { project: 0 })), 'mac'), a = cardOf(out(onN([orbit(), atlas()], { project: 1 })), 'mac');
   assert.match(o.title, /^┌─ mac · shared by 2 projects ─/);
@@ -281,16 +279,20 @@ test('AC5: on a short terminal the cards are cut a row at a time from the bottom
 test('AC6: the project line — agents per model, its golden image, its sandbox images — and the legend', () => {
   const t = text(onN([orbit(), atlas()], { assignments: team }));
   const joined = t.join(' ');
-  assert.match(joined, /agents: opus-5 🤖x2, haiku-5 🤖x1 · golden image golden-orbit built 2026-11-18 UTC · +sandbox image amd64 built 2026-11-23 UTC/);
+  assert.match(joined, /agents: opus-5 🤖x2, haiku-5 🤖x1 · golden image golden-orbit built 2026-11-18 UTC /);
+  // ASS-580: the amd64 image is on the remote machines' cards, so not on the project line too.
+  assert.doesNotMatch(t.filter(l => !l.startsWith('│')).join(' '), /sandbox image/);
   assert.ok(t.includes(strip(LEGEND)));
   assert.equal(strip(LEGEND), '■ seat in use  □ seat free  │ limit  ● running  ○ stopped   📦 sandbox  🌿 worktree  💺 Lima VM  📁 slot  📂 workspace');
   // No agents, no golden image, a failed and a running sandbox image build.
-  const p = orbit({ golden: null, sandboxImages: { amd64: { label: { hash: 'a' }, run: { hash: 'b', 'started-at': iso(NOW), 'ended-at': iso(NOW), 'exit-code': 1 } }, arm64: { run: { hash: 'c', 'started-at': iso(NOW) } } } });
+  // An image no card shows (no cluster runs that architecture) stays on the project line.
+  const other = macArch() === 'arm64' ? 'amd64' : 'arm64';
+  const p = orbit({ golden: null, substrateMachines: [], sandboxImages: { [other]: { label: { hash: 'a' }, run: { hash: 'b', 'started-at': iso(NOW), 'ended-at': iso(NOW), 'exit-code': 1 } } } });
   const raw = out(onN([p], { assignments: [] })).join('\n');
-  assert.match(strip(raw), /no agents · golden image: none · sandbox image amd64 build failed · sandbox image arm64 building/);
-  assert.ok(raw.includes(`${RED}sandbox image amd64 build failed`));
+  assert.match(strip(raw), new RegExp(`no agents · golden image: none · sandbox image ${other} build failed`));
+  assert.ok(raw.includes(`${RED}sandbox image ${other} build failed`));
   const never = orbit({ golden: { name: 'golden-orbit', 'built-at': null }, sandboxImages: {} });
-  assert.match(text(onN([never], { assignments: [] })).join(' '), /golden image golden-orbit not built · sandbox image: none/);
+  assert.match(text(onN([never], { assignments: [] })).join(' '), /golden image golden-orbit not built\s/);
 });
 
 test('AC6: every machine figure the table showed is on a card — CPU, RAM used/limit/total, disk used/free/total, what is on it, seats', () => {
@@ -351,7 +353,7 @@ test('ASS-575 AC2: a machine past its boot wait is never the headline\'s next ma
     const s = onN([p]);
     const next = nextPlace(s, NOW);
     assert.equal(next.machine, 'ws-east', 'over (control said so, or its time ran out since control\'s last tick): not placed on');
-    assert.match(head(s), /2 machines · 1 can take work · .*next ticket → ws-east /);
+    assert.match(head(s), /3 machines · 1 can take work · .*next ticket → ws-east /);
     assert.doesNotMatch(head(s), /next ticket → vm-west/);
   }
   // (test/control/boot-waits.test.js checks that the dashboard's bootWaitOver is control's own, word for word.)
@@ -377,4 +379,84 @@ test('ASS-575 AC3: a card shows "starting · waited m of n min" during the boot 
   assert.match(head(onN([both])), /nothing can take work: ws-east didn't come up, vm-west didn't come up$/);
   // Another wait length is the file's (remote-boot-wait-seconds).
   assert.match(line(cardOf(out(onN([waiting(stopped(remoteOnly()), 'vm-west', NOW - 60e3, false, 300)])), 'vm-west'), 'Seats'), /starting · waited 1 of 5 min/);
+});
+
+// ===== ASS-580: the Mac's card for every project; each card's sandbox images =====
+
+const arm = macArch();   // the Mac's own architecture (arm64 on Apple silicon)
+const built = (day, hash = 'h') => ({ label: { hash, 'built-at': `${day}T10:00:00Z` }, run: { hash, 'started-at': `${day}T09:30:00Z`, 'ended-at': `${day}T10:00:00Z`, 'exit-code': 0 } });
+const imageLines = c => c.lines.filter(l => l.startsWith('Image'));
+
+test('ASS-580 AC1: a remote-only project gets the Mac\'s card — gray "no work" verdict, the whole Mac\'s gauges, no seats or Share — last, counted, never the headline\'s choice', () => {
+  for (const p of [remoteOnly(), full(remoteOnly()), stopped(remoteOnly())]) {
+    const s = onN([p, atlas()]);
+    const lines = out(s);
+    const mac = cardOf(lines, 'mac');
+    assert.ok(mac, 'a Mac card');
+    assert.equal(titles(lines).at(-1), 'mac', 'after every other machine');
+    assert.equal(line(mac, 'Seats'), 'Seats   no work: none of its run targets is on the Mac');
+    assert.ok(lines.some(l => l.includes(`${GRAY}no work: none of its run targets is on the Mac`)), 'gray');
+    assert.equal(line(mac, 'Share'), '', 'no Share line');
+    assert.doesNotMatch(mac.lines.join('\n'), /■|□/, 'no seat squares');
+    // The whole Mac's gauges, the same another project sees.
+    const other = cardOf(out(onN([p, atlas()], { project: 1 })), 'mac');
+    for (const label of ['CPU', 'RAM', 'Disk']) assert.equal(line(mac, label), line(other, label));
+    assert.match(head(s), /^Orbit · 3 machines · /);
+    assert.doesNotMatch(head(s), /next ticket → mac|mac no Mac run target/);
+    assert.notEqual(nextPlace(s, NOW).target?.startsWith('local'), true, 'the planner never places it on the Mac');
+  }
+  // With every remote machine full the red "why" names the remote machines only.
+  assert.match(head(onN([full(remoteOnly())])), /nothing can take work: ws-east full \(memory\), vm-west full \(memory\)$/);
+});
+
+test('ASS-580 AC2: each card shows the images its machine\'s cluster runs — built, building (amber), build failed (red), none — and none without a cluster', () => {
+  const images = {
+    amd64: built('2026-11-23'),
+    [arm]: built('2026-11-20'),
+  };
+  if (arm === 'amd64') images.amd64 = built('2026-11-20');
+  // orbit: clusters on ws-east, vm-west and the Mac.
+  const p = orbit({ substrateMachines: ['mac', 'ws-east', 'vm-west'], sandboxImages: images });
+  const lines = out(onN([p]));
+  assert.deepEqual(imageLines(cardOf(lines, 'mac')), [`Image   sandbox image ${arm} built 2026-11-20 UTC`]);
+  for (const id of ['ws-east', 'vm-west']) assert.deepEqual(imageLines(cardOf(lines, id)), [`Image   sandbox image amd64 built ${arm === 'amd64' ? '2026-11-20' : '2026-11-23'} UTC`]);
+  // Building, failed, none.
+  const q = orbit({ substrateMachines: ['mac', 'ws-east'], sandboxImages: {
+    amd64: { label: { hash: 'a', 'built-at': '2026-11-22T10:00:00Z' }, run: { hash: 'b', 'started-at': iso(NOW), 'ended-at': iso(NOW), 'exit-code': 1 } },
+  } });
+  const ql = out(onN([q]));
+  if (arm !== 'amd64') assert.deepEqual(imageLines(cardOf(ql, 'mac')), [`Image   sandbox image ${arm}: none`]);
+  assert.deepEqual(imageLines(cardOf(ql, 'ws-east')), ['Image   sandbox image amd64 build failed']);
+  assert.ok(ql.join('\n').includes(`${RED}sandbox image amd64 build failed`));
+  assert.deepEqual(imageLines(cardOf(ql, 'vm-west')), [], 'no cluster on vm-west: no image line');
+  const r = orbit({ substrateMachines: ['ws-east'], sandboxImages: { amd64: { run: { hash: 'c', 'started-at': iso(NOW) } } } });
+  const rl = out(onN([r]));
+  assert.deepEqual(imageLines(cardOf(rl, 'ws-east')), ['Image   sandbox image amd64 building']);
+  assert.ok(rl.join('\n').includes(`${AMBER}sandbox image amd64 building`));
+  // The Mac with no cluster declared: no line, unless an image of its architecture was built.
+  assert.deepEqual(imageLines(cardOf(out(onN([remoteOnly()])), 'mac')), []);
+  assert.deepEqual(imageLines(cardOf(out(onN([remoteOnly(orbit({ sandboxImages: { [arm]: built('2026-11-19') } }))])), 'mac')), [`Image   sandbox image ${arm} built 2026-11-19 UTC`]);
+  // A project with no cluster and no image: no image line anywhere.
+  assert.doesNotMatch(text(onN([atlas()])).join('\n'), /sandbox image/);
+});
+
+test('ASS-580 AC3, AC6: no image shown twice — an image on a card is not on the project line', () => {
+  const p = orbit({ substrateMachines: ['mac', 'ws-east', 'vm-west'], sandboxImages: { amd64: built('2026-11-23'), arm64: built('2026-11-20') } });
+  const t = text(onN([p]));
+  const below = t.filter(l => !/^[│┌└]/.test(l));
+  assert.doesNotMatch(below.join(' '), /sandbox image/, 'none on the project line');
+  for (const arch of ['amd64', 'arm64']) assert.ok(t.some(l => l.includes(`sandbox image ${arch} built`)), `${arch} on a card`);
+  // Each card shows its image at most once.
+  for (const id of ['mac', 'ws-east', 'vm-west']) assert.ok(imageLines(cardOf(out(onN([p])), id)).length <= 1);
+});
+
+test('ASS-580 AC4: with the extra card and image lines, two a row and the short-terminal cut still hold', () => {
+  const s = onN([remoteOnly(orbit({ sandboxImages: { amd64: built('2026-11-23'), [arm]: built('2026-11-20') } }))]);
+  for (const l of out(s, 120)) assert.ok(visible(l) <= 120);
+  assert.deepEqual([...text(s).find(l => l.startsWith('┌─ ')).matchAll(/┌─ (\S+)/g)].map(m => m[1]), ['ws-east', 'vm-west'], 'two a row');
+  const short = out(s, 120, 20).map(strip);
+  assert.ok(short.length <= 20);
+  assert.deepEqual(titles(short), ['ws-east', 'vm-west']);
+  assert.ok(short.includes('+1 machine below — a taller terminal shows it'), short.join('\n'));
+  assert.equal(short.at(-1), strip(LEGEND));
 });

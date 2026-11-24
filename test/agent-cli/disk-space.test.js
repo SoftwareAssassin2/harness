@@ -193,6 +193,57 @@ test('ASS-288 AC3/AC6: vm:reclaim-all deletes the deletable VMs of every project
   assert.equal(r.exists('abc-2-a'), true);
 });
 
+// ASS-578: reclaim() with project p keeping its VMs in a Lima folder of its own, on a volume of its own: df for a path
+// in it says <own>-k KiB less what the folder holds now, mounted at /Volumes/Own; any other path as the fixture's.
+function reclaimOwn(args) {
+  const r = reclaim(args);
+  const own = realpathSync(mkdtempSync(join(tmpdir(), 'own-lima-')));
+  edit(r.at('projects', 'p', 'project.json'), p => { p['lima-home'] = own; });
+  r.env.FAKE_LIMA_BY_HOME = '1';
+  writeFileSync(join(r.v.dir, 'own-k'), String(1e12));
+  r.v.script('df', `p="\${@: -1}"
+if [[ "$p" == '${own}'* ]]; then cap=$(cat '${r.v.dir}/own-k'); used=$(du -sk '${own}' | cut -f1); m=/Volumes/Own
+else cap=$(cat '${r.v.dir}/volume-k'); used=$(du -sk '${r.v.instances}' | cut -f1); m=/; fi
+echo 'Filesystem 1024-blocks Used Available Capacity Mounted on'; echo "/dev/fake $cap $used $((cap - used)) 1% $m"`);
+  const vmIn = (folder, name, blocks, status = 'Stopped') => {
+    mkdirSync(join(folder, name), { recursive: true });
+    writeFileSync(join(folder, name, 'status'), status); writeFileSync(join(folder, name, 'ssh-port'), '0');
+    writeFileSync(join(folder, name, 'disk'), randomBytes(blocks * KB));
+  };
+  const ownVolume = kib => writeFileSync(join(r.v.dir, 'own-k'), String(kib));
+  const usedOwn = () => Number(execFileSync('du', ['-sk', own], { encoding: 'utf8' }).split('\t')[0]);
+  return { ...r, own, vmIn, ownVolume, usedOwn };
+}
+
+test('ASS-578 AC2: vm:reclaim-all reclaims each volume holding a Lima folder from the projects whose folder it holds — a project\'s own folder short, only its VMs go; the harness-wide volume, above the level, untouched', async () => {
+  const r = reclaimOwn({ warn: 0.0001 });                 // 100000 bytes
+  r.vmIn(r.own, 'abc-1-a', 5); r.vmIn(r.own, 'abc-2-a', 5);
+  r.vm('q-0-a', 5);                                       // q's, harness-wide: the oldest of all, but on the other volume
+  r.inventory('p', [['abc-1-a', 'ABC-1', '2026-10-01T00:00:00Z'], ['abc-2-a', 'ABC-2', '2026-10-03T00:00:00Z']]);
+  r.inventory('q', [['q-0-a', 'Q-0', '2026-09-01T00:00:00Z']]);
+  r.ownVolume(r.usedOwn() + Math.ceil(100000 / 1024) - 10);   // p's volume 10 KiB short: one VM is enough
+  const { stdout, stderr } = await r.reclaimAll();
+  const out = JSON.parse(stdout);
+  assert.deepEqual(out.deleted.map(x => [x.project, x.name]), [['p', 'abc-1-a']]);
+  assert.ok(!existsSync(join(r.own, 'abc-1-a')) && existsSync(join(r.own, 'abc-2-a')));
+  assert.ok(r.exists('q-0-a'), 'q\'s VM, on the volume above the level, kept');
+  assert.deepEqual(out.volumes.map(v => [v.mount, v['lima-home'], v.projects, v.short]), [['/', r.v.instances, ['q'], false], ['/Volumes/Own', r.own, ['p'], false]]);
+  assert.equal(out.short, false);
+  assert.match(stderr, /deleted abc-1-a \(p ABC-1 A, [^)]*\): \d+ bytes freed .* free on \/Volumes\/Own/);
+  assert.ok(r.v.calls().filter(c => c.argv[0] === 'delete').every(c => c.home === r.own), 'deleted in its own folder');
+});
+
+test('ASS-578 AC2: harness:check-disk-space reads the volume of every Lima folder in use — a project\'s own one too — and the least free decides', async () => {
+  const r = reclaimOwn({ warn: 0.0001, hold: 0.00003 });
+  r.env.DISK_SPACE_FILE = join(r.f.dir, 'disk-space.json');
+  r.ownVolume(r.usedOwn() + 50);                          // 51200 bytes: below warn
+  const out = JSON.parse((await r.cli('harness:check-disk-space')).stdout);
+  assert.equal(out.level, 'warn');
+  assert.deepEqual(out.volumes.map(v => [v.mount, v.paths]), [['/', [r.v.instances, r.f.dir]], ['/Volumes/Own', [r.own]]]);
+  r.ownVolume(r.usedOwn() + 10);                          // 10240 bytes: below hold
+  assert.equal(JSON.parse((await r.cli('harness:check-disk-space')).stdout).level, 'hold');
+});
+
 test('ASS-288 AC3: vm:reclaim-all short of the warn level with every deletable VM gone deletes them all, says it is short, and leaves running and in-flight ones; --dry-run deletes nothing', async () => {
   const r = reclaim({ warn: 1000 });                       // 1 TB: never reached
   r.vm('abc-0-a', 5, 'Running');

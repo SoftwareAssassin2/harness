@@ -89,9 +89,10 @@ import { refreshCommitLists } from './commit-refresh.js';
 import { detectReverts } from './reverts.js';
 import { raiseDependencies } from './dependencies.js';
 import { checkDisk, diskHeld } from './disk.js';
+import { checkLimaHomes } from './lima-home-check.js';
 import { readHostMemory } from './host-memory.js';
 import { readHostCpu } from './host-cpu.js';
-import { limaHome } from './vm.js';
+import { limaHomes } from './vm.js';
 import { checkCredentials } from './credentials.js';
 import { login } from './login.js';
 import { sessionUsage, loginExpiry, refreshLogin } from '../agents/usage.js';
@@ -174,10 +175,10 @@ export function createContext({ root, env = process.env, command, log = () => {}
   // size); null with HOST_MEMORY_DISABLED=1 — the test fixtures' env, as
   // DISK_SPACE_DISABLED is — so a test's control never holds a VM for the real
   // Mac's memory. Tests replace it.
-  ctx.hostMemory = env.HOST_MEMORY_DISABLED === '1' ? null : () => readHostMemory(limaHome(env))();
+  ctx.hostMemory = env.HOST_MEMORY_DISABLED === '1' ? null : () => readHostMemory(limaHomes(env))();   // ASS-578: every Lima folder in use
   // hostCpu() — the Mac's CPU now (ASS-528, see host-cpu.js: every process's CPU summed, its cores, each Lima VM's
   // CPU), for the seat budget (seat-budget.js); null with HOST_MEMORY_DISABLED=1 as hostMemory is. Tests replace it.
-  ctx.hostCpu = env.HOST_MEMORY_DISABLED === '1' ? null : () => readHostCpu(limaHome(env))();
+  ctx.hostCpu = env.HOST_MEMORY_DISABLED === '1' ? null : () => readHostCpu(limaHomes(env))();
   // ASS-494: within a deeper timed sub-routine (runSteps, finishEnded, detectReverts), each timed by command name,
   // its arguments dropped — '<parent key>/cli <command>', '…/script <command>' (tick-stats.js timeHere, commandName);
   // elsewhere just run. A script started and not awaited (steps.js's script steps) is started untimed (ctx.untimed):
@@ -327,6 +328,8 @@ export async function tick(ctx) {
           await ctx.attempt('disk', 'check', () => checkDisk(ctx));
           held = diskHeld({ diskSpace: readDiskSpace(ctx.paths.diskSpace) });
         });
+        // ASS-578: a project.json lima-home that can't be used named in the log (lima-home-check.js).
+        await ctx.timed('steps', 'checkLimaHomes', () => ctx.attempt('lima-home', 'check', () => checkLimaHomes(ctx, ctx.load())));
         // ASS-395: a project held by its credentials starts no new work (dispatch.js, steps.js). ASS-497: so, unlike the
         // checks that call out (CHECKS), it stays awaited: this tick's dispatch reads the hold its check has just recorded.
         await ctx.timed('steps', 'checkCredentials', () => ctx.attempt('credentials', 'check', () => checkCredentials(ctx, ctx.load())));

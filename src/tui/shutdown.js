@@ -3,6 +3,7 @@
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { machineStatuses, stopMachine } from '../control/machine.js';
+import { limaHomes } from '../control/machine-lima.js';
 
 // shutDown({ children, agentPids, timeoutMs, alive, kill, log }) — stop()s
 // every child ({ name, pid, stop, exited: a promise settled once it has
@@ -62,14 +63,15 @@ const LIMACTL_LIMIT = 30000;
 const settled = promise => promise.then(() => ({}), error => ({ error }));
 
 // vmStopper({ env, timeoutMs, log, counted }) — { run, force }: run() stops
-// every Running Lima instance under env's LIMA_HOME (env must carry it:
-// src/control/vm.js limaEnv) and only there, all at once, each with a
+// every Running Lima instance in every Lima folder in use (ASS-578: env's
+// LIMA_HOME — env must carry it: src/control/vm.js limaEnv — and each project's
+// own lima-home, limaHomes) and only there, all at once, each with a
 // graceful `limactl stop` given timeoutMs; one not stopped by then — or that
 // failed, or every one still stopping once force() is called (Q again) — is
 // force-stopped (`limactl stop -f`). Nothing is deleted: the disks stay.
 // counted(n) is told how many are still stopping, as each ends (0 at the
-// end); each is log()ged, and how it stopped. No LIMA_HOME folder: no VMs,
-// and limactl is not run.
+// end); each is log()ged, and how it stopped. None of those folders there: no
+// VMs, and limactl is not run.
 export function vmStopper({ env, timeoutMs = 60000, log, counted = () => {} }) {
   let forced = false;
   const stopping = new Set();
@@ -85,13 +87,14 @@ export function vmStopper({ env, timeoutMs = 60000, log, counted = () => {} }) {
   };
   return {
     async run() {
-      if (!env.LIMA_HOME || !existsSync(env.LIMA_HOME)) return;
+      const homes = env.LIMA_HOME ? limaHomes(env).filter(home => existsSync(home)) : [];
+      if (!homes.length) return;
       let status;
       try { status = await machineStatuses({ env, killSignal: 'SIGKILL', timeout: LIMACTL_LIMIT }); } catch (error) { return log(`limactl list failed, so no VM was stopped: ${error.message.trim()}`); }
       const names = [...status].filter(([name, s]) => name && s === 'Running').map(([name]) => name);
       if (!names.length) return;
       let left = names.length;
-      log(`stopping ${left} VM${left === 1 ? '' : 's'} under ${env.LIMA_HOME}: ${names.join(', ')}`);
+      log(`stopping ${left} VM${left === 1 ? '' : 's'} under ${homes.join(', ')}: ${names.join(', ')}`);
       counted(left);
       await Promise.all(names.map(name => stopOne(name).then(() => counted(--left))));
     },

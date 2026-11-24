@@ -46,7 +46,7 @@ function setup({ images = '', warm = false, registry = true, upstream = true, re
   // start and stop (ASS-289) write the instance's status file, Running or Stopped; FAIL_STOP=<vm> fails a stop of it, as with a plain stop.
   // list [<vm>] --format <f> (ASS-287: the inventory, unlogged) prints <f> for each instance folder, or the one (exit 1 when none), its
   // {{.Name}}, {{.Dir}} and {{.Status}} (the folder's status file, else Stopped) filled.
-  fake('limactl', `printf 'LIMA_HOME=%s\\n' "$LIMA_HOME" > '${log}/lima-home'
+  fake('limactl', `printf 'LIMA_HOME=%s\\n' "$LIMA_HOME" > '${log}/lima-home'; printf '%s\\n' "$LIMA_HOME" >> '${log}/lima-homes'
 [[ "$1" == list ]] || perl -MFcntl=:flock -e 'open(my $f, ">>", $ARGV[0]) or die; print flock($f, LOCK_EX | LOCK_NB) ? "$ARGV[1] free\\n" : "$ARGV[1] held\\n"' "$PROJECTS_DIR/p/vms.lock" "$1" >> '${log}/vm-lock'
 case "$1" in
   list) shift; fmt="" names=()
@@ -120,6 +120,23 @@ test('AC1: builds golden-p from the template and the declared setup, in order, t
   assert.equal(label.project, 'p');
   assert.ok(stdout.includes(label.hash.slice(0, 12)), stdout);
   assert.deepEqual(readdirSync(s.lima), ['golden-p']);
+});
+
+test('ASS-578 AC1: a project with its own lima-home has its golden image built there, every limactl run with that folder as LIMA_HOME; the harness-wide folder untouched', async () => {
+  const s = setup();
+  const own = join(s.dir, 'own-lima');
+  const pj = JSON.parse(readFileSync(join(s.dir, 'projects', 'p', 'project.json'), 'utf8'));
+  writeFileSync(join(s.dir, 'projects', 'p', 'project.json'), JSON.stringify({ ...pj, 'lima-home': own }));
+  mkdirSync(own);
+  await s.build();
+  assert.ok(existsSync(join(own, 'golden-p', 'golden-image.json')), 'built and labelled in its own folder');
+  assert.deepEqual(readdirSync(s.lima), [], 'nothing in the harness-wide folder');
+  assert.deepEqual([...new Set(s.logOf('lima-homes').trim().split('\n'))], [own]);
+  // Run again: the label read from its own folder, so the image is current.
+  s.reset();
+  const { stdout } = await s.build();
+  assert.match(stdout, /golden-p is current/);
+  assert.deepEqual(s.calls(), []);
 });
 
 test('AC2: run again with the same inputs, it reuses golden-p and builds nothing', async () => {

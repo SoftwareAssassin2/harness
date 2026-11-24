@@ -46,7 +46,7 @@ test('ASS-475 AC1/AC2: while the token is rejected the sprint header shows the c
   const warning = headerWarnings(dashboard(REJECTED), NOW.getTime()).find(w => w.id === 'jira-token-rejected');
   assert.equal(warning.chip, true);
   assert.equal(warning.operator, false);
-  assert.equal(warning.todo, 'Jira rejects the analytics API token of the "J" jira work source since 2026-11-14 08:30 UTC, so the analytics are not updated: create a new Atlassian API token and put it in project.json as the api-token of the "J" jira work source');
+  assert.equal(warning.todo, 'Jira rejects the analytics API token of the "J" jira work source since 2026-11-14 08:30 UTC, so the analytics are not updated: create a new Atlassian API token, copy it, and run ./agent.sh project:set-atlassian-token p');   // ASS-561 AC6
   assert.ok(liveWarnings(dashboard(REJECTED), NOW.getTime()).p.some(w => w.key === 'jira-token-rejected'));
   assert.ok(!render(dashboard(), wide).some(l => strip(l).includes('Jira API token rejected')));
   assert.ok(!headerWarnings(dashboard(), NOW.getTime()).some(w => w.id === 'jira-token-rejected'));
@@ -58,7 +58,7 @@ test('ASS-475 AC1/AC2: the Performance screen leads with a red line naming the r
   const raw = performance.view(on(REJECTED), wide);
   const shown = raw.map(strip);
   assert.match(shown[0], /^Jira rejects the analytics API token of the "J" jira work source since 2026-11-14 08:30 UTC/);
-  assert.match(shown.join(' '), /create a new Atlassian API token and put it in project\.json as the api-token of the "J" jira work source\. These numbers stop at 2026-11-14 08:00 UTC\./);
+  assert.match(shown.join(' '), /create a new Atlassian API token, copy it, and run \.\/agent\.sh project:set-atlassian-token p\. These numbers stop at 2026-11-14 08:00 UTC\./);
   assert.ok(raw[0].startsWith('\x1b[31m'), raw[0]);
   assert.ok(shown.every(l => l.length <= wide.columns));
   // Still loading, or no analytics yet: the line shows all the same, without the time.

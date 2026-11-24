@@ -17,9 +17,13 @@
 #   lima_stop <vm> [force]                           # limactl stop [-f]
 #   lima_list [<vm>] --format <format>               # limactl list: what only Lima has (an instance's Dir, its
 #                                                    # SSHLocalPort and display; every instance, golden ones too)
+#   lima_list_all --format <format>                  # limactl list in every Lima folder in use (lima_homes, ASS-578)
 #
-# Every call runs with LIMA_HOME as lima_home resolves it (the env var when
-# set), so a command needs it no more than it did before (ASS-273).
+# Every call runs with LIMA_HOME as the folder holding its instance (ASS-578,
+# lima-home.bash lima_vm_home: LIMA_HOME's, else whichever of the folders in use
+# has it — a project may keep its VMs in a folder of its own), per call; a list
+# of every instance, the folder LIMA_HOME names (lima_home). So a command needs
+# LIMA_HOME no more than it did before (ASS-273).
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/lima-home.bash"
 
 # A SIGTERM to the local `limactl shell` never reaches the VM (no tty, so
@@ -32,27 +36,30 @@ lima_wrap='trap '"'"'kill -TERM "$c" 2>/dev/null'"'"' TERM; "$@" <&0 & c=$!; whi
 
 lima_run() {
   local workdir="$1" marker="$2" timeout="$3" vm="$4" code=0; shift 4
-  LIMA_HOME="$(lima_home)" ${timeout:+perl -e 'alarm shift; exec @ARGV' "$timeout"} limactl shell ${workdir:+--workdir "$workdir"} "$vm" -- ${marker:+bash -c "$lima_wrap" "$marker"} "$@" || code=$?
+  LIMA_HOME="$(lima_vm_home "$vm")" ${timeout:+perl -e 'alarm shift; exec @ARGV' "$timeout"} limactl shell ${workdir:+--workdir "$workdir"} "$vm" -- ${marker:+bash -c "$lima_wrap" "$marker"} "$@" || code=$?
   [[ -z "$timeout" || $code -ne 142 ]] || code=124
   return "$code"
 }
 
-lima_stop_marked() { LIMA_HOME="$(lima_home)" limactl shell "$1" -- pkill -TERM -f "[${2:0:1}]${2:1}"; }
+lima_stop_marked() { LIMA_HOME="$(lima_vm_home "$1")" limactl shell "$1" -- pkill -TERM -f "[${2:0:1}]${2:1}"; }
 
-lima_copy_in() { LIMA_HOME="$(lima_home)" limactl copy -r "$2" "$1:$3"; }
-lima_copy_out() { LIMA_HOME="$(lima_home)" limactl copy -r "$1:$2" "$3"; }
+lima_copy_in() { LIMA_HOME="$(lima_vm_home "$1")" limactl copy -r "$2" "$1:$3"; }
+lima_copy_out() { LIMA_HOME="$(lima_vm_home "$1")" limactl copy -r "$1:$2" "$3"; }
 
-lima_status() { LIMA_HOME="$(lima_home)" limactl list "$1" --format '{{.Status}}'; }
+lima_status() { LIMA_HOME="$(lima_vm_home "$1")" limactl list "$1" --format '{{.Status}}'; }
 
-lima_list() { LIMA_HOME="$(lima_home)" limactl list "$@"; }
+# One instance (a name first): the folder holding it; else every instance in LIMA_HOME's folder.
+lima_list() { if [[ -n "${1:-}" && "$1" != -* ]]; then LIMA_HOME="$(lima_vm_home "$1")" limactl list "$@"; else LIMA_HOME="$(lima_home)" limactl list "$@"; fi; }
 
-lima_stop() { LIMA_HOME="$(lima_home)" limactl stop ${2:+-f} "$1"; }
+lima_list_all() { local h; while IFS= read -r h; do [[ ! -d "$h" ]] || LIMA_HOME="$h" limactl list "$@" || true; done < <(lima_homes); }
+
+lima_stop() { LIMA_HOME="$(lima_vm_home "$1")" limactl stop ${2:+-f} "$1"; }
 
 # The sandbox vm:start explains (step 1): the VM must have an ssh port of its
 # own (ssh.localPort, pinned when it was cloned) for the profile to allow.
 lima_start() {
   local command="$1" vm="$2" display="$3" ssh port allowed="" profile home; shift 3
-  home="$(lima_home)"
+  home="$(lima_vm_home "$vm")"
   [[ "$(lima_list "$vm" --format '{{.Config.Video.Display}}')" == "$display" ]] \
     || LIMA_HOME="$home" limactl edit --tty=false "$vm" --set ".video.display = \"$display\"" >/dev/null 2>&1 || { echo "$command: could not set $vm's video.display to $display" >&2; return 1; }
   ssh="$(lima_list "$vm" --format '{{.SSHLocalPort}}')"

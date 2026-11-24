@@ -25,7 +25,8 @@ set -euo pipefail
 #  - each project's Claude sessions of its own folder (.claude/projects/<folder,
 #    every other character a dash>), as Claude Code names the folder of the
 #    working directory a chat runs in, so a chat resumes;
-#  - each ticket VM's mount in $LIMA_HOME/<vm>/lima.yaml (golden-* never).
+#  - each ticket VM's mount in <Lima folder>/<vm>/lima.yaml (golden-* never), in
+#    every Lima folder in use (ASS-578: the harness-wide one and each project's own lima-home).
 # Last it prints each project's Claude login keychain item, old and new
 # (ASS-47: Claude Code-credentials-<first 8 hex of sha256 of the config
 # dir>): the keychain is not touched — log in again, or copy the item.
@@ -37,7 +38,12 @@ set -euo pipefail
 root="$(cd "${HARNESS_ROOT:-$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../..}" && pwd -P)"
 data="$root/data"
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../agent-cli/lima-home.bash"
-lima_folder="$(lima_home "$([[ -f "$root/harness.json" ]] && echo "$root/harness.json" || echo "$data/harness.json")")"
+lima_folders=("$(lima_home_default "$([[ -f "$root/harness.json" ]] && echo "$root/harness.json" || echo "$data/harness.json")")")
+while IFS= read -r folder; do
+  [[ " ${lima_folders[*]} " == *" $folder "* ]] || lima_folders+=("$folder")
+done < <(shopt -s nullglob; for f in "$root"/projects/*/project.json "$data"/projects/*/project.json; do jq -r '.["lima-home"] // empty | strings | select(startswith("/")) | sub("/+$"; "")' "$f" 2>/dev/null || true; done)
+lima_yamls=()
+for folder in "${lima_folders[@]}"; do for yaml in "$folder"/*/lima.yaml; do [[ ! -f "$yaml" ]] || lima_yamls+=("$yaml"); done; done
 zot_dir="${ZOT_DIR:-$HOME/Library/Application Support/harness/zot}"
 names=(agent-names.json agent-names.json.lock agent-names-last-used.json agent-names-last-used.json.lock
   assignments.json assignments.json.lock chats.json chats.json.lock harness.json harness.json.lock
@@ -59,7 +65,7 @@ for dir in "$root"/projects/*/ "$data"/projects/*/; do
   pid="$(pid_in "$zot_dir/$project.pid")"
   ! alive "$pid" || refuse "$project's zot is running (pid $pid): kill it first"
 done
-for yaml in "$lima_folder"/*/lima.yaml; do
+for yaml in "${lima_yamls[@]}"; do
   [[ -f "$yaml" ]] && grep -qF "location: $root/projects/" "$yaml" || continue
   vm="$(basename "$(dirname "$yaml")")" pid="$(pid_in "$(dirname "$yaml")/ha.pid")"
   ! alive "$pid" || refuse "VM $vm, mounting $root/projects/, is running (pid $pid): limactl stop it first"
@@ -123,7 +129,7 @@ for sessions in "$data"/projects/*/.claude/projects; do
     if [[ -e "$to" ]]; then echo "move-data: $to exists; left $dir as it is" >&2; else mv "$dir" "$to"; echo "Renamed $dir to $(basename "$to")."; fi
   done
 done
-for yaml in "$lima_folder"/*/lima.yaml; do
+for yaml in "${lima_yamls[@]}"; do
   [[ -f "$yaml" && "$(basename "$(dirname "$yaml")")" != golden-* ]] && grep -qF "location: $old" "$yaml" || continue
   OLD="location: $old" NEW="location: $new" perl -pi -e 's/\Q$ENV{OLD}\E/$ENV{NEW}/g' "$yaml"
   echo "Pointed $yaml's mount at $new."

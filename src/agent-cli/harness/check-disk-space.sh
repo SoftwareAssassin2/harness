@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
-# Description: Read the free space on the volumes holding LIMA_HOME and the data folder, and record it against harness.json's disk-free-warn-gb and disk-free-hold-gb — harness:check-disk-space [--report <project> <run>]; prints what it recorded.
+# Description: Read the free space on the volumes holding every Lima folder in use and the data folder, and record it against harness.json's disk-free-warn-gb and disk-free-hold-gb — harness:check-disk-space [--report <project> <run>]; prints what it recorded.
 set -euo pipefail
 
-# ASS-288. df for the volume holding LIMA_HOME (the VMs, lima-home.bash) and
-# for the one holding the data folder (harness.json's), one entry per volume
-# (both folders on one volume share it), the least free deciding the level:
+# ASS-288. df for the volume holding each Lima folder in use (the VMs,
+# lima-home.bash lima_homes: the harness-wide one and, ASS-578, each project's
+# own lima-home) and for the one holding the data folder (harness.json's), one
+# entry per volume (folders on one volume share it), the least free deciding the level:
 #   hold — below disk-free-hold-gb; or held already and not yet back above
 #          disk-free-warn-gb: control starts no agent, VM, clone or golden
 #          build until it is (src/control/disk.js);
@@ -41,9 +42,12 @@ fi
 
 read -r warn hold < <(disk_levels "$command") || exit 1
 [[ -n "${warn:-}" ]] || exit 1
-lima="$(lima_home)"
+# ASS-578: every Lima folder in use — the harness-wide one and each project's own (lima_homes) — and the data folder.
+paths=()
+while IFS= read -r path; do paths+=("$path"); done < <(lima_homes)
+paths+=("$disk_data_folder")
 volumes="[]"
-for path in "$lima" "$disk_data_folder"; do
+for path in "${paths[@]}"; do
   line="$(volume_stats "$path" 2>&1)" || { echo "$command: $line" >&2; exit 1; }
   IFS=$'\t' read -r free total mount <<<"$line"
   volumes="$(jq -c --arg m "$mount" --argjson f "$free" --argjson t "$total" --arg p "$path" '

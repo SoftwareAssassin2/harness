@@ -108,3 +108,65 @@ test('ASS-395: both commands refuse a bad project or usage', async () => {
     await assert.rejects(run(AGENT, [command, 'nope'], { env: m.env }), /no project nope/);
   }
 });
+
+// ASS-561: a project with a jira work source — its Atlassian API token (the keychain item its atlassian entry names,
+// else project.json's api-email/api-token) and the acli login — checked, but held apart: atlassian-needs.json, never
+// credentials-hold.json. acli is a fake printing <dir>/acli-out and exiting <dir>/acli-code (0 without).
+const BOARD = 'https://example.atlassian.net/jira/software/c/projects/PROJ/boards/12';
+const ATLASSIAN = { 'keychain-service': 'Atlassian API Token (Test)', site: 'example.atlassian.net', email: 'ada@example.com' };
+const LOGGED_IN = '✓ Authenticated\n  Site: example.atlassian.net\n  Email: ada@example.com\n  Authentication Type: api_token\n';
+function jiraMac({ atlassian = ATLASSIAN, keychain = ['Atlassian API Token (Test)'], source = {} } = {}) {
+  const m = mac({ declaration: { p: atlassian ? { atlassian } : {} }, keychain, project: { name: 'P', 'work-sources': [{ name: 'J', type: 'jira', url: BOARD, ...source }] } });
+  script(join(m.dir, 'bin'), 'acli', `printf '%s\\n' "acli $*" >> "${m.dir}/calls"; cat "${m.dir}/acli-out" 2>/dev/null; exit "$(cat "${m.dir}/acli-code" 2>/dev/null || echo 0)"`);
+  writeFileSync(join(m.dir, 'acli-out'), LOGGED_IN);
+  const needs = join(m.projects, 'p', 'atlassian-needs.json');
+  return { ...m, needs, acli: (out, code = 0) => { writeFileSync(join(m.dir, 'acli-out'), out); writeFileSync(join(m.dir, 'acli-code'), String(code)); } };
+}
+const FIX = './agent.sh project:set-atlassian-token p';
+
+test('ASS-561 AC1/AC5: with a jira work source and no Atlassian keychain item, check-credentials reports it with the fix, holding nothing; the next check after it is saved clears it', async () => {
+  const m = jiraMac({ keychain: [] });
+  const out = await m.cli('project:check-credentials', 'p');
+  assert.equal(out.held, false);
+  assert.deepEqual(out.problems, []);
+  assert.equal(existsSync(m.record), false, 'not a credentials hold');
+  assert.deepEqual(out.atlassian.problems, [{ credential: 'keychain item "Atlassian API Token (Test)" (atlassian)', problem: 'missing from the keychain: the analytics cannot sign in to Jira', fix: FIX }]);
+  assert.match(out.atlassian.since, /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$/);
+  assert.deepEqual(JSON.parse(readFileSync(m.needs, 'utf8')), out.atlassian);
+  assert.deepEqual(await m.cli('project:credentials-status', 'p'), out);
+  await run(AGENT, ['project:credentials-status', 'p', '--fail-when-held'], { env: m.env });   // exits 0: not held
+  // Saved: the next check finds nothing, and the record is gone.
+  writeFileSync(join(m.kc, 'Atlassian API Token (Test)'), 'x');
+  assert.deepEqual(await m.cli('project:check-credentials', 'p'), { held: false, since: null, problems: [] });
+  assert.equal(existsSync(m.needs), false);
+});
+
+test('ASS-561 AC1: with no atlassian entry, project.json\'s api-email and api-token are the token (nothing reported); with neither, that is reported', async () => {
+  const kept = jiraMac({ atlassian: null, keychain: [], source: { 'api-email': 'ada@example.com', 'api-token': 'x' } });
+  assert.deepEqual(await kept.cli('project:check-credentials', 'p'), { held: false, since: null, problems: [] });
+  const none = jiraMac({ atlassian: null, keychain: [] });
+  const out = await none.cli('project:check-credentials', 'p');
+  assert.equal(out.held, false);
+  assert.deepEqual(out.atlassian.problems.map(p => [p.credential, p.fix]), [['the Atlassian API token', FIX]]);
+  assert.match(out.atlassian.problems[0].problem, /no atlassian entry for p in ~\/\.harness\/vm-credentials\.json, nor an api-email and api-token/);
+});
+
+test('ASS-561 AC2: acli logged out, or logged in to another site, is reported with the fix, holding nothing; with the network down nothing is reported', async () => {
+  const m = jiraMac();
+  assert.deepEqual(await m.cli('project:check-credentials', 'p'), { held: false, since: null, problems: [] });
+  assert.match(m.calls(), /acli jira auth status/);
+  m.acli('✗ You are not logged in. Run acli jira auth login.\n', 1);
+  let out = await m.cli('project:check-credentials', 'p');
+  assert.equal(out.held, false);
+  assert.deepEqual(out.atlassian.problems, [{ credential: 'the acli login (example.atlassian.net)', problem: 'acli is not logged in to Jira', fix: FIX }]);
+  m.acli('✓ Authenticated\n  Site: other.atlassian.net\n  Email: ada@example.com\n');
+  out = await m.cli('project:check-credentials', 'p');
+  assert.deepEqual(out.atlassian.problems.map(p => p.problem), ['acli is logged in to other.atlassian.net, not example.atlassian.net']);
+  m.acli('Error: Get "https://example.atlassian.net/rest/api/3/myself": dial tcp: lookup example.atlassian.net: no such host\n', 1);
+  assert.deepEqual(await m.cli('project:check-credentials', 'p'), { held: false, since: null, problems: [] });
+  assert.equal(existsSync(m.needs), false);
+  // An off-board project asks acli nothing.
+  const off = mac({ project: { name: 'P', 'work-sources': [{ type: 'off-board' }] }, declaration: { p: { atlassian: ATLASSIAN } }, keychain: [] });
+  assert.deepEqual(await off.cli('project:check-credentials', 'p'), { held: false, since: null, problems: [] });
+  assert.doesNotMatch(off.calls(), /acli|Atlassian/);
+});

@@ -77,6 +77,7 @@ else
   [[ "$2" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "vm:credentials: invalid VM '$2'" >&2; exit 1; }
 fi
 project="$1" vm="$2"
+lima_use "$project" || exit 1   # ASS-578: its Lima folder, for every limactl below
 
 decl="$(declared_credentials vm:credentials "$project" | jq -c 'del(.atlassian)')"
 stamps="$(read_stamps "$decl")"

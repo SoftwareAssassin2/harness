@@ -135,6 +135,20 @@ test('ASS-417 AC1/AC3/AC5: a quit stops every running VM under the harness\'s LI
   assert.deepEqual(said.slice(1).sort(), ['VM one stopped', 'VM two stopped']);
 });
 
+test('ASS-578 AC2: a quit stops the running VMs of every Lima folder in use — the harness-wide one and a project\'s own lima-home — each with its own folder as LIMA_HOME', async () => {
+  const l = lima({ one: 'Running', idle: 'Stopped' }, { elsewhere: 'Running' }), said = [];
+  const projects = mkdtempSync(join(tmpdir(), 'projects-'));
+  mkdirSync(join(projects, 'big'));
+  writeFileSync(join(projects, 'big', 'project.json'), JSON.stringify({ name: 'Big', 'lima-home': l.other }));
+  l.env.PROJECTS_DIR = projects;
+  await quitWith(l, { said })(0);
+  assert.deepEqual([l.status('one'), l.status('idle'), l.status('elsewhere', l.other)], ['Stopped', 'Stopped', 'Stopped']);
+  assert.ok(l.calls().includes(`${l.other} stop elsewhere`), l.calls().join('\n'));
+  assert.ok(l.calls().includes(`${l.home} stop one`), l.calls().join('\n'));
+  assert.ok(l.calls().includes(`${l.other} list --format {{.Name}}\t{{.Status}}`), 'its folder listed');
+  assert.equal(said[0], `stopping 2 VMs under ${l.home}, ${l.other}: one, elsewhere`);
+});
+
 test('ASS-417 AC2/AC5: a restart (exit 75) stops no VM, and interrupts no golden build', async () => {
   const l = lima({ one: 'Running' }), killed = [];
   await quitWith(l, { goldenBuilds: () => [{ project: 'p', pid: 99 }], kill: (pid, signal) => killed.push([pid, signal]) })(75);

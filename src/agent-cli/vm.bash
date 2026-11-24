@@ -9,7 +9,7 @@
 #   $setup_marker                             # the file in a VM whose Setup finished (ASS-68: vm:mark-setup-complete, vm:setup-complete)
 #   free_port                                 # a TCP port free on the Mac's loopback now that no instance pins: a clone's ssh.localPort (under lock_ports)
 #   lock_ports <command> / unlock_ports       # the harness-wide ssh port lock (descriptor 4): from choosing a port until it is written to lima.yaml
-#   pinned_ports                              # "<instance>\t<port>" for every instance under LIMA_HOME whose lima.yaml pins ssh.localPort
+#   pinned_ports                              # "<instance>\t<port>" for every instance, in every Lima folder in use (lima_homes), whose lima.yaml pins ssh.localPort
 #   ports_in_use <port…>                      # those of the ports something listens on now, on the Mac's loopback
 #   ssh_repin <command> <vm>                  # a stopped VM whose pinned port another instance pins, or something holds now, re-pinned to a free one (ASS-467)
 #
@@ -26,12 +26,16 @@
 #   delete_build <command> <project>          # golden-<project>-build deleted, under its build lock (not waited for); fails while a build holds it
 #   reclaim_generations <command> <project> [dry-run]   # the project's deletable VMs of an older golden generation deleted (ASS-287); prints what was, and what was kept
 #   volume_free                               # the bytes free on the volume holding LIMA_HOME (df)
-#   reclaim_all <command> [dry-run]           # every project's deletable VMs deleted, least recently accessed first across all, until that volume is back above disk-free-warn-gb (ASS-288)
+#   reclaim_all <command> [dry-run]           # on each volume holding a Lima folder below disk-free-warn-gb, the deletable VMs of the projects
+#                                             # whose folder it holds deleted, least recently accessed first across them, until it is back above (ASS-288, ASS-578)
 #
 # One VM per ticket variation, a copy-on-write clone of the project's golden
-# image (golden-<project>, vm:build-golden) under LIMA_HOME (lima-home.bash:
-# the env var, else harness.local.json's lima-home, else harness.json's, else ~/.lima). Ticket keys are unique across projects, so
-# the name is too. The ticket's folder is data/projects/<project>/work/<KEY> — an
+# image (golden-<project>, vm:build-golden) in the project's Lima folder (lima-home.bash lima_home <project>, ASS-578:
+# its project.json lima-home, else the harness-wide one — the LIMA_HOME env var, else harness.local.json's lima-home,
+# else harness.json's, else ~/.lima). Sourcing this exports LIMA_HOME as the harness-wide folder (lima_init); a command
+# for one project's VMs makes it that project's (lima_use) before its own limactl calls, and the functions below that
+# take a project use its folder whatever LIMA_HOME is. Ticket keys are unique across projects, so
+# the name is too, across every folder. The ticket's folder is data/projects/<project>/work/<KEY> — an
 # off-board ticket's in its home project's, as every agent's (prompt.bash
 # work_folder) — and is the only thing of the Mac's a VM has, read-only, at
 # /mnt/ticket (ASS-182: a VM writes it only through its agent.sh).
@@ -49,7 +53,7 @@ source "$here_vm/ticket-system.bash"
 source "$here_vm/lima-home.bash"
 source "$here_vm/machine.bash"
 source "$here_vm/disk.bash"
-LIMA_HOME="$(lima_home)"; export LIMA_HOME
+lima_init
 agent="$here_vm/../../agent.sh"
 harness_file="${HARNESS_FILE:-$here_vm/../../data/harness.json}"
 tokens_file="${HARNESS_HOME:-$HOME/.harness}/vm-tokens.json"
@@ -89,7 +93,7 @@ running_vm() {
 }
 
 # ASS-467: every VM keeps an ssh port (ssh.localPort in its lima.yaml) no
-# other instance under LIMA_HOME pins — running or stopped, any project's, a
+# other instance pins, in any Lima folder in use (ASS-578: the ports are the Mac's, whichever folder an instance is in) — running or stopped, any project's, a
 # golden image's or a vm:test-repos VM's — so a stopped VM's port, free on the
 # Mac while it is down, is never handed to another, which would then hold it
 # (Lima's host agent listens on it) and keep the first from starting. A port
@@ -103,13 +107,13 @@ lock_ports() { lock_on 4 "$disk_data_folder/vm-ports.lock" "$1" "${VM_LOCK_TIMEO
 unlock_ports() { exec 4>&-; }
 
 pinned_ports() {
-  local yaml name
-  for yaml in "$LIMA_HOME"/*/lima.yaml; do
+  local yaml name home
+  while IFS= read -r home; do for yaml in "$home"/*/lima.yaml; do
     name="$(basename "$(dirname "$yaml")")"
     [[ -f "$yaml" && "$name" != _* ]] || continue
     awk -v vm="$name" '/^ssh:/ { s = 1; next } /^[^[:space:]#]/ { s = 0 }
       s && /^[[:space:]]+localPort:/ { p = $2; gsub(/[^0-9]/, "", p); if (p + 0 > 0) print vm "\t" p + 0; exit }' "$yaml"
-  done
+  done; done < <(lima_homes)
 }
 
 ports_in_use() {
@@ -141,7 +145,7 @@ ssh_repin() {
     elif [[ -n "$(ports_in_use "$port")" ]]; then why="held by another process now"; fi
   fi
   [[ -n "$why" ]] || { unlock_ports; return 0; }
-  port_new="$(free_port)" && limactl edit --tty=false "$vm" --set ".ssh.localPort = $port_new" >/dev/null 2>&1 \
+  port_new="$(free_port)" && LIMA_HOME="$(lima_vm_home "$vm")" limactl edit --tty=false "$vm" --set ".ssh.localPort = $port_new" >/dev/null 2>&1 \
     || { unlock_ports; echo "$command: $vm's ssh port $port is $why, and it could not be re-pinned to a free one" >&2; return 1; }
   unlock_ports
   echo "$command: $vm's ssh port $port is $why; re-pinned to $port_new" >&2
@@ -279,7 +283,7 @@ measure_disks() {
 # accessed_at <instance folder> — when its disk (else the folder) was last written.
 accessed_at() { date -u -r "$( [[ -f "$1/disk" ]] && echo "$1/disk" || echo "$1")" +%Y-%m-%dT%H:%M:%SZ; }
 
-golden_bytes() { disk_bytes "$(lima_list "golden-$1" --format '{{.Dir}}' 2>/dev/null)" 2; }
+golden_bytes() { local -x LIMA_HOME; LIMA_HOME="$(lima_home "$1")" || return 1; disk_bytes "$(lima_list "golden-$1" --format '{{.Dir}}' 2>/dev/null)" 2; }
 
 # built_at <instance folder> — the built-at of the golden image label in it, empty without one.
 built_at() { jq -r '.["built-at"] // empty' "$1/golden-image.json" 2>/dev/null || true; }
@@ -313,6 +317,7 @@ vm_disk_limit() {
 reconcile_vms() {
   local command="$1" project="$2" file listing sprint recorded measured="{}" name dir limit blind=false current="" current_at="" golden=0 generation old build=null leftover
   local folders=() names=() goldens sizes=() own shared allocated k build_bytes=0
+  local -x LIMA_HOME; LIMA_HOME="$(lima_home "$project")" || return 1   # ASS-578: the project's own folder
   file="$(vms_file "$project")"
   sysctl -n kern.bootsessionuuid >/dev/null 2>&1 || blind=true
   limit="$(vm_disk_limit "$command" "$project")" || return 1
@@ -390,6 +395,7 @@ reconcile_vms() {
 # short still once none is left, it returns 3 as well.
 make_room() {
   local command="$1" project="$2" need="$3" vm="$4" scope="${5:-}" inventory limit use golden free avail bytes taken
+  local -x LIMA_HOME; LIMA_HOME="$(lima_home "$project")" || return 1   # ASS-578: the volume holding the project's folder
   inventory="$(reconcile_vms "$command" "$project")" || return 1
   # .deletable: what may go, in the order it goes — the leftover build, then the VMs, least recently accessed first;
   # each one's frees-bytes, what deleting it gives back (ASS-403): the last of a generation's VMs to go, the ones
@@ -445,6 +451,7 @@ room_delete() {
 }
 
 delete_vm() {
+  local -x LIMA_HOME; LIMA_HOME="$(lima_home "$2")" || return 1
   limactl delete -f "$3" >/dev/null 2>&1 || { echo "$1: could not delete $3" >&2; return 1; }
   update_json "$(vms_file "$2")" --arg n "$3" 'del(.[$n])'
   [[ ! -f "$tokens_file" ]] || update_json "$tokens_file" --arg n "$3" 'del(.[$n])'
@@ -467,6 +474,7 @@ build_in_progress() {
 # vm:build-golden then refuses, as with any build running); taken without
 # waiting: held, a build is in progress and nothing is deleted.
 delete_build() {
+  local -x LIMA_HOME; LIMA_HOME="$(lima_home "$2")" || return 1
   perl -MFcntl=:flock -e 'open(my $f, ">>", shift) or exit 2; flock($f, LOCK_EX | LOCK_NB) or exit 3; exit(system(@ARGV) == 0 ? 0 : 1)' \
     "$projects/$2/golden-build.lock" limactl delete -f "golden-$2-build" >/dev/null 2>&1 \
     || { echo "$1: could not delete golden-$2-build (or a build of $2 started)" >&2; return 1; }
@@ -483,6 +491,7 @@ delete_build() {
 # caller holds the project's VM lock.
 reclaim_generations() {
   local command="$1" project="$2" dry="${3:-}" plan name
+  local -x LIMA_HOME; LIMA_HOME="$(lima_home "$project")" || return 1
   plan="$(reconcile_vms "$command" "$project" | jq --argjson dry "$( [[ -n "$dry" ]] && echo true || echo false)" '
     def it: { name, ticket, variation, "golden-built-at", "disk-bytes" };
     { project, "golden-built-at", "dry-run": $dry,
@@ -494,34 +503,67 @@ reclaim_generations() {
   echo "$plan"
 }
 
-# reclaim_all (ASS-288): below disk-free-warn-gb on the volume holding
-# LIMA_HOME, the deletable VMs of every project — stopped, their variation not
+# reclaim_all (ASS-288): below disk-free-warn-gb on a volume holding a Lima
+# folder, the deletable VMs of every project whose folder that volume holds —
+# stopped, their variation not
 # in flight: reconcile_vms's deletable, as make_room deletes — are deleted,
-# every project's leftover golden-<project>-build first (ASS-289: a failed
+# every such project's leftover golden-<project>-build first (ASS-289: a failed
 # build's, deletable when stopped and no build is in progress), then the VMs
 # least recently accessed first across all of them, until df says the volume
-# is back at or above the warn level or none is left. Each project's inventory
+# is back at or above the warn level or none is left. ASS-578: each Lima folder
+# in use is on some volume — the harness-wide one's, and each project's own
+# (lima-home.bash lima_home) — and each volume is reclaimed so, in turn, from
+# the projects whose folder it holds only: deleting a VM on one disk frees
+# nothing on another. Each project's inventory
 # is read under its VM lock, one project at a time; each deletion takes that
 # project's lock again and reconciles first, so a VM started or put back in
 # flight since is skipped (no two locks are ever held at once). Each deletion
 # is said on stderr with its VM, project, ticket, variation, last access and
 # the bytes df says it freed. Prints { dry-run, warn-bytes, free-bytes-before,
 # free-bytes, deleted: [{ project, name, kind, ticket, variation, last-accessed,
-# disk-bytes, freed-bytes }], short } — kind leftover-golden-build (ticket and
-# variation null) or ticket-vm; — short: still below the warn level.
+# disk-bytes, freed-bytes }], short, volumes: [{ mount, lima-home, projects,
+# free-bytes-before, free-bytes, short }] } — kind leftover-golden-build (ticket and
+# variation null) or ticket-vm; free-bytes-before and free-bytes the fullest
+# volume's; short: some volume still below the warn level.
 # With dry-run, those it would delete — counting each one's disk-bytes as
-# freed — deleting none. A project whose inventory cannot be read is passed
+# freed — deleting none. A project whose inventory or folder cannot be read is passed
 # over, said on stderr.
 reclaim_all() {
-  local command="$1" dry="${2:-}" warn hold free before candidates="[]" deleted="[]" dir project inventory next name kind bytes ticket variation accessed after freed what
+  local command="$1" dry="${2:-}" warn hold dir project home line mount deleted="[]" volumes="[]" default order=()
+  local -A on=() home_of=()
   read -r warn hold < <(disk_levels "$command") || true
   [[ -n "${warn:-}" ]] || return 1
+  default="$(lima_home_default)"
+  line="$(volume_of "$default" 2>&1)" || { echo "$command: $line" >&2; return 1; }
+  mount="${line#*$'\t'}"; order+=("$mount"); home_of[$mount]="$default"; on[$mount]=""
+  for dir in "$projects"/*/; do
+    project="$(basename "$dir")"
+    [[ "$project" =~ ^[A-Za-z0-9_-]+$ && -f "$dir/project.json" ]] || continue
+    home="$(lima_home "$project" 2>&1)" || { echo "$command: $project passed over: $home" >&2; continue; }
+    line="$(volume_of "$home" 2>&1)" || { echo "$command: $project passed over: $line" >&2; continue; }
+    mount="${line#*$'\t'}"
+    [[ -n "${home_of[$mount]+set}" ]] || { order+=("$mount"); home_of[$mount]="$home"; on[$mount]=""; }
+    on[$mount]+="$project "
+  done
+  for mount in "${order[@]}"; do
+    # shellcheck disable=SC2086
+    reclaim_volume "$command" "$dry" "$warn" "$mount" "${home_of[$mount]}" ${on[$mount]} || return 1
+  done
+  jq -n --argjson d "$deleted" --argjson v "$volumes" --argjson dry "$( [[ -n "$dry" ]] && echo true || echo false)" --argjson w "$warn" \
+    '{ "dry-run": $dry, "warn-bytes": $w, "free-bytes-before": ($v | map(.["free-bytes-before"]) | min), "free-bytes": ($v | map(.["free-bytes"]) | min),
+       deleted: $d, short: any($v[]; .short), volumes: $v }'
+}
+
+# reclaim_volume <command> <dry> <warn> <mount> <a Lima folder on it> <project…> — reclaim_all's, for one volume: its
+# deletions appended to $deleted, and its { mount, lima-home, projects, free-bytes-before, free-bytes, short } to $volumes.
+reclaim_volume() {
+  local command="$1" dry="$2" warn="$3" mount="$4" free before candidates="[]" project inventory next name kind bytes ticket variation accessed after freed what
+  local -x LIMA_HOME="$5"   # volume_free's: the volume holding it
+  shift 5
   free="$(volume_free 2>&1)" || { echo "$command: $free" >&2; return 1; }
   before="$free"
   if (( free < warn )); then
-    for dir in "$projects"/*/; do
-      project="$(basename "$dir")"
-      [[ "$project" =~ ^[A-Za-z0-9_-]+$ && -f "$dir/project.json" ]] || continue
+    for project; do
       lock_vms "$command" "$project" || { echo "$command: $project passed over: its VM lock could not be taken" >&2; continue; }
       inventory="$(reconcile_vms "$command" "$project")" || { unlock_vms; echo "$command: $project passed over: its inventory could not be read" >&2; continue; }
       unlock_vms
@@ -560,10 +602,10 @@ reclaim_all() {
     freed=$(( after > free ? after - free : 0 ))
     free="$after"
     deleted="$(jq -c --argjson x "$next" --argjson f "$freed" '. + [$x + { "freed-bytes": $f }]' <<<"$deleted")"
-    echo "$command: deleted $name ($what, last accessed $accessed): $freed bytes freed ($(gib "$freed") GiB), $(gib "$free") GiB free" >&2
+    echo "$command: deleted $name ($what, last accessed $accessed): $freed bytes freed ($(gib "$freed") GiB), $(gib "$free") GiB free on $mount" >&2
   done
-  jq -n --argjson d "$deleted" --argjson dry "$( [[ -n "$dry" ]] && echo true || echo false)" --argjson w "$warn" --argjson b "$before" --argjson f "$free" \
-    '{ "dry-run": $dry, "warn-bytes": $w, "free-bytes-before": $b, "free-bytes": $f, deleted: $d, short: ($f < $w) }'
+  volumes="$(jq -c --arg m "$mount" --arg h "$LIMA_HOME" --arg ps "$*" --argjson b "$before" --argjson f "$free" --argjson w "$warn" \
+    '. + [{ mount: $m, "lima-home": $h, projects: ($ps | split(" ") | map(select(. != ""))), "free-bytes-before": $b, "free-bytes": $f, short: ($f < $w) }]' <<<"$volumes")"
 }
 # vm_install_deps <command> <vm> <project> — ASS-503: in the VM, each of the project's repositories whose
 # pnpm-lock.yaml changed since its deps were installed gets `pnpm install --frozen-lockfile` (in-vm/install-deps.sh),

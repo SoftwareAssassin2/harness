@@ -163,7 +163,7 @@ test('ASS-490 AC1, AC2, AC3: control --project times each tick and each of tick.
   // the deeper keys under runSteps left out here); the VM phase's marked as background.
   const top = (phase, keys) => Object.keys(keys).filter(k => !k.slice(phase.length + 1).includes('/')).toSorted();
   assert.deepEqual(top('timers', s.phases.timers['sub-routines']), ['timers/checkApiCost', 'timers/checkGcloud', 'timers/checkGlab', 'timers/checkPushAccount', 'timers/checkUsage', 'timers/detectReverts', 'timers/fireTimers', 'timers/load', 'timers/refreshCommitLists']);   // ASS-558: refreshCommitLists
-  assert.deepEqual(top('steps', s.phases.steps['sub-routines']), ['steps/checkCredentials', 'steps/checkDisk', 'steps/checkRateLimits', 'steps/fastTrack', 'steps/load', 'steps/runSteps']);
+  assert.deepEqual(top('steps', s.phases.steps['sub-routines']), ['steps/checkCredentials', 'steps/checkDisk', 'steps/checkLimaHomes', 'steps/checkRateLimits', 'steps/fastTrack', 'steps/load', 'steps/runSteps']);   // ASS-578: checkLimaHomes
   assert.equal(s.phases['seats/VMs']['sub-routines']['seats/VMs/superviseVms'].background, true);
   assert.equal(s.phases.finish['sub-routines']['finish/finishEnded']['calls-last'], 1);
   const phaseSum = Object.values(s.phases).reduce((sum, p) => sum + p['last-ms'], 0);

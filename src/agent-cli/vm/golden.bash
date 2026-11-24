@@ -5,7 +5,7 @@
 #   source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/golden.bash"
 #   golden_definition <command> <project>   # reads the definition: sets $folder, $tools, $images, $repos, $hosts_toml (and registry.bash's $port…),
 #                                            # $inputs, the input lines exactly as hashed, and $hash; fails, naming <command>, without one
-#   golden_label <project>                   # <LIMA_HOME>/golden-<project>/golden-image.json, the built image's label
+#   golden_label <project>                   # <its Lima folder>/golden-<project>/golden-image.json, the built image's label
 #   golden_status <project>                  # after golden_definition: where its build stands, as JSON (below)
 #
 # The inputs (see build-golden.sh): "<sha256>  definition/<path>" for every
@@ -17,11 +17,12 @@
 # (inputs: the text split at each newline, the last aside — joined with
 # newlines plus one more, they hash to it), so a stale image can say what
 # changed. GOLDEN_IMAGE_SHARED overrides the shared steps'
-# folder, for tests. LIMA_HOME is exported as lima-home.bash resolves it
-# (ASS-273).
+# folder, for tests. LIMA_HOME is exported as lima-home.bash resolves the
+# harness-wide folder (ASS-273, lima_init); the golden image is in the
+# project's own folder (ASS-578: lima_home <project>).
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../registry/registry.bash"
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lima-home.bash"
-LIMA_HOME="$(lima_home)"; export LIMA_HOME
+lima_init
 shared="${GOLDEN_IMAGE_SHARED:-$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/golden-image}"
 
 golden_definition() {
@@ -67,7 +68,7 @@ golden_arm64() {
     | ($s[0][$p.i] // empty) | select(.tag == $p.t) | "arm64 \($p.i):\($p.t) \(.digest)"'
 }
 
-golden_label() { echo "$LIMA_HOME/golden-$1/golden-image.json"; }
+golden_label() { local home; home="$(lima_home "$1")" || return 1; echo "$home/golden-$1/golden-image.json"; }
 
 # A build started detached (vm:build-golden-start, ASS-151) is recorded in
 # data/projects/<project>/: golden-build-run.json { pid, started-at } as it

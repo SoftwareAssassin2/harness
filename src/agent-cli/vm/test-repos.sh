@@ -33,6 +33,7 @@ source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../vm-credentials.bash"
 [[ $# -ge 1 ]] || { echo "usage: vm:test-repos <project> [<repository>…]" >&2; exit 1; }
 [[ "$1" =~ ^[A-Za-z0-9_-]+$ && -f "$projects/$1/project.json" ]] || { echo "vm:test-repos: no project '$1'" >&2; exit 1; }
 project="$1" json="$projects/$1/project.json"; shift
+lima_use "$project" || exit 1   # ASS-578: its Lima folder, for every limactl below
 folder="$(jq -r '.["golden-image"].folder // empty' "$json")"
 [[ -n "$folder" ]] || { echo "vm:test-repos: $project has no golden-image in project.json" >&2; exit 1; }
 [[ "$folder" == /* ]] || folder="$projects/../$folder"

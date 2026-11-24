@@ -29,14 +29,18 @@
 // - ASS-577: with FAKE_LIMA_REFUSE_STOPPED=1, a `shell` or `copy` into an
 //   instance whose status is not Running fails as Lima's does (exit 1, its
 //   "is stopped, run `limactl start …`" line), and `shell` into a missing one too.
+// - ASS-578: with FAKE_LIMA_BY_HOME=1, the instances are in LIMA_HOME's folder (a
+//   project may keep its VMs in a Lima folder of its own) — FAKE_LIMA_INSTANCES
+//   without one — and every call's log entry carries `home`, the LIMA_HOME it ran with.
 // Under test/support/, which npm test's pattern leaves alone.
 import { spawn } from 'node:child_process';
 import { appendFileSync, cpSync, mkdirSync, existsSync, readFileSync, writeFileSync, readdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 
 const args = process.argv.slice(2);
-const log = entry => { if (process.env.FAKE_LIMACTL_LOG) appendFileSync(process.env.FAKE_LIMACTL_LOG, `${JSON.stringify(entry)}\n`); };
-const instances = process.env.FAKE_LIMA_INSTANCES ?? '/nonexistent';
+const byHome = process.env.FAKE_LIMA_BY_HOME === '1';
+const log = entry => { if (process.env.FAKE_LIMACTL_LOG) appendFileSync(process.env.FAKE_LIMACTL_LOG, `${JSON.stringify(byHome ? { ...entry, home: process.env.LIMA_HOME ?? null } : entry)}\n`); };
+const instances = (byHome && process.env.LIMA_HOME) || (process.env.FAKE_LIMA_INSTANCES ?? '/nonexistent');
 const at = (vm, file) => join(instances, vm, file);
 const read = (vm, file) => readFileSync(at(vm, file), 'utf8').trim();
 const positional = args.slice(1).filter(a => !a.startsWith('-'));

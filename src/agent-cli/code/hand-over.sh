@@ -116,15 +116,16 @@ stop_started() {
 }
 trap stop_started EXIT
 # lima_ready <vm> — the machine ready for the hand-over: a Lima VM (no kind: prefix) found stopped is started (vm:start);
-# 0 ready (or not a Lima VM: nothing to do), 3 when there is no such VM (no instance under LIMA_HOME); exits, saying
+# 0 ready (or not a Lima VM: nothing to do), 3 when there is no such VM (no instance in the project's Lima folder, ASS-578); exits, saying
 # why, when it won't start or its state can't be read.
 lima_ready() {
-  local vm="$1" status
+  local vm="$1" status home
   [[ -n "$vm" && "$vm" != *:* ]] || return 0
+  home="$(lima_home "$project")" || exit 1
   # Gone only when Lima has no instance folder for it either: a limactl that fails for another reason is no reason to
   # take the forge's branches over what the VM holds.
   if ! status="$(machine_status "$vm" 2>/dev/null)"; then
-    [[ ! -e "$(lima_home)/$vm" ]] || { echo "$command: could not read the state of $key $variation's Lima VM $vm" >&2; exit 1; }
+    [[ ! -e "$home/$vm" ]] || { echo "$command: could not read the state of $key $variation's Lima VM $vm" >&2; exit 1; }
     return 3
   fi
   [[ "$status" != Running ]] || return 0

@@ -194,7 +194,7 @@ function layout(state, size) {
   const third = form ? 'type   tab next field   enter sets the span   esc cancels' : state.performanceMessage ? red(state.performanceMessage) : '';
   // ASS-475: while Jira rejects the analytics token, a red line first: the numbers stop at the last good read.
   const through = loaded?.data?.tickets?.['fetched-through'];
-  const warn = project?.jiraTokenRejected ? wrap(`${jiraTokenTodo(project.jiraTokenRejected)}.${through ? ` These numbers stop at ${String(through).slice(0, 16).replace('T', ' ')} UTC.` : ''}`, Math.max(20, columns || Infinity)).map(red) : [];
+  const warn = project?.jiraTokenRejected ? wrap(`${jiraTokenTodo(project.jiraTokenRejected, project.id)}.${through ? ` These numbers stop at ${String(through).slice(0, 16).replace('T', ' ')} UTC.` : ''}`, Math.max(20, columns || Infinity)).map(red) : [];
   const message = (text, lead = []) => ({ head: [...warn, ...lead, text, ...(third ? [third] : [])], grid: null, notice: [], height: 0, last: 0 });
   if (!project) return message('No project selected.');
   if (!loaded) return message(`loading ${project.id}'s analytics…`);

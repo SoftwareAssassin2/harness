@@ -35,6 +35,7 @@ source "$here_vm/work.bash"
 command=vm:recreate
 [[ $# -eq 3 ]] || { echo "usage: $command <project> <ticket-key> <variation>" >&2; exit 1; }
 project="$1" key="$(tr '[:lower:]' '[:upper:]' <<< "$2")" variation="$3"
+lima_use "$project" || exit 1   # ASS-578: its Lima folder, for every limactl below
 variation_exists "$command" "$project" "$key" "$variation"
 vm="$(vm_name "$key" "$variation")" golden="golden-$project"
 refuse() { blocked_log "$project" "$key" "$variation" "Repair Image" "vm:recreate refused: $1"; echo "$command: $1" >&2; exit 3; }

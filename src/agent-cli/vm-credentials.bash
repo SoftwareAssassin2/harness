@@ -34,7 +34,10 @@
 # `claude setup-token`, as CLAUDE_CODE_OAUTH_TOKEN) or anthropic (a Console API
 # key, as ANTHROPIC_API_KEY: { "keychain-service": "Anthropic API Key" }).
 # atlassian is never injected into a VM (ASS-238: Jira work runs on the host);
-# declared, vm:scan-image still searches an image for it.
+# declared, vm:scan-image still searches an image for it. It is the host's
+# Jira API token (ASS-561): the downloader's analytics read it (cycle.js
+# analyticsAuth), project:set-atlassian-token saves it and logs acli in with
+# it, and project:check-credentials checks it without holding the project.
 # A project may declare both (ASS-217): its VMs then hold both, and control
 # picks one per agent, unsetting the other in its command (dispatch.js). A
 # kind left out is not provisioned. The keychain service name alone finds

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Description: Check a project's credentials and hold its new work while one is missing or failing — project:check-credentials <project>; prints project:credentials-status's { held, since, problems }.
+# Description: Check a project's credentials and hold its new work while one is missing or failing — project:check-credentials <project>; prints project:credentials-status's { held, since, problems[, atlassian][, substrate] }.
 set -euo pipefail
 
 # ASS-395. Every credential the project is declared to need, checked where it
@@ -10,7 +10,8 @@ set -euo pipefail
 #     -w nor -g: no secret is read and no access is asked for (read_stamps'
 #     read) — so a missing item (security's 44) or one that cannot be read is
 #     found; an entry the declaration itself gets wrong is one problem. A
-#     project with no entry (or no file) declares none: nothing to check;
+#     project with no entry (or no file) declares none: nothing to check.
+#     Its atlassian item holds nothing: ASS-561 checks it apart (below);
 #   - the host's forge login for each of project.json's repositories: gh for
 #     one on github.com, glab for any other (merge-requests.bash's split),
 #     `<tool> auth status --hostname <host>`; skipped with GH_DISABLED=1 /
@@ -55,15 +56,17 @@ timed() { perl -e 'alarm shift; exec @ARGV' "$limit" "$@"; }
 NETWORK='no such host|dial tcp|connection refused|connection reset|network is unreachable|i/o timeout|timeout|timed out|(^|[^0-9])50[234]([^0-9]|$)|bad gateway|service unavailable|gateway time-?out'
 LOST='(^|[^0-9])401([^0-9]|$)|unauthori[sz]ed|invalid[_ ]token|token (has )?(expired|been revoked|was revoked)|not (been )?authenticated|have been authenticated|not logged in|no token'
 
-# The keychain items its VM credentials declare.
-declared="$HOME/.harness/vm-credentials.json"
+# The keychain items its VM credentials declare (atlassian's apart, below: ASS-561).
+declared="$HOME/.harness/vm-credentials.json" declared_ok=1 atlassian_service=""
 if [[ -f "$declared" ]] && ! jq empty "$declared" 2>/dev/null; then
+  declared_ok=0
   problem "~/.harness/vm-credentials.json" "is not valid JSON" "correct the file (its shape is in src/agent-cli/vm-credentials.bash)"
 elif [[ -f "$declared" ]] && jq -e --arg p "$project" 'has($p)' "$declared" >/dev/null 2>&1; then
   if decl="$(declared_credentials "$command" "$project" 2>&1)"; then
     for kind in "${KINDS[@]}"; do
       service="$(jq -r --arg k "$kind" '.[$k]["keychain-service"] // empty' <<< "$decl")"
       [[ -n "$service" ]] || continue
+      [[ "$kind" == atlassian ]] && { atlassian_service="$service"; continue; }   # ASS-561: checked below, holding nothing
       save="security add-generic-password -U -s \"$service\" -a \"\$USER\" -T /usr/bin/security -w \"\$(pbpaste)\" (with the $kind token copied)"
       status=0
       timed security find-generic-password -s "$service" >/dev/null 2>&1 || status=$?
@@ -73,6 +76,7 @@ elif [[ -f "$declared" ]] && jq -e --arg p "$project" 'has($p)' "$declared" >/de
       fi
     done
   else
+    declared_ok=0
     problem "~/.harness/vm-credentials.json" "${decl#"$command: "}" "correct $project's entry in ~/.harness/vm-credentials.json (its shape is in src/agent-cli/vm-credentials.bash)"
   fi
 fi
@@ -168,6 +172,57 @@ if sub_entries="$(node "$here/../substrate.js" "$projects" "$project" 2>/dev/nul
   printf '%s\n' "${sub_problems[@]+"${sub_problems[@]}"}" | jq -sc '[.[] | select(. != null)]' | jq -c --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '{ "checked-at": $at, problems: . }' | replace_file "$dir/substrate-needs.json"
 else
   rm -f "$dir/substrate-needs.json"
+fi
+
+# ASS-561: for a project with a jira work source, the Atlassian API token the downloader's analytics sign in with and
+# the acli login its ticket sync (and ticket:set-ticket-system-status, ticket:raise-bug) runs under — checked alike but
+# holding nothing (analytics and the Jira sync are degraded, agent work goes on), and kept apart in atlassian-needs.json
+# ({ since, problems }, since kept while there are any, written only when they change; removed when there are none),
+# which credentials-status prints as `atlassian` and the dashboard shows as a chip (frame.js headerWarnings):
+#   - the keychain item its vm-credentials.json `atlassian` entry names, read by its attributes alone, as above; with
+#     no such entry (and a declaration that is not itself wrong, a problem above), project.json's jira work source's
+#     api-email and api-token (the analytics' fallback, cycle.js analyticsAuth), a problem only when both are missing;
+#   - `acli jira auth status`: logged in, and to the work source's site. A check that does not answer in time, or fails
+#     only because the site could not be reached (ASS-429's NETWORK without LOST), is unknown, not a problem.
+# Each fix is project:set-atlassian-token, which saves the token and logs acli in. ACLI_DISABLED=1 skips acli.
+atl_problems=()
+atl_problem() { atl_problems+=("$(jq -cn --arg c "$1" --arg p "$2" --arg f "./agent.sh project:set-atlassian-token $project" '{ credential: $c, problem: $p, fix: $f }')"); }
+if jira_source="$(jq -ce '[."work-sources"[]? | select(.type == "jira")][0] // empty' "$json" 2>/dev/null)"; then
+  site="$(jq -r '.url // ""' <<< "$jira_source" | sed -E 's#^[a-z]+://##; s#[/?#].*$##')"
+  if [[ -n "$atlassian_service" ]]; then
+    status=0
+    timed security find-generic-password -s "$atlassian_service" >/dev/null 2>&1 || status=$?
+    if [[ $status -eq 44 ]]; then atl_problem "keychain item \"$atlassian_service\" (atlassian)" "missing from the keychain: the analytics cannot sign in to Jira"
+    elif [[ $status -eq 142 ]]; then atl_problem "keychain item \"$atlassian_service\" (atlassian)" "no answer within ${limit}s: is the login keychain locked?"
+    elif [[ $status -ne 0 ]]; then atl_problem "keychain item \"$atlassian_service\" (atlassian)" "unreadable (security exited $status)"
+    fi
+  elif [[ $declared_ok -eq 1 ]] && ! jq -e '(."api-email" | strings | length > 0) and (."api-token" | strings | length > 0)' <<< "$jira_source" >/dev/null; then
+    atl_problem "the Atlassian API token" "none: no atlassian entry for $project in ~/.harness/vm-credentials.json, nor an api-email and api-token in project.json's jira work source"
+  fi
+  if [[ "${ACLI_DISABLED:-}" != 1 ]]; then
+    if ! command -v acli >/dev/null; then
+      atl_problem "the acli login${site:+ ($site)}" "acli is not installed (brew install acli first)"
+    else
+      status=0
+      said="$(timed acli jira auth status 2>&1)" || status=$?
+      if [[ $status -eq 142 ]]; then :   # no answer in time: unknown
+      elif grep -Eqi "$NETWORK" <<< "$said" && ! grep -Eqi "$LOST" <<< "$said"; then :   # ASS-429: unreachable, unknown
+      elif [[ $status -ne 0 ]] || grep -Eqi "$LOST|unauthenticated" <<< "$said"; then
+        atl_problem "the acli login${site:+ ($site)}" "acli is not logged in to Jira"
+      elif [[ -n "$site" ]]; then
+        on="$(sed -nE 's/^[[:space:]]*Site:[[:space:]]*([^[:space:]]+).*/\1/p' <<< "$said" | head -n 1 | sed -E 's#^[a-z]+://##; s#/.*$##')"
+        [[ -z "$on" ]] || [[ "$(tr 'A-Z' 'a-z' <<< "$on")" == "$(tr 'A-Z' 'a-z' <<< "$site")" ]] \
+          || atl_problem "the acli login ($site)" "acli is logged in to $on, not $site"
+      fi
+    fi
+  fi
+fi
+atl_record="$dir/atlassian-needs.json"
+atl_list="$(printf '%s\n' "${atl_problems[@]+"${atl_problems[@]}"}" | jq -sc '[.[] | select(. != null)]')"
+if [[ "$atl_list" == '[]' ]]; then
+  rm -f "$atl_record"
+elif ! jq -e --argjson l "$atl_list" '.problems == $l' "$atl_record" >/dev/null 2>&1; then
+  update_json --create "$atl_record" --argjson l "$atl_list" '{ since: (.since // (now | floor | todate)), problems: $l }'
 fi
 
 record="$dir/credentials-hold.json"

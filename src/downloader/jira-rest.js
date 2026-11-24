@@ -3,7 +3,8 @@
 // changelog, and the board's sprints.
 // acli (jira.js) returns only the signed-in user's tickets and never a
 // ticket's history, so these read Jira's REST API directly, with basic auth
-// from the jira work source's api-email and api-token. `fetchFn` is Node's
+// from the project's Atlassian API token (cycle.js analyticsAuth, ASS-561: its
+// keychain item, else the jira work source's api-email and api-token). `fetchFn` is Node's
 // global fetch in the downloader, a fake in tests.
 //
 // The calls (verified against a live site 2026-11):

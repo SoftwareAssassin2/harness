@@ -2,7 +2,7 @@
 # Description: Each Lima instance's pinned ssh port and the clashes among them — vm:ports [--fix]; prints { vms: [{ name, port, status }], clashes: [{ port, vms, keeps, reason }], repinned: [{ name, from, to }] }; --fix re-pins the clashing stopped VMs to free ports.
 set -euo pipefail
 
-# ASS-467 (and ASS-465). Every instance under LIMA_HOME whose lima.yaml pins
+# ASS-467 (and ASS-465). Every instance in every Lima folder in use (ASS-578) whose lima.yaml pins
 # ssh.localPort (vm.bash pinned_ports): ticket VMs of every project, golden
 # images and vm:test-repos VMs alike, with its status (limactl list). A clash
 # is a port pinned by two or more instances (reason "shared"): the one that
@@ -25,7 +25,7 @@ source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../vm.bash"
 report() {
   local pins statuses stopped held
   pins="$(pinned_ports)"
-  statuses="$(lima_list --format '{{.Name}}	{{.Status}}' 2>/dev/null || true)"
+  statuses="$(lima_list_all --format '{{.Name}}	{{.Status}}' 2>/dev/null || true)"
   stopped="$(awk -F'\t' 'NR == FNR { if ($2 == "Stopped") s[$1] = 1; next } s[$1] { print $2 }' <(printf '%s\n' "$statuses") <(printf '%s\n' "$pins") | sort -u)"
   # shellcheck disable=SC2086
   held="$(ports_in_use $stopped)"

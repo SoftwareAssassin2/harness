@@ -68,7 +68,10 @@ function idle(state) {
 // memory-hold.json, the disk hold of ASS-288), the landed fixes a restart would
 // load (ASS-393), then idleness (ASS-59), then the analytics' Jira API token
 // rejected (ASS-475: the downloader's jira-token-rejected.json; it holds no
-// work, but the Performance screen's numbers stop until it is fixed); then the
+// work, but the Performance screen's numbers stop until it is fixed), the
+// Atlassian token or acli login missing or failing (ASS-561: check-credentials'
+// atlassian-needs.json; it holds no work either, but the analytics and the Jira
+// sync are degraded until project:set-atlassian-token is run); then the
 // banner's: the disk low (ASS-288), the account hold, the rate limit,
 // self-healing and the human's pause.
 export const IDLE_AFTER_MS = 5 * 60e3;
@@ -94,7 +97,8 @@ export function headerWarnings(state, now = Date.now()) {
     state.disk?.level === 'hold' && warning('out-of-disk-space', 'Out of disk space', `Free disk space: nothing new starts until ${state.disk['warn-bytes'] / 1e9} GB is free`, { chip: true, scope: 'harness' }),
     fixes.length > 0 && warning('restart', restartNotice(fixes.length), `Restart the harness to load ${fixes.join(', ')}`, { chip: true, scope: 'harness' }),
     idle(state) && warning('idle', 'No work in progress', 'No agent is working a sprint ticket: check the sprint', { chip: true, after: IDLE_AFTER_MS }),
-    project?.jiraTokenRejected && warning('jira-token-rejected', 'Jira API token rejected', jiraTokenTodo(project.jiraTokenRejected), { chip: true }),
+    project?.jiraTokenRejected && warning('jira-token-rejected', 'Jira API token rejected', jiraTokenTodo(project.jiraTokenRejected, project.id), { chip: true }),
+    atlassianNeeded(project) && warning('atlassian-token', `Atlassian sign-in: run './agent.sh project:set-atlassian-token ${project.id}'`, atlassianTodo(project), { chip: true }),
     state.disk?.level === 'warn' && warning('disk-low', 'Disk low', `Free disk space: ${gib(state.disk['free-bytes'])} GiB free, below the ${state.disk['warn-bytes'] / 1e9} GB warning level`, { scope: 'harness' }),
     account && warning('sign-in', 'Sign in', `Sign in: ${account['config-dir'] ? `CLAUDE_CONFIG_DIR=${account['config-dir']} ` : ''}claude, then /login as ${account.expected}`),
     limit && warning('rate-limited', 'Rate limited', `Wait: control sends its ${limit.kinds.join(' and ')} agents nothing until it resets ${resetText(limit['resets-at'], now)}`),
@@ -108,9 +112,18 @@ export function headerWarnings(state, now = Date.now()) {
 // jiraTokenTodo(record) — ASS-475: what to do about the analytics' rejected
 // Jira API token, as the header warning's notification and the Performance
 // screen say it.
-export function jiraTokenTodo(record) {
+// ASS-561: the fix is project:set-atlassian-token, when the record's project is known.
+export function jiraTokenTodo(record, project = null) {
   const source = record?.['work-source'] ? `the "${record['work-source']}" jira work source` : 'its jira work source';
-  return `Jira rejects the analytics API token of ${source}${record?.since ? ` since ${String(record.since).replace('T', ' ').replace(/:\d\dZ$/, ' UTC')}` : ''}, so the analytics are not updated: create a new Atlassian API token and put it in project.json as the api-token of ${source}`;
+  return `Jira rejects the analytics API token of ${source}${record?.since ? ` since ${String(record.since).replace('T', ' ').replace(/:\d\dZ$/, ' UTC')}` : ''}, so the analytics are not updated: create a new Atlassian API token, copy it, and run ./agent.sh project:set-atlassian-token ${project ?? '<project>'}`;
+}
+
+// atlassianNeeded(project), atlassianTodo(project) — ASS-561: whether project:check-credentials found the project's
+// Atlassian API token or acli login missing or failing (atlassian-needs.json), and what to do, each problem named.
+const atlassianNeeded = project => Boolean(project?.atlassianNeeds?.problems?.length);
+function atlassianTodo(project) {
+  const what = project.atlassianNeeds.problems.map(p => `${p.credential}: ${p.problem}`).join('; ');
+  return `${what}. Copy the project's Atlassian API token (id.atlassian.com, Security, API tokens) and run ./agent.sh project:set-atlassian-token ${project.id}: the analytics and the Jira sync are degraded until then; agent work goes on`;
 }
 
 // controlTroubles(state, now) — ASS-460, ASS-457: a red line under the banner

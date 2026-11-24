@@ -742,7 +742,7 @@ test('ASS-454 AC3: a priority set by hand is drawn in bright magenta, no 🪪; t
   assert.ok(!rankedRaw.filter(l => !l.includes('\x1b[95m137')).some(l => l.replace(/\x1b\[95m\d+\x1b\[0m/g, '').includes('\x1b[95m')));
 });
 
-test('ASS-454 AC4: priorityPrefix — four cells whatever it is given; a row without a priority (an empty seat, ASS-451) gets four blanks', () => {
+test('ASS-454 AC4: priorityPrefix — four cells whatever it is given; a row without a priority (an unranked ticket) gets four blanks', () => {
   assert.equal(priorityPrefix(null), '    ');
   assert.equal(priorityPrefix(undefined, true), '    ');
   assert.equal(priorityPrefix(1), '  1 ');

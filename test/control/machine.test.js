@@ -87,3 +87,23 @@ test('machineStatus, machineStatuses and stopMachine: each VM\'s status, all of 
   assert.deepEqual(v.calls().filter(c => c.argv[0] === 'stop').map(c => c.argv), [['stop', 'ass-74-a'], ['stop', '-f', 'ass-75-a']]);
   await assert.rejects(machineStatuses({ env: { ...v.env, PATH: '/nonexistent' } }));
 });
+
+test('ASS-578 AC1/AC2: a project keeping its VMs in its own Lima folder — every instance\'s status read across every folder in use, and each VM\'s command, status and stop run with the folder holding it as LIMA_HOME', async () => {
+  const v = fakeVm();
+  const own = realpathSync(mkdtempSync(join(tmpdir(), 'own-lima-'))), projects = mkdtempSync(join(tmpdir(), 'projects-'));
+  mkdirSync(join(projects, 'big'));
+  writeFileSync(join(projects, 'big', 'project.json'), JSON.stringify({ name: 'Big', 'lima-home': own }));
+  v.instance('ass-1-a', 'Running');
+  for (const [name, status] of [['big-1-a', 'Running'], ['golden-big', 'Stopped']]) {
+    mkdirSync(join(own, name)); writeFileSync(join(own, name, 'status'), status); writeFileSync(join(own, name, 'ssh-port'), '0');
+  }
+  const env = { ...v.env, LIMA_HOME: v.instances, PROJECTS_DIR: projects, FAKE_LIMA_BY_HOME: '1' };
+  assert.deepEqual(Object.fromEntries(await machineStatuses({ env })), { 'ass-1-a': 'Running', 'big-1-a': 'Running', 'golden-big': 'Stopped' });
+  assert.equal(machineCommand('big-1-a', ['true'], { env }).env.LIMA_HOME, own);
+  assert.equal(machineCommand('ass-1-a', ['true'], { env }).env.LIMA_HOME, v.instances);
+  assert.equal(await machineStatus('big-1-a', { env }), 'Running');
+  await stopMachine('big-1-a', { env });
+  assert.equal(readFileSync(join(own, 'big-1-a', 'status'), 'utf8'), 'Stopped');
+  const calls = v.calls();
+  assert.deepEqual(calls.filter(c => c.argv[0] !== 'list' || c.argv[1] !== '--format').map(c => [c.argv[0], c.home]), [['list', own], ['stop', own]]);
+});

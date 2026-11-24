@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Description: Whether a project's work is held by its credentials, and why — project:credentials-status <project> [--fail-when-held]; prints { held, since, problems[, substrate][, warnings] }.
+# Description: Whether a project's work is held by its credentials, and why — project:credentials-status <project> [--fail-when-held]; prints { held, since, problems[, atlassian][, substrate][, warnings] }.
 set -euo pipefail
 
 # ASS-395. Reads data/projects/<project>/credentials-hold.json, which
@@ -23,8 +23,10 @@ fail_when_held=0
 
 # ASS-533: with `substrate` added — { checked-at, problems: [{ machine, credential, problem, fix }] } — for a project
 # with Substrate clusters: what they need (check-credentials' substrate-needs.json), which holds nothing.
-record="$projects/$1/credentials-hold.json" needs="$projects/$1/substrate-needs.json"
-substrate='null'
+# ASS-561: with `atlassian` added — { since, problems: [{ credential, problem, fix }] } — while the project's Atlassian
+# API token or acli login is missing or failing (check-credentials' atlassian-needs.json), which holds nothing either.
+record="$projects/$1/credentials-hold.json" needs="$projects/$1/substrate-needs.json" atl="$projects/$1/atlassian-needs.json"
+substrate='null' atlassian='null'
 [[ ! -f "$needs" ]] || substrate="$(jq -c '.' "$needs" 2>/dev/null || echo null)"
 # ASS-571: with `warnings` added — [{ credential, problem, fix }], holding nothing — while control's last reading of
 # the project's Claude usage failed (claude-usage.json's failure, src/control/usage.js: its login token expired and
@@ -39,7 +41,9 @@ if why="$(jq -er '.failure.why // empty | strings' "$usage" 2>/dev/null)"; then
   warnings="$(jq -cn --arg why "$why" --arg at "$at" --arg asof "$asof" --arg fix "${config}claude (it refreshes its token as it starts), then /login if it asks" \
     '[{ credential: "the Claude usage token", problem: "its usage cannot be read since \($at): \($why); \(if $asof == "" then "never read" else "last read \($asof)" end)", fix: $fix }]')"
 fi
-extra() { jq -cn --argjson s "$substrate" --argjson w "$warnings" '(if $s == null then {} else { substrate: $s } end) + (if $w == [] then {} else { warnings: $w } end)'; }
+[[ ! -f "$atl" ]] || atlassian="$(jq -c 'select((.problems | length) > 0)' "$atl" 2>/dev/null || true)"
+[[ -n "$atlassian" ]] || atlassian='null'
+extra() { jq -cn --argjson a "$atlassian" --argjson s "$substrate" --argjson w "$warnings" '(if $a == null then {} else { atlassian: $a } end) + (if $s == null then {} else { substrate: $s } end) + (if $w == [] then {} else { warnings: $w } end)'; }
 if [[ -f "$record" ]] && jq -e '(.problems | length) > 0' "$record" >/dev/null 2>&1; then
   jq -c --argjson x "$(extra)" '{ held: true, since: (.since // null), problems } + $x' "$record"
   [[ $fail_when_held -eq 0 ]] || exit 3

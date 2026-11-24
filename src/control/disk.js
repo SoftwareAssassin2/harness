@@ -1,11 +1,13 @@
 // The disk watch (ASS-288): a full disk once took the harness and its data
 // down with no warning, so control watches the free space on the volumes
-// holding LIMA_HOME (the VMs) and the data folder, against harness.json's
+// holding the VMs — every Lima folder in use: the harness-wide one and, ASS-578,
+// each project's own lima-home — and the data folder, against harness.json's
 // disk-free-warn-gb and disk-free-hold-gb:
 //   - at most once a minute (DISK_EVERY) it reads them: harness:check-disk-space,
 //     which runs df and records the level in disk-space.json (beside
 //     harness.json), every control and the dashboard reading the same record;
-//   - below the warn level it reclaims space harness-wide: vm:reclaim-all,
+//   - below the warn level it reclaims space harness-wide: vm:reclaim-all (each
+//     volume below it from the VMs of the projects whose Lima folder it holds),
 //     beside the tick (one at a time per control; the command itself lets one
 //     run at a time across controls), deleting every project's stopped VMs no
 //     variation in flight needs, least recently accessed first across all of
@@ -92,6 +94,6 @@ async function reclaim(ctx, memory) {
     ctx.log(PHASE, `deleted ${d.name} (${what}, last accessed ${d['last-accessed']}): ${d['freed-bytes']} bytes freed (${gib(d['freed-bytes'])} GiB)`);
   }
   if (out.deleted?.length) memory.at = null;
-  if (out.short && !memory.short) ctx.log(PHASE, `nothing more to delete: ${gib(out['free-bytes'])} GiB free on the volume holding the VMs, still below the ${gb(out['warn-bytes'])} GB warning level; every other VM runs or its variation is in flight — free space on the volume by hand`);
+  if (out.short && !memory.short) ctx.log(PHASE, `nothing more to delete: ${gib(out['free-bytes'])} GiB free on the fullest volume holding VMs, still below the ${gb(out['warn-bytes'])} GB warning level; every other VM runs or its variation is in flight — free space on the volume by hand`);
   memory.short = Boolean(out.short);
 }

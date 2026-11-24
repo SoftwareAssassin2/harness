@@ -8,7 +8,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync, renameSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { git, edit } from './workstation-fixture.js';
@@ -20,7 +20,9 @@ const IDENTITY = { GIT_AUTHOR_NAME: 'T', GIT_AUTHOR_EMAIL: 't@example.com', GIT_
 // withVm({ status, exists }) — sandboxed()'s project p, and ABC-3 A's Lima VM abc-3-a as vm:start finds one (its ssh
 // port pinned, its tmpfs, sudo and lima0 faked), `status`, its /repos/harness a clone of origin; the variation records
 // it and no run-target (last worked on local-vm before run targets existed, as ABC-89 A). exists false: recorded only.
-async function withVm({ status = 'Stopped', exists = true } = {}) {
+// ASS-578: own — the project keeps its VMs in a Lima folder of its own (project.json lima-home): the VM is there, and the
+// fake limactl keeps its instances in, and logs, the LIMA_HOME each call runs with (FAKE_LIMA_BY_HOME).
+async function withVm({ status = 'Stopped', exists = true, own = false } = {}) {
   const t = await sandboxed();
   const vm = fakeVm(t.s.env);
   Object.assign(t.s.env, { ...vm.env, LIMA_HOME: vm.instances, FAKE_LIMA_REFUSE_STOPPED: '1', ...IDENTITY });
@@ -35,10 +37,17 @@ async function withVm({ status = 'Stopped', exists = true } = {}) {
   const inVm = join(vm.root, 'repos', 'harness');
   execFileSync('git', ['clone', '-q', t.s.origins.harness, inVm]);
   if (exists) vm.instance('abc-3-a', status, String(40000 + Math.floor(Math.random() * 20000)));
+  let home = vm.instances;
+  if (own) {
+    home = realpathSync(mkdtempSync(join(tmpdir(), 'own-lima-')));
+    if (exists) renameSync(join(vm.instances, 'abc-3-a'), join(home, 'abc-3-a'));
+    edit(t.s.at('projects', 'p', 'project.json'), p => { p['lima-home'] = home; });
+    t.s.env.FAKE_LIMA_BY_HOME = '1';
+  }
   assert.equal((await t.s.result('ticket:set-vm', 'p', 'ABC-3', 'A', 'abc-3-a', '')).code, 0);
-  const statusOf = () => readFileSync(join(vm.instances, 'abc-3-a', 'status'), 'utf8').trim();
+  const statusOf = () => readFileSync(join(home, 'abc-3-a', 'status'), 'utf8').trim();
   const lifecycle = () => vm.calls().filter(c => c.argv && ['start', 'stop'].includes(c.argv[0])).map(c => c.argv[0]);
-  return { ...t, vm, inVm, statusOf, lifecycle };
+  return { ...t, vm, inVm, statusOf, lifecycle, home };
 }
 
 // A commit on change/ABC-3-1 in the VM, never pushed, and a file left uncommitted: the work its last step left there.
@@ -82,6 +91,22 @@ test('AC1: from a stopped Lima VM onto a Mac worktree, the branch is pushed from
   assert.equal(readFileSync(join(h.json.folder, 'loose.txt'), 'utf8'), 'left over\n');
   assert.equal(t.statusOf(), 'Stopped');
   assert.deepEqual(t.lifecycle(), ['start', 'stop']);
+});
+
+test('ASS-578 AC1: a project keeping its VMs in its own Lima folder hands over from its stopped VM there — every limactl (start, shell, copy, stop) run with that folder as LIMA_HOME', async () => {
+  const t = await withVm({ own: true });
+  const ws = join(mkdtempSync(join(tmpdir(), 'ws-')), 'harness');
+  execFileSync('git', ['clone', '-q', t.s.origins.harness, ws]);
+  edit(t.s.at('projects', 'p', 'project.json'), p => { p['local-environments'] = [{ name: 'local-pc', type: 'local-pc', folder: ws }]; });
+  workInVm(t.inVm);
+  const h = await t.call('code:hand-over', 'p', 'ABC-3', 'A', 'local-worktree');
+  assert.equal(h.code, 0, h.err);
+  assert.deepEqual([h.json['started-vm'], h.json['stopped-again']], ['abc-3-a', true]);
+  assert.equal(readFileSync(join(h.json.folder, 'feature.txt'), 'utf8'), 'built in the VM\n');
+  assert.equal(t.statusOf(), 'Stopped');
+  const calls = t.vm.calls();
+  assert.ok(calls.some(c => 'vm' in c), 'it ran in the VM');
+  assert.deepEqual(calls.filter(c => c.home !== t.home && !(c.argv?.[0] === 'list' && c.argv.length === 3 && !('vm' in c))), [], `every call with LIMA_HOME ${t.home}`);
 });
 
 test('AC1: a VM running already is handed over from as it is — neither started nor stopped', async () => {

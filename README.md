@@ -32,7 +32,8 @@ merged change, with a person approving at the gates.
   `node_modules/` is missing
 - [Lima](https://lima-vm.io/) (`brew install lima`), with room for VMs in its
   folder (`vm-disk-limit-gb` in `data/harness.json`, 120 by default). Control
-  watches the free space on that volume and the data folder's: below
+  watches the free space on that volume (and on each project's own Lima
+  folder's, below) and the data folder's: below
   `disk-free-warn-gb` (50) it warns and deletes the stopped VMs no ticket
   needs; below `disk-free-hold-gb` (15) it starts no new work until there is
   room again
@@ -76,7 +77,8 @@ this repo.
    interactive, or with `HARNESS_SKIP_INSTALL=1`.
 
    `Q` quits: control and the downloader stop (control stops its agents),
-   then every running VM in the harness's Lima folder is stopped, a running
+   then every running VM in every Lima folder in use (the harness's and each
+   project's own) is stopped, a running
    golden image build is interrupted (the next build starts over), and the
    dashboard exits. Each VM gets `vm-stop-timeout-seconds` (in
    `data/harness.json`, 60 by default) to stop before it is force-stopped;
@@ -116,7 +118,63 @@ change; `LIMA_HOME` still overrides it. It refuses to overwrite an installed
 project without `--force`, keeps a
 credentials entry you already have for the project (`--force` replaces it
 with the bundle's placeholders), and leaves the remaining manual steps
-printed for you.
+printed for you. A bundle never carries a project's own Lima folder (below):
+a project reinstalled with `--force` keeps its own `lima-home`.
+
+### A project's own Lima folder
+
+All projects' VMs live in the one Lima folder above unless a project says
+otherwise (ASS-578): an optional `lima-home` in its
+`data/projects/<project>/project.json`, an absolute path, keeps that
+project's golden image and ticket VMs there instead (say, a project with big
+VMs on a disk of its own), while the others stay where they are. A project's
+golden image and its VMs are always in the same folder: a ticket VM is an
+APFS copy-on-write clone of the golden disk, and clones can't cross volumes.
+
+- Every Lima call for the project's VMs (create, start, stop, delete, the
+  golden build, credentials, ports, the code hand-over) runs with its folder
+  as `LIMA_HOME`, per call: `src/agent-cli/lima-home.bash` (`lima_home
+  <project>`, `lima_vm_home <instance>`) for the bash commands,
+  `src/control/machine-lima.js` (`projectLimaHome`, `vmLimaHome`) for control
+  and the dashboard.
+- The harness-wide views cover every folder in use: the disk check (each
+  folder's volume against `disk-free-warn-gb` and `disk-free-hold-gb`, the
+  least free deciding), `vm:reclaim-all` (each volume below the warning level
+  reclaimed from the VMs of the projects whose folder it holds), the memory
+  and CPU readings, the VM inventories and statuses, `vm:ports` (ssh ports are
+  the Mac's, so no two instances in any folder pin one), and the dashboard's
+  shutdown.
+- A `lima-home` that isn't an absolute path, or isn't writable (its nearest
+  existing folder: an unmounted disk's `/Volumes/<name>` is not), is named in
+  control's log (`lima-home …`), and the project's VM commands refuse to run
+  until it is fixed.
+- Lima keeps its config, SSH key and networks under `<folder>/_config`. A new
+  folder gets its own key on first use; Lima 2.x gives a VM the key of the
+  folder it starts from at every boot, and `vm:move-lima-home` also copies the
+  old folder's key and `networks.yaml` into a new folder that has none, so a
+  moved VM accepts SSH as before.
+
+To move a project's VMs, stop the harness, then:
+
+```sh
+./agent.sh vm:move-lima-home <project> <folder> --dry-run   # what would move, the space it needs and the target has
+./agent.sh vm:move-lima-home <project> <folder>
+```
+
+It moves the project's golden image(s), a leftover failed build, and its
+ticket VMs, and sets its `lima-home` (or removes it, when the folder is the
+harness-wide one). It refuses, moving nothing, while the harness runs, a
+golden build of the project runs, any of those VMs isn't stopped, or the
+target already holds one of their names. On another volume each instance is
+copied whole and sparse-aware (macOS `cp`, which skips a disk's holes), so a
+clone becomes a full copy: it adds up what each one allocates and refuses
+unless the target's volume keeps `disk-free-hold-gb` free after it (deleting
+VMs no ticket needs first, `vm:reclaim <project>` or `vm:delete`, makes it
+smaller). Each copy is checked (every file there with its size, the small ones
+byte for byte) and seen `Stopped` by `limactl list` under the new folder
+before `lima-home` is set and the old copies deleted; a failure part way
+leaves the old copies and the setting as they were. On the same volume each
+instance is just renamed into place.
 
 ## Operator Needed notifications
 
@@ -157,8 +215,8 @@ only the one selected: "Project blocked by credentials", the gcloud and glab
 logins to renew, a Substrate cluster broken (ASS-533) and the other Substrate
 warnings (ASS-539: a template with no golden snapshot, Docker's memory low,
 snapshot disk use high, a sandbox image build failed, a sandbox that could not
-be set up), "Out of memory", "Out of disk space", "Restart to load …
-landed fixes", "No work in progress", and the banner's disk low, sign-in,
+be set up), the Atlassian sign-in (ASS-561, below), "Out of memory", "Out of
+disk space", "Restart to load … landed fixes", "No work in progress", and the banner's disk low, sign-in,
 rate limit and self-healing. The notification's title is the warning, its
 subtitle the project (or "All projects" for one the whole harness shares), and
 its body says what to do, such as the credentials hold's first fix or
@@ -178,6 +236,46 @@ selects that project.
   Restart to load …) notify once, not once per project.
 - `"operator-needed-notifications": false` turns these off for that project
   too.
+
+### The Atlassian API token and the acli login (ASS-561)
+
+A project with a jira work source needs two Jira sign-ins on the Mac: an
+Atlassian API token, which the downloader's analytics (the `p` screen) use
+with Jira's REST API, and the `acli` login, which the downloader's ticket
+sync, `ticket:set-ticket-system-status` and `ticket:raise-bug` run under.
+One command sets both:
+
+```sh
+# copy the token (id.atlassian.com, Security, API tokens), then
+./agent.sh project:set-atlassian-token <project>          # or: … <project> --stdin < token-file
+```
+
+- It needs the project's `atlassian` entry in `~/.harness/vm-credentials.json`,
+  `{ "keychain-service": "…", "site": "<site>.atlassian.net", "email": "…" }`,
+  and says what to add when there is none.
+- It reads the token from the clipboard (or stdin), saves it as that keychain
+  item through `security -i` (the token on its stdin, never on a command
+  line), clears the clipboard, runs `acli jira auth login --site <site>
+  --email <email> --token` with the token on stdin, then runs
+  `project:check-credentials` again. It never prints the token.
+- The analytics read the token from that keychain item, with the entry's
+  email. A project with no `atlassian` entry keeps using its jira work
+  source's `api-email` and `api-token` in `project.json`.
+- `project:check-credentials` (control runs it every ~3 minutes) reports the
+  keychain item missing or unreadable (with no entry: no `api-token` in
+  `project.json` either), `acli` not logged in, or logged in to another
+  site. As for the forge logins (ASS-429), an `acli jira auth status` that
+  fails only because the site can't be reached is unknown, not a problem.
+  `ACLI_DISABLED=1` skips acli.
+- These problems **hold nothing**: agent work goes on, and only the analytics
+  and the Jira sync are degraded. They are kept apart from the credentials
+  hold, in `data/projects/<project>/atlassian-needs.json`, which
+  `project:credentials-status` prints as `atlassian`. The dashboard shows a
+  red header chip, "Atlassian sign-in: run './agent.sh
+  project:set-atlassian-token <project>'", with one notification. It clears
+  at the next check that finds nothing, which the command runs itself.
+- A token Jira rejects is still the "Jira API token rejected" chip (ASS-475).
+  Its fix names the same command.
 
 ## Building a ticket two ways
 
@@ -871,6 +969,7 @@ Orbit · 3 machines · 2 can take work · 3 of 4 seats in use · next ticket →
 │ Disk    ███████░░░░░░░░░│ 80.0 of 196 GiB · 116 free    │  │ Disk    █████████████░░░│ 691 of 931 GiB · 240 free     │
 │ Seats   ■■□  2 of 3 · can take 1 more                   │  │ Seats   none needed: worktrees on the Mac take no seat  │
 │ Cluster ● healthy · 2.8 GiB · 4% CPU                    │  │ Cluster ● up · 1.4 GiB · 1% CPU                         │
+│ Image   sandbox image amd64 built 2026-11-23 UTC        │  │ Image   sandbox image arm64 built 2026-11-20 UTC        │
 │ On it   🌿 ORB-102 worktree · 🤖x2 Write Plan           │  │ On it   🌿 ORB-105 worktree · idle                      │
 │         📦 ORB-103 sandbox · hibernated (0.4 GiB        │  │ Share   50% (split) · allotment 3 tickets · uses 1      │
 │            snapshot)                                    │  │         lends 0 · borrows 0                             │
@@ -911,6 +1010,13 @@ Orbit · 3 machines · 2 can take work · 3 of 4 seats in use · next ticket →
 - **Cluster**: the machine's Substrate cluster (its last check, red with its
   troubles: `cluster missing`, `Docker memory low`…) and the project's part of
   its memory and CPU.
+- **Image** (ASS-580): the sandbox image that machine's cluster runs for the
+  project: the Mac's card its own architecture's (arm64 on Apple silicon), a
+  workstation's or cloud VM's the amd64 one, as `sandbox image <arch> built
+  <day> UTC`, amber `building`, red `build failed` (the header chip's rule) or
+  gray `none`. A machine with no Substrate cluster for the project has no image
+  line, except the Mac's card, which still shows an image built for its
+  architecture.
 - **On it**: the project's tickets there, at most four then `+N more`: `💺
   <KEY> Lima VM · running` (`creating` in gray before its VM exists), `📦 <KEY>
   sandbox · running 1.5 GiB 3% CPU` (`hibernated` with its snapshot's disk,
@@ -919,15 +1025,21 @@ Orbit · 3 machines · 2 can take work · 3 of 4 seats in use · next ticket →
   <KEY> workspace` (`workspace free`), each `🤖` / `💻` with its step while
   agents or a script work on it, else `idle`, and a gold `unsandboxed` while
   its agent runs without Claude Code's sandbox (ASS-564).
-- **The Mac's card** shows only while the project can use the Mac (a Mac run
-  target or a Mac Substrate cluster), titled `mac · shared by N projects`: its
-  gauges are the whole Mac's (what the seat budget measures), its seats,
-  tickets and `Share` line the project's own — its share (`(split)` when
-  unset), allotment and use in tickets (red `over` past its allotment), what
-  it lends or borrows, and the memory and CPU behind them.
+- **The Mac's card** shows for every project (ASS-580: the Mac runs control,
+  the forwarder, Hindsight and the registry for all of them), titled `mac ·
+  shared by N projects`: its gauges are the whole Mac's (what the seat budget
+  measures), its seats, tickets and `Share` line the project's own — its share
+  (`(split)` when unset), allotment and use in tickets (red `over` past its
+  allotment), what it lends or borrows, and the memory and CPU behind them. A
+  project that can't run work on the Mac (no Mac run target, no Mac Substrate
+  cluster: one on remote machines alone) gets the card with the gauges and a
+  gray `no work: none of its run targets is on the Mac`, no seats and no
+  `Share` line; it comes after every other machine, counts in the headline's
+  machine count, and is never the headline's next machine nor in its red
+  "why" list.
 - Under the cards **the project line** (`agents: <model> 🤖xN, …`, its golden
-  image and the day it was built, each sandbox image: `built <day>`,
-  `building`, red `build failed`) and a gray **legend**. On a short terminal
+  image and the day it was built, and only a sandbox image no card shows, so
+  no image appears twice) and a gray **legend**. On a short terminal
   the cards are cut a row at a time from the bottom and a gray
   `+N machines below` says what's hidden; the headline and the legend always show.
 

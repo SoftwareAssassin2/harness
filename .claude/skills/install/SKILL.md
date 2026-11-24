@@ -165,12 +165,20 @@ When you're done, no `{…}` placeholder may be left in the entry:
 jq -r --arg p "<project>" '.[$p] | .. | strings | select(test("^\\{.*\\}$"))' ~/.harness/vm-credentials.json
 ```
 
-**Jira API credentials** (a `jira-api-credentials` step): the bundle never
-carries the jira work source's `api-email` and `api-token` (the P screen's
-analytics download reads them), so the person adds their own to that work
-source in `data/projects/<project>/project.json`: `api-email` their Atlassian
-email, `api-token` an API token from id.atlassian.com. Have them edit the file
-**themselves** so the token never passes through you.
+**Jira API credentials** (a `jira-api-credentials` step, ASS-561): the bundle
+never carries the Atlassian API token (the P screen's analytics download and
+the acli login use it). With the project's `atlassian` entry filled in above,
+have the person copy an API token from id.atlassian.com and run
+**themselves**, so the token never passes through you:
+
+```
+! ./agent.sh project:set-atlassian-token <project>
+```
+
+It saves the token as the entry's keychain item, clears the clipboard and
+logs acli in. Until it's done the dashboard shows the "Atlassian sign-in"
+chip (it holds no work). A project with no `atlassian` entry still reads the
+jira work source's `api-email` and `api-token` in `project.json`.
 
 **Logins**: for a `glab-login` step have the person run `! glab auth login`,
 and for a `gcloud-login` step `! gcloud auth login`. These are interactive

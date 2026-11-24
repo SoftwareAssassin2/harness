@@ -36,6 +36,7 @@ source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../vm.bash"
 
 [[ $# -eq 3 ]] || { echo "usage: vm:demo <project> <ticket-key> <variation>" >&2; exit 1; }
 project="$1" key="$(tr '[:lower:]' '[:upper:]' <<< "$2")" variation="$3"
+lima_use "$project" || exit 1   # ASS-578: its Lima folder, for every limactl below
 plan="$("$agent" ticket:demo-plan "$project" "$key" "$variation")"
 [[ "$(jq -r .demo <<<"$plan")" == true ]] || { echo "vm:demo: $key $variation has no demo: $(jq -r .why <<<"$plan")" >&2; exit 1; }
 vm="$(recorded_vm vm:demo "$project" "$key" "$variation")"

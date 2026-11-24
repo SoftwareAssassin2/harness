@@ -11,6 +11,7 @@ source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../vm.bash"
 
 [[ $# -eq 2 ]] || { echo "usage: vm:stop <project> <vm>" >&2; exit 1; }
 project="$1" vm="$2"
+lima_use "$project" || exit 1   # ASS-578: its Lima folder, for every limactl below
 [[ "$project" =~ ^[A-Za-z0-9_-]+$ && -f "$projects/$project/project.json" ]] || { echo "vm:stop: no project '$project'" >&2; exit 1; }
 lock_vms vm:stop "$project"
 entry="$(reconcile_vms vm:stop "$project" | jq -r --arg n "$vm" 'first(.vms[] | select(.name == $n) | [.state, .ticket, .variation] | @tsv) // empty')"

@@ -15,6 +15,7 @@ import { scanMergeRequests } from './merge-requests.js';
 import { syncMergedMergeRequests } from './merged-merge-requests.js';
 import { syncOffBoardAnalytics } from './off-board-analytics.js';
 import { dataDir } from '../data-folder.js';
+import { declaredCredentials } from '../control/vm-credentials.js';   // ASS-561: the atlassian keychain item
 
 // runCycle({ root, project, now, adapters, exec, fetch, comments, lookups, dryRun, log }) — root is the
 // repo root (agent.sh is under it and, unless PROJECTS_DIR says otherwise,
@@ -89,8 +90,10 @@ import { dataDir } from '../data-folder.js';
 //    ticket, its comments (adapters.jira.fetchComments) — `ticket:sync-jira-
 //    comments <project> <key> <file>`. One that fails keeps what it had and
 //    the cycle goes on; it is logged only when it starts failing.
-// 5b. Analytics (ASS-406), every cycle, for a project whose jira work source
-//    has api-email and api-token (Jira REST's basic auth), when adapters.
+// 5b. Analytics (ASS-406), every cycle, for a project with an Atlassian API
+//    token (Jira REST's basic auth; ASS-561, analyticsAuth: the keychain item
+//    its ~/.harness/vm-credentials.json atlassian entry names, with that
+//    entry's email, else its jira work source's api-email and api-token), when adapters.
 //    jiraRest is given: every ticket of the board's Jira project, sub-tasks
 //    included (ASS-440), whoever holds it, with its full changelog (jiraRest.
 //    fetchAnalyticsTickets) — those updated since ANALYTICS_OVERLAP_MS before
@@ -146,7 +149,7 @@ import { dataDir } from '../data-folder.js';
 // The Jira steps (2, 3, 3b, 3c, 5, 5b) only for a project with a jira work source; one with
 // only an off-board source (the harness's own) syncs those tickets alone.
 // Fails before anything runs when the project has neither.
-export async function runCycle({ root, project, now = new Date(), adapters, exec, fetch: fetchFn = globalThis.fetch, comments, lookups = false, dryRun = false, log = () => {} }) {
+export async function runCycle({ root, project, now = new Date(), adapters, exec, fetch: fetchFn = globalThis.fetch, comments, lookups = false, dryRun = false, env = process.env, log = () => {} }) {
   const projects = process.env.PROJECTS_DIR ?? join(dataDir(root), 'projects');
   const read = file => JSON.parse(readFileSync(join(projects, project, file), 'utf8'));
   const config = read('project.json');
@@ -261,7 +264,7 @@ export async function runCycle({ root, project, now = new Date(), adapters, exec
 
     // 5b. Analytics (ASS-406): its own failures logged, never the cycle's.
     if (source && adapters.jiraRest) {
-      await syncAnalytics({ key: join(projects, project), project, source, board, tickets: join(projects, project, 'analytics', 'tickets.json'), rejectedFile: join(projects, project, 'jira-token-rejected.json'), call, rest: adapters.jiraRest, fetchFn, log });
+      await syncAnalytics({ key: join(projects, project), project, source, board, tickets: join(projects, project, 'analytics', 'tickets.json'), rejectedFile: join(projects, project, 'jira-token-rejected.json'), call, rest: adapters.jiraRest, fetchFn, exec, env, log });
     }
 
     // 5b′. Off-board analytics (ASS-413): the off-board tickets' status histories and the project's own sprints.
@@ -345,27 +348,55 @@ export const ANALYTICS_OVERLAP_MS = 5 * 60_000;
 // projects folder and project, and by part (credentials, sign-in, tickets, sprints).
 const analyticsNotes = new Map();
 
-// ASS-475: what to do about a token Jira rejects, as the log and the dashboard say it.
-export const TOKEN_FIX = "create a new Atlassian API token (id.atlassian.com, Security, API tokens) and put it in project.json's jira work source as api-token";
+// ASS-475: what to do about a token Jira rejects, as the log and the dashboard say it;
+// ASS-561: the command that saves a new one to the keychain and logs acli in with it.
+export const tokenFix = project => `create a new Atlassian API token (id.atlassian.com, Security, API tokens), copy it, and run ./agent.sh project:set-atlassian-token ${project}`;
+
+// analyticsAuth({ project, source, exec, env }) — ASS-561: the analytics' Jira sign-in, { email, token, from }, or
+// { problem } when there is none. The token is the keychain item the project's atlassian entry in
+// ~/.harness/vm-credentials.json names (`security find-generic-password -s <service> -w`, as /usr/bin/security,
+// which the item lets read it), with that entry's email; with no such entry, the jira work source's api-email and
+// api-token in project.json (installs from before ASS-561). Never logged: `from` names where it came from.
+const KEYCHAIN_WAIT_MS = 30e3;   // as vm-credentials.bash's VM_KEYCHAIN_TIMEOUT: a locked keychain never answers
+export async function analyticsAuth({ project, source, exec, env = process.env }) {
+  const entry = declaredCredentials(env, project)?.atlassian;
+  const service = entry?.['keychain-service'];
+  if (typeof service === 'string' && service) {
+    if (!entry.email) return { problem: `the atlassian entry for ${project} in ~/.harness/vm-credentials.json has no email` };
+    let token;
+    let timer;
+    const late = new Promise((_, reject) => { timer = setTimeout(() => reject(Object.assign(new Error('no answer'), { code: 'timeout' })), KEYCHAIN_WAIT_MS); timer.unref?.(); });
+    try { token = String(await Promise.race([exec('security', ['find-generic-password', '-s', service, '-w']), late])).replace(/\s+/g, ''); } catch (err) {
+      return { problem: err?.code === 44 ? `keychain item "${service}" is missing`
+        : err?.code === 'timeout' ? `keychain item "${service}" gave no answer within ${KEYCHAIN_WAIT_MS / 1000}s (is the login keychain locked?)`
+          : `keychain item "${service}" cannot be read (security exited ${err?.code ?? 'abnormally'})` };
+    } finally { clearTimeout(timer); }
+    if (!token) return { problem: `keychain item "${service}" is empty` };
+    return { email: entry.email, token, from: `keychain item "${service}"` };
+  }
+  const email = source['api-email'], token = source['api-token'];
+  if (!email || !token) return { problem: 'the jira work source has no api-email and api-token' };
+  return { email, token, from: "the jira work source's api-token" };
+}
 
 // syncAnalytics: step 5b (ASS-406).
-async function syncAnalytics({ key, project, source, board, tickets, rejectedFile, call, rest, fetchFn, log }) {
+async function syncAnalytics({ key, project, source, board, tickets, rejectedFile, call, rest, fetchFn, exec, env, log }) {
   const note = (part, text) => {
     const at = `${key}\0${part}`;
     if (text === null) return void analyticsNotes.delete(at);
     if (analyticsNotes.get(at) !== text) log(text);
     analyticsNotes.set(at, text);
   };
-  const email = source['api-email'], token = source['api-token'];
-  if (!email || !token) return note('credentials', 'analytics skipped: the jira work source has no api-email and api-token');
+  const signIn = await analyticsAuth({ project, source, exec, env });
+  if (signIn.problem) return note('credentials', `analytics skipped: ${signIn.problem} — ${tokenFix(project)}`);
   note('credentials', null);
-  const auth = { site: board.site, email, token };
+  const auth = { site: board.site, email: signIn.email, token: signIn.token };
   const reason = err => String(err?.message ?? err).split('\n')[0];
 
   // ASS-475: the sign-in first; a rejected token reads nothing and moves nothing on.
   const recorded = () => { try { return JSON.parse(readFileSync(rejectedFile, 'utf8')); } catch { return null; } };
   const rejected = async err => {
-    note('sign-in', `analytics: Jira rejected the jira work source's api-token (${reason(err)}); nothing read, tickets.json and its fetched-through stay as they are until it signs in — ${TOKEN_FIX}`);
+    note('sign-in', `analytics: Jira rejected ${signIn.from} (${reason(err)}); nothing read, tickets.json and its fetched-through stay as they are until it signs in — ${tokenFix(project)}`);
     const was = recorded(), problem = reason(err);
     if (was && was.status === err.status && was.problem === problem) return;
     try { await call(['analytics:record-sign-in', project], { 'signed-in': false, status: err.status, problem, 'work-source': source.name ?? null }); note('sign-in-record', null); } catch (e) {
@@ -379,7 +410,7 @@ async function syncAnalytics({ key, project, source, board, tickets, rejectedFil
     return note('sign-in', `analytics: the Jira sign-in could not be checked; nothing read, tickets.json stays as it is: ${reason(err)}`);
   }
   const record = recorded();
-  if (record || analyticsNotes.get(`${key}\0sign-in`)?.startsWith('analytics: Jira rejected')) log('analytics: Jira takes the api-token again; reading every ticket changed since the last good read');
+  if (record || analyticsNotes.get(`${key}\0sign-in`)?.startsWith('analytics: Jira rejected')) log(`analytics: Jira takes ${signIn.from} again; reading every ticket changed since the last good read`);
   note('sign-in', null);
   if (record) {
     try { await call(['analytics:record-sign-in', project], { 'signed-in': true }); note('sign-in-record', null); } catch (e) {

@@ -8,7 +8,7 @@ import { placeOf, machineCell, runsCell } from '../places.js';
 import { below, headerLines, platform } from './frame.js';
 import { QUEUE_KEY } from './queue.js';
 import { cloudVmsOf } from '../../control/dev-environments.js';
-import { NONE, agentLines, liveAssignments, ticketMarks, sprintMark, markDot, GLYPHS, move, red, gold, gray, sprintTickets, statusCell, ticketAgents, chatSpend, seatPlan, runsScript, since } from './shared.js';
+import { NONE, agentLines, liveAssignments, ticketMarks, sprintMark, markDot, GLYPHS, move, red, gold, sprintTickets, statusCell, ticketAgents, chatSpend, seatPlan, runsScript, since } from './shared.js';
 import { planningFocusOn } from '../../control/planning-focus-file.js';
 import { openTicket } from './ticket.js';
 import { poolOf } from '../../control/plan.js';
@@ -51,7 +51,7 @@ const FLOORS = { [TABLE_HEADERS.indexOf('Machine')]: 'GCP workstation'.length, [
 // row's "↳ AWAITING MERGE" line (ASS-363), its third when it has both. No rows → 0 (no floor).
 const ticketFloor = (rows, tickets) => Math.max(0, ...rows.map((row, i) => {
   const [first, ...more] = [row[0]].flat();
-  const title = tickets[i].title ?? '';   // an empty seat row (ASS-451) has none: its whole line floors the column
+  const title = tickets[i].title ?? '';
   return Math.max(visible(first) - visible(title) + visible(clip(title, TITLE_CHARS)) + (visible(title) > TITLE_CHARS ? 1 : 0), ...more.map(visible));
 }));
 
@@ -69,17 +69,7 @@ function gridAt(state, { rows, bodyHeight }, tickets, done, steps = []) {
   const qa = !state.day && hasQaStep(state, steps) ? tickets.findLastIndex(isQa) : -1;
   const last = qa >= 0 ? qa : tickets.findLastIndex(t => t.step?.sequence === done);
   const open = last < 0 || last >= rows.length - 1 ? 0 : Math.min(last, lastStart(rows, bodyHeight));
-  return [ticketRowNear(tickets, state.selected ?? open), state.scroll ?? open];
-}
-
-// ticketRowNear(rows, at) — `at`, or when that row is an empty seat (ASS-451: never selected) the nearest ticket row
-// below it, else above it; `at` itself when the grid has no ticket row (nothing is selected then: layout).
-function ticketRowNear(rows, at) {
-  if (!isEmptySeat(rows[at])) return at;
-  const below = rows.findIndex((row, i) => i > at && !isEmptySeat(row));
-  if (below >= 0) return below;
-  const above = rows.findLastIndex(row => !isEmptySeat(row));
-  return above >= 0 ? above : at;
+  return [state.selected ?? open, state.scroll ?? open];
 }
 
 // ASS-402: whether the project's engine (its `steps`, as sprintTickets
@@ -112,23 +102,22 @@ function hasQaStep(state, steps) {
 function layout(state, { columns = 0, rows = Infinity, now = 0 }) {
   const { tickets, steps, done } = sprintTickets(state);
   const seats = seatPlan(state);
-  const { rows: grid, place } = withEmptySeats(tickets, seats);
   // ASS-573: and the blank line render (app.js) keeps between the key and the footer's status lines.
   const status = platform(state, columns, now).length;
   const bottom = below(state) + Math.max(1, status) + (status ? 1 : 0);
   const key = iconKey(columns);
   const free = rows - headerLines(state, columns, now).length - bottom - 5 - key.length;
-  const cells = ticketRows(grid, liveAssignments(state), steps, state.projects[state.project]?.collaborations, ticketMarks(state, tickets), placesOf(state, seats), t => runsScript(state, t));
-  const fit = { columns, stretch: 0, min: ticketFloor(cells, grid), shrink: SHRINK, floors: FLOORS };
+  const cells = ticketRows(tickets, liveAssignments(state), steps, state.projects[state.project]?.collaborations, ticketMarks(state, tickets), placesOf(state, seats), t => runsScript(state, t));
+  const fit = { columns, stretch: 0, min: ticketFloor(cells, tickets), shrink: SHRINK, floors: FLOORS };
   const ticketGrid = { rows: tableLayout(TABLE_HEADERS, cells, fit).cells, bodyHeight: free - 4 };
-  const [selected, scroll] = gridAt(state, ticketGrid, grid, done, steps);
-  const selectable = tickets.length > 0;   // ASS-451: empty seat rows alone — nothing to select
+  const [selected, scroll] = gridAt(state, ticketGrid, tickets, done, steps);
+  const selectable = tickets.length > 0;
   // The same rows and fit as ticketGrid's: boxTable lays them out alike.
   const table = boxTable(TABLE_HEADERS, cells.length ? cells : [['No tickets in this sprint']], {
-    ...fit, height: ticketGrid.bodyHeight + 4, scroll, dashed: true, separators: boundaries(tickets, place),
+    ...fit, height: ticketGrid.bodyHeight + 4, scroll, dashed: true, separators: boundaries(tickets),
     selected: state.focus === 'tickets' && selectable ? selected : undefined,
   });
-  return { tickets, grid, steps, done, ticketGrid, table, key, room: Math.max(0, free), selected: selectable ? selected : undefined, scroll };
+  return { tickets, steps, done, ticketGrid, table, key, room: Math.max(0, free), selected: selectable ? selected : undefined, scroll };
 }
 
 // The grid's section lines (ASS-358), for boxTable's `separators`: solid
@@ -150,11 +139,8 @@ const isQa = t => (t.status?.chain ?? [{ step: t.step }]).some(l => l.step?.['is
 // into view or not) between the line and the next line drawn on that side, or the grid's top or bottom
 // edge, so read down the grid every row is counted once. Where lines go is ASS-358/371/401's, unchanged;
 // only lines boxTable draws (before rows 1 to n-1, never the first) bound a section.
-// ASS-451: worked out over the ticket rows alone — the counts and where each line falls among them never change
-// for empty seat rows — then drawn before the grid row `place` (withEmptySeats) gives: above the empty seats just
-// before that ticket row that belong below the line (every one under the green and purple lines; the planning ones
-// under the blue line, the in-progress ones staying above it). No `place`: the ticket rows are the grid's.
-function boundaries(tickets, place = i => i) {
+// ASS-579: the grid's rows are the tickets alone (ASS-451's empty seat rows are gone).
+function boundaries(tickets) {
   const kinds = tickets.map(t => poolOf(t.step, t.status));
   const doneEnd = tickets.findLastIndex(t => t.step?.['is-done'] === true) + 1;
   const qaEnd = tickets.findLastIndex(isQa) + 1;
@@ -168,45 +154,11 @@ function boundaries(tickets, place = i => i) {
     const down = (at[n + 1] ?? tickets.length) - i, up = i - (at[n - 1] ?? 0);
     return [i, { color, text: `${below} (${down}) ↓ · ↑ ${above} (${up})` }];
   }));
-  const drawn = new Map([...labelled].map(([i, label]) => [place(i, line(i) === POOL_LINE), label]));
-  return i => drawn.get(i) ?? null;
+  return i => labelled.get(i) ?? null;
 }
 
-// ASS-451: an empty seat row — one per free in-progress and per free planning seat (seatPlan's free, freeSeats) on
-// the live sprint's grid; none on a past day (seatPlan: no seats then). It is no ticket: never selected (the
-// cursor, ↑/↓, Enter skip it: ticketRowNear, step), not counted (boundaries, the header's tiles and totals read the
-// ticket rows); scrolling counts it as a row.
-const isEmptySeat = row => row?.emptySeat != null;
-// withEmptySeats(tickets, seats) — { rows, place }: `rows`, the grid's rows, the tickets (sprintTickets' order)
-// with each free seat's { emptySeat: kind } among them: the in-progress ones right after the last row holding an
-// in-progress seat (seats.progress), or with none at the start of the in-progress section — the first
-// in-progress-pool row (poolOf) under the done and QA rows, else the first planning-pool row there, else just
-// under them; the planning ones right after the last row holding a planning seat (seats.planning) and never above
-// the in-progress ones, or with none at the start of the planning section — the first planning-pool row at or
-// after the in-progress ones, else just after the last in-progress-pool row and them. Every ticket row keeps its
-// order. `place(i, pool)`, the grid row a section line over ticket row i is drawn before (boundaries): over the
-// empty seats inserted just before it, or — `pool`, the blue planning line — over the planning ones alone.
-export function withEmptySeats(tickets, { progress = [], planning = [], free = {} } = {}) {
-  if (!free.progress && !free.planning) return { rows: tickets, place: i => i };
-  const id = t => `${t.key} ${t.variation?.name}`;
-  const kinds = tickets.map(t => poolOf(t.step, t.status));
-  const top = Math.max(tickets.findLastIndex(t => t.step?.['is-done'] === true), tickets.findLastIndex(isQa)) + 1;
-  const first = (kind, from) => kinds.findIndex((k, i) => i >= from && k === kind);
-  const lastHolder = held => tickets.findLastIndex(t => held.includes(id(t)));
-  const progressAt = lastHolder(progress) >= 0 ? lastHolder(progress) + 1 : [first('progress', top), first('planning', top), top].find(i => i >= 0);
-  const planningAt = lastHolder(planning) >= 0 ? Math.max(progressAt, lastHolder(planning) + 1)
-    : [first('planning', progressAt), Math.max(progressAt, kinds.lastIndexOf('progress') + 1)].find(i => i >= 0);
-  const rows = [], at = [];
-  for (let i = 0; i <= tickets.length; i++) {
-    at.push({ progress: rows.length });
-    rows.push(...Array.from({ length: i === progressAt ? free.progress : 0 }, () => ({ emptySeat: 'progress' })));
-    at[i].planning = rows.length;
-    rows.push(...Array.from({ length: i === planningAt ? free.planning : 0 }, () => ({ emptySeat: 'planning' })));
-    if (i < tickets.length) rows.push(tickets[i]);
-  }
-  return { rows, place: (i, pool) => at[i][pool ? 'planning' : 'progress'] };
-}
-const EMPTY_SEAT = 'empty seat';
+// ASS-579: no empty seat rows (ASS-451) any more: seats are no fixed counts since the seat budget (ASS-527,
+// ASS-528); the compute network screen (n) and the seat queue (q) show room for more work.
 
 const PAUSED = '\x1b[34mPAUSED\x1b[0m';   // blue, before a paused variation's key (ASS-259)
 const UNASSIGNED = red('UNASSIGNED');   // red (ASS-355; was PAUSED's blue), before a reassigned ticket's key, in PAUSED's place (ASS-345)
@@ -285,17 +237,13 @@ const dim = text => `\x1b[2m${text}\x1b[0m`;
 const byHand = text => `\x1b[95m${text}\x1b[0m`;
 // priorityPrefix(priority, manual) — what starts every ticket row (ASS-454): the priority right-aligned in
 // PRIORITY_CELLS cells, padded with spaces ("  1", " 42", "137"), past PRIORITY_CAP shown as it ("999", no "+";
-// the key says so), bright magenta when set by hand; then one blank. No priority (null: an unranked ticket, or a row that
-// is no ticket, such as an empty seat): blanks, so the icon columns still start four cells in.
+// the key says so), bright magenta when set by hand; then one blank. No priority (null: an unranked ticket): blanks,
+// so the icon columns still start four cells in.
 export const priorityPrefix = (priority, manual = false) => {
   const n = Number(priority);
   const text = priority == null || priority === '' ? '' : (Number.isFinite(n) ? String(Math.min(n, PRIORITY_CAP)) : String(priority)).slice(0, PRIORITY_CELLS);
   return `${' '.repeat(PRIORITY_CELLS - text.length)}${text && manual ? byHand(text) : text} `;
 };
-// An empty seat row's mark (ASS-451), dim. ASS-559: no ticket row is marked with a seat any more (💺 a VM or planning
-// seat, ASS-357; ⛅ a workstation's, ASS-469; 🌐 a cloud VM's, ASS-481; 📦 a Substrate sandbox, ASS-535): the Machine and
-// Runs in columns say where each runs.
-const SEAT = '💺';
 
 // placesOf(state, seats) — "<key> <variation>" → where that sprint variation runs (places.js placeOf), from seatPlan's
 // `seats` (the planner's holders and targets, control's seats.json records) and the project's substrate.json checks
@@ -372,11 +320,8 @@ function iconKey(columns) {
 // repository (mergeTrains, ASS-363) gets one more line, after any AWAITING
 // one and indented as it is: "↳ AWAITING MERGE <repo> <key> → <repo> <key>"
 // (awaitingMerge). iconKey says what each means, under the grid.
-// An empty seat row (ASS-451, withEmptySeats) is one line: blanks where the priority and five icon columns are, a dim 💺
-// in the 🤖/💻 column, then "empty seat" in dim gray, starting where the tickets' text does; every other cell blank.
 function ticketRows(tickets, assignments, steps, collaborations = {}, marks = { needed: new Set() }, places = () => null, scripts = () => false) {
   return tickets.map(t => {
-    if (isEmptySeat(t)) return [`${priorityPrefix(null)}${' '.repeat(5)}${dim(SEAT)} ${dim(gray(EMPTY_SEAT))}`, ...TABLE_HEADERS.slice(1).map(() => '')];
     // One line per assignment to this ticket and this row's variation (or to no
     // variation in particular).
     const agents = ticketAgents(assignments, t);
@@ -466,25 +411,15 @@ export function onKey(state, key, size, { step, sideways }) {
   if (key.sequence === PLANNING_FOCUS_KEY && !key.ctrl && state.screen === 's') return flipPlanningFocus(state);
   if (key.sequence === QUEUE_KEY && !key.ctrl && state.screen === 's') return { ...state, queueOpen: true };
   if (key.name === 'return' && state.screen === 's' && state.focus === 'tickets') {
-    const { grid, selected } = layout(state, size);
-    const ticket = selected == null || isEmptySeat(grid[selected]) ? null : grid[selected];
+    const { tickets, selected } = layout(state, size);
+    const ticket = selected == null ? null : tickets[selected];
     return ticket ? openTicket(state, { key: ticket.key, variation: ticket.variation.name }) : state;
   }
   if (step && !sideways && state.screen === 's' && state.focus === 'tickets') {
     const grid = layout(state, size);
     if (grid.selected == null) return { ...state, scroll: move(grid.ticketGrid, grid.scroll, grid.scroll, step)[1] };
-    const [selected, scroll] = skipEmptySeats(grid, step);
+    const [selected, scroll] = move(grid.ticketGrid, grid.selected, grid.scroll, step);
     return { ...state, selected, scroll };
   }
 }
 
-// skipEmptySeats(layout, step) — [selected, scroll] after ↑/↓ (move): the next ticket row that way, past any empty
-// seat rows (ASS-451: never selected), scrolled into view with them; none that way, the selection stays and the
-// grid scrolls as far as that way goes, so empty seats at the grid's top or bottom still come into view.
-function skipEmptySeats({ grid, ticketGrid, selected, scroll }, step) {
-  let next = selected + step;
-  while (next >= 0 && next < grid.length && isEmptySeat(grid[next])) next += step;
-  if (next >= 0 && next < grid.length) return move(ticketGrid, selected, scroll, next - selected);
-  const end = step < 0 ? 0 : grid.length - 1;
-  return [selected, move(ticketGrid, selected, scroll, end - selected)[1]];
-}

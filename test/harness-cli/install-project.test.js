@@ -270,13 +270,13 @@ test('ASS-407 AC3: a jira work source without api-email and api-token adds a las
   assert.equal(r.status, 0, r.stderr);
   assert.deepEqual(json(s.at('to', 'projects', 'p', 'project.json'))['work-sources'], [{ name: 'Example', type: 'jira', url: jira.url }]);
   const steps = r.stdout.slice(r.stdout.indexOf('Remaining setup steps:'));
-  assert.match(steps, /\d+\. Add api-email .* and api-token .* to the jira work source in .*project\.json.*analytics/);
-  assert.ok(steps.indexOf('api-token') > steps.indexOf('memory:up'), steps);   // after the manifest's steps
+  assert.match(steps, /\d+\. Copy an Atlassian API token .* and run \.\/agent\.sh project:set-atlassian-token \S+, with the atlassian entry .*analytics/);   // ASS-561
+  assert.ok(steps.indexOf('set-atlassian-token') > steps.indexOf('memory:up'), steps);   // after the manifest's steps
   // without a jira work source there is no such step.
   const t = setup();
   const u = t.install(t.bundle, '--project-root', t.at('work', 'acme'), '--lima-home', t.at('lima'));
   assert.equal(u.status, 0, u.stderr);
-  assert.ok(!u.stdout.includes('api-token'), u.stdout);
+  assert.ok(!u.stdout.includes('set-atlassian-token'), u.stdout);
 });
 
 // ASS-524 AC3: an engine is its workflow.yaml; a bundle made before ASS-524 carries state-engine.json.

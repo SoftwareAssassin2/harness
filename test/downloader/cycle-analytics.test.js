@@ -235,7 +235,7 @@ test('ASS-475 AC2: with the token fixed, the next round clears the warning and r
   assert.ok(Math.abs(minutes - wanted) <= 2, `${jqls.at(-1)} vs ${wanted}`);
   const since = new Date(Date.parse(lastGood) - ANALYTICS_OVERLAP_MS).toISOString();
   assert.ok(lines.some(l => l.includes(`analytics: 2 tickets updated since ${since}`)), lines.join('\n'));
-  assert.ok(lines.some(l => /Jira takes the api-token again/.test(l)), lines.join('\n'));
+  assert.ok(lines.some(l => /Jira takes the jira work source's api-token again/.test(l)), lines.join('\n'));
   const after = JSON.parse(readFileSync(r.file('tickets.json'), 'utf8'));
   assert.deepEqual([after.tickets['PROJ-1'].status, after.tickets['PROJ-2'].status], ['Done', 'In Progress']);
   assert.ok(after['fetched-through'] > lastGood);
@@ -275,4 +275,69 @@ test('ASS-475: a sign-in check that fails another way (a 5xx) reads nothing, is 
   assert.deepEqual(paths, []);
   assert.equal(lines.filter(l => /analytics: the Jira sign-in could not be checked; nothing read, tickets\.json stays as it is: HTTP 503/.test(l)).length, 1, lines.join('\n'));
   assert.equal(existsSync(join(r.project, 'jira-token-rejected.json')), false);
+});
+
+// ASS-561: the analytics' token from the keychain item the project's atlassian entry in vm-credentials.json names
+// (HARNESS_HOME a folder of the test's; `security` answered by the cycle's exec), else project.json's api-token.
+function harnessHome(declaration) {
+  const home = mkdtempSync(join(tmpdir(), 'cycle-analytics-home-'));
+  writeFileSync(join(home, 'vm-credentials.json'), JSON.stringify(declaration));
+  return { ...process.env, HARNESS_HOME: home };
+}
+async function cycleWith(r, fetchFn, { env, keychain = {} }, lines = []) {
+  const { calls, exec: base } = executor(r.dir);
+  const asked = [];
+  const exec = async (file, args) => {
+    if (file !== 'security') return base(file, args);
+    asked.push(args);
+    if (!(args[2] in keychain)) throw Object.assign(new Error('security: item not found'), { code: 44 });
+    return `${keychain[args[2]]}\n`;
+  };
+  await runCycle({ root: r.dir, project: 'p', now: new Date(), adapters: { jira, jiraRest }, exec, fetch: fetchFn, env, log: l => lines.push(l) });
+  return { calls, asked };
+}
+const basicOf = (email, token) => `Basic ${Buffer.from(`${email}:${token}`).toString('base64')}`;
+function authFetch() {
+  const auths = [];
+  const { fetchFn } = fakeFetch(u => (u.pathname === '/rest/api/3/search/jql' ? { issues: [], isLast: true } : SPRINTS));
+  return { auths, fetchFn: async (url, opts) => { auths.push(opts?.headers?.Authorization); return fetchFn(url, opts); } };
+}
+
+test('ASS-561 AC4: with an atlassian entry the analytics sign in with its keychain item\'s token and its email, not project.json\'s', async () => {
+  const r = root();   // project.json still holds secret-token: the keychain wins
+  const env = harnessHome({ p: { atlassian: { 'keychain-service': 'Atlassian API Token (Test)', site: 'example.atlassian.net', email: 'kay@example.com' } } });
+  const { auths, fetchFn } = authFetch();
+  const lines = [];
+  const { calls, asked } = await cycleWith(r, fetchFn, { env, keychain: { 'Atlassian API Token (Test)': 'keychain-token' } }, lines);
+  assert.deepEqual(asked, [['find-generic-password', '-s', 'Atlassian API Token (Test)', '-w']]);
+  assert.ok(auths.length > 0);
+  assert.ok(auths.every(a => a === basicOf('kay@example.com', 'keychain-token')), 'every Jira call uses the keychain token');
+  assert.ok(calls.includes('analytics:sync-tickets'));
+  assert.ok(!lines.join('\n').includes('keychain-token'), 'the token is never logged');
+});
+
+test('ASS-561 AC4: with no atlassian entry the analytics use project.json\'s api-email and api-token, asking the keychain nothing', async () => {
+  const r = root();
+  const { auths, fetchFn } = authFetch();
+  const { asked } = await cycleWith(r, fetchFn, { env: harnessHome({ p: { claude: { 'keychain-service': 'Claude' } } }) });
+  assert.deepEqual(asked, []);
+  assert.ok(auths.length > 0 && auths.every(a => a === basicOf('ada@example.com', 'secret-token')));
+});
+
+test('ASS-561 AC4/AC6: an atlassian entry whose keychain item is missing reads nothing (no fallback), logged once naming the item and project:set-atlassian-token', async () => {
+  const r = root();
+  const env = harnessHome({ p: { atlassian: { 'keychain-service': 'Atlassian API Token (Test)', site: 'example.atlassian.net', email: 'kay@example.com' } } });
+  const { auths, fetchFn } = authFetch();
+  const lines = [];
+  for (let i = 0; i < 2; i++) await cycleWith(r, fetchFn, { env }, lines);
+  assert.deepEqual(auths, []);
+  assert.equal(lines.filter(l => l === 'analytics skipped: keychain item "Atlassian API Token (Test)" is missing — create a new Atlassian API token (id.atlassian.com, Security, API tokens), copy it, and run ./agent.sh project:set-atlassian-token p').length, 1, lines.join('\n'));
+});
+
+test('ASS-561 AC6: a rejected token\'s log names project:set-atlassian-token', async () => {
+  const r = root();
+  const { fetchFn } = fakeFetch(() => SPRINTS, () => 401);
+  const lines = [];
+  await cycle(r, fetchFn, lines);
+  assert.ok(lines.some(l => /Jira rejected the jira work source's api-token .* run \.\/agent\.sh project:set-atlassian-token p$/.test(l)), lines.join('\n'));
 });

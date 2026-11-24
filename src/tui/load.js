@@ -1,7 +1,7 @@
 // Reads the dashboard's data from the repo's JSON files.
 import { readdirSync, readFileSync, existsSync, statSync, watch } from 'node:fs';
 import { readFile } from 'node:fs/promises';
-import { join, dirname, basename } from 'node:path';
+import { join, dirname, basename, isAbsolute } from 'node:path';
 import { requiresReauthentication, loadCollaborations, loadChatSpend, loadMemorySpend, loadOutside } from '../control/state.js';
 import { isLiveBacklogEntry } from '../control/rank.js';
 import { defaultSpendLimit } from '../control/spend.js';
@@ -181,6 +181,7 @@ export const loadProjects = (dir, lima = limaHome()) => readdirSync(dir)
       accountHold: project['account-hold'] ?? null,
       credentialsHold: existsSync(join(dir, name, 'credentials-hold.json')) ? readJson(join(dir, name, 'credentials-hold.json')) : null,   // ASS-395: control's credentials hold, { since, problems }
       jiraTokenRejected: existsSync(join(dir, name, 'jira-token-rejected.json')) ? readJson(join(dir, name, 'jira-token-rejected.json')) : null,   // ASS-475: the downloader's analytics sign-in rejected, { since, status, problem, work-source }
+      atlassianNeeds: existsSync(join(dir, name, 'atlassian-needs.json')) ? readJson(join(dir, name, 'atlassian-needs.json')) : null,   // ASS-561: project:check-credentials' Atlassian token and acli login problems, { since, problems }; it holds nothing
       apiCapHold: project['api-cap-hold'] ?? null,   // ASS-217: the API cap holding its fallback, control's
       apiKey: hasApiKey(join(dir, name)),   // ASS-333: whether its agents can fall back to an API key (see hasApiKey)
       hindsight: project.hindsight ?? null,   // its memory's server, for the memory screen (ASS-62)
@@ -306,11 +307,14 @@ export function loadApiCost(dir) {
 // builds from the folder project.json's "golden-image" names, as { name,
 // built-at } — built-at from its golden-image.json, null when it has never
 // been built (or the file is caught half-written); null for a project
-// without a "golden-image".
+// without a "golden-image". ASS-578: a project keeping its VMs in a Lima
+// folder of its own (project.json lima-home, an absolute path) has its image
+// there, and its golden says so as home.
 export function loadGolden(id, project, lima) {
   if (!project?.['golden-image']) return null;
-  const name = `golden-${id}`;
-  try { return { name, 'built-at': readJson(join(lima, name, 'golden-image.json'))['built-at'] ?? null }; } catch { return { name, 'built-at': null }; }
+  const name = `golden-${id}`, own = typeof project['lima-home'] === 'string' && isAbsolute(project['lima-home']) ? project['lima-home'] : null;
+  const home = own ? { home: own } : {};
+  try { return { name, 'built-at': readJson(join(own ?? lima, name, 'golden-image.json'))['built-at'] ?? null, ...home }; } catch { return { name, 'built-at': null, ...home }; }
 }
 
 // loadMemoryHold(dir, file) — the project folder's memory-hold.json (ASS-398:
@@ -512,7 +516,7 @@ export function watchFiles(files, onChange, { delay = 50 } = {}) {
 // files (see loadQuestions), ticket chats (see loadCollaborations) and chat-spend.json (see loadChatSpend) — and of the sprints only the one on show: the
 // selected project's snapshot of the past `day`, or its active sprint.json;
 // then each project's golden image (ASS-292: loadGolden) as its golden-<id>
-// entry in the Lima folder `lima` — vm:build-golden builds a new one beside
+// entry in the Lima folder `lima`, or its own (ASS-578: its golden's home) — vm:build-golden builds a new one beside
 // it and renames it into place, which a watch on the old folder's
 // golden-image.json would never see.
 export function dataFiles(root, { projects, workflows, project, day }, lima = limaHome()) {
@@ -528,14 +532,14 @@ export function dataFiles(root, { projects, workflows, project, day }, lima = li
     join(dataDir(root), 'disk-space.json'),
     ...workflows.map(w => w.file ?? engineFileIn(join(root, 'engines'), w.name)),   // a project's own at its file (ASS-277)
     ...projects.flatMap(({ id }) => [
-      join(dir(id), 'project.json'), join(dir(id), 'gcloud-requires-reauthentication'), join(dir(id), 'glab-requires-reauthentication'), join(dir(id), 'rate-limit.json'), join(dir(id), 'claude-usage.json'), join(dir(id), 'push-account.json'), join(dir(id), 'credentials-hold.json'), join(dir(id), 'jira-token-rejected.json'), join(dir(id), 'api-cost.json'), join(dir(id), 'memory-spend.json'), join(dir(id), 'sprints.json'), join(dir(id), 'backlog.json'), join(dir(id), 'global-questions-and-answers.json'), join(dir(id), 'chat-spend.json'), join(dir(id), 'vms.json'), join(dir(id), 'outside-tickets.json'), join(dir(id), 'memory-hold.json'), join(dir(id), 'memory-wait.json'), join(dir(id), SEATS_FILE), join(dir(id), SEAT_QUEUE_FILE), join(dir(id), SEAT_BUDGET_FILE), join(dir(id), REMOTE_SEATS_FILE), join(dir(id), BOOT_WAITS_FILE), join(dir(id), PLANNING_FOCUS_FILE), join(dir(id), SUBSTRATE_FILE), join(dir(id), 'workstations.json'),   // substrate.json: ASS-533;
+      join(dir(id), 'project.json'), join(dir(id), 'gcloud-requires-reauthentication'), join(dir(id), 'glab-requires-reauthentication'), join(dir(id), 'rate-limit.json'), join(dir(id), 'claude-usage.json'), join(dir(id), 'push-account.json'), join(dir(id), 'credentials-hold.json'), join(dir(id), 'jira-token-rejected.json'), join(dir(id), 'atlassian-needs.json'), join(dir(id), 'api-cost.json'), join(dir(id), 'memory-spend.json'), join(dir(id), 'sprints.json'), join(dir(id), 'backlog.json'), join(dir(id), 'global-questions-and-answers.json'), join(dir(id), 'chat-spend.json'), join(dir(id), 'vms.json'), join(dir(id), 'outside-tickets.json'), join(dir(id), 'memory-hold.json'), join(dir(id), 'memory-wait.json'), join(dir(id), SEATS_FILE), join(dir(id), SEAT_QUEUE_FILE), join(dir(id), SEAT_BUDGET_FILE), join(dir(id), REMOTE_SEATS_FILE), join(dir(id), BOOT_WAITS_FILE), join(dir(id), PLANNING_FOCUS_FILE), join(dir(id), SUBSTRATE_FILE), join(dir(id), 'workstations.json'),   // substrate.json: ASS-533;
         // ASS-539: sandbox-failures.json, and each architecture's sandbox image label and last build's run;
         join(dir(id), SANDBOX_FAILURES_FILE), ...SANDBOX_ARCHES.flatMap(arch => { const f = sandboxImageFiles(dir(id), arch); return [f.label, f.run]; }),
-        // planning-focus.json: ASS-531; seat-budget.json: ASS-528; jira-token-rejected.json: ASS-475; seats.json and workstations.json (whose seats are lost): ASS-469; seat-queue.json: ASS-525; memory-hold.json: ASS-398; memory-wait.json: ASS-420; vms.json: its VMs' credential kinds (ASS-333, hasApiKey) and the local virtual machines box (ASS-486); outside-tickets.json: ASS-355
+        // planning-focus.json: ASS-531; seat-budget.json: ASS-528; jira-token-rejected.json: ASS-475; atlassian-needs.json: ASS-561; seats.json and workstations.json (whose seats are lost): ASS-469; seat-queue.json: ASS-525; memory-hold.json: ASS-398; memory-wait.json: ASS-420; vms.json: its VMs' credential kinds (ASS-333, hasApiKey) and the local virtual machines box (ASS-486); outside-tickets.json: ASS-355
       ...(existsSync(work(id)) ? readdirSync(work(id)).toSorted() : []).flatMap(ticket => ['questions-and-answers.json', 'collaboration.json'].map(file => join(work(id), ticket, file))),
     ]),
     ...(shown ? [shown] : []),
-    ...projects.flatMap(({ golden }) => (golden ? [join(lima, golden.name)] : [])),
+    ...projects.flatMap(({ golden }) => (golden ? [join(golden.home ?? lima, golden.name)] : [])),
   ];
 }
 

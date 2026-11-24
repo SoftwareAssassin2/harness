@@ -225,7 +225,7 @@ test('AC4: project:credentials-status lists what the project\'s clusters need wi
   assert.deepEqual(out.substrate.problems.map(p => [p.machine, p.credential]), [['mac', 'Docker on the Mac'], ['gke', 'GKE']]);
   assert.equal(out.substrate.problems[0].fix, 'open -a Docker');
   assert.deepEqual(JSON.parse((await run(AGENT, ['project:credentials-status', 'p'], { env })).stdout).substrate, out.substrate);
-  // A project with no cluster prints exactly as before.
-  edit(join(s.f.dir, 'projects', 'p', 'project.json'), j => { delete j['dev-environments']; });
+  // A project with no cluster prints exactly as before (with an Atlassian token, so ASS-561 finds nothing either).
+  edit(join(s.f.dir, 'projects', 'p', 'project.json'), j => { delete j['dev-environments']; Object.assign(j['work-sources'][0], { 'api-email': 'ada@example.com', 'api-token': 'x' }); });
   assert.deepEqual(JSON.parse((await run(AGENT, ['project:check-credentials', 'p'], { env })).stdout), { held: false, since: null, problems: [] });
 });

@@ -1,5 +1,5 @@
 # The harness's disk (ASS-288): the free space on the volumes holding its VMs
-# (LIMA_HOME) and its data folder, against harness.json's disk-free-warn-gb and
+# (every Lima folder in use, ASS-578) and its data folder, against harness.json's disk-free-warn-gb and
 # disk-free-hold-gb (GB, 10^9 bytes; 50 and 15 when it has neither).
 #
 #   source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../disk.bash"

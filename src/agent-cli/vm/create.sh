@@ -91,6 +91,7 @@ source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../vm.bash"
 
 [[ $# -eq 3 || ( $# -eq 4 && "$4" == --vm ) ]] || { echo "usage: vm:create <project> <ticket-key> <variation> [--vm]" >&2; exit 1; }
 project="$1" key="$(tr '[:lower:]' '[:upper:]' <<< "$2")" variation="$3" force_vm="${4:-}"
+lima_use "$project" || exit 1   # ASS-578: its Lima folder, for every limactl below
 variation_exists vm:create "$project" "$key" "$variation"
 
 # ASS-551: on a substrate run target, the variation's sandbox (above).

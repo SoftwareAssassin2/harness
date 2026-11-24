@@ -20,7 +20,9 @@ set -euo pipefail
 #     a machine's own settings, so the tracked harness.json never changes) to
 #     --lima-home, made absolute (its ~ is never expanded); without it an
 #     absolute lima-home already set there, else in harness.json, is kept,
-#     else it is ~/.lima;
+#     else it is ~/.lima; a project reinstalled with --force keeps its own
+#     project.json lima-home (ASS-578: its VMs and golden image are there; a
+#     bundle never carries one, as it is this machine's);
 #   - writes the bundle's credentials template, its placeholders as they are,
 #     to ~/.harness/vm-credentials.json at .["<project>"], other projects'
 #     entries kept and the file backed up first to
@@ -167,9 +169,11 @@ write_credentials=true
 [[ "$declared" == true && "$force" != true ]] && write_credentials=false
 jq --arg p "$project" --slurpfile t "$b/vm-credentials.template.json" '.[$p] = $t[0]' <<<"$credentials" > "$stage/vm-credentials.json"
 
-# 8. project.json, its machine-specific fields filled in.
-jq --arg p "$project" --arg folder "$project_root" '
+# 8. project.json, its machine-specific fields filled in; a reinstalled project's own lima-home kept (ASS-578).
+own_home="$(jq -r '.["lima-home"] // empty | strings' "$target/project.json" 2>/dev/null || true)"
+jq --arg p "$project" --arg folder "$project_root" --arg home "$own_home" '
   walk(if . == "{project-root}" then $folder else . end)
+  | del(.["lima-home"]) | if $home != "" then .["lima-home"] = $home else . end
   | if (.registry | type) == "object" then .registry["storage-path"] = "projects/\($p)/registry" else . end
   | if (.["golden-image"] | type) == "object" then .["golden-image"].folder = "projects/\($p)/golden-image" else . end
 ' "$b/project.json" > "$stage/project.json"
@@ -203,7 +207,7 @@ fi
 
 # --- What is left: the manifest's setup steps and the placeholders still to fill. ---
 entry="$(jq -c --arg p "$project" '.[$p] // {}' "$credentials_file" 2>/dev/null || echo '{}')"
-echo "Installed $project into $target (project root $project_root, Lima folder $lima_home)."
+echo "Installed $project into $target (project root $project_root, Lima folder ${own_home:-$lima_home})."
 if [[ "$write_credentials" == true && "$declared" == true ]]; then
   echo "Replaced $project's entry in $credentials_file with the bundle's template (--force); the old file is $backup."
 elif [[ "$write_credentials" == true ]]; then
@@ -218,7 +222,7 @@ jq -r --argjson entry "$entry" --slurpfile pj "$target/project.json" --arg file 
   | ([(.setup // [])[] | select(type == "object")
       | select(.step != "keychain-item" or .in != "vm-credentials.template.json" or (.placeholder as $x | $left | index($x)))]
     + (if any(($pj[0]["work-sources"] // [] | arrays)[]; type == "object" and .type == "jira" and ((.["api-email"] | type) != "string" or (.["api-token"] | type) != "string"))
-         then [{step: "jira-api-credentials", description: "Add api-email (your Atlassian email) and api-token (an API token from id.atlassian.com) to the jira work source in \($pjfile) (its .\"work-sources\" entry with type jira); the P screen'"'"'s analytics download needs them"}]
+         then [{step: "jira-api-credentials", description: "Copy an Atlassian API token (id.atlassian.com, Security, API tokens) and run ./agent.sh project:set-atlassian-token \($p), with the atlassian entry for \($p) in \($file) filled in (ASS-561: it saves the token to the keychain and logs acli in); the P screen'"'"'s analytics download needs it"}]
          else [] end)) as $steps
   | [$ph | to_entries[] | select(.key as $k | $left | index($k))] as $todo
   | (if ($steps | length) > 0 then "\nRemaining setup steps:" else "\nNo setup steps left." end),

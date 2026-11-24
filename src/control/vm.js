@@ -11,7 +11,7 @@ import { machineOf, SUBSTRATE_RUN_TARGETS } from './machine.js';
 // (machine.js, ASS-432: machineCommand, stopMarked, machineStatuses, …);
 // the Lima backend (machine-lima.js) holds limaHome and limaEnv, kept
 // importable from here.
-export { limaHome, limaEnv } from './machine-lima.js';
+export { limaHome, limaEnv, limaHomes, projectLimaHome, vmLimaHome } from './machine-lima.js';
 // ASS-435: where things are in a machine — a VM's /repos/ and /mnt/ticket
 // below, or a GCP workstation folder's repos/ and ticket — is machine.js
 // machinePaths'; REPOS and TICKET_FOLDER stay a VM's.

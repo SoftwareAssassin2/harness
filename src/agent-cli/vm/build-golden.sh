@@ -2,8 +2,10 @@
 # Description: Build a project's golden VM image, or reuse it when none of its inputs changed — vm:build-golden <project> [--fix <what it fixed>].
 set -euo pipefail
 
-# The image is the Lima instance golden-<project> under LIMA_HOME (the env
-# var, else harness.local.json's lima-home, else harness.json's, else ~/.lima: lima-home.bash, ASS-273),
+# The image is the Lima instance golden-<project> in the project's Lima folder
+# (ASS-578: its project.json lima-home, else the harness-wide one — the env var
+# LIMA_HOME, else harness.local.json's lima-home, else harness.json's, else ~/.lima:
+# lima-home.bash, ASS-273; every limactl here runs with it as LIMA_HOME, lima_use),
 # where VMs, copy-on-write clones of it, must live too. Its definition is the folder project.json's "golden-image" names —
 #   { "folder": "projects/<project>/golden-image" }   (relative to the data folder, data/)
 # — and, optionally, "tools": the build tools its VM agents need (ASS-229),
@@ -85,6 +87,7 @@ source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../vm.bash"   # lock_vms
 
 [[ $# -eq 1 || ( $# -eq 3 && "$2" == --fix && -n "$3" ) ]] || { echo "usage: vm:build-golden <project> [--fix <what it fixed>]" >&2; exit 1; }
 project="$1" fix="${3-}"
+lima_use "$project" || exit 1
 sandbox_definition vm:build-golden "$project"
 golden="golden-$project" build="golden-$project-build"
 lock_on 7 "$projects/$project/golden-build.lock" vm:build-golden 1 2>/dev/null \

@@ -19,6 +19,7 @@ source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../vm.bash"
 
 [[ $# -eq 2 ]] || { echo "usage: vm:delete <project> <vm>" >&2; exit 1; }
 project="$1" vm="$2"
+lima_use "$project" || exit 1   # ASS-578: its Lima folder, for every limactl below
 [[ "$project" =~ ^[A-Za-z0-9_-]+$ && -f "$projects/$project/project.json" ]] || { echo "vm:delete: no project '$project'" >&2; exit 1; }
 lock_vms vm:delete "$project"
 entry="$(reconcile_vms vm:delete "$project" | jq -r --arg n "$vm" 'first(.vms[] | select(.name == $n) | [.state, .deletable] | @tsv) // empty')"
