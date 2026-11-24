@@ -365,6 +365,9 @@ update_json "$json" --slurpfile in "$file" --arg target "$target" --arg state "$
           | ($old.t["worked-manually"] != null) as $manual
           | .updated[$key] = ($old.t + system_fields($t)
             | if status_kept($old.t) then .["ticket-system-status"] = $old.t["ticket-system-status"] else . end
+            # ASS-576: a transition acli failed to make (pending-ticket-system-status) stays for the retry while upstream
+            # still shows the status it moves from; a fetched status off it (applied, or a human moved it) drops it.
+            | if $old.t["pending-ticket-system-status"] != null and ($t | has("ticket-system-status")) and $t["ticket-system-status"] != $old.t["pending-ticket-system-status"].from then del(.["pending-ticket-system-status"]) else . end
             | points_merged($old.t; $t)
             | dependencies_merged($old.t; $t)
             | if $target == "sprint" and $old.t.description != $t.description and ($manual | not) then .description = $old.t.description | held($t) else . end

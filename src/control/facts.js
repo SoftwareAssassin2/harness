@@ -177,7 +177,8 @@ export function ticketFacts(ctx, project, ticket, variation, since, vm, evaluati
   return {
     checks,
     questions: () => questionsOf(ctx, project.id, ticket.key),
-    ticketSystemStatus: ticket['ticket-system-status'],
+    // ASS-576: while a transition acli failed to make is pending (control retries it), the status being set, not a stale one.
+    ticketSystemStatus: ticket['pending-ticket-system-status']?.status ?? ticket['ticket-system-status'],
     fastTracked: ticket['fast-track'] === true,
     humanReview: fresh(variation['human-review'], variation),
     selectedVariation: fresh(ticket['selected-variation'], variation),

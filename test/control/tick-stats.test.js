@@ -162,7 +162,7 @@ test('ASS-490 AC1, AC2, AC3: control --project times each tick and each of tick.
   // Each call tick.js makes, nested under its phase as '<phase>/<function>' (ASS-494: its loads too, as '<phase>/load';
   // the deeper keys under runSteps left out here); the VM phase's marked as background.
   const top = (phase, keys) => Object.keys(keys).filter(k => !k.slice(phase.length + 1).includes('/')).toSorted();
-  assert.deepEqual(top('timers', s.phases.timers['sub-routines']), ['timers/checkApiCost', 'timers/checkGcloud', 'timers/checkGlab', 'timers/checkPushAccount', 'timers/checkUsage', 'timers/detectReverts', 'timers/fireTimers', 'timers/load', 'timers/refreshCommitLists']);   // ASS-558: refreshCommitLists
+  assert.deepEqual(top('timers', s.phases.timers['sub-routines']), ['timers/checkApiCost', 'timers/checkGcloud', 'timers/checkGlab', 'timers/checkPushAccount', 'timers/checkUsage', 'timers/detectReverts', 'timers/fireTimers', 'timers/load', 'timers/refreshCommitLists', 'timers/retryTransitions']);   // ASS-558: refreshCommitLists; ASS-576: retryTransitions
   assert.deepEqual(top('steps', s.phases.steps['sub-routines']), ['steps/checkCredentials', 'steps/checkDisk', 'steps/checkLimaHomes', 'steps/checkRateLimits', 'steps/fastTrack', 'steps/load', 'steps/runSteps']);   // ASS-578: checkLimaHomes
   assert.equal(s.phases['seats/VMs']['sub-routines']['seats/VMs/superviseVms'].background, true);
   assert.equal(s.phases.finish['sub-routines']['finish/finishEnded']['calls-last'], 1);
@@ -329,7 +329,7 @@ test('ASS-494 AC1, AC3: in a tick, each phase\'s load is timed apart as \'<phase
   };
   let subs = check();
   assert.equal(subs['finish/load'].calls, 1);
-  assert.equal(subs['timers/load'].calls, 8);                                                                      // one per timers phase function (ASS-558: refreshCommitLists the eighth)
+  assert.equal(subs['timers/load'].calls, 9);                                                                      // one per timers phase function (ASS-558: refreshCommitLists the eighth; ASS-576: retryTransitions the ninth)
   for (const key of ['steps/runSteps/escalateFailedStarts', 'steps/runSteps/blockFailing', 'steps/runSteps/stopAtSpendingLimit', 'steps/runSteps/load', 'steps/runSteps/runVariation', 'steps/runSteps/runVariation/load', 'steps/runSteps/runVariation/cli ticket:change-state']) assert.ok(subs[key], key);
   assert.equal(subs['steps/runSteps/runVariation'].calls, 1);
   // An agent that ended with no assignment left: finishEnded's finishOne for it, its load inside.

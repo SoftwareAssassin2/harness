@@ -61,6 +61,12 @@
 # off (ASS-166, ticket:set-manual): a ticket done is no longer worked by hand,
 # and its open non-blocking questions close as Assumed (ASS-248,
 # question:close-assumed): it shipped on their assumptions.
+# ASS-576: a transition the ticket system refused leaves the move standing:
+# instead of the → line it says "<KEY> ticket system status not set to
+# <status> (retrying): <error>" and adds a ticket-system notice to the
+# variation (ticket:add-ai-notice, best effort); the status is left pending
+# for control to retry. A move into a step pairing no status, or the status
+# the ticket has, drops a pending transition (superseded).
 #
 # recheck_requirements <command> <project> <ticket-key> — the ticket's
 # requirements have changed (a new description, ticket:take-new; an answer
@@ -168,9 +174,22 @@ sync_paired_status() {
     "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/question/close-assumed.sh" "$project" "$ticket" > /dev/null
   fi
   paired="$(engine_steps_of "$command" "$engine" "$project" 2>/dev/null | jq -r --arg id "$state" 'first(.[] | select(.id == $id) | .["paired-ticket-system-status"] // empty) // empty' 2>/dev/null || true)"
-  [[ -n "$paired" && "$paired" != "$current" ]] || return 0
-  "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/ticket/set-ticket-system-status.sh" "$project" "$ticket" "$paired"
-  echo "$command: $ticket ticket system status → $paired"
+  if [[ -z "$paired" || "$paired" == "$current" ]]; then
+    if jq -e --arg key "$ticket" 'any((.features, .bugs, .spikes) // [] | .[]; (.key | ascii_downcase == ($key | ascii_downcase)) and has("pending-ticket-system-status"))' "$file" >/dev/null 2>&1; then
+      update_whole_ticket "$command" "$project" "$ticket" 'del(.["pending-ticket-system-status"])'
+    fi
+    return 0
+  fi
+  local here err
+  here="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
+  if err="$("$here/ticket/set-ticket-system-status.sh" "$project" "$ticket" "$paired" 2>&1 >/dev/null)"; then
+    [[ -z "$err" ]] || echo "$err" >&2
+    echo "$command: $ticket ticket system status → $paired"
+  else
+    err="$(grep -v '^ticket:set-ticket-system-status:' <<< "$err" | tr '\n' ' ' | sed 's/[[:space:]]*$//')"
+    echo "$command: $ticket ticket system status not set to $paired (retrying): ${err:-failed}"
+    "$here/ticket/add-ai-notice.sh" "$project" "$ticket" "$variation" ticket-system "Ticket system status not set to $paired; retrying" "${err:-failed}" >/dev/null 2>&1 || true
+  fi
 }
 
 recheck_requirements() {

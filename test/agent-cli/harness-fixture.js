@@ -128,6 +128,7 @@ export function fixture() {
     PUSH_ACCOUNT_DISABLED: '1',
     // Control's commit lists (ASS-558) are not refreshed, so a test's control never calls a forge or reads a clone for them.
     COMMIT_LISTS_DISABLED: '1',
+    TRANSITION_RETRIES_DISABLED: '1',
     // Control waits for a script step's command up to 30 seconds in the tick that started it (ASS-328: 5 by
     // default, then left running), so a test ticking a fixed number of times still moves on a slow-starting one.
     SCRIPT_WAIT_MS: '30000',

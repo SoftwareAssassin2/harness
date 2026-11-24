@@ -214,6 +214,8 @@ export async function moveTicket(ctx, phase, project, ticket, variation, to, why
   ctx.log(phase, `${ticket.key} ${variation.name} ${from} → ${to}${startAt ? ` at ${startAt}` : ''}${why ? ` (${why})` : ''}`);
   const status = /ticket system status → (.*)$/m.exec(said);
   if (status) ctx.log(phase, `${ticket.key} ticket system status → ${status[1]}`);
+  const unset = /ticket system status (not set to .*)$/m.exec(said);   // ASS-576: acli failed; control retries it (transition-retry.js)
+  if (unset) ctx.log(phase, `${ticket.key} ticket system status ${unset[1]}`);
   return true;
 }
 

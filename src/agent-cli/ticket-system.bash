@@ -4,6 +4,7 @@
 #   source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../ticket-system.bash"
 #   ticket_system <command> <project>   # "jira" when data/projects/<project>/project.json has a jira work-source, else ""
 #   acli_run <command> <acli args…>     # runs acli, or says what it would run when ACLI_DISABLED=1 (tests)
+#   acli_failed <exit> <output>         # whether an acli run failed: a non-zero exit, or acli's ✗ / a line-start Failure:/Error: (it can exit 0 on one, ASS-576)
 #   home_project <command> <project> <key>   # the project the ticket lives in: an off-board key (the harness's own, ASS-n), the harness project's; any other, <project>
 #   key_project <command> <key>              # the project whose own key prefix the key carries (an off-board key-prefix, or a Jira board's project key); nothing when none
 #   story_point_scale <command> <project>    # the project's story-point scale, a JSON array (ASS-152)
@@ -29,6 +30,11 @@ acli_run() {
   else
     acli "$@"
   fi
+}
+
+acli_failed() {
+  [[ "$1" != 0 ]] && return 0
+  grep -qE '(^|[[:space:]])✗|^[[:space:]]*(Failure|Error):' <<< "$2"
 }
 
 # off_board_prefix <command> <project> — the key prefix of the project's

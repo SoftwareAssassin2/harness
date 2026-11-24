@@ -86,6 +86,7 @@ import { checkUsage } from './usage.js';
 import { checkApiCost } from './api-cost.js';
 import { checkPushAccount } from './push-account.js';
 import { refreshCommitLists } from './commit-refresh.js';
+import { retryTransitions } from './transition-retry.js';
 import { detectReverts } from './reverts.js';
 import { raiseDependencies } from './dependencies.js';
 import { checkDisk, diskHeld } from './disk.js';
@@ -170,6 +171,9 @@ export function createContext({ root, env = process.env, command, log = () => {}
   // with COMMIT_LISTS_DISABLED=1 — the test fixtures' env, as PUSH_ACCOUNT_DISABLED is — so a test's control never
   // runs ticket:refresh-commits (a forge read). Tests set it.
   ctx.commitLists = env.COMMIT_LISTS_DISABLED !== '1';
+  // transitionRetries — whether control retries the ticket-system transitions acli failed to make (ASS-576,
+  // transition-retry.js); off with TRANSITION_RETRIES_DISABLED=1, the test fixtures' env.
+  ctx.transitionRetries = env.TRANSITION_RETRIES_DISABLED !== '1';
   // hostMemory() — the Mac's memory now (ASS-398; ASS-404, see host-memory.js:
   // macOS's free percentage and pressure level, and each Lima VM's resident
   // size); null with HOST_MEMORY_DISABLED=1 — the test fixtures' env, as
@@ -260,7 +264,7 @@ export function createContext({ root, env = process.env, command, log = () => {}
 
 // The phases that start agents, skipped while a restart drains.
 const NEW_WORK = new Set([fastTrack, refineBacklog, dispatch]);
-const PHASES = [finishEnded, superviseRegistries, followGolden, superviseMemory, backupMemory, recordMemorySpend, budgetRemote, budgetSeats, assignSeats, seatMemory, superviseVms, superviseWorkstations, superviseSubstrate, superviseSandboxes, fastTrack, runSteps, detectGaps, fireTimers, detectReverts, checkGcloud, checkGlab, checkUsage, checkApiCost, checkPushAccount, refreshCommitLists, raiseDependencies, refineBacklog, superviseAgents, dispatch, recordSeatQueue];
+const PHASES = [finishEnded, superviseRegistries, followGolden, superviseMemory, backupMemory, recordMemorySpend, budgetRemote, budgetSeats, assignSeats, seatMemory, superviseVms, superviseWorkstations, superviseSubstrate, superviseSandboxes, fastTrack, runSteps, detectGaps, fireTimers, detectReverts, checkGcloud, checkGlab, checkUsage, checkApiCost, checkPushAccount, refreshCommitLists, retryTransitions, raiseDependencies, refineBacklog, superviseAgents, dispatch, recordSeatQueue];
 // ASS-490: which of the header's nine phases (tick-stats.js TICK_PHASES) each phase function is timed under, and by
 // what name (ctx.timed, as '<phase>/<name>'; named here, as checkGcloud and checkGlab are made, not declared); the
 // hold, disk and credentials checks before fast track count under 'steps', the phase they gate. BACKGROUND: those that start work they do not await (vm-lifecycle.js's VM jobs, steps.js's script
@@ -271,14 +275,14 @@ const PHASE_OF = new Map(Object.entries({
   'seats/VMs': { budgetRemote, budgetSeats, assignSeats, seatMemory, superviseVms, superviseWorkstations, superviseSubstrate, superviseSandboxes },
   steps: { fastTrack, runSteps },
   gaps: { detectGaps },
-  timers: { fireTimers, detectReverts, checkGcloud, checkGlab, checkUsage, checkApiCost, checkPushAccount, refreshCommitLists },
+  timers: { fireTimers, detectReverts, checkGcloud, checkGlab, checkUsage, checkApiCost, checkPushAccount, refreshCommitLists, retryTransitions },
   dependencies: { raiseDependencies, refineBacklog },
   supervise: { superviseAgents },
   dispatch: { dispatch, recordSeatQueue },
 }).flatMap(([phase, calls]) => Object.entries(calls).map(([name, fn]) => [fn, { phase, name }])));
 // ASS-497: CHECKS, the periodic checks that call out (background-checks.js), start their jobs and return a promise
 // of them, which the tick does not await: only their start is timed, and they are marked background too.
-const CHECKS = new Set([detectReverts, checkGcloud, checkGlab, checkUsage, checkApiCost, checkPushAccount, refreshCommitLists]);   // ASS-558: refreshCommitLists
+const CHECKS = new Set([detectReverts, checkGcloud, checkGlab, checkUsage, checkApiCost, checkPushAccount, refreshCommitLists, retryTransitions]);   // ASS-558: refreshCommitLists; ASS-576: retryTransitions
 const BACKGROUND = new Set([superviseVms, superviseSubstrate, runSteps, ...CHECKS]);   // ASS-533: its checks run as a job beside the tick
 // ASS-494: those timed a level deeper — their helpers, per-item loop bodies, agent.sh calls, scripts and loads
 // (ctx.timedHere, ctx.cli, ctx.script, ctx.load; ASS-493: ctx.succeeds runs untimed in the background). detectReverts
