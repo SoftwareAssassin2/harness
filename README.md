@@ -1027,7 +1027,8 @@ Orbit · 3 machines · 2 can take work · 3 of 4 seats in use · next ticket →
   gray `none`. A machine with no Substrate cluster for the project has no image
   line, except the Mac's card, which still shows an image built for its
   architecture.
-- **On it**: every one of the project's tickets there, one a line: `💺
+- **On it**: every one of the project's tickets there, one a line (cut with
+  `…` to the card's width, never wrapped; ASS-590): `💺
   <KEY> Lima VM · running` (`creating` in gray before its VM exists), `📦 <KEY>
   sandbox · running 1.5 GiB 3% CPU` (`hibernated` with its snapshot's disk,
   `starting`, `resuming`, `hibernating`, red `crashed (will be replaced)`),
