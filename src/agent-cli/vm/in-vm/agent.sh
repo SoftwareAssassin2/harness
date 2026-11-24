@@ -14,6 +14,10 @@
 # (AGENT_FORWARDER_URL and AGENT_TOKEN_FILE override them, for tests).
 # The arguments go to jq after "--" (ASS-336), so a "--"-leading one, such as
 # question:ask's --blocking, is sent as it is, never taken as a jq option.
+# File form (ASS-589): work:write, work:append, automated-tests:record and
+# ticket:set-demo-plan given one argument past their stdin form take that last
+# one as a local file, read as the content (same cap) and dropped from argv, so
+# no path reaches the Mac; a missing or unreadable one fails (1), nothing sent.
 # Needs curl, jq and base64.
 set -uo pipefail
 url="${AGENT_FORWARDER_URL:-$(cat /run/harness/agent-url 2>/dev/null)}"
@@ -21,11 +25,20 @@ token_file="${AGENT_TOKEN_FILE:-/run/harness/agent-token}"
 token="$( [ -r "$token_file" ] && tr -d '[:space:]' < "$token_file" || true)"
 STDIN_CAP=1048576
 takes_stdin() { case "$1" in work:write|work:append|work:add-screenshot|automated-tests:record|ticket:set-demo-plan|ticket:post-comment|ticket:set-acceptance-criteria|ticket:set-merge-request-plan|merge-request:update|merge-request:upload-image|merge-request:reply) return 0 ;; *) return 1 ;; esac; }
+# The stdin form's argument count of the commands that also take a file (the forwarder's max-args for them).
+file_form() { case "$1" in work:write|work:append) echo 4 ;; automated-tests:record|ticket:set-demo-plan) echo 3 ;; *) echo -1 ;; esac; }
 if takes_stdin "${1:-}"; then
+  what=stdin
+  if (( $# - 1 == $(file_form "$1") + 1 )); then
+    file="${!#}" what="file ${!#}"
+    [ -f "$file" ] && [ -r "$file" ] || { echo "agent.sh: $1: no readable file $file: not sent" >&2; exit 1; }
+    set -- "${@:1:$#-1}"
+    exec <"$file" # stdin is never read in this form
+  fi
   # One more byte than the cap is read, to tell over it; base64 is 4 characters to 3 bytes, less its padding.
   stdin="$(head -c $((STDIN_CAP + 1)) | base64 | tr -d '\n')"
   pad="${stdin##*[!=]}"
-  (( ${#stdin} / 4 * 3 - ${#pad} <= STDIN_CAP )) || { echo "agent.sh: stdin is over 1 MB: not sent" >&2; exit 1; }
+  (( ${#stdin} / 4 * 3 - ${#pad} <= STDIN_CAP )) || { echo "agent.sh: $what is over 1 MB: not sent" >&2; exit 1; }
   # Through jq's stdin, not an argument: Linux caps one argument at 128 KB.
   body="$(jq -cR --arg t "$token" '{ token: $t, argv: $ARGS.positional, stdin: . }' --args -- "$@" <<<"$stdin")"
 else

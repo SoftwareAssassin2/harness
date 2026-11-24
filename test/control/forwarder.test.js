@@ -541,7 +541,7 @@ test('ASS-589 AC1, AC3: through the real forwarder, work:write and work:append w
       const r = await client('work:append', 'p', 'ABC-3', 'A', 'change-log.md', file(name, text));
       assert.equal(r.code, 0, r.stderr);
     }
-    assert.equal(readFileSync(join(folder, 'change-log-A.md'), 'utf8'), '- one\n- two');
+    assert.equal(readFileSync(join(folder, 'change-log-A.md'), 'utf8'), '- one\n- two\n', 'work:append ends an entry with a newline');
     assert.ok(lines.includes('forwarder RUN abc-3-a ["work:write","p","ABC-3","A","execution-plan.md"]'), lines.join('\n'));
     assert.ok(!lines.join('\n').includes(dir), 'no local path reaches the Mac');
     const six = await client('work:write', 'p', 'ABC-3', 'A', 'execution-plan.md', plan, 'extra');
