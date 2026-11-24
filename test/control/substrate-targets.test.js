@@ -60,6 +60,10 @@ function fakeCtx({ fail = () => null } = {}) {
   return ctx;
 }
 const settle = () => new Promise(r => setTimeout(r, 0));
+// ASS-582: the remote machines up (connected, set up since) and their clusters healthy (checked since), so a bring-up runs.
+const upEntry = { connected: true, 'connected-at': '2026-11-20T10:00:00Z', setup: { ok: true, 'checked-at': '2026-11-20T10:01:00Z' } };
+const healthy = { state: 'healthy', problems: [], 'checked-at': '2026-11-20T10:02:00Z' };
+const up = { workstations: { 'ws-1': upEntry, 'vm-1': upEntry }, substrate: { 'ws-1': healthy, 'vm-1': healthy } };
 async function drain(ctx) { for (let i = 0; i < 20; i++) await settle(); for (const r of ctx.memory.sandboxes?.values() ?? []) if (r.job) await r.job; for (const j of ctx.memory.sandboxJobs?.values() ?? []) await j; }
 
 test('AC2: local-substrate takes a Mac seat, workstation-substrate a workstation\'s, cloud-vm-substrate a cloud VM\'s; a step takes the first of its targets the project allows with a free seat; a Docker step never a substrate one', () => {
@@ -113,7 +117,7 @@ for (const [target, seat, host] of [['local-substrate', { kind: 'vm' }, 'mac'], 
     const ctx = fakeCtx({ fail: a => (a[0] === 'substrate:sandbox-up' && failing ? 'substrate:sandbox-up: no worker has room' : null) });
     const variation = at('build');
     const t = ticket('ABC-3', variation);
-    const project = { id: 'p', seats: [{ key: 'ABC-3', variation: 'A', target, ...seat }], tickets: [t] };
+    const project = { id: 'p', seats: [{ key: 'ABC-3', variation: 'A', target, ...seat }], tickets: [t], ...up };
     const step = prompt('build');
     assert.equal(sandboxWaits(ctx, {}, project, t, variation, step, 'ABC-3 A build'), true);
     await drain(ctx);
@@ -144,7 +148,7 @@ test('AC1: a seat moved to another machine moves the sandbox — its work pushed
   const ctx = fakeCtx();
   const variation = at('build', { sandbox: { name: 'abc-3-a', project: 'p', machine: 'ws-1', state: 'running' } });
   const t = ticket('ABC-3', variation);
-  const project = { id: 'p', seats: [{ key: 'ABC-3', variation: 'A', kind: 'cloud-vm', workstation: 'vm-1', target: 'cloud-vm-substrate' }], tickets: [t] };
+  const project = { id: 'p', seats: [{ key: 'ABC-3', variation: 'A', kind: 'cloud-vm', workstation: 'vm-1', target: 'cloud-vm-substrate' }], tickets: [t], ...up };
   assert.equal(sandboxWaits(ctx, {}, project, t, variation, prompt('build'), 'w'), true);
   await drain(ctx);
   assert.deepEqual(ctx.calls, ['substrate:sandbox-delete p ABC-3 A --keep-work', 'substrate:sandbox-up p ABC-3 A vm-1', 'substrate:stack-up p ABC-3 A --after created 0']);
@@ -254,7 +258,7 @@ test('ASS-542 AC2: the app stack is brought up right after the sandbox (told whe
   const engine = { steps: [...engineWith(prompt('build')).steps, { id: 'blocked', sequence: 5, action: { type: 'prompt', prompt: 'b' } }, { id: 'blocked-for-human', sequence: 6, action: { type: 'human' } }] };
   const variation = at('build');
   const t = ticket('ABC-3', variation);
-  const project = { id: 'p', engine, seats: [{ key: 'ABC-3', variation: 'A', target: 'workstation-substrate', kind: 'workstation', workstation: 'ws-1' }], tickets: [t] };
+  const project = { id: 'p', engine, seats: [{ key: 'ABC-3', variation: 'A', target: 'workstation-substrate', kind: 'workstation', workstation: 'ws-1' }], tickets: [t], ...up };
   const step = prompt('build');
   assert.equal(sandboxWaits(ctx, {}, project, t, variation, step, 'ABC-3 A build'), true);
   await drain(ctx);

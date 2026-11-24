@@ -58,6 +58,21 @@
 //   that time counted. A sandbox recorded running whose cluster's check (substrate.json's sandbox-use, measured after
 //   it was last seen up) finds it crashed is not taken as up (sandboxUp), so the next step that needs it goes the same
 //   way. After a cluster or node restart every crashed sandbox there is handled so, each when its ticket next needs it.
+// - ASS-582: a bring-up only once its machine is up and its cluster ready. At control's start (or a machine's boot)
+//   a ticket seated on a workstation or cloud VM not connected yet had its bring-up refused ("has no open connection")
+//   and counted, and one more refused while its cluster was still starting after the boot sent it to Blocked. Now,
+//   before the bring-up, machineWhy: the machine not up (stopped, starting, connecting, being set up, or lost —
+//   lostWhy), or its cluster not ready (substrate-config.js clusterWhy: not checked since the machine connected,
+//   starting, missing, Docker down, or broken with a problem control's restart fixes) — and the machine the sandbox is
+//   on, when its seat moved and its work is to move out first. Then the step waits, no failure counted, logged once
+//   ("sandbox <KEY> <var>: waits for <machine> to come up (<why>)"). Control starts and connects the machine meanwhile
+//   for the seat on it (seats.js seatNeeds, workstations.js), and checks its cluster at once once it connects
+//   (substrate.js). The wait is bounded by the machine's boot wait (seats.js bootWaits, ASS-553/575: a machine whose
+//   cluster is not ready counts as not up while a substrate seat on it is held): past remote-boot-wait-seconds the
+//   machine is lost for placement and the step goes elsewhere per pool choice — never to Blocked for it. The Mac's
+//   cluster has no boot wait: past remote-boot-wait-seconds of waiting for it the bring-up runs and counts again. A
+//   bring-up refused because the connection closed under it is a wait too. Only a bring-up that fails on a machine up
+//   with its cluster ready (or broken for a problem no restart fixes) counts towards Blocked.
 //
 // ASS-537: hibernation when a ticket gives up its seat, and resumption when it gets one. Operator decisions (ASS-532's
 // spike, 2026-11-22):
@@ -84,10 +99,12 @@
 //   substrate-config.js), a remote machine's own limits (remote-seats.js). A hibernated sandbox holds none.
 import { runsInVm } from './vm.js';
 import { claimsWorkstation, machineScriptRunning, scriptPlace } from './machine-steps.js';
-import { seatOf, targetOf, onSubstrateTarget } from './seat-kinds.js';
+import { seatOf, targetOf, onSubstrateTarget, lostWhy } from './seat-kinds.js';
 import { isDoneStep, isManual, stepOf } from './engine.js';
 import { moveTicket } from './moves.js';
-import { sandboxUse, SANDBOX_FAILURES_FILE } from './substrate-config.js';
+import { sandboxUse, clusterWhy, SANDBOX_FAILURES_FILE } from './substrate-config.js';
+import { workstationUsable } from './workstation-connection.js';
+import { BOOT_WAIT_SECONDS } from './run-targets.js';
 import { sandboxActor } from './machine-substrate.js';
 import { runTargetOf } from './machine.js';
 import { backoffDelay, held as heldFor, failed, BLOCK_AFTER } from './backoff.js';
@@ -228,6 +245,38 @@ async function stackFailed(ctx, project, ticket, variation, error) {
   });
 }
 
+// machineWhy(project, machine) — ASS-582: why a sandbox bring-up on the machine waits now rather than runs (null: it
+// runs): a workstation or cloud VM that cannot be used (lostWhy: its login, its setup, unreachable), or is not up yet
+// (stopped, starting, connecting, being set up: workstation-connection.js workstationUsable; control starts and connects
+// it for its seat, seats.js seatNeeds), or whose cluster is not ready (substrate-config.js clusterWhy); the Mac's cluster
+// not ready.
+export function machineWhy(project, machine) {
+  if (!machine) return null;
+  if (machine === 'mac') return clusterWhy(project, machine);
+  const entry = project.workstations?.[machine];
+  const lost = lostWhy(entry);
+  if (lost) return lost;
+  if (!workstationUsable(entry)) {
+    if (entry?.connected !== true) return entry?.state === 'stopped' ? 'it is stopped; control starts and connects it' : 'it is not connected yet; control connects it';
+    return 'it is being set up';
+  }
+  return clusterWhy(project, machine);
+}
+
+// NOT_CONNECTED — ASS-582: substrate:sandbox-up's refusal for a remote machine with no open connection (substrate.bash
+// substrate_connected), tried again after NOT_CONNECTED_RETRY, never counted.
+const NOT_CONNECTED = /has no open connection/;
+const NOT_CONNECTED_RETRY = 30e3;
+
+// macWaitOver(ctx, state, r, now) — ASS-582: the Mac's cluster waited for (not ready) since r.macWaitSince for longer
+// than remote-boot-wait-seconds: its bring-up runs (and counts) again, so a Mac cluster that never comes back sends its
+// tickets to Blocked rather than holding them for ever. (A remote machine's wait is bounded by its boot wait instead:
+// seats.js bootWaits counts it lost and its seats go elsewhere.)
+function macWaitOver(ctx, state, r, now) {
+  r.macWaitSince ??= now;
+  return now - r.macWaitSince > Number(state?.harness?.['remote-boot-wait-seconds'] ?? BOOT_WAIT_SECONDS) * 1000;
+}
+
 // sandboxWaits(ctx, state, project, ticket, variation, step, who, held) — whether the step's work waits for its sandbox
 // (see the module comment): false at once for a step on no substrate target, or one that works on no machine.
 // `held` — the step's backoff key (backoff.js ticketKey, runKey): a bring-up that fails is counted on it (ASS-537 AC4);
@@ -242,10 +291,21 @@ export function sandboxWaits(ctx, state, project, ticket, variation, step, who, 
   if (!host) return true;   // a remote target with no seat record yet: the next tick's seats
   if (r.stopping) return true;   // ASS-567: its stop (superviseSandboxes) still running: brought up once it has ended
   if (r.said !== host) { r.said = host; ctx.log(PHASE, `${who}: waits for its Substrate sandbox on ${host === 'mac' ? 'the Mac' : host}`); }
-  if (r.job || now < r.until) return true;
+  if (r.job) return true;
+  // ASS-582: its machine (or, its seat moved, the one its sandbox is on, whose work moves out first) not up, or its
+  // cluster not ready: the step waits, no failure counted (see the module comment).
+  const was = variation.sandbox?.machine;
+  const why = (was && was !== host && was !== 'mac' ? machineWhy(project, was) : null) ?? machineWhy(project, host);
+  const waitFor = was && was !== host && was !== 'mac' && machineWhy(project, was) ? was : host;
+  if (why && !(host === 'mac' && macWaitOver(ctx, state, r, now))) {
+    if (r.waitSaid !== `${waitFor} ${why}`) { r.waitSaid = `${waitFor} ${why}`; ctx.log(PHASE, `${ticket.key} ${variation.name}: waits for ${waitFor === 'mac' ? 'the Mac' : waitFor} to come up (${why})`); }
+    return true;
+  }
+  if (!why) r.macWaitSince = null;
+  if (r.waitSaid) { r.waitSaid = null; ctx.log(PHASE, `${ticket.key} ${variation.name}: ${host === 'mac' ? 'the Mac' : host} is up${why ? ` (its cluster waited for past remote-boot-wait-seconds: ${why})` : ''}; its sandbox is brought up`); }
+  if (now < r.until) return true;
   const hibernated = variation.sandbox?.machine === host && variation.sandbox?.state === 'stopped';
   r.job = (async () => {
-    const was = variation.sandbox?.machine;
     let out;
     try {
       if (was && was !== host) {
@@ -254,6 +314,12 @@ export function sandboxWaits(ctx, state, project, ticket, variation, step, who, 
       }
       out = JSON.parse(String(await ctx.cli(['substrate:sandbox-up', project.id, ticket.key, variation.name, host])).trim().split('\n').pop());
     } catch (error) {
+      // ASS-582: its connection closed under it (a machine stopping, a connection dropped): a wait, not a failure.
+      if (NOT_CONNECTED.test(String(error?.message ?? ''))) {
+        r.until = ctx.now().getTime() + NOT_CONNECTED_RETRY;
+        ctx.log(PHASE, `${ticket.key} ${variation.name}: waits for ${host === 'mac' ? 'the Mac' : host} to come up (its connection closed as its sandbox was brought up; not counted)`);
+        return;
+      }
       // ASS-568: crashed — replaced, not counted (see the module comment).
       if (!isCrash(error)) throw error;
       await replaceCrashed(ctx, project, ticket, variation, r, error);

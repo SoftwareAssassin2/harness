@@ -69,6 +69,11 @@ set -euo pipefail
 # listed no substrate target, so on a project whose run targets were substrate
 # ones alone every new ticket waited at it for ever (found by ASS-543).
 #
+# ASS-581: the Lima path below refuses (exit 1, naming why) for a project
+# whose run targets (dev-environments.run-targets, or its mode's) leave out
+# local-vm — a variation's old `vm` record from before run targets included:
+# no VM is made or re-created for it (vm:recreate, which runs this, likewise).
+#
 # ASS-435, ASS-468: a project whose dev-environments mode is workstation or
 # vm+workstation (dev-environments.bash) runs a variation's steps on its GCP
 # workstations, each step claiming a free one for its length and giving it
@@ -144,6 +149,13 @@ if [[ -z "$force_vm" && "$mode" != vm && ( -z "$recorded" || "$recorded" == work
   [[ "$mode" != workstation ]] || { echo "vm:create: $project runs its tickets on workstations alone, and $wsv_why" >&2; exit 1; }
   echo "vm:create: $wsv_why; $key $variation gets a VM" >&2
 fi
+# ASS-581: a Lima VM only for a project that runs on local-vm (its run targets, its own or its mode's). A variation's
+# `vm` record from before run targets is not a placement: no VM is made or re-created for it (nor with --vm).
+targets="$(dev_environments_run_targets vm:create "$project")" || exit 1
+grep -qxF local-vm <<< "$targets" || {
+  echo "vm:create: $project doesn't run on local-vm (its run targets: $(paste -sd ' ' - <<< "$targets")), so no Lima VM is made or re-created for $key $variation${recorded:+ (its old VM record $recorded is not used)}; its step runs on a seat of the project's own run targets" >&2
+  exit 1
+}
 vm="$(vm_name "$key" "$variation")" golden="golden-$project"
 mapfile -t repos < <(jq -r '.repositories[]?.url | (sub("\\.git$"; "") | split("/") | last), .' "$projects/$project/project.json")   # name, url, …
 

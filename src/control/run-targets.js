@@ -215,6 +215,13 @@ export function projectRunTargets(json) {
   return { targets: MODE_TARGETS[mode], derived: true, mode, docker, poolChoice };
 }
 
+// listsLocalVm(project) — ASS-581: whether the project (loadState's: its runTargets, else read from its json) lists
+// local-vm among its run targets, its own or as derived from its mode. Without it control never makes, re-creates or
+// starts a Lima VM for one of its variations (vm-lifecycle.js), whatever `vm` record a variation still carries from
+// before run targets (ASS-540): that record is not a placement. ASS-577's hand-over, which starts an existing old VM
+// only to move its branches out and stops it again, is the one exception (run-target-places.js readyTarget).
+export const listsLocalVm = project => (project?.runTargets ?? projectRunTargets(project?.json ?? {})).targets.includes('local-vm');
+
 // poolChoiceOf(step, project, list) — ASS-553: how the step picks among its candidates `list`: its own `pool-choice`,
 // else the project's (projectRunTargets' poolChoice), else remote-first when a candidate is a worktree target, else
 // first (see "Pool choice" above).

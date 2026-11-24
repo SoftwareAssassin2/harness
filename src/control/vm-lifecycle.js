@@ -168,6 +168,7 @@ import { holdOf, heldBy } from './dependencies.js';
 import { backoffDelay, held } from './backoff.js';
 import { runsInVm } from './vm.js';
 import { onMacTarget, onSubstrateTarget } from './seat-kinds.js';
+import { listsLocalVm } from './run-targets.js';
 // ticketKeyOf(project, variation) — the key of the ticket the variation is of.
 const ticketKeyOf = (project, variation) => project.tickets?.find(t => t.variations?.includes(variation))?.key;
 import { machineStatuses, runInMachine, machineOf, onWorkstation, runTargetOf } from './machine.js';
@@ -263,6 +264,7 @@ export const NEVER_UP = 'never-up';
 export function awaitsVm(ctx, state, project, variation, who) {
   if (onWorkstationVariation(variation) || !variation?.vm?.name) return false;
   if (onWorkstationSeat(project, variation)) return false;   // ASS-469: its steps run on its seat's workstation
+  if (!listsLocalVm(project)) return false;   // ASS-581: no Lima VM runs for it (vmsOf); its step waits for a seat on the project's targets instead
   const k = ticketKeyOf(project, variation);
   if (k != null && onSubstrateTarget(project, k, variation.name)) return false;   // ASS-535: its step runs in its sandbox (sandboxes.js sandboxWaits)
   const name = variation?.vm?.name;
@@ -392,8 +394,25 @@ function vmsOf(ctx, state, project) {
     const busy = state.assignments.some(a => a.project === project.id && a['work-item']?.toLowerCase() === e.ticket?.toLowerCase() && a.variation === e.variation);   // ASS-349
     vms.set(name, { ticket: e.ticket, variation: e.variation, run: false, kind: e['credential-kind'] ?? null, stamps: e['credential-stamps'] ?? null, unlinked, busy });
   }
+  const localVm = listsLocalVm(project);   // ASS-581
   for (const t of project.tickets) for (const v of t.variations ?? []) {
     if (!v.vm?.name || onWorkstationVariation(v)) continue;   // ASS-435: a workstation's machine is workstations.js's
+    // ASS-581: a project whose run targets leave out local-vm runs no Lima VM: a `vm` record left from before run
+    // targets (ASS-540) is not a placement — its VM is never made, re-created or started (a vm-hold neither), only
+    // stopped (once idle) or, at a `vm: released` step, deleted; the step waits for a seat on the project's own
+    // targets. Said once per variation, when its step would have run the VM.
+    if (!localVm) {
+      const use = vmUse(project.engines ?? state.engines, project.engineName, v), free = !v['is-deleted'] && !isHeld(t, v);
+      const busy = state.assignments.some(a => a.project === project.id && a['work-item'] === t.key && a.variation === v.name)
+        || machineScriptRunning(ctx, project.id, t.key, v.name);
+      if (free && (use === 'running' || v['vm-hold']) && !ctx.memory.warned.has(`old-vm/${project.id}/${t.key}/${v.name}`)) {
+        ctx.memory.warned.add(`old-vm/${project.id}/${t.key}/${v.name}`);
+        ctx.log(PHASE, `${t.key} ${v.name}: its old Lima VM record ignored — ${project.id} doesn't run on local-vm (its run targets: ${(project.runTargets?.targets ?? []).join(', ') || 'none'}); its step waits for a seat on them`);
+      }
+      vms.set(v.vm.name, { ...vms.get(v.vm.name), ticket: t.key, variation: v.name, state: v['harness-status']?.state, health: v['ai-feedback-long'] ?? null, hold: null,
+        run: false, waits: false, ready: false, dependsOn: [], busy, paused: undefined, keep: false, release: free && !pause && use === 'released', rateLimited: null, offVm: true });
+      continue;
+    }
     const use = vmUse(project.engines ?? state.engines, project.engineName, v), free = !v['is-deleted'] && !isHeld(t, v);
     const wants = free && use === 'running', release = free && !pause && use === 'released';
     const busy = state.assignments.some(a => a.project === project.id && a['work-item'] === t.key && a.variation === v.name)
@@ -569,7 +588,7 @@ async function match(ctx, id, vms, r, status, diskHold = false, stampEvery = CRE
     else if (vm.run && s == null) [args, did] = [['vm:create', id, vm.ticket, vm.variation], `recreated (${vm.ticket} ${vm.variation} at ${vm.state}; it had been deleted)`];
     else if (vm.run && s != null && s !== 'Running') [args, did] = [['vm:start', id, vm.ticket, vm.variation], `started (${vm.ticket} ${vm.variation} at ${vm.state}${vm.hold ? '; held for the operator' : ''}${vm.pendingEnd && vm.overridden ? `; for its step's end, pending on it` : ''})`];
     else if (!vm.run && s === 'Running') {
-      const why = `${vm.ticket} ${vm.variation} ${vm.state ? `at ${vm.state}` : vm.unlinked ? 'not linked to its variation' : 'is not in the sprint'}${vm.waits ? (vm.ready ? '; planned, waits for a build seat' : '; waits for a slot') : ''}${vm.dependsOn?.length ? `; waits on ${vm.dependsOn.join(', ')}` : ''}${vm.paused ? `; ${vm.paused === 'all' ? 'all projects are' : `${id} is`} paused` : ''}${vm.rateLimited ? `; rate-limited until ${vm.rateLimited.until}, no API fallback` : ''}${vm.seated ? '; it holds a workstation seat, its steps run there' : ''}${vm.idle ? '; its step does not use its machine, so it holds no seat' : ''}`;
+      const why = `${vm.ticket} ${vm.variation} ${vm.state ? `at ${vm.state}` : vm.unlinked ? 'not linked to its variation' : 'is not in the sprint'}${vm.waits ? (vm.ready ? '; planned, waits for a build seat' : '; waits for a slot') : ''}${vm.dependsOn?.length ? `; waits on ${vm.dependsOn.join(', ')}` : ''}${vm.paused ? `; ${vm.paused === 'all' ? 'all projects are' : `${id} is`} paused` : ''}${vm.rateLimited ? `; rate-limited until ${vm.rateLimited.until}, no API fallback` : ''}${vm.seated ? '; it holds a workstation seat, its steps run there' : ''}${vm.idle ? '; its step does not use its machine, so it holds no seat' : ''}${vm.offVm ? `; ${id} doesn't run on local-vm` : ''}`;
       if (vm.busy) {   // ASS-349: an assignment on its variation — its agent at work in it — holds the stop till it ends (ASS-527: or an in-machine script)
         if (!ctx.memory.warned.has(holding)) { ctx.memory.warned.add(holding); ctx.log(PHASE, `${id} ${name}: to stop (${why}); waits until its agent finishes`); }
         continue;

@@ -10,7 +10,8 @@
 //   entry in data/projects/<p>/substrate.json, which the dashboard reads and seat-budget.js / remote-seats.js count
 //   (AC5).
 // - A remote machine's cluster (a workstation's or a cloud VM's) is checked only while the machine is connected and
-//   set up: a check never starts a machine, nor keeps one from its idle stop. Its cluster's state lives under /home
+//   set up: a check never starts a machine, nor keeps one from its idle stop. ASS-582: checked at once after the machine
+//   connects (its connected-at newer than the last check), as its sandboxes wait for a check since then. Its cluster's state lives under /home
 //   there, so a restart keeps it, and workstation:setup (at every connect) starts its node again (AC3, AC7).
 // - The Mac's cluster is shared by the Mac projects: each project's control checks it for its own part (its
 //   WorkerPool, atespace and templates) and the whole; substrate:up's lock keeps two restarts apart.
@@ -78,7 +79,10 @@ async function keep(ctx, state, project, entries, r) {
     const now = ctx.now().getTime();
     // ASS-538: its egress credentials kept in step with the keychain and the allowlist, on every pass.
     if (e.host === MAC || usable(project, e.machine)) await keepCredentials(ctx, state, project, e);
-    if (now - s.checkedAt < every) continue;
+    // ASS-582: a remote machine (re)connected since its last check is checked at once, not up to CHECK_EVERY later: its
+    // sandboxes wait for a check newer than the connection (substrate-config.js clusterWhy).
+    const connectedAt = e.host === MAC ? NaN : Date.parse(project.workstations?.[e.machine]?.['connected-at'] ?? '');
+    if (now - s.checkedAt < every && !(Number.isFinite(connectedAt) && s.checkedAt < connectedAt)) continue;
     if (e.host !== MAC && !usable(project, e.machine)) { s.broken = 0; continue; }
     s.checkedAt = now;
     let h;

@@ -312,3 +312,25 @@ test('ASS-234 AC3: vm:create recreates a reused VM cloned before the golden imag
   assert.equal(JSON.parse(r.stdout).created, true);
   assert.equal(clones(), 3);
 });
+
+test('ASS-581 AC4: vm:create refuses to make or re-create a Lima VM for a project whose run targets leave out local-vm, naming why — the variation\'s old vm record not used, --vm or not; nothing cloned or started', async () => {
+  const l = lima();
+  l.mount();
+  edit(join(l.f.dir, 'projects', 'p', 'project.json'), p => { p['dev-environments'] = { 'run-targets': ['local-substrate', 'local-worktree'], substrate: { clusters: [{ machine: 'mac' }] } }; });
+  const sprint = join(l.f.dir, 'projects', 'p', 'sprints', 'sprint-10', 'sprint.json');
+  edit(sprint, s => { s.features[0].variations[0].vm = { name: 'abc-3-a', 'created-at': '2026-10-01T00:00:00Z' }; delete s.features[0].variations[0]['run-target']; });
+  for (const extra of [[], ['--vm']]) {
+    for (const present of [false, true]) {
+      if (present) l.v.instance('abc-3-a', 'Stopped'); else rmSync(join(l.v.instances, 'abc-3-a'), { recursive: true, force: true });
+      const before = l.v.calls().length;
+      await assert.rejects(l.cli('vm:create', 'p', 'ABC-3', 'A', ...extra),
+        /vm:create: p doesn't run on local-vm \(its run targets: local-substrate local-worktree\), so no Lima VM is made or re-created for ABC-3 A \(its old VM record abc-3-a is not used\)/);
+      assert.ok(!l.v.calls().slice(before).some(c => ['clone', 'start'].includes(c.argv?.[0])), `${extra} ${present}: nothing cloned or started`);
+    }
+  }
+  assert.deepEqual(l.f.variation('A').vm, { name: 'abc-3-a', 'created-at': '2026-10-01T00:00:00Z' }, 'the record left as it was');
+  // The same project listing local-vm makes it as ever.
+  edit(join(l.f.dir, 'projects', 'p', 'project.json'), p => { p['dev-environments']['run-targets'] = ['local-substrate', 'local-vm', 'local-worktree']; });
+  rmSync(join(l.v.instances, 'abc-3-a'), { recursive: true, force: true });
+  assert.equal(JSON.parse((await l.cli('vm:create', 'p', 'ABC-3', 'A')).stdout).created, true);
+});

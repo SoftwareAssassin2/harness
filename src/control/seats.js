@@ -59,7 +59,8 @@ import { statusIn } from './engine.js';
 import { idleAt } from './vm-lifecycle.js';
 import { seatCapacity, keepSeats, placeSeats, seatWords, isRemoteSeat, lostWhy, SEATS_FILE } from './seat-kinds.js';
 import { workstationUsable } from './workstation-connection.js';
-import { BOOT_WAIT_SECONDS } from './run-targets.js';
+import { BOOT_WAIT_SECONDS, isSubstrateTarget } from './run-targets.js';
+import { clusterWhy } from './substrate-config.js';
 import { stepOnMachine } from './workstation-steps.js';
 import { removeDoneWorktrees } from './run-target-places.js';
 import { roomWords } from './pool-choice.js';
@@ -137,7 +138,9 @@ export async function assignSeats(ctx, state) {
 // taken out of its seats (keepSeats, logged) and placed again — the next remote machine with room, else the Mac — and
 // no new one goes to it; control goes on starting it (seatNeeds: lost with tickets in progress), and once it is up its
 // seats are back. A machine that cannot be used for another reason (lostWhy: its login, its setup, unreachable) is
-// lost at once, as before. Logged once each way. ASS-575: the waits are recorded each tick they change in the project's
+// lost at once, as before. ASS-582: for a substrate seat held on it, a machine is up only once its Substrate cluster is
+// ready too (substrate-config.js clusterWhy), so a cluster still starting after the boot is waited for within the same
+// boot wait, and past it the machine is lost as above (until its cluster is ready). Logged once each way. ASS-575: the waits are recorded each tick they change in the project's
 // boot-waits.json (recordBootWaits, boot-waits.js), which the dashboard reads; a control starting afresh takes the
 // waits it finds there up again, so a restart doesn't give a late machine a new full wait.
 export function bootWaits(ctx, state, project) {
@@ -147,7 +150,12 @@ export function bootWaits(ctx, state, project) {
   for (const w of project.devEnvironments?.workstations ?? []) {
     const k = `${project.id} ${w.id}`, entry = project.workstations?.[w.id];
     const held = (project.seats ?? []).some(s => isRemoteSeat(s) && s.workstation === w.id);
-    if (workstationUsable(entry) || lostWhy(entry)) {
+    // ASS-582: a machine up whose Substrate cluster is not ready yet (after its boot: not checked since it connected,
+    // its node starting, …) is not up for a substrate seat held on it (its sandbox waits: sandboxes.js machineWhy) —
+    // and stays so once its wait was over for it, until the cluster is ready.
+    const substrateHeld = (project.seats ?? []).some(s => isRemoteSeat(s) && s.workstation === w.id && isSubstrateTarget(s.target));
+    const cluster = workstationUsable(entry) && !lostWhy(entry) && (substrateHeld || m.get(k)?.cluster) ? clusterWhy(project, w.id) : null;
+    if ((workstationUsable(entry) && !cluster) || lostWhy(entry)) {
       if (m.get(k)?.over && workstationUsable(entry)) ctx.log(PHASE, `${w.id} is up: its seats are back`);
       m.delete(k);
       continue;
@@ -158,8 +166,8 @@ export function bootWaits(ctx, state, project) {
     // so — never from an older seat's since: a machine that stops under a seat held for long gets its full wait.
     const since = was?.since ?? now;
     const late = was?.over || now - since > wait;
-    if (late && !was?.over) ctx.log(PHASE, `${w.id} did not come up within ${Math.round(wait / 1000)} s (remote-boot-wait-seconds) of a step being placed on it: its steps go to the next remote machine with room, else the Mac, until it is up; control goes on starting it`);
-    m.set(k, { since, over: late });
+    if (late && !was?.over) ctx.log(PHASE, `${w.id} did not come up within ${Math.round(wait / 1000)} s (remote-boot-wait-seconds) of a step being placed on it${cluster ? ` (${cluster})` : ''}: its steps go to the next remote machine with room, else the Mac, until it is up; control goes on starting it`);
+    m.set(k, { since, over: late, ...(cluster ? { cluster: true } : {}) });
     if (late) over[w.id] = overWhy(wait / 1000);
   }
   project.bootWaitOver = over;
@@ -187,7 +195,7 @@ function bootMemory(ctx, state) {
   for (const p of state.projects ?? []) {
     for (const [id, w] of Object.entries(loadBootWaits(join(ctx.paths.projects, p.id))?.machines ?? {})) {
       const since = Date.parse(w?.since);
-      if (Number.isFinite(since)) m.set(`${p.id} ${id}`, { since, over: w.over === true });
+      if (Number.isFinite(since)) m.set(`${p.id} ${id}`, { since, over: w.over === true, ...(w.cluster ? { cluster: true } : {}) });
     }
   }
   return m;

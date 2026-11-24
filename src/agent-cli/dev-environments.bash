@@ -16,6 +16,7 @@
 #   dev_environments_mode <command> <project>          # vm, vm+workstation or workstation
 #   dev_environments_workstations <command> <project>  # each workstation as one JSON line, in list order: { id, gcp-project, region, cluster, config[, gcloud-config] }
 #   dev_environments_workstation <command> <project> <id>   # that workstation's JSON line; fails when the list has none
+#   dev_environments_run_targets <command> <project>   # ASS-581: its run targets, one per line (its own list, or its mode's)
 #
 # Each fails, naming <command> and the project, without the project or when
 # its dev-environments is wrong (each bad field named). A gcloud-config comes
@@ -27,6 +28,12 @@ dev_environments_projects="${PROJECTS_DIR:-$dev_environments_here/../../data/pro
 dev_environments() {
   local out
   out="$(node "$dev_environments_here/dev-environments.js" "$dev_environments_projects" "$2" 2>&1)" || { echo "$1: project $2: $out" >&2; return 1; }
+  echo "$out"
+}
+
+dev_environments_run_targets() {
+  local out
+  out="$(node "$dev_environments_here/dev-environments.js" "$dev_environments_projects" "$2" --run-targets 2>&1)" || { echo "$1: project $2: $out" >&2; return 1; }
   echo "$out"
 }
 

@@ -590,7 +590,12 @@ Lima VM is stopped between steps, so a hand-over that reads from it (or brings
 the branch into it) starts it with `vm:start`, does its work and stops it again
 (ASS-577); while the Mac is out of memory the step waits instead (no failure
 counted). A VM that no longer exists is said so, the branches are taken from
-the forge, and what could not be recovered is logged. A step's agent on a Mac
+the forge, and what could not be recovered is logged. That start is the only one a
+project whose run targets leave out `local-vm` ever gets (ASS-581): for such a
+project control never makes, re-creates or starts a Lima VM, whatever old `vm`
+record a variation carries from before run targets (Blocked's runs included);
+its steps wait for a seat on the project's own targets, an old VM still running
+is stopped once idle, and `vm:create` refuses, naming why. A step's agent on a Mac
 target runs on the host in that folder, and its scripts are told
 `HARNESS_RUN_TARGET`, so commands that fall back to the host work there.
 `seats.json` records each holder's `target`, and the Mac-target holders in its
@@ -1349,7 +1354,16 @@ the project's active sandboxes.
     again with the step's backoff and sends the ticket to Blocked after 3 in a
     row. A sandbox that had crashed (after a Docker or node restart) is not
     one of these: control replaces it (ASS-568, "Crashed sandboxes" below);
-    only a replacement that cannot be made counts.
+    only a replacement that cannot be made counts. Nor is a bring-up on a
+    machine not up yet (ASS-582): while the workstation or cloud VM is
+    stopped, starting, connecting or being set up, or its cluster is not ready
+    (not checked since the machine connected, starting, missing, Docker down,
+    or broken for a problem control's restart fixes), the step waits, nothing
+    counted, logged once as `sandbox <KEY> <var>: waits for <machine> to come
+    up (<why>)`. The wait is the machine's boot wait: past
+    `remote-boot-wait-seconds` it counts as lost and the step goes elsewhere
+    by pool choice. The Mac's cluster has no boot wait: past the same time its
+    bring-up runs, and counts, again.
   - A nested Lima VM (Substrate's microVM path) is not watched: the harness
     runs its clusters on gVisor only.
 - `project:credentials-status` adds `substrate`: what the clusters need

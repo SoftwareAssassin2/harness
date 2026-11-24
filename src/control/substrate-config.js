@@ -204,6 +204,36 @@ export function loadSandboxImages(dir, read = f => JSON.parse(readFileSync(f, 'u
 export const imageBuildFailed = image => Boolean(image?.run?.['ended-at'] && image.run['exit-code'] != null && image.run['exit-code'] !== 0
   && image.run.hash !== image.label?.hash);
 
+// clusterWhy(project, machine) — ASS-582: why a sandbox bring-up on the machine's cluster waits rather than runs now (and
+// so counts no failure), from its last check (project.substrate, substrate.json) — null when nothing says to wait:
+// - a remote machine (a workstation or cloud VM) whose cluster has not been checked since the machine last connected
+//   (its workstations.json connected-at): a check from before it stopped says nothing of its cluster now, and its node
+//   takes a few minutes to come back after a boot (substrate.js checks it at once after a connect);
+// - a check that says `starting` (its node young), `missing` (control makes it), `docker-down`, or `broken` with a
+//   problem control's restart fixes (a problem's `repair`: proxy ARP off, pods not ready, the node or the cluster).
+// A cluster broken only for problems no restart fixes (Docker's memory, a template with no golden snapshot) does not
+// wait: its bring-up runs and fails as before, counted, so the ticket goes to Blocked rather than waiting for ever.
+// Nothing waits while the project's background work is off (no check is made). The Mac's cluster with no check
+// recorded yet runs too (as before: a test's context, a project just set up).
+export function clusterWhy(project, machine) {
+  if (project?.json?.['background-work'] === false) return null;   // no checks made (substrate.js), so none to wait for
+  const live = project?.substrate?.[machine];
+  if (machine !== MAC) {
+    const connectedAt = Date.parse(project?.workstations?.[machine]?.['connected-at'] ?? '');
+    const checkedAt = Date.parse(live?.['checked-at'] ?? '');
+    if (!live || !Number.isFinite(checkedAt)) return 'its Substrate cluster not checked yet';
+    if (Number.isFinite(connectedAt) && checkedAt < connectedAt) return 'its Substrate cluster not checked since it connected';
+  }
+  if (!live) return null;
+  const problems = (Array.isArray(live.problems) ? live.problems : []).map(p => `${p?.what}: ${p?.why}`).join('; ');
+  const said = problems ? `: ${problems}` : '';
+  if (live.state === 'starting') return `its Substrate cluster is starting${said}`;
+  if (live.state === 'missing') return 'its Substrate cluster is not there yet (control makes it)';
+  if (live.state === 'docker-down') return `Docker is not answering there${said}`;
+  if (live.state === 'broken' && (live.problems ?? []).some(p => p?.repair === true)) return `its Substrate cluster is not ready (control restarts it)${said}`;
+  return null;
+}
+
 // sandboxUse(live) — ASS-535 AC3: the project's sandboxes on the cluster as its last check measured them
 // (substrate:health's usage.sandbox-use: each one's worker pod cgroup, its rootfs writes included), [{ actor, state,
 // memory (bytes), cpu (percent of one core) }]; [] with none measured.

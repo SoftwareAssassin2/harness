@@ -7,7 +7,8 @@
 //
 // One entry per workstation or cloud VM a step was placed on while it was not up (or that control first saw so while
 // holding seats): `since` is when its wait began, `ends-at` when it runs out (since + remote-boot-wait-seconds), `over`
-// whether control already counts it as lost (project.bootWaitOver, seat-kinds.js seatCapacity). Pure helpers, shared by
+// whether control already counts it as lost (project.bootWaitOver, seat-kinds.js seatCapacity), and `cluster: true` when
+// it is up but waited for because its Substrate cluster is not ready yet for a sandbox seat on it (ASS-582). Pure helpers, shared by
 // control (seats.js) and the dashboard (tui/load.js, tui/screens/shared.js planProject, the n screen's cards).
 import { existsSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -24,7 +25,7 @@ export const overWhy = seconds => `it did not come up within ${Math.round(second
 // bootWaitsJson(waits, seconds) — the file's content for a project: `waits` is Map id → { since (ms), over }.
 export function bootWaitsJson(waits, seconds) {
   const machines = {};
-  for (const [id, w] of waits) machines[id] = { since: new Date(w.since).toISOString(), 'ends-at': new Date(w.since + seconds * 1000).toISOString(), over: w.over === true };
+  for (const [id, w] of waits) machines[id] = { since: new Date(w.since).toISOString(), 'ends-at': new Date(w.since + seconds * 1000).toISOString(), over: w.over === true, ...(w.cluster ? { cluster: true } : {}) };
   return { 'wait-seconds': seconds, machines };
 }
 
@@ -53,7 +54,7 @@ export function loadBootWaits(dir) {
 // placeable meanwhile).
 export function bootWaitOf(file, entry, id, now = Date.now()) {
   const w = file?.machines?.[id];
-  if (!w || workstationUsable(entry) || lostWhy(entry)) return null;
+  if (!w || (workstationUsable(entry) && !w.cluster) || lostWhy(entry)) return null;   // ASS-582: up, its cluster not ready
   const seconds = Number(file['wait-seconds'] ?? BOOT_WAIT_SECONDS), since = Date.parse(w.since);
   if (!Number.isFinite(since)) return null;
   const endsAt = Date.parse(w['ends-at'] ?? '') || since + seconds * 1000;

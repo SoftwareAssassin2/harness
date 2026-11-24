@@ -21,7 +21,7 @@ import { confineHostAgent, GUARD } from '../agents/confinement.js';
 import { sandboxSettings, isSandboxedTarget, remoteSandboxProblem, remoteAgentSh, sandboxWhereText, macSandboxProblem, unsandboxedSettings, unsandboxedWhereText } from '../agents/worktree-sandbox.js';
 import { allowlist } from '../substrate/egress.js';
 import { declaredCredentials } from './vm-credentials.js';
-import { isRemoteWorktree } from './run-targets.js';
+import { isRemoteWorktree, listsLocalVm } from './run-targets.js';
 import { memoryMcpConfig, memoryPort, memoryAnswers } from '../agents/memory.js';
 import { accountOf, kindOfAccount } from '../agents/account.js';
 import { sessionDir } from '../agents/session.js';
@@ -215,7 +215,13 @@ export const codeFolder = (project, vm, folder, repository) => (!vm ? folder : r
 function vmFor(state, project, step, key, variation) {
   if (!runsOnMachine(project, key, variation, step)) return null;
   const found = project.tickets.find(t => t.key === key)?.variations?.find(v => v.name === variation && !v['is-deleted']);
-  return vmOf(found, `${key} ${variation} ${step.id}`, targetOf(project, key, variation) ?? undefined);
+  const target = targetOf(project, key, variation) ?? undefined, machine = vmOf(found, `${key} ${variation} ${step.id}`, target);
+  // ASS-581: never into a Lima VM its project doesn't run on (an old `vm` record from before run targets, with no seat
+  // naming another place): held, and tried again once a seat on the project's targets is placed.
+  if (!listsLocalVm(project) && target == null && machine === found?.vm?.name && (found.vm.kind ?? 'lima') === 'lima' && !found.workstation?.name) {
+    throw new Error(`${key} ${variation} ${step.id} has no seat on ${project.id}'s run targets yet, and ${project.id} doesn't run on local-vm: its old Lima VM ${machine} is not used`);
+  }
+  return machine;
 }
 
 // ticketFolderOf(ctx, machine) — the ticket folder on the Mac a workstation
