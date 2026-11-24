@@ -11,7 +11,7 @@ import assert from 'node:assert/strict';
 import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import { createServer } from 'node:net';
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync, chmodSync, readdirSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync, chmodSync, readdirSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { parseServices, validateServices, normalizeServices } from '../../src/substrate/services.js';
@@ -242,6 +242,7 @@ test('AC3: the CA is trusted (system store, NODE_EXTRA_CA_CERTS) once its servic
     assert.deepEqual(last(r.out).app, { url: `http://127.0.0.1:${port + 1}/`, status: 302 });
     assert.equal(readFileSync(join(root, 'usr', 'local', 'share', 'ca-certificates', 'sandbox-local-ca.crt'), 'utf8'), '-----BEGIN CERTIFICATE----- toy\n');
     assert.equal(readFileSync(join(root, 'etc', 'profile.d', 'sandbox-ca.sh'), 'utf8'), 'export NODE_EXTRA_CA_CERTS=/usr/local/share/ca-certificates/sandbox-local-ca.crt\n');
+    assert.ok(!existsSync(join(root, 'etc', 'ssl', 'sandbox-node-extra-ca.pem')), 'no gateway bundle: no combined file (ASS-588)');
     // An app that never answers fails the start, naming its URL.
     await stopAll(root);
     d.app = { url: 'http://127.0.0.1:9/', after: ['app'], 'ready-seconds': 2 };
@@ -249,6 +250,40 @@ test('AC3: the CA is trusted (system store, NODE_EXTRA_CA_CERTS) once its servic
     const r2 = await services(root, ['up']);
     assert.equal(r2.code, 3);
     assert.match(last(r2.out).failed.why, /^http:\/\/127\.0\.0\.1:9\/ did not answer within 2s/);
+  } finally { await stopAll(root); }
+});
+
+test('ASS-588 AC1, AC2: with the egress gateway\'s bundle readable, NODE_EXTRA_CA_CERTS names one file holding the gateway bundle then the local CA, rewritten each start; the bundle gone, back to the local CA alone', async () => {
+  const d = declaration();
+  const port = await freePort();
+  d.services[0].start = `mkdir -p "$HARNESS_VM_ROOT/var/lib/proxy" && echo "-----BEGIN CERTIFICATE----- toy" > "$HARNESS_VM_ROOT/var/lib/proxy/root.crt" && exec node "$HARNESS_VM_ROOT/opt/toy/toy.js" app`;
+  d.ca = { cert: '/var/lib/proxy/root.crt', after: 'app' };
+  const root = sandboxRoot(d, port);
+  const bundle = join(root, 'run', 'ate', 'egress-trust-bundle', 'trust-bundle.pem');
+  const combined = join(root, 'etc', 'ssl', 'sandbox-node-extra-ca.pem');
+  const profile = join(root, 'etc', 'profile.d', 'sandbox-ca.sh');
+  mkdirSync(dirname(bundle), { recursive: true });
+  writeFileSync(bundle, '-----BEGIN CERTIFICATE----- gateway');   // no trailing newline: the two must not run together
+  try {
+    const r = await services(root, ['up']);
+    assert.equal(r.code, 0, r.err);
+    assert.equal(readFileSync(profile, 'utf8'), 'export NODE_EXTRA_CA_CERTS=/etc/ssl/sandbox-node-extra-ca.pem\n');
+    const both = readFileSync(combined, 'utf8');
+    assert.match(both, /^-----BEGIN CERTIFICATE----- gateway\n+-----BEGIN CERTIFICATE----- toy\n$/, both);
+    assert.equal(statSync(combined).mode & 0o777, 0o644);
+    assert.equal(readFileSync(join(root, 'usr', 'local', 'share', 'ca-certificates', 'sandbox-local-ca.crt'), 'utf8'), '-----BEGIN CERTIFICATE----- toy\n');
+    // A second start rewrites it, never appends.
+    await stopAll(root);
+    assert.equal((await services(root, ['up'])).code, 0);
+    assert.equal(readFileSync(combined, 'utf8'), both);
+    assert.equal(readFileSync(combined, 'utf8').match(/----- toy/g).length, 1);
+    // The bundle gone: the local CA alone, the stale combined file removed.
+    await stopAll(root);
+    rmSync(bundle);
+    const r3 = await services(root, ['up']);
+    assert.equal(r3.code, 0, r3.err);
+    assert.equal(readFileSync(profile, 'utf8'), 'export NODE_EXTRA_CA_CERTS=/usr/local/share/ca-certificates/sandbox-local-ca.crt\n');
+    assert.ok(!existsSync(combined), 'the stale combined file is removed');
   } finally { await stopAll(root); }
 });
 
