@@ -16,8 +16,12 @@ import (
 // zombie's pid for a running service. As a child subreaper (a no-op as PID 1; elsewhere, a test's server, the same
 // adoption), on each SIGCHLD and every 5 s it waits on each zombie child it did not start itself — by pid, never
 // wait4(-1), so a job's own exit status stays its cmd.Wait's (tracked, under startMu).
+// prSetChildSubreaper — PR_SET_CHILD_SUBREAPER: the same on every arch, but syscall defines it only on some (not
+// amd64/386), and an amd64 image builds this file.
+const prSetChildSubreaper = 0x24
+
 func startReaper() {
-	syscall.RawSyscall(syscall.SYS_PRCTL, syscall.PR_SET_CHILD_SUBREAPER, 1, 0)
+	syscall.RawSyscall(syscall.SYS_PRCTL, prSetChildSubreaper, 1, 0)
 	chld := make(chan os.Signal, 1)
 	signal.Notify(chld, syscall.SIGCHLD)
 	go func() {
