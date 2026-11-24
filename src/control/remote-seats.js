@@ -42,9 +42,17 @@
 // - ASS-535 AC3: on a machine whose tickets run in Substrate sandboxes (the project lists its kind's substrate target —
 //   workstation-substrate, cloud-vm-substrate — before the plain one, and has a cluster there: remoteSandboxes), a
 //   ticket's use is its sandbox's, inside the cluster: the cluster's fixed part alone is taken out of the use shared over
-//   the tickets (its sandboxes' measured use, rootfs writes included, is theirs), the floor is a sandbox's expected use
-//   (substrate-config.js sandboxNeed), and a seat holder whose sandbox runs is in the reading (it never claims the
-//   machine's folder). A hibernated sandbox holds no seat (ASS-527).
+//   the tickets (its sandboxes' measured use, rootfs writes included, is theirs), the floor is a sandbox's expected use,
+//   and a seat holder whose sandbox runs is in the reading (it never claims the machine's folder). A hibernated sandbox
+//   holds no seat (ASS-527).
+// - ASS-574: that expected use is the Mac's estimate since ASS-570 (ticket-estimate.js estimateFor), one per machine:
+//   only working sandboxes' readings on that machine's cluster are samples (an idle, starting, resuming, hibernating
+//   or hibernated one never lowers it), floored at the machine's cluster entry's sandbox-memory-gib /
+//   sandbox-cpu-percent, moved at most ×1.1 a tick, kept across restarts in ticket-estimate-<machine>.json. Before, it
+//   was the average of every sandbox measured running (substrate-config.js sandboxNeed), idle or not. The machine's
+//   measured use per ticket is still blended in above it, as before. remote-seats.json's per-ticket and the `remote …`
+//   log line say where it came from: `defaults` / `from N working samples` (and `measured` when the machine's own use
+//   per ticket is above the estimate), or `a VM's` on a machine without sandboxes (its floor a Lima VM's).
 // - ASS-537 AC3: a hibernated sandbox uses no memory or CPU (neither in the reading nor a seat); what it keeps counts
 //   where it lives: the project's WorkerPool's warm workers' memory requests are part of the cluster's reserve
 //   (substrate-config.js warmPool, in remoteLoad), and its snapshots' disk against the cluster's (snapshotDisk): a
@@ -85,8 +93,10 @@ import { DEFAULT_BUDGET, DEFAULT_CPU_FLOOR } from './seat-budget.js';
 import { DEFAULT_FLOOR_GIB, gib } from './host-memory.js';
 import { holdersOf } from './workstation-connection.js';
 import { MODES_WITH_WORKSTATIONS, isRemoteSeat } from './seat-kinds.js';
-import { remoteLoad, clusterEntry, sandboxNeed, sandboxUse, snapshotDisk } from './substrate-config.js';
+import { remoteLoad, clusterEntry, sandboxUse, snapshotDisk } from './substrate-config.js';
 import { sandboxActor } from './machine-substrate.js';
+import { estimateFor } from './ticket-estimate.js';
+import { variationBusy } from './sandboxes.js';
 
 const PHASE = 'remote';
 const GIB = 1024 ** 3;
@@ -216,13 +226,15 @@ export async function budgetRemote(ctx, state) {
       const was = m.diskHeld.get(k) ?? project.remoteBudget?.[w.id]?.disk?.held === true;
       const hold = diskHold({ disk: work, levels, was, measured, now });
       logDiskHold(ctx, m, k, work, levels, hold, on.length, measured, was);
-      const r = machineSeats({ entry, limits, held: on.length, pending, harness: state.harness ?? {}, now, reserved, floor: sandboxed ? sandboxNeed(clusterEntry(project, w.id), live) : null, diskFull: Boolean(sandboxed && disk?.full), diskHeld: hold.held });
+      // ASS-574: a sandbox's expected use from this machine's working sandboxes alone, steadied (ticket-estimate.js).
+      const need = sandboxed ? estimateFor(ctx, state, project, clusterEntry(project, w.id), { own: true, machine: w.id, isBusy: (key, variation) => variationBusy(ctx, state, project.id, key, variation) }) : null;
+      const r = machineSeats({ entry, limits, held: on.length, pending, harness: state.harness ?? {}, now, reserved, floor: need && { memory: need.memory, cpu: need.cpu }, diskFull: Boolean(sandboxed && disk?.full), diskHeld: hold.held });
       body[w.id] = {
         seats: r.seats, held: on.length, pending, state: r.state, why: r.why, admit: r.admit, limits,
         ...(r.state === 'measured' ? {
           'memory-used-bytes': Math.round(r.used.memory), 'memory-budget-bytes': Math.round(r.budget.memory),
           'cpu-percent': round(r.used.cpu), 'cpu-budget-percent': round(r.budget.cpu),
-          'per-ticket': { 'memory-bytes': Math.round(r.per.memory), 'cpu-percent': round(r.per.cpu) },
+          'per-ticket': { 'memory-bytes': Math.round(r.per.memory), 'cpu-percent': round(r.per.cpu), ...perSource(need, r.per) },
         } : {}),
         ...(reserved ? { substrate: { 'memory-bytes': Math.round(reserved.memory), 'cpu-percent': round(reserved.cpu), running: reserved.running,
           'pool-memory-bytes': Math.round(reserved.pool ?? 0),   // ASS-537 AC3
@@ -240,17 +252,37 @@ export async function budgetRemote(ctx, state) {
 
 const round = n => Math.round(n * 10) / 10;
 
+// perSource(need, per) — ASS-574: where a machine's per-ticket figure came from, as seat-budget.json's (ASS-570): a
+// machine of sandboxes' estimate's 'working-samples' (how many) or 'defaults' (its floor), that floor and the target
+// it moves towards, and `measured` when the machine's own use per ticket is above the estimate (so it is the figure);
+// a plain machine's 'vm' (its tickets' measured use, at least a Lima VM's floor).
+function perSource(need, per) {
+  if (!need) return { source: 'vm' };
+  return { source: need.source, samples: need.samples,
+    floor: { 'memory-bytes': Math.round(need.floor.memory), 'cpu-percent': round(need.floor.cpu) },
+    target: { 'memory-bytes': Math.round(need.target.memory), 'cpu-percent': round(need.target.cpu) },
+    measured: per.memory > need.memory + 1 || per.cpu > need.cpu + 1e-6 };
+}
+
+// fromWhere(per) — ASS-574: where the per-ticket figure came from, for the log line (seat-budget.js's wording).
+function fromWhere(per) {
+  const from = per.source === 'working-samples' ? `from ${per.samples} working sample${per.samples === 1 ? '' : 's'}`
+    : per.source === 'defaults' ? `defaults${per.samples ? ` (its ${per.samples} working sample${per.samples === 1 ? '' : 's'} under them)` : ''}`
+    : "a VM's";
+  return per.measured ? `${from}; its measured use per ticket above it` : from;
+}
+
 // logChange(ctx, m, project, w, b) — a machine's seats, reading state or whether it takes one more, logged once each
 // time one changes; a failed reading so once per outage.
 function logChange(ctx, m, project, w, b) {
-  const k = `${project} ${w.id}`, key = JSON.stringify([b.seats, b.state, b.admit]);
+  const k = `${project} ${w.id}`, key = JSON.stringify([b.seats, b.state, b.admit, b['per-ticket']?.source ?? null, b['per-ticket']?.samples ?? null, b['per-ticket']?.measured ?? null]);
   if (m.logged.get(k) === key) return;
   const was = m.logged.get(k);
   m.logged.set(k, key);
   const what = `${project} ${w.id}`;
   if (b.state === 'unread') { ctx.log(PHASE, `${what}: can't read its memory or CPU (${b.why}) — no new tickets on it until it can; the ${b.held} it holds keep running`); return; }
   if (b.state === 'unmeasured') { if (was) ctx.log(PHASE, `${what}: not measured (${b.why}): ${b.seats} seat${b.seats === 1 ? '' : 's'} (those it holds, at least one) until it is`); return; }
-  ctx.log(PHASE, `${what}: ${b.seats} seat${b.seats === 1 ? '' : 's'} — holds ${b.held}; memory ${gib(b['memory-used-bytes'])} of ${gib(b['memory-budget-bytes'])} GiB, CPU ${b['cpu-percent']}% of ${b['cpu-budget-percent']}% (its limits ${b.limits.memory}% and ${b.limits.cpu}%); one ticket ${gib(b['per-ticket']['memory-bytes'])} GiB, ${b['per-ticket']['cpu-percent']}% CPU: ${b.why}`);
+  ctx.log(PHASE, `${what}: ${b.seats} seat${b.seats === 1 ? '' : 's'} — holds ${b.held}; memory ${gib(b['memory-used-bytes'])} of ${gib(b['memory-budget-bytes'])} GiB, CPU ${b['cpu-percent']}% of ${b['cpu-budget-percent']}% (its limits ${b.limits.memory}% and ${b.limits.cpu}%); one ticket ${gib(b['per-ticket']['memory-bytes'])} GiB, ${b['per-ticket']['cpu-percent']}% CPU (${fromWhere(b['per-ticket'])}): ${b.why}`);
 }
 
 // logDiskHold(ctx, m, k, disk, levels, hold, held, measured, was) — ASS-557 AC1: a machine's disk hold, logged once when it starts and
@@ -268,7 +300,7 @@ function logDiskHold(ctx, m, k, disk, levels, hold, held, measured, was) {
 // at most once a minute for the figures.
 function record(ctx, m, id, body, now) {
   const file = remoteSeatsFile(ctx.paths.projects, id);
-  const key = JSON.stringify(Object.entries(body).map(([w, b]) => [w, b.seats, b.held, b.state, b.disk?.held]));
+  const key = JSON.stringify(Object.entries(body).map(([w, b]) => [w, b.seats, b.held, b.state, b.disk?.held, b['per-ticket']?.source ?? null, b['per-ticket']?.samples ?? null]));
   const was = m.written.get(id);
   if (was && was.key === key && now - was.at < 60e3 && existsSync(file)) return;
   try {

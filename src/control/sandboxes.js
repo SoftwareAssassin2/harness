@@ -329,7 +329,7 @@ function resumedMeanwhile(project, s) {
 
 // variationBusy(ctx, state, projectId, key, name) — an agent or an in-machine script of the variation runs now (ASS-570:
 // also what makes a sandbox's reading a working sample for the seat budget, ticket-estimate.js).
-export const variationBusy = (ctx, state, projectId, key, name) => state.assignments.some(a => a.project === projectId && String(a['work-item']).toUpperCase() === String(key).toUpperCase() && a.variation === name)
+export const variationBusy = (ctx, state, projectId, key, name) => (state.assignments ?? []).some(a => a.project === projectId && String(a['work-item']).toUpperCase() === String(key).toUpperCase() && a.variation === name)
   || machineScriptRunning(ctx, projectId, key, name);
 
 // superviseSandboxes(ctx, state) — the tick's phase (see the module comment).

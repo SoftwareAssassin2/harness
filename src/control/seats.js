@@ -63,6 +63,7 @@ import { BOOT_WAIT_SECONDS } from './run-targets.js';
 import { stepOnMachine } from './workstation-steps.js';
 import { removeDoneWorktrees } from './run-target-places.js';
 import { roomWords } from './pool-choice.js';
+import { overWhy, bootWaitsJson, writeBootWaits, loadBootWaits } from './boot-waits.js';
 
 const PHASE = 'seats';
 // SEAT_HEALTH — what the long Health of a variation taken out of a lost workstation's seat begins with.
@@ -111,6 +112,7 @@ export async function assignSeats(ctx, state) {
       ctx.log(PHASE, `${s.key} ${s.variation}: placed on ${target}${machine ? ` (${machine})` : ''} by pool choice ${plan.choice} — headroom now, in tickets: ${roomWords(plan.rooms ?? [])}`);
     }
     bootPlaced(ctx, project, [...placed.seated, ...placed.moved], ctx.now().getTime());   // ASS-553 AC7
+    recordBootWaits(ctx, state, project, dir);   // ASS-575: boot-waits.json, for the dashboard
     project.seats = placed.records;
     project.planningSeats = planningNow;
     project.localSeats = localNow;
@@ -135,10 +137,12 @@ export async function assignSeats(ctx, state) {
 // taken out of its seats (keepSeats, logged) and placed again — the next remote machine with room, else the Mac — and
 // no new one goes to it; control goes on starting it (seatNeeds: lost with tickets in progress), and once it is up its
 // seats are back. A machine that cannot be used for another reason (lostWhy: its login, its setup, unreachable) is
-// lost at once, as before. Logged once each way.
+// lost at once, as before. Logged once each way. ASS-575: the waits are recorded each tick they change in the project's
+// boot-waits.json (recordBootWaits, boot-waits.js), which the dashboard reads; a control starting afresh takes the
+// waits it finds there up again, so a restart doesn't give a late machine a new full wait.
 export function bootWaits(ctx, state, project) {
-  const m = (ctx.memory.bootWaits ??= new Map()), now = ctx.now().getTime();
-  const wait = Number(state.harness?.['remote-boot-wait-seconds'] ?? BOOT_WAIT_SECONDS) * 1000;
+  const m = bootMemory(ctx, state), now = ctx.now().getTime();
+  const wait = waitSeconds(state) * 1000;
   const over = {};
   for (const w of project.devEnvironments?.workstations ?? []) {
     const k = `${project.id} ${w.id}`, entry = project.workstations?.[w.id];
@@ -156,7 +160,7 @@ export function bootWaits(ctx, state, project) {
     const late = was?.over || now - since > wait;
     if (late && !was?.over) ctx.log(PHASE, `${w.id} did not come up within ${Math.round(wait / 1000)} s (remote-boot-wait-seconds) of a step being placed on it: its steps go to the next remote machine with room, else the Mac, until it is up; control goes on starting it`);
     m.set(k, { since, over: late });
-    if (late) over[w.id] = `it did not come up within ${Math.round(wait / 1000)} s (remote-boot-wait-seconds)`;
+    if (late) over[w.id] = overWhy(wait / 1000);
   }
   project.bootWaitOver = over;
 }
@@ -170,6 +174,32 @@ function bootPlaced(ctx, project, records, now) {
     const k = `${project.id} ${s.workstation}`;
     if (!m.has(k)) m.set(k, { since: now, over: false });
   }
+}
+
+const waitSeconds = state => Number(state.harness?.['remote-boot-wait-seconds'] ?? BOOT_WAIT_SECONDS);
+
+// bootMemory(ctx, state) — memory.bootWaits ("<project> <id>" → { since (ms), over }), at this control's first look
+// seeded from each project's boot-waits.json (ASS-575), so a wait survives a restart.
+function bootMemory(ctx, state) {
+  if (ctx.memory.bootWaits) return ctx.memory.bootWaits;
+  const m = (ctx.memory.bootWaits = new Map());
+  if (!ctx.paths?.projects) return m;
+  for (const p of state.projects ?? []) {
+    for (const [id, w] of Object.entries(loadBootWaits(join(ctx.paths.projects, p.id))?.machines ?? {})) {
+      const since = Date.parse(w?.since);
+      if (Number.isFinite(since)) m.set(`${p.id} ${id}`, { since, over: w.over === true });
+    }
+  }
+  return m;
+}
+
+// recordBootWaits(ctx, state, project, dir) — ASS-575 AC1: the project's boot waits written to its boot-waits.json
+// when they changed (removed when none), for the dashboard's planner and the n screen's cards.
+function recordBootWaits(ctx, state, project, dir) {
+  if (!ctx.paths?.projects) return;
+  const prefix = `${project.id} `, waits = new Map();
+  for (const [k, w] of ctx.memory.bootWaits ?? []) if (k.startsWith(prefix)) waits.set(k.slice(prefix.length), w);
+  writeBootWaits(dir, bootWaitsJson(waits, waitSeconds(state)), message => ctx.log('error', `${PHASE}: ${message}`));
 }
 
 // noteReleases(ctx, state) — ASS-527 AC1: each variation that held a planning or an in-progress seat when last

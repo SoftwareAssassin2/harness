@@ -463,7 +463,10 @@ request's CI does.
   before it can be measured. Past the wait it counts as lost until it is up
   (`seats <id> did not come up within …`): its steps go to the next remote
   machine with room, else the Mac. An unusable machine (login expired, setup
-  failed, unreachable) is skipped at once.
+  failed, unreachable) is skipped at once. Control records each wait in the
+  project's `boot-waits.json` (since when, when it runs out, whether it has;
+  ASS-575), kept across a restart and read by the dashboard, whose planner and
+  `n` screen then treat a machine past its wait as control does.
 - `most-room`: of the candidates with a free seat, the one with the most
   headroom now, anywhere; ties keep list order.
 
@@ -895,8 +898,11 @@ Orbit · 3 machines · 2 can take work · 3 of 4 seats in use · next ticket →
 - **Seats**: `■` per seat the project's tickets hold there, `□` per seat free
   under the current rule, then a plain verdict: `can take 2 more`, `full: one
   more would pass its memory limit`, `held: disk below its 15 GB hold …`,
-  `stopped: starts on demand (up to 15 min)`, `no new work: its reading
-  failed (…)`, `no work: its gcloud login needs reauthentication`.
+  `stopped: starts on demand (up to 15 min)`, `starting · waited 4 of 15 min`
+  (control waiting for it to boot, ASS-575), `no work: didn't come up within
+  15 min; work goes elsewhere until it's up` (past its boot wait: never the
+  headline's next machine), `no new work: its reading failed (…)`, `no work:
+  its gcloud login needs reauthentication`.
 - **Cluster**: the machine's Substrate cluster (its last check, red with its
   troubles: `cluster missing`, `Docker memory low`…) and the project's part of
   its memory and CPU.
@@ -1125,7 +1131,7 @@ VM's `cloud-vm-substrate`; a `gke` entry none, until GKE is approved.
   a GKE trial (the spike's section 7).
 - Optional per entry: `memory-gib` (2.5) and `cpu-percent` (30), the cluster's
   fixed cost; `sandbox-memory-gib` (1.5) and `sandbox-cpu-percent` (100), one
-  active sandbox's (on the Mac, the per-ticket estimate's floor, ASS-570); `warm-workers` (1); `worker-memory-gib` (4) and
+  active sandbox's (the floor of that machine's per-ticket estimate, ASS-570 / ASS-574); `warm-workers` (1); `worker-memory-gib` (4) and
   `worker-cpus` (4), one worker's limits.
 - A wrong entry is logged by control naming the field, and nothing of the
   list is set up or checked until it is fixed.
@@ -1546,7 +1552,11 @@ run targets' Docker rule sees to.
   all of it with no samples), moved at most ×1.1 a tick and kept across
   restarts in `data/projects/<p>/ticket-estimate.json`; the budget log line
   and `seat-budget.json`'s `per-ticket` (`source`, `samples`, `floor`,
-  `target`) say where it came from.
+  `target`) say where it came from. A workstation's or cloud VM's sandboxes
+  (ASS-574) use the same estimate, one per machine from its own working
+  samples, kept in `ticket-estimate-<machine>.json`; the machine's measured
+  use per ticket still counts above it, and the `remote …` log line and
+  `remote-seats.json`'s `per-ticket` say where the figure came from.
 - **Hibernation (ASS-537).** A ticket that gives up its seat (a gate, a human
   step, a wait, a step on another target) has its sandbox hibernated — never
   deleted — once no agent turn and no in-machine script of it runs: suspending

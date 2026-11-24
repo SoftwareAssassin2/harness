@@ -19,6 +19,7 @@ import { projectRunTargets } from '../control/run-targets.js';
 import { loadSeatQueue, SEAT_QUEUE_FILE } from '../control/seat-queue.js';
 import { LOOP_COUNT_FILE } from '../control/loop-count.js';
 import { SEAT_BUDGET_FILE, REMOTE_SEATS_FILE } from '../control/seat-budget-file.js';
+import { loadBootWaits, BOOT_WAITS_FILE } from '../control/boot-waits.js';
 import { loadPlanningFocus, PLANNING_FOCUS_FILE } from '../control/planning-focus-file.js';
 import { loadSubstrate, substrateEntries, SUBSTRATE_FILE, loadSandboxFailures, SANDBOX_FAILURES_FILE, loadSandboxImages, sandboxImageFiles, SANDBOX_ARCHES } from '../control/substrate-config.js';
 
@@ -158,6 +159,7 @@ export const loadProjects = (dir, lima = limaHome()) => readdirSync(dir)
       localSeats: loadSeats(join(dir, name), readJson, 'local'),   // ASS-541: its seatless holders on the Mac (ASS-540: local-worktree, local-workspace), for the n screen's Mac card (ASS-572)
       seatBudget: loadSeatBudgetFile(join(dir, name)),   // ASS-528: control's seat-budget.json, the Mac seats it may hold now and why
       planningFocus: loadPlanningFocus(join(dir, name)),   // ASS-531: its planning-focus.json, { on, by, at } or null (the sprint screen's P)
+      bootWaits: loadBootWaits(join(dir, name)),   // ASS-575: control's boot-waits.json, each remote machine's boot wait (the planner's bootWaitOver, the n screen's cards)
       remoteBudget: loadSeatBudgetFile(join(dir, name), REMOTE_SEATS_FILE),   // ASS-529: control's remote-seats.json, each remote machine's seats
       substrate: substrateOf(project, loadSubstrate(join(dir, name))),   // ASS-533: its Substrate clusters' last checks (substrate.json), those it still declares
       substrateMachines: substrateMachinesOf(project),   // ASS-539: the machines it declares a kind cluster on (the n screen's cards, ASS-572)
@@ -526,7 +528,7 @@ export function dataFiles(root, { projects, workflows, project, day }, lima = li
     join(dataDir(root), 'disk-space.json'),
     ...workflows.map(w => w.file ?? engineFileIn(join(root, 'engines'), w.name)),   // a project's own at its file (ASS-277)
     ...projects.flatMap(({ id }) => [
-      join(dir(id), 'project.json'), join(dir(id), 'gcloud-requires-reauthentication'), join(dir(id), 'glab-requires-reauthentication'), join(dir(id), 'rate-limit.json'), join(dir(id), 'claude-usage.json'), join(dir(id), 'push-account.json'), join(dir(id), 'credentials-hold.json'), join(dir(id), 'jira-token-rejected.json'), join(dir(id), 'api-cost.json'), join(dir(id), 'memory-spend.json'), join(dir(id), 'sprints.json'), join(dir(id), 'backlog.json'), join(dir(id), 'global-questions-and-answers.json'), join(dir(id), 'chat-spend.json'), join(dir(id), 'vms.json'), join(dir(id), 'outside-tickets.json'), join(dir(id), 'memory-hold.json'), join(dir(id), 'memory-wait.json'), join(dir(id), SEATS_FILE), join(dir(id), SEAT_QUEUE_FILE), join(dir(id), SEAT_BUDGET_FILE), join(dir(id), REMOTE_SEATS_FILE), join(dir(id), PLANNING_FOCUS_FILE), join(dir(id), SUBSTRATE_FILE), join(dir(id), 'workstations.json'),   // substrate.json: ASS-533;
+      join(dir(id), 'project.json'), join(dir(id), 'gcloud-requires-reauthentication'), join(dir(id), 'glab-requires-reauthentication'), join(dir(id), 'rate-limit.json'), join(dir(id), 'claude-usage.json'), join(dir(id), 'push-account.json'), join(dir(id), 'credentials-hold.json'), join(dir(id), 'jira-token-rejected.json'), join(dir(id), 'api-cost.json'), join(dir(id), 'memory-spend.json'), join(dir(id), 'sprints.json'), join(dir(id), 'backlog.json'), join(dir(id), 'global-questions-and-answers.json'), join(dir(id), 'chat-spend.json'), join(dir(id), 'vms.json'), join(dir(id), 'outside-tickets.json'), join(dir(id), 'memory-hold.json'), join(dir(id), 'memory-wait.json'), join(dir(id), SEATS_FILE), join(dir(id), SEAT_QUEUE_FILE), join(dir(id), SEAT_BUDGET_FILE), join(dir(id), REMOTE_SEATS_FILE), join(dir(id), BOOT_WAITS_FILE), join(dir(id), PLANNING_FOCUS_FILE), join(dir(id), SUBSTRATE_FILE), join(dir(id), 'workstations.json'),   // substrate.json: ASS-533;
         // ASS-539: sandbox-failures.json, and each architecture's sandbox image label and last build's run;
         join(dir(id), SANDBOX_FAILURES_FILE), ...SANDBOX_ARCHES.flatMap(arch => { const f = sandboxImageFiles(dir(id), arch); return [f.label, f.run]; }),
         // planning-focus.json: ASS-531; seat-budget.json: ASS-528; jira-token-rejected.json: ASS-475; seats.json and workstations.json (whose seats are lost): ASS-469; seat-queue.json: ASS-525; memory-hold.json: ASS-398; memory-wait.json: ASS-420; vms.json: its VMs' credential kinds (ASS-333, hasApiKey) and the local virtual machines box (ASS-486); outside-tickets.json: ASS-355

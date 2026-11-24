@@ -4,6 +4,7 @@ import { sinceResolution, visitsInto, statusOf, changePath, isOpenQuestion, bloc
 import { rankBacklog, flattenSprint } from '../../control/rank.js';
 import { dependencyHold, dependencyRows } from '../../control/dependencies.js';
 import { seatsOf, nextPlacement } from '../../control/plan.js';
+import { bootWaitOverOf } from '../../control/boot-waits.js';
 import { switchedOffStepErrors } from '../../workflow/validate.js';
 import { stateOf, levelChanges, enginesOf, refinementSteps as refinementStepsOf } from '../status.js';
 import { lastStart } from '../table.js';
@@ -333,9 +334,9 @@ export function seatPlan(state) {
 }
 
 // plannerState(state) — the dashboard's projects as control's loadState lists them (planProject), what plan.js planFor
-// reads, the selected project's limits for harness.json's.
-function plannerState(state) {
-  const projects = state.projects.map(p => planProject(state, p));
+// reads, the selected project's limits for harness.json's. `now` for the remote machines' boot waits (ASS-575).
+function plannerState(state, now = Date.now()) {
+  const projects = state.projects.map(p => planProject(state, p, now));
   return {
     projects, allProjects: projects, assignments: state.assignments ?? [], harness: state.projects[state.project]?.limits?.harness ?? {}, running: {},
     engines: enginesOf(state.workflows.filter(w => w.project == null)),
@@ -345,9 +346,9 @@ function plannerState(state) {
 // nextPlace(state) — ASS-572: where the selected project's next ticket would go now, the planner's own answer
 // (plan.js nextPlacement: { target, machine, choice, rooms? }, target null when nothing has room), for the compute
 // network screen's headline; null without a project. Live state, whatever day the sprint screen shows.
-export function nextPlace(state) {
+export function nextPlace(state, now = Date.now()) {
   if (!state.projects[state.project]) return null;
-  const plan = plannerState(state);
+  const plan = plannerState(state, now);
   return nextPlacement(plan, plan.projects[state.project]);
 }
 
@@ -380,7 +381,7 @@ export function freeSeats(seats) {
 // its run targets as control reads them (runTargets: load.js runTargetPlan) and its remote seats (remoteBudget), and
 // (ASS-531) its focus-on-planning switch (planningFocus), and (ASS-559) its Mac-target holders (localSeats, seats.json's
 // `local`, which control's seatedIn reads too), so the seats shown are given as control gives them.
-function planProject(state, p) {
+function planProject(state, p, now = Date.now()) {
   const seen = enginesOf(state.workflows.filter(w => w.project == null || w.project === p.id).toReversed());   // its own listed first: last wins
   const engines = switchOff(seen, (p.switchedOffSteps ?? []).filter(e => !switchedOffStepErrors(e, seen).length));
   const tickets = flattenSprint(p.sprint ?? {});
@@ -390,7 +391,11 @@ function planProject(state, p) {
     devEnvironments: p.devEnvironments ?? null, workstations: p.workstations ?? {}, seats: p.seats ?? [], planningSeats: p.planningSeats ?? [], localSeats: p.localSeats ?? [], seatBudget: p.seatBudget ?? null, planningFocus: p.planningFocus ?? null,
     // ASS-572: its run targets as control reads them (projectRunTargets: list, mode, pool choice) and its remote
     // machines' seats (remote-seats.json), so the planner places as control does.
-    ...(p.runTargetPlan ? { runTargets: p.runTargetPlan } : {}), remoteBudget: p.remoteBudget ?? null };
+    ...(p.runTargetPlan ? { runTargets: p.runTargetPlan } : {}), remoteBudget: p.remoteBudget ?? null,
+    // ASS-575: the remote machines past their boot wait (control's boot-waits.json, seats.js bootWaits), in control's
+    // shape (project.bootWaitOver, read by seat-kinds.js seatCapacity), so the planner never places on one; a wait whose
+    // time ran out since control's last tick counts as over already.
+    bootWaitOver: bootWaitOverOf(p.bootWaits, p.workstations, now) };
 }
 
 // Which of two sprint tickets is closer to done: the higher step sequence at

@@ -339,3 +339,42 @@ test('AC7: CLAUDE.md and README describe the redesigned n screen — the headlin
     for (const gone of ['Mac total', 'pool summary, its Mac share line']) assert.ok(!doc.includes(gone), `${name} still says ${gone}`);
   }
 });
+
+// ===== ASS-575: the remote machines' boot waits (control's boot-waits.json) =====
+
+// waiting(p, id, sinceMs, over) — control's boot-waits.json for `id`, loaded as the dashboard loads it (load.js bootWaits).
+const waiting = (p, id, since, over = false, seconds = 900) => ({ ...p, bootWaits: { 'wait-seconds': seconds, machines: { [id]: { since: iso(since), 'ends-at': iso(since + seconds * 1000), over } } } });
+
+test('ASS-575 AC2: a machine past its boot wait is never the headline\'s next machine — the dashboard\'s planner treats it as lost, as control does', () => {
+  // Without a boot wait vm-west takes the next ticket (AC1 "all stopped"); past its wait it is lost, so ws-east does.
+  for (const p of [waiting(stopped(remoteOnly()), 'vm-west', NOW - 20 * 60e3, true), waiting(stopped(remoteOnly()), 'vm-west', NOW - 16 * 60e3, false)]) {
+    const s = onN([p]);
+    const next = nextPlace(s, NOW);
+    assert.equal(next.machine, 'ws-east', 'over (control said so, or its time ran out since control\'s last tick): not placed on');
+    assert.match(head(s), /2 machines · 1 can take work · .*next ticket → ws-east /);
+    assert.doesNotMatch(head(s), /next ticket → vm-west/);
+  }
+  // (test/control/boot-waits.test.js checks that the dashboard's bootWaitOver is control's own, word for word.)
+  // A machine that came up since is not waited for, whatever the file still says.
+  const up = waiting(stopped(remoteOnly()), 'vm-west', NOW - 20 * 60e3, true);
+  up.workstations['vm-west'] = { ...up.workstations['vm-west'], state: 'running', connected: true, 'connected-at': iso(NOW - 60e3), setup: { ok: true, 'checked-at': iso(NOW - 30e3) } };
+  assert.equal(nextPlace(onN([up]), NOW).machine, 'vm-west');
+});
+
+test('ASS-575 AC3: a card shows "starting · waited m of n min" during the boot wait and the "didn\'t come up" verdict after it', () => {
+  const during = onN([waiting(stopped(remoteOnly()), 'vm-west', NOW - 5 * 60e3 - 20e3)]);
+  const c1 = cardOf(out(during), 'vm-west');
+  assert.match(line(c1, 'Seats'), /starting · waited 5 of 15 min · can take 1/);
+  assert.equal(nextPlace(during, NOW).machine, 'vm-west', 'within its wait it is still placed on');
+  assert.match(head(during), /next ticket → vm-west .* · it is starting: waited 5 of 15 min$/);
+  const after = onN([waiting(stopped(remoteOnly()), 'vm-west', NOW - 20 * 60e3, true)]);
+  const c2 = cardOf(out(after), 'vm-west');
+  assert.match(line(c2, 'Seats'), /no work: didn't come up within 15 min; work goes elsewhere until it's up/);
+  assert.ok(out(after).some(l => l.includes(RED) && strip(l).includes("didn't come up")), 'red');
+  // With every machine unable to take work, the headline says why.
+  const both = waiting(stopped(remoteOnly()), 'vm-west', NOW - 20 * 60e3, true);
+  both.bootWaits.machines['ws-east'] = { since: iso(NOW - 20 * 60e3), 'ends-at': iso(NOW - 5 * 60e3), over: true };
+  assert.match(head(onN([both])), /nothing can take work: ws-east didn't come up, vm-west didn't come up$/);
+  // Another wait length is the file's (remote-boot-wait-seconds).
+  assert.match(line(cardOf(out(onN([waiting(stopped(remoteOnly()), 'vm-west', NOW - 60e3, false, 300)])), 'vm-west'), 'Seats'), /starting · waited 1 of 5 min/);
+});

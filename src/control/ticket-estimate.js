@@ -27,6 +27,13 @@
 // - Where it came from (`source`, said in the budget log line and seat-budget.json's per-ticket): 'working-samples'
 //   (with how many) or 'defaults' (no samples, or every sample under the floor: the floor itself).
 //
+// ASS-574: the same estimate for a workstation's or cloud VM's sandboxes (remote-seats.js), one per machine — each
+// cluster's workers differ — from that machine's own readings (substrate.json's "<machine>" entry) and its tickets'
+// working stretches: estimateFor's `machine` (MAC by default). A remote machine's is kept in its own file beside the
+// Mac's, ticket-estimate-<machine>.json (estimateFile), the same shape; its floor is that machine's cluster entry's
+// sandbox-memory-gib / sandbox-cpu-percent. remote-seats.js keeps blending in the machine's measured use per ticket
+// above it, as before.
+//
 // CPU (the ticket's question, 2026-11-23): no working sandbox had been measured on the Mac — substrate.json keeps only
 // the last check, and the only figures in the notes are ASS-532's spike (agent turns waiting on the model: ~0 CPU; test
 // runs: as much as the worker's 4-CPU limit allows) and ASS-542's whole app stacks (memory only: 9.0 and 9.3 GiB). So
@@ -43,7 +50,9 @@ export const STEP = 1.1;
 const GIB = 1024 ** 3;
 const KEEP_BUSY_MS = 30 * 60e3;   // a finished stretch of work is forgotten after this (its readings long taken)
 
-export const estimateFile = (projectsDir, id) => join(projectsDir, id, ESTIMATE_FILE);
+// estimateFile(projectsDir, id, machine) — the Mac's ESTIMATE_FILE; a remote machine's ticket-estimate-<machine>.json
+// (ASS-574; its id made safe for a file name).
+export const estimateFile = (projectsDir, id, machine = MAC) => join(projectsDir, id, machine === MAC ? ESTIMATE_FILE : `ticket-estimate-${String(machine).replace(/[^A-Za-z0-9._-]/g, '_')}.json`);
 
 // floorOf(entry) — the project's Mac cluster entry's sandbox figures, { memory (bytes), cpu (percent of one core) }.
 export const floorOf = entry => ({ memory: entry['sandbox-memory-gib'] * GIB, cpu: entry['sandbox-cpu-percent'] });
@@ -75,9 +84,10 @@ export function step(previous, goal, floor) {
   return { memory: one('memory'), cpu: one('cpu') };
 }
 
-// readEstimate(projectsDir, id) — its ticket-estimate.json, or an empty one (absent or unreadable).
-export function readEstimate(projectsDir, id) {
-  const file = estimateFile(projectsDir, id);
+// readEstimate(projectsDir, id, machine) — its ticket-estimate.json (a remote machine's: its own, ASS-574), or an empty
+// one (absent or unreadable).
+export function readEstimate(projectsDir, id, machine = MAC) {
+  const file = estimateFile(projectsDir, id, machine);
   try {
     if (existsSync(file)) {
       const j = JSON.parse(readFileSync(file, 'utf8'));
@@ -101,7 +111,7 @@ export function trackBusy(ctx, project, isBusy) {
 
 const memoryOf = ctx => (ctx.memory.ticketEstimate ??= { busy: new Map(), files: new Map(), said: new Map() });
 
-// workingSamples(ctx, project, live, actorOf, lead) — the new readings of `live` (the project's Mac cluster's last check)
+// workingSamples(ctx, project, live, actorOf, lead) — the new readings of `live` (the project's cluster's last check on the machine)
 // that are working samples: [{ at, actor, memory-bytes, cpu-percent }]; [] for a reading already taken.
 export function workingSamples(ctx, project, live, actorOf, lead, since) {
   const at = Date.parse(live?.['checked-at'] ?? '');
@@ -117,16 +127,19 @@ export function workingSamples(ctx, project, live, actorOf, lead, since) {
   return out;
 }
 
-// estimateFor(ctx, state, project, entry, { own, isBusy }) — one ticket's expected use, { memory, cpu, source, samples,
-// target, floor }. For the control's own projects (`own`) it takes the new working samples, moves the estimate a step and
-// keeps it (ESTIMATE_FILE); for another control's it reads what that one kept.
-export function estimateFor(ctx, state, project, entry, { own = false, isBusy = () => false } = {}) {
+// estimateFor(ctx, state, project, entry, { own, isBusy, machine }) — one ticket's expected use, { memory, cpu, source,
+// samples, target, floor }. For the control's own projects (`own`) it takes the new working samples, moves the estimate
+// a step and keeps it (ESTIMATE_FILE); for another control's it reads what that one kept. `machine` (ASS-574): whose
+// cluster's sandboxes — MAC, or a workstation's or cloud VM's id, each its own samples, estimate and file; `entry` that
+// machine's cluster entry.
+export function estimateFor(ctx, state, project, entry, { own = false, isBusy = () => false, machine = MAC } = {}) {
   const m = memoryOf(ctx), floor = floorOf(entry), dir = ctx.paths.projects;
-  const file = own ? (m.files.get(project.id) ?? readEstimate(dir, project.id)) : readEstimate(dir, project.id);
+  const k = machine === MAC ? project.id : `${project.id} ${machine}`;
+  const file = own ? (m.files.get(k) ?? readEstimate(dir, project.id, machine)) : readEstimate(dir, project.id, machine);
   let kept = file;
   if (own) {
     trackBusy(ctx, project, isBusy);
-    const live = project.substrate?.[MAC];
+    const live = project.substrate?.[machine];
     const actorOf = new Map();
     for (const t of project.tickets ?? []) for (const v of t.variations ?? []) actorOf.set(v.sandbox?.name ?? `${t.key}-${v.name}`.toLowerCase().replace(/[^a-z0-9-]/g, '-'), { key: t.key, variation: v.name });
     const lead = (state.harness?.['substrate-check-seconds'] ?? CHECK_EVERY / 1000) * 1000;
@@ -138,18 +151,18 @@ export function estimateFor(ctx, state, project, entry, { own = false, isBusy = 
     const estimate = { 'memory-bytes': Math.round(next.memory), 'cpu-percent': Math.round(next.cpu * 10) / 10 };
     kept = { samples, 'checked-at': checkedAt, estimate, at: file.at };
     const changed = fresh.length || checkedAt !== file['checked-at'] || JSON.stringify(estimate) !== JSON.stringify(file.estimate);
-    if (changed) kept = write(ctx, project.id, { ...kept, at: ctx.now().toISOString() });
-    m.files.set(project.id, kept);
+    if (changed) kept = write(ctx, project.id, machine, { ...kept, at: ctx.now().toISOString() });
+    m.files.set(k, kept);
   }
   const goal = target(kept.samples, floor);
   const now = kept.estimate ? { memory: Math.max(floor.memory, kept.estimate['memory-bytes']), cpu: Math.max(floor.cpu, kept.estimate['cpu-percent']) } : { memory: goal.memory, cpu: goal.cpu };
   return { ...now, source: goal.source, samples: kept.samples.length, target: { memory: goal.memory, cpu: goal.cpu }, floor };
 }
 
-// write(ctx, id, body) — ESTIMATE_FILE written whole (a temp file renamed over it); a failure logged, the body kept in
-// memory either way.
-function write(ctx, id, body) {
-  const file = estimateFile(ctx.paths.projects, id);
+// write(ctx, id, machine, body) — its estimate file written whole (a temp file renamed over it); a failure logged, the
+// body kept in memory either way.
+function write(ctx, id, machine, body) {
+  const file = estimateFile(ctx.paths.projects, id, machine);
   try {
     writeFileSync(`${file}.tmp`, `${JSON.stringify(body, null, 2)}\n`);
     renameSync(`${file}.tmp`, file);

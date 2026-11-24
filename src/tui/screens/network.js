@@ -21,7 +21,10 @@
 //    - Seats: ■ per seat its project's tickets hold there, □ per seat free under the current rule (the Mac: its
 //      seat-budget.json `seats`, a remote machine: remote-seats.json's), then a plain verdict — "can take N more",
 //      "full: one more would pass its memory limit", "held: disk below its 15 GB hold …", "stopped: starts on demand
-//      (up to 15 min)", "no work: <why it can't be used>"…;
+//      (up to 15 min)", ASS-575: "starting · waited m of n min" while control waits for it to boot (boot-waits.json),
+//      "no work: didn't come up within n min; work goes elsewhere until it's up" once that wait ran out (control then
+//      counts it as lost, and so does the dashboard's planner: shared.js planProject's bootWaitOver, so the headline never
+//      names it), "no work: <why it can't be used>"…;
 //    - Cluster: its Substrate cluster's state and the project's part of it (memory, CPU), red with its troubles;
 //    - On it: the project's tickets there (machine-tickets.js ticketsOn), at most ON_IT, then "+N more";
 //    - the Mac's Share line(s): the project's share of the harness's budget, its allotment, its use, what it lends or
@@ -36,6 +39,7 @@ import { visible, wrapParts, wrapLine } from '../text.js';
 import { ellipsis, gray, red, green, projectAssignments, nextPlace } from './shared.js';
 import { workstationState, cloudVmState } from '../../control/workstation-machines.js';
 import { lostWhy } from '../../control/seat-kinds.js';
+import { bootWaitOf } from '../../control/boot-waits.js';
 import { HOST_OF, BOOT_WAIT_SECONDS } from '../../control/run-targets.js';
 import { macRoom, machineRoom, rank } from '../../control/pool-choice.js';
 import { imageBuildFailed } from '../../control/substrate-config.js';
@@ -65,7 +69,8 @@ export function age(at, now) {
   const s = Math.max(0, Math.round(ms / 1000));
   return s < 60 ? `${s}s` : s < 3600 ? `${Math.round(s / 60)}m` : s < 86400 ? `${Math.round(s / 3600)}h` : `${Math.round(s / 86400)}d`;
 }
-const BOOT = `up to ${Math.round(BOOT_WAIT_SECONDS / 60)} min`;
+const minutes = seconds => Math.round(seconds / 60);
+const bootWords = project => `up to ${minutes(Number(project.bootWaits?.['wait-seconds'] ?? BOOT_WAIT_SECONDS))} min`;
 
 // ===== The machines' facts =====
 
@@ -163,11 +168,16 @@ function remoteMachine(project, w, now) {
   const possible = b?.seats ?? Math.max(held, 1);
   const room = possible - held;
   const label = { 'sign in needed': 'sign-in needed' }[word] ?? word;
+  // ASS-575: its boot wait (control's boot-waits.json, boot-waits.js bootWaitOf) — past it the machine is lost to
+  // control (seats.js bootWaits), so to the planner here too; within it, how long it has waited.
+  const boot = bootWaitOf(project.bootWaits, entry, w.id, now);
   let verdict;
   if (lost || word === 'sign in needed' || word === 'setup failed') verdict = { text: `no work: ${lost ?? (word === 'sign in needed' ? 'its gcloud login needs reauthentication' : 'its setup failed')}`, tone: 'red', short: label };
   else if (b?.state === 'unread') verdict = { text: `no new work: its reading failed (${b.why})`, tone: 'red', short: 'reading failed' };
   else if (diskHeld) verdict = { text: `held: disk below its ${gb(hold)} GB hold (${dk ? num(dk.free) : '?'} GiB free${b?.disk?.folder ? ` at ${b.disk.folder}` : ''}) — no new ticket until ${gb(b?.disk?.['release-bytes'] ?? warn)} GB is free`, tone: 'red', short: 'disk held' };
-  else if (!fresh && word !== 'running') verdict = room > 0 ? { text: `${label}: starts on demand (${BOOT}) · can take ${room}`, tone: 'gray', short: `${label} (starts on demand)` }
+  else if (boot?.over) verdict = { text: `no work: didn't come up within ${minutes(boot.seconds)} min; work goes elsewhere until it's up`, tone: 'red', short: "didn't come up" };
+  else if (boot) verdict = { text: `starting · waited ${Math.floor(boot.waited / 60)} of ${minutes(boot.seconds)} min${room > 0 ? ` · can take ${room}` : ''}`, tone: 'amber', short: 'starting' };
+  else if (!fresh && word !== 'running') verdict = room > 0 ? { text: `${label}: starts on demand (${bootWords(project)}) · can take ${room}`, tone: 'gray', short: `${label} (starts on demand)` }
     : { text: `${label}: holds ${held}, takes no more until it is measured`, tone: 'gray', short: label };
   else if (!fresh) verdict = room > 0 ? { text: `can take ${room} more (not measured yet)`, tone: 'green' } : { text: `not measured yet: holds ${held}, takes no more until it is`, tone: 'amber', short: 'not measured' };
   else if (room > 0) verdict = { text: `can take ${room} more`, tone: 'green' };
@@ -175,13 +185,13 @@ function remoteMachine(project, w, now) {
     const m = String(b?.why ?? '').match(/pass its (.+?) limit/);
     verdict = { text: `full: ${String(b?.why ?? 'no room for one more').replace('one more ticket would', 'one more would')}`, tone: 'amber', short: m ? `full (${m[1].replace(' and ', ', ')})` : 'full' };
   }
-  const usable = !lost && word !== 'sign in needed' && word !== 'setup failed' && b?.state !== 'unread' && !diskHeld;
+  const usable = !lost && word !== 'sign in needed' && word !== 'setup failed' && b?.state !== 'unread' && !diskHeld && !boot?.over;
   return {
     id: w.id, kind: cloud ? 'cloud-vm' : 'workstation', word, label, fresh, ago: !fresh && r?.at ? age(r.at, now) : '',
     cpu: has(cpuUsed) && has(capacity) && capacity > 0 ? { used: cpuUsed / capacity * 100, limit: limits.cpu } : null,
     ram: has(ramUsed) ? { used: ramUsed, limit: ramLimit, total: ramTotal } : null,
     disk: dk && has(dk.free) ? { free: dk.free, total: dk.total, hold, warn, held: diskHeld, low: dk.free < warn } : null,
-    seats: { held, possible }, verdict, canTake: usable && room > 0, room: usable ? machineRoom(b) : 0,
+    seats: { held, possible }, verdict, boot, canTake: usable && room > 0, room: usable ? machineRoom(b) : 0,
     cpuCapacity: capacity,
     cluster: clusterFacts(project.substrate?.[w.id], b?.substrate, null, capacity, now),
   };
@@ -250,7 +260,8 @@ export function headline(project, list, next, columns) {
     const remote = HOST_OF[next.target] !== 'local';
     const why = next.choice === 'remote-first' ? (remote ? 'remote first, most room' : 'remote machines full') : CHOICE_WORDS[next.choice] ?? next.choice;
     const runs = KIND_WORDS[RUNS_IN[next.target]] ?? next.target;
-    const starts = m && m.kind !== 'mac' && !m.fresh && m.word !== 'running' ? ` · it is ${m.label}: starts on demand` : '';
+    const starts = m?.boot ? ` · it is starting: waited ${Math.floor(m.boot.waited / 60)} of ${minutes(m.boot.seconds)} min`
+      : m && m.kind !== 'mac' && !m.fresh && m.word !== 'running' ? ` · it is ${m.label}: starts on demand` : '';
     tail = `next ticket → ${green(id ?? `a ${KIND_LABELS[HOST_OF[next.target]] ?? next.target}`)} (${runs}; ${why})${starts}${next.ahead ? ` · after ${plural(next.ahead, 'ticket')} already waiting` : ''}`;
   }
   const one = [...parts, tail].join(' · ');
@@ -419,7 +430,7 @@ const legendLines = columns => (visible(LEGEND) <= columns ? [LEGEND] : wrapPart
 export function view(state, { columns = 120, now = Date.now(), height = null } = {}) {
   const project = state.projects?.[state.project];
   if (!project) return [gray('no project')];
-  const next = nextPlace(state);
+  const next = nextPlace(state, now);
   const list = placed(machines(state, now), next, project);
   const head = headline(project, list, next, columns);
   const width = cardWidth(columns), n = perRow(columns);

@@ -228,6 +228,8 @@ export function activeSandboxes(entry, live) {
 
 // sandboxNeed(entry, live) — AC3: one more ticket's sandbox's expected use, { memory, cpu }: the average of the
 // project's active sandboxes' measured use, the entry's sandbox-memory-gib / sandbox-cpu-percent with none measured.
+// No longer what seats are sized by — idle sandboxes lowered it: ticket-estimate.js is, on the Mac (ASS-570) and on
+// remote machines (ASS-574); kept for its tests and as the plain average.
 export function sandboxNeed(entry, live) {
   const measured = sandboxUse(live).filter(u => ACTIVE.has(u.state) && u.memory > 0);
   if (!entry) return null;
