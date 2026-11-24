@@ -596,7 +596,7 @@ This section is about **Blocked**, the AI's own troubleshooting state, not Block
 - **Wait on the Fix** (`ticket:wait-on`) records the variation's `waits-on`.
 - **Await the Fix** (or **Await the Fix Merge Request**) runs `ticket:fix-landed` every 5 minutes.
 
-The fix has **landed** when its ticket is Done and either went through a merge step, or has a commit starting `<FIX-KEY>:` on its project's default branch. A merge request fix has landed when the merge request has merged. A **harness** fix also needs the running controls restarted on code that contains it. Until then the ticket's Health says "Fix `<KEY>` landed; waiting for a harness restart to load it", and the header shows **Restart to load N landed fixes**.
+The fix has **landed** when its ticket is Done and either went through a merge step, or has a commit starting `<FIX-KEY>:` on its project's default branch. A merge request fix has landed when the merge request has merged. A fix ticket in neither the sprint nor the backlog (another team's, in the ticket system) has landed once Done there (the engine's paired done status, or Jira's `done` status category), read from `outside-tickets.json`, which the downloader keeps fresh for waited-on keys (ASS-562); it never counts as closed without landing. A **harness** fix also needs the running controls restarted on code that contains it. Until then the ticket's Health says "Fix `<KEY>` landed; waiting for a harness restart to load it", and the header shows **Restart to load N landed fixes**.
 
 Once it has landed, **Find Where to Resume** (`ticket:fix-resume-step`) picks the step to go back to: the fix ticket's declared `resume-at`, else the earliest step the fix's commits or changed work files touch, else the step it blocked at. The ticket then **resumes automatically**, with no operator needed. It moves to that step at once, even with no free seat, and waits there for one (ASS-522). A fix ticket that closed without landing sends the ticket round Blocked again.
 
@@ -609,7 +609,7 @@ Find the cause first:
 ```
 
 - **Exit 1 with `awaiting-restart`:** the fix is merged but not loaded. Restart: `./agent.sh harness:request-restart`. Don't move the ticket by hand.
-- **Exit 1 otherwise:** the fix isn't seen as landed. The fix ticket isn't Done yet, or it is Done with no merge step and no `<FIX-KEY>:` commit on the default branch (for example a squash or merge commit named otherwise). Or `waits-on` names the wrong ticket.
+- **Exit 1 otherwise:** the fix isn't seen as landed. The fix ticket isn't Done yet, or it is Done with no merge step and no `<FIX-KEY>:` commit on the default branch (for example a squash or merge commit named otherwise). Or `waits-on` names the wrong ticket. An outside fix ticket (ASS-562) waits until `outside-tickets.json` shows it Done: `jq '.tickets[] | select(.key=="<FIX-KEY>")' data/projects/<project>/outside-tickets.json`.
 - **Exit 3:** the fix ticket closed without landing. **Exit 4:** the ticket waits on nothing.
 
 If the fix really is deployed and the ticket still sits in Blocked, **resume it yourself**. Tell the operator which ticket and why.
