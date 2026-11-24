@@ -29,7 +29,8 @@
 //    - Cluster: its Substrate cluster's state and the project's part of it (memory, CPU), red with its troubles;
 //    - Image (ASS-580): the sandbox image its cluster runs for the project (the Mac's architecture on the Mac, amd64 on
 //      a remote machine): built <day> UTC, building (amber), build failed (red), none (gray);
-//    - On it: the project's tickets there (machine-tickets.js ticketsOn), at most ON_IT, then "+N more";
+//    - On it: every one of the project's tickets there (machine-tickets.js ticketsOn), one a line, cut with an ellipsis
+//      to the card's width, never wrapped (ASS-590);
 //    - the Mac's Share line(s): the project's share of the harness's budget, its allotment, its use, what it lends or
 //      borrows (seat-budget.json).
 // 3. The project line: its agents per model, its golden image (name, the day it was built), and any sandbox image no
@@ -57,7 +58,7 @@ import { RUNS_IN } from '../places.js';
 
 const GIB = 2 ** 30;
 const CPU_WINDOW = 5 * 60e3, FRESH = 5 * 60e3;   // remote-seats.js CPU_WINDOW, READING_STALE
-export const TWO_UP = 120, GAP = 2, ON_IT = 4, LABEL = 8;
+export const TWO_UP = 120, GAP = 2, LABEL = 8;
 const MAC_SEAT_TARGETS = new Set(['local-vm', 'local-substrate']), MAC_FREE_TARGETS = new Set(['local-worktree', 'local-workspace']);
 const TONES = { green, amber: AMBER, red, gray };
 
@@ -395,9 +396,7 @@ export function machineCard(state, project, m, width) {
   const inner = width - 4, stale = !m.fresh;
   const title = m.kind === 'mac' ? (m.sharedBy > 1 ? `mac · shared by ${m.sharedBy} projects` : 'mac') : `${m.id} · ${KIND_LABELS[m.kind]}`;
   const on = ticketsOn(state, project, m.id, { cpuCapacity: m.cpuCapacity });
-  const onLines = on.length
-    ? [...on.slice(0, on.length > ON_IT ? ON_IT - 1 : ON_IT).map(e => e.text), ...(on.length > ON_IT ? [gray(`+${on.length - ON_IT + 1} more`)] : [])]
-    : [gray('nothing of its project')];
+  const onLines = on.length ? on.map(e => e.text) : [gray('nothing of its project')];
   return card({
     title, status: status(m), width,
     lines: [
@@ -407,9 +406,9 @@ export function machineCard(state, project, m, width) {
       seatsLine(m),
       ...(m.cluster ? [clusterLine(m.cluster)] : []),
       ...(m.images ?? []).map(({ arch, image }) => `${'Image'.padEnd(LABEL)}${imageText(arch, image)}`),
-      ...onLines.map((l, i) => `${(i ? '' : 'On it').padEnd(LABEL)}${l}`).flatMap(l => wrapLine(l, inner, LABEL + 3)),   // a ticket's line wraps under its key
-      ...(m.share ? shareLines(m.share).flatMap(parts => pack(parts.filter(p => p.trim()), inner)) : []),
-    ].flatMap(l => wrapLine(l, inner, LABEL)),
+    ].flatMap(l => wrapLine(l, inner, LABEL)).concat(
+      onLines.map((l, i) => `${(i ? '' : 'On it').padEnd(LABEL)}${l}`),   // one a line, unwrapped: card() cuts it with "…" (ASS-590)
+      m.share ? shareLines(m.share).flatMap(parts => pack(parts.filter(p => p.trim()), inner)) : []),
   });
 }
 

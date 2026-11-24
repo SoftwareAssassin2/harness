@@ -162,7 +162,7 @@ test('AC3: seat squares — ■ per seat in use, □ per seat free — then a pl
 
 test('AC3: what\'s on a machine — kind icon, key, variation and state: a step, hibernated, crashed (will be replaced), unsandboxed, idle', () => {
   const s = onN([orbit(), atlas()], { sandboxed: { Y: { sandboxed: false, why: 'socat not installed' } } });
-  const lines = out(s);
+  const lines = out(s, 200);   // wide: each line whole (at 120 a long one is cut with "…", ASS-590)
   assert.deepEqual(onIt(cardOf(lines, 'ws-east')), [
     '🌿 ORB-102 worktree · 🤖x2 Write Plan · unsandboxed',
     '📦 ORB-103 sandbox · hibernated (0.4 GiB snapshot)',

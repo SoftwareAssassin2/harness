@@ -111,13 +111,13 @@ test('AC1: a machine with nothing of the project says so', () => {
   assert.deepEqual(onIt(card(empty, 'ws-1')), ['nothing of its project']);
 });
 
-test('AC1: long keys are cut, more than four tickets on a machine end in "+N more", and the footer and the n screen fit 120 columns', () => {
+test('AC1: long keys are cut, every ticket on a machine is listed (ASS-590: no "+N more"), and the footer and the n screen fit 120 columns', () => {
   const many = Array.from({ length: 11 }, (_, i) => ({ key: `VERY-LONG-PROJECT-${i}`, title: 'T', variations: [{ name: 'B', ...at('build', sandbox(`VERY-LONG-PROJECT-${i}`, 'B', 'cvm-1', 'running')) }] }));
   const p = project({ sprint: { ...sprint, features: many }, seats: [], substrate: { 'cvm-1': { state: 'healthy', 'checked-at': checkedAt, usage: { 'sandbox-use': Object.fromEntries(many.map(t => [`${t.key}-b`.toLowerCase(), { state: 'running', 'memory-bytes': 999 * GIB, 'cpu-percent': 9999 }])) } } } });
   assert.equal(on(p, 'cvm-1')[0], '📦 VERY-LONG-PRO… B sandbox · running 999.0 GiB');
   const items = onIt(card(p, 'cvm-1'));
-  assert.equal(items.length, 4);
-  assert.equal(items.at(-1), '+8 more');
+  assert.equal(items.length, 11);
+  assert.ok(!items.some(l => /\+\d+ more/.test(l)), items.join('\n'));
   for (const columns of [120, 160, 240]) for (const line of [...platform(stateOf(p), columns, now.getTime()), ...networkView(stateOf(p), { columns, now: now.getTime() })]) assert.ok(visible(line) <= columns, `${visible(line)} > ${columns}: ${strip(line)}`);
 });
 

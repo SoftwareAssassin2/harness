@@ -1027,7 +1027,7 @@ Orbit · 3 machines · 2 can take work · 3 of 4 seats in use · next ticket →
   gray `none`. A machine with no Substrate cluster for the project has no image
   line, except the Mac's card, which still shows an image built for its
   architecture.
-- **On it**: the project's tickets there, at most four then `+N more`: `💺
+- **On it**: every one of the project's tickets there, one a line: `💺
   <KEY> Lima VM · running` (`creating` in gray before its VM exists), `📦 <KEY>
   sandbox · running 1.5 GiB 3% CPU` (`hibernated` with its snapshot's disk,
   `starting`, `resuming`, `hibernating`, red `crashed (will be replaced)`),
@@ -1769,7 +1769,7 @@ run targets' Docker rule sees to.
   percent of the machine) are the sandbox's measured use while it runs (`not
   measured` before the next check); a hibernated one shows its snapshot's disk
   instead. An actor a check found that no variation names is listed by its
-  name. At most four lines a card, then `+N more`.
+  name. Every ticket is listed, one a line (ASS-590).
 - **What the template needs.** Root in a gVisor sandbox has almost no
   capabilities by default (AUDIT_WRITE, KILL, NET_BIND_SERVICE), so `sudo -u
   agent` would fail. The harness's template (`sandbox-template` in
