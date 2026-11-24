@@ -276,6 +276,15 @@ One command sets both:
   at the next check that finds nothing, which the command runs itself.
 - A token Jira rejects is still the "Jira API token rejected" chip (ASS-475).
   Its fix names the same command.
+- A status transition acli refuses (ASS-576; it can exit 0 on one, so a
+  `✗` or a line-start `Failure:` / `Error:` counts too) leaves the ticket's
+  `ticket-system-status` unset: `ticket:set-ticket-system-status` exits 1
+  with acli's message and records `pending-ticket-system-status` `{ status,
+  from, at, error }`. A move whose paired status fails still stands, logged
+  as `<KEY> ticket system status not set to <status> (retrying): …`, with a
+  `ticket-system` notice on the ticket. Control retries pending transitions
+  once a minute (`TRANSITION_RETRIES_DISABLED=1` turns that off); qa-testing
+  reads the pending status, and the sync drops it once Jira's status moves.
 
 ## Building a ticket two ways
 
