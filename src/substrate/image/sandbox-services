@@ -19,7 +19,8 @@
 #   sandbox-services hosts             the host map written: every service's name and aliases and the
 #                                      declared hosts → 127.0.0.1 in /etc/hosts
 #   sandbox-services trust             the declared CA trusted: the system's store, NODE_EXTRA_CA_CERTS
-#                                      (/etc/profile.d), the agent's NSS database (Chromium)
+#                                      (/etc/profile.d; beside the egress gateway's bundle when mounted),
+#                                      the agent's NSS database (Chromium)
 #   sandbox-services login [--check]   sandbox-login with the declared login's env: the agent's headless
 #                                      browser signs in as the seeded user (its session kept); --check:
 #                                      the kept session still loads the app signed in
@@ -157,7 +158,16 @@ trust() {
   for ((i = 0; i < 60; i++)); do as_root test -s "$R$cert" && break; sleep 1; done
   as_root test -s "$R$cert" || { failed_name=ca failed_why="no CA certificate at $cert"; echo "sandbox-services: ca: no certificate at $cert" >&2; return 1; }
   as_root bash -c 'mkdir -p "$(dirname "$2")" && cp "$1" "$2" && chmod 0644 "$2"' _ "$R$cert" "$R/usr/local/share/ca-certificates/sandbox-local-ca.crt"
-  as_root bash -c 'mkdir -p "$1" && printf "export NODE_EXTRA_CA_CERTS=%s\n" "$2" > "$1/sandbox-ca.sh"' _ "$R/etc/profile.d" /usr/local/share/ca-certificates/sandbox-local-ca.crt
+  # NODE_EXTRA_CA_CERTS takes one file, and this profile.d file is read after harness-credentials.sh's: with the
+  # egress gateway's bundle mounted, name a file holding it then the local CA, so Node keeps trusting the gateway (ASS-588).
+  local node_ca=/usr/local/share/ca-certificates/sandbox-local-ca.crt bundle="$R/run/ate/egress-trust-bundle/trust-bundle.pem"
+  if as_root test -r "$bundle"; then
+    as_root bash -c 'mkdir -p "$(dirname "$3")" && { cat "$1"; echo; cat "$2"; } > "$3" && chmod 0644 "$3"' _ "$bundle" "$R$node_ca" "$R/etc/ssl/sandbox-node-extra-ca.pem"
+    node_ca=/etc/ssl/sandbox-node-extra-ca.pem
+  else
+    as_root rm -f "$R/etc/ssl/sandbox-node-extra-ca.pem"
+  fi
+  as_root bash -c 'mkdir -p "$1" && printf "export NODE_EXTRA_CA_CERTS=%s\n" "$2" > "$1/sandbox-ca.sh"' _ "$R/etc/profile.d" "$node_ca"
   [[ -n "$R" ]] && return 0
   sudo update-ca-certificates >/dev/null 2>&1 || { failed_name=ca failed_why="update-ca-certificates failed"; return 1; }
   if command -v certutil >/dev/null; then

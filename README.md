@@ -1942,7 +1942,7 @@ on one workstation, cloud VM or the Mac, and nothing takes turns.
   `/etc/hosts`), starts each service in dependency order, each waiting for its
   dependencies' health checks, runs each job once per sandbox (migrations in
   their declared order; a job done is never run again, a failed one is), trusts
-  the CA (the system's store, `NODE_EXTRA_CA_CERTS`, the agent's NSS database
+  the CA (the system's store, `NODE_EXTRA_CA_CERTS` (beside the egress gateway's bundle when mounted), the agent's NSS database
   for Chromium) and waits for the app's URL. Then `sandbox-login` signs the
   agent's headless browser (Playwright's Chromium) in as the seeded user and
   keeps its session. A failing service or job stops the start: its log and
