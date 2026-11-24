@@ -677,6 +677,11 @@ Blocked for Human, saying the ticket needs that project's access — it
 belongs in that project or must be done on the Mac. Nothing else ever
 adds a repository, and none is ever removed.
 
+A fix ticket in neither the sprint nor the backlog (a ticket-system ticket
+another team holds) is judged from `outside-tickets.json` (ASS-562): landed
+once Done in its ticket system (the engine's paired done status, or Jira's
+`done` status category), waiting otherwise; never a failed attempt.
+
 Where a landed fix resumes the ticket (ASS-343): declared, else derived, else
 the step it blocked at. Once await-fix says landed, Find Where to Resume
 (`resume-step`, `ticket:fix-resume-step`, on the host) records the run's
@@ -2821,9 +2826,11 @@ same step: it never moved, so no step re-runs and no visit is spent.
   another loaded project's sprint or backlog, then the project's
   `outside-tickets.json`. The Jira downloader writes that file each cycle
   (`ticket:sync-outside`) with `{ key, title, url, ticket-system-status,
-  ticket-system-assignment }` for every key a sprint or backlog ticket depends
-  on that neither holds, read by key (assigned to a teammate, say). A key
-  found nowhere holds nothing.
+  ticket-system-assignment }` (and `ticket-system-status-category` when Jira
+  gives one, ASS-562) for every key a sprint or backlog ticket depends on, or
+  a live variation of one waits on (`waits-on`, Blocked's fix ticket, in this
+  project; ASS-562), that neither holds, read by key (assigned to a
+  teammate, say). A key found nowhere holds nothing.
 - **When it is done:** its ticket-system status is the status paired with
   the `is-done` step of the execution engine of the project it belongs to,
   read from the engine and never assumed to be "Done". For an outside ticket

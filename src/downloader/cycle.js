@@ -72,11 +72,13 @@ import { declaredCredentials } from '../control/vm-credentials.js';   // ASS-561
 //    logged and the cycle goes on. Nothing missing, no read and no sync.
 // 3c. Outside dependencies (ASS-355): every key the sprint file's and
 //    backlog.json's tickets (not soft deleted, as the syncs above left them)
-//    depend on that neither holds — a ticket assigned to a teammate, say —
+//    depend on, or their live variations wait on (waits-on, a ticket of this
+//    project; ASS-562), that neither holds — a ticket assigned to a teammate, say —
 //    read by key (adapters.jira.fetchTicketsByKey, batched, views false: its
 //    status and assignee alone are wanted) whoever holds it, to `ticket:
 //    sync-outside <project> <file>` with { fetched-at, keys, tickets: [{ key,
-//    title, url, ticket-system-status, ticket-system-assignment }] }, which
+//    title, url, ticket-system-status, ticket-system-assignment,
+//    ticket-system-status-category when Jira gives one }] }, which
 //    keeps data/projects/<p>/outside-tickets.json (control judges the
 //    dependencies against it). Nothing wanted, no read — and no write unless
 //    the file still lists some, emptied then. A read that fails is logged
@@ -322,7 +324,10 @@ async function syncOutside({ project, board, tickets, recorded, call, jira, exec
   const up = k => String(k ?? '').toUpperCase();
   const live = tickets.filter(t => t?.key && t['is-deleted'] !== true);
   const held = new Set(live.map(t => up(t.key)));
-  const keys = [...new Set(live.flatMap(t => t.dependencies ?? []).map(up))].filter(k => k && !held.has(k));
+  // ASS-562: and each key a live variation waits on (Blocked's fix ticket, ticket:wait-on) in this project.
+  const waited = live.flatMap(t => (t.variations ?? []).filter(v => v?.['is-deleted'] !== true).map(v => v['waits-on'])
+    .filter(w => w?.ticket && w['merge-request'] == null && w.project === project).map(w => w.ticket));
+  const keys = [...new Set([...live.flatMap(t => t.dependencies ?? []), ...waited].map(up))].filter(k => k && !held.has(k));
   const fetchedAt = new Date().toISOString();
   if (!keys.length) {
     if (recorded.length) await call(['ticket:sync-outside', project], { 'fetched-at': fetchedAt, keys: [], tickets: [] });
@@ -335,7 +340,8 @@ async function syncOutside({ project, board, tickets, recorded, call, jira, exec
     return log(`outside dependencies: ${keys.length} could not be read: ${String(err.message ?? err).split('\n')[0]}`);
   }
   log(`outside dependencies: ${keys.length} depended on, ${read.length} read`);
-  const fields = t => ({ key: t.key, title: t.title ?? '', url: t.url ?? null, 'ticket-system-status': t['ticket-system-status'] ?? null, 'ticket-system-assignment': t['ticket-system-assignment'] ?? null });
+  const fields = t => ({ key: t.key, title: t.title ?? '', url: t.url ?? null, 'ticket-system-status': t['ticket-system-status'] ?? null, 'ticket-system-assignment': t['ticket-system-assignment'] ?? null,
+    ...(t['ticket-system-status-category'] != null ? { 'ticket-system-status-category': t['ticket-system-status-category'] } : {}) });
   await call(['ticket:sync-outside', project], { 'fetched-at': fetchedAt, keys, tickets: read.map(fields) });
 }
 

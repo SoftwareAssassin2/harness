@@ -11,11 +11,13 @@ set -euo pipefail
 # written beside and renamed over, so a reader never sees half of it)
 # data/projects/<project>/outside-tickets.json becomes { "fetched-at",
 # "tickets": [ { key, title, url, ticket-system-status,
-# ticket-system-assignment } ] }, by key: each fetched ticket as fetched (its
+# ticket-system-assignment, and ticket-system-status-category when given
+# (ASS-562) } ] }, by key: each fetched ticket as fetched (its
 # other fields dropped), one wanted but not fetched (a read that failed) kept
 # as it was, one no longer wanted dropped. No keys empties it. Made when
 # missing. Control and the dashboard judge dependencies against it
-# (src/control/dependencies.js). Prints `synced <n> outside tickets`. Fails,
+# (src/control/dependencies.js), and ticket:fix-landed a waited-on fix
+# ticket (ASS-562). Prints `synced <n> outside tickets`. Fails,
 # writing nothing, on a bad or missing project, a missing file, or one not of
 # that shape. PROJECTS_DIR overrides the projects folder, used by tests.
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../json-file.bash"
@@ -33,7 +35,8 @@ update_json --create "$projects/$project/outside-tickets.json" --slurpfile f "$f
   def up: ascii_upcase;
   ($f[0].keys | map(up)) as $want
   | ($f[0].tickets | map(select(.key | up as $k | $want | any(. == $k)))
-      | map({ key, title: (.title // ""), url: (.url // null), "ticket-system-status": (."ticket-system-status" // null), "ticket-system-assignment": (."ticket-system-assignment" // null) })) as $new
+      | map({ key, title: (.title // ""), url: (.url // null), "ticket-system-status": (."ticket-system-status" // null), "ticket-system-assignment": (."ticket-system-assignment" // null) }
+        + (if ."ticket-system-status-category" != null then { "ticket-system-status-category": ."ticket-system-status-category" } else {} end))) as $new
   | ($new | map(.key | up)) as $got
   | ((.tickets // []) | map(select(.key | up as $k | ($want | any(. == $k)) and ($got | any(. == $k) | not))))  as $kept
   | { "fetched-at": ($f[0]."fetched-at" // null), tickets: ($new + $kept | sort_by(.key)) }'

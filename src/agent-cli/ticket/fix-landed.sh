@@ -31,6 +31,10 @@ set -euo pipefail
 # variation's file, an edit made before the wait began (it is in what was
 # recorded), or a file removed. A wait recorded before ASS-342, with no
 # "wait-began", finds no such edit.
+# A key in neither the sprint nor the backlog is read from the project's
+# outside-tickets.json (ASS-562): landed once Done in its ticket system (its
+# engine's paired done status, or the "done" status category), else waiting
+# (1), never exit 3.
 # Prints { waits-on, status,
 # landed } and exits 0 once landed; exits 3 when it is Done without a merge,
 # such a commit or such an edit (closed without its fix landed: a failed fix
@@ -205,10 +209,31 @@ found="$(jq -cs --arg key "$fix" '
       merged: any(.variations // [] | .[] | select(.["is-deleted"] | not) | .["state-changes"] // [] | .[] | .. | objects | select(has("from-state")); .["from-state"] | IN("merge-pull-request", "ensure-auto-merge")) }' "${files[@]}")"
 status="$(jq -r '.status // "unknown"' <<< "${found:-null}")"
 merged="$(jq -r '.merged // false' <<< "${found:-null}")"
-landed=false code=false
-[[ "$status" == Done && "$merged" == true ]] && landed=true code=true
-[[ "$status" == Done && "$landed" == false ]] && committed "$home" "$fix" && landed=true code=true
-[[ "$status" == Done && "$landed" == false && -n "$began" ]] && edited "$1" "$key" "$3" "$began" && landed=true
+landed=false code=false outside=false
+# ASS-562: a key in neither the sprint nor the backlog — a ticket-system ticket
+# another team holds — is read from outside-tickets.json (ticket:sync-outside,
+# which the downloader keeps fresh while it is waited on) and judged as a
+# dependency is (dependencies.js doneStatuses): Done when its status is one an
+# is-done step of the home project's execution engine pairs with, or its status
+# category is "done". It has no merge step or commit to look for, so it lands
+# when Done and waits otherwise; never exit 3, never a restart wait.
+if [[ "${found:-null}" == null ]]; then
+  outside_ticket="$(jq -c --arg key "$(tr '[:lower:]' '[:upper:]' <<< "$fix")" '
+    first(.tickets // [] | .[] | objects | select((.key // "") | ascii_upcase == $key))' "$projects/$home/outside-tickets.json" 2>/dev/null || true)"
+  if [[ -n "$outside_ticket" ]]; then
+    outside=true
+    status="$(jq -r '.["ticket-system-status"] // "unknown"' <<< "$outside_ticket")"
+    engine="$(jq -r '.["execution-state-engine"] // empty' "$projects/$home/project.json" 2>/dev/null || true)"
+    paired='[]'
+    [[ -n "$engine" ]] && paired="$(engine_steps_of ticket:fix-landed "$engine" "$home" 2>/dev/null \
+      | jq -c '[.[] | select(.["is-done"] == true) | .["paired-ticket-system-status"] | select(. != null)]' 2>/dev/null)" || paired='[]'
+    jq -e --argjson paired "${paired:-[]}" '(.["ticket-system-status"] as $s | $s != null and ($paired | index($s)) != null)
+      or .["ticket-system-status-category"] == "done"' <<< "$outside_ticket" >/dev/null && landed=true
+  fi
+fi
+[[ "$outside" == false && "$status" == Done && "$merged" == true ]] && landed=true code=true
+[[ "$outside" == false && "$status" == Done && "$landed" == false ]] && committed "$home" "$fix" && landed=true code=true
+[[ "$outside" == false && "$status" == Done && "$landed" == false && -n "$began" ]] && edited "$1" "$key" "$3" "$began" && landed=true
 restart="$(jq -r '.["awaiting-restart"] // empty' <<< "$variation")"
 # ASS-393: a harness fix landed in code waits for the running control to load it.
 if [[ "$code" == true ]] && is_harness_project "$home" && ! loaded "$1" "$home" "$fix"; then
@@ -231,5 +256,5 @@ if [[ -n "$restart" ]]; then
 fi
 jq -nc --argjson w "$waits" --arg s "$status" --argjson l "$landed" --argjson c "$cleared" '{ "waits-on": $w, status: $s, landed: $l } + $c'
 [[ "$landed" == true ]] && { blocked_log "$1" "$key" "$3" "Await the Fix" "The fix ticket $fix landed (status $status): $key resumes."; exit 0; }
-[[ "$status" == Done ]] && { blocked_log "$1" "$key" "$3" "Await the Fix" "The fix ticket $fix is Done without its fix landed: a failed fix attempt; Blocked goes round again."; echo "ticket:fix-landed: $fix is Done without its fix landed" >&2; exit 3; }
+[[ "$outside" == false && "$status" == Done ]] && { blocked_log "$1" "$key" "$3" "Await the Fix" "The fix ticket $fix is Done without its fix landed: a failed fix attempt; Blocked goes round again."; echo "ticket:fix-landed: $fix is Done without its fix landed" >&2; exit 3; }
 exit 1

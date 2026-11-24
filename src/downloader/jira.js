@@ -282,6 +282,7 @@ function ticket({ key, fields: f = {} }, site, storyPointsField, sprintName) {
     description: text(f.description),
     url: `${site}/browse/${key}`,
     'ticket-system-status': f.status?.name ?? null,
+    ...(f.status?.statusCategory?.key != null ? { 'ticket-system-status-category': f.status.statusCategory.key } : {}),
     'ticket-system-priority': f.priority?.name ?? null,
     'ticket-system-assignment': f.assignee?.displayName ?? null,
     'ticket-system-assignment-id': accountIdOf(f.assignee),
