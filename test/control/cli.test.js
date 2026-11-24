@@ -100,3 +100,32 @@ test('ASS-493 AC4: a check is limited to SCRIPT_CHECK_TIMEOUT_MS (10 min), kille
   assert.ok(lines.includes('error script-succeeds check sh -c "sleep 600" (ABC-3 A) still running after 0.2s: killed, counted as not succeeded'), lines.join('\n'));
   assert.match(lines.at(-1), /^script sh -c "sleep 600" \(ABC-3 A\): killed after \d+\.\ds$/);
 });
+
+// ASS-583 AC3: a failing command's stderr (its last lines) is in the error, and so in control's error log line
+// (tick.js ctx.attempt logs "<phase> <what>: <message>"); one that fails saying nothing gives its exit status, never
+// only node's "Command failed: …".
+test('ASS-583 AC3: a failing CLI command\'s stderr (its last lines) is in control\'s error log line; a silent one\'s exit status', async () => {
+  const { mkdtempSync, writeFileSync, chmodSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const root = mkdtempSync(join(tmpdir(), 'cli-root-'));
+  writeFileSync(join(root, 'agent.sh'), `#!/bin/bash
+case "$1" in
+  noisy) for i in $(seq 1 15); do echo "line $i" >&2; done; echo "code:hand-over: harness (https://forge.example/g/harness): authentication failed (fatal: Authentication failed)" >&2; exit 1 ;;
+  silent) echo '{"partial":true}'; exit 128 ;;
+esac`);
+  chmodSync(join(root, 'agent.sh'), 0o755);
+  const lines = [];
+  const ctx = { root, env: process.env, log: (phase, text) => lines.push(`${phase} ${text}`) };
+  // As control logs a step's failure (tick.js ctx.attempt).
+  const attempt = async (what, fn) => { try { await fn(); } catch (error) { ctx.log('error', `dispatch ${what}: ${error.message}`); } };
+  await attempt('run noisy', () => runCli(ctx, ['noisy']));
+  const noisy = lines.find(l => l.startsWith('error dispatch run noisy'));
+  assert.match(noisy, /authentication failed \(fatal: Authentication failed\)/);
+  assert.match(noisy, /line 15/);
+  assert.doesNotMatch(noisy, /line 5\b/, 'only the last lines');
+  assert.doesNotMatch(noisy, /Command failed/);
+  await attempt('run silent', () => runCli(ctx, ['silent']));
+  const silent = lines.find(l => l.startsWith('error dispatch run silent'));
+  assert.equal(silent, 'error dispatch run silent: agent.sh silent: exited 128 with nothing on stderr (stdout\'s last line: {"partial":true})');
+});

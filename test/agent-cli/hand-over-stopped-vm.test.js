@@ -14,6 +14,9 @@ import { join } from 'node:path';
 import { git, edit } from './workstation-fixture.js';
 import { fakeVm } from '../support/fake-vm.js';
 import { sandboxed, branchOnOrigin } from './sandbox-fixture.js';
+import { httpsGit } from '../support/https-git.js';
+import { after } from 'node:test';
+import { dirname, basename } from 'node:path';
 
 const IDENTITY = { GIT_AUTHOR_NAME: 'T', GIT_AUTHOR_EMAIL: 't@example.com', GIT_COMMITTER_NAME: 'T', GIT_COMMITTER_EMAIL: 't@example.com' };
 
@@ -178,4 +181,25 @@ test('AC3: a limactl that fails while the VM\'s instance is still there is not t
   assert.notEqual(h.code, 0);
   assert.match(h.err, /could not read the state of ABC-3 A's Lima VM abc-3-a/);
   assert.equal(h.json?.['missing-vm'], undefined);
+});
+
+// ASS-583 AC2: the forge the fallback reads refuses the Mac (the live case: a private GitLab over https, and no
+// credential the Mac's git could use): the hand-over fails, naming the repository and "authentication failed", and
+// never reports work lost that it could not check.
+const forges = [];
+after(() => Promise.all(forges.map(f => f.close())));
+test('ASS-583 AC2: a VM gone and a forge that refuses the Mac — the hand-over fails saying "authentication failed" for the repository, and reports nothing lost', async () => {
+  const t = await withVm({ exists: false });
+  branchOnOrigin(t.s);
+  const forge = await httpsGit(dirname(t.s.origins.harness), { token: 'glpat-not-held-by-the-mac' }); forges.push(forge);
+  edit(t.s.at('projects', 'p', 'project.json'), p => { p.repositories[0].url = forge.url(basename(t.s.origins.harness)); });
+  Object.assign(t.s.env, { GIT_SSL_CAINFO: forge.ca, GIT_CONFIG_NOSYSTEM: '1' });
+  assert.equal((await t.call('substrate:sandbox-up', 'p', 'ABC-3', 'A', 'mac')).code, 0);
+  const h = await t.call('code:hand-over', 'p', 'ABC-3', 'A', 'local-substrate');
+  assert.notEqual(h.code, 0);
+  assert.match(h.err, /code:hand-over: harness \(https:\/\/127\.0\.0\.1:\d+\/harness\.git\): authentication failed/);
+  assert.match(h.err, /ABC-3 A's Lima VM abc-3-a no longer exists, and its branches on the forge could not be checked; not handed over/);
+  assert.doesNotMatch(h.err, /lost/);
+  assert.equal(h.json?.lost, undefined);
+  assert.notEqual(t.s.variation('A')['run-target']?.target, 'local-substrate', 'nothing recorded: control tries again');
 });

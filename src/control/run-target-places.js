@@ -8,6 +8,7 @@
 // taken for the ticket, or the machine's checkout brought up to date. Between two machine targets it only records the
 // target (their steps push and claim as before) — control does not even call it then — unless one of them is a
 // Substrate sandbox (ASS-535): its branches then move through the Mac (relay.bash), which holds the forge logins. A failure throws: the step is held and tried again (backoff.js).
+// ASS-585: the hand-over runs in the background, its step held till it has succeeded (see readyTarget below).
 //
 // runsOnMachine is where a step's work runs now: in the ticket's machine when the step is a run-location: vm step and
 // its target is not a Mac target; on the Mac otherwise (a host step runs on the host whatever its target, as before).
@@ -73,7 +74,7 @@ export function handOverVm(project, ticket, variation) {
 // holds no seat meanwhile, as a step starting a VM does). Said once per hold; no failure counted; tried every tick.
 export async function handOverWaits(ctx, state, project, ticket, variation, who) {
   const vm = handOverVm(project, ticket, variation), said = `hand-over-memory/${who}`;
-  if (!vm || ctx.memory.vmsUp?.has(vm)) return false;
+  if (!vm || ctx.memory.vmsUp?.has(vm) || ctx.memory.handOvers?.has(handOverKey(project, ticket, variation))) return false;   // ASS-585: one in flight (or ended, unread) asked no more
   if (!await memoryShort(ctx, state, project, vm, { key: ticket.key, variation: variation.name, state: variation['harness-status']?.state })) {
     ctx.memory.warned?.delete(said);
     return false;
@@ -85,26 +86,90 @@ export async function handOverWaits(ctx, state, project, ticket, variation, who)
   return true;
 }
 
+// ASS-585: a hand-over runs in the background, as a script step's command does (ASS-494, steps.js startScript): relaying
+// branches through the Mac or starting a stopped Lima VM (ASS-577) can take minutes, and awaited in line it held the
+// whole tick of its project — every other ticket's steps and dispatches with it (`slow tick … cli code:hand-over 25472ms`).
+// readyTarget starts it (untimed: the tick's timings never include it), keeps it in ctx.memory.handOvers under the
+// variation (`<project>/<KEY>/<var>`), and waits HAND_OVER_WAIT at most (ctx.handOverWait in tests) in the tick that
+// started it, so a quick one — nothing to move, a branch already on the forge — still lets its step go on in that tick.
+// Past that the step is held, `waiting for its hand-over` (said once), and every later call reads it without waiting:
+// - while it runs, HANDING_OVER: the caller starts nothing (steps.js handedOver, dispatch.js) and asks again next tick —
+//   no failure counted, the visit not spent;
+// - once it has succeeded, as an awaited one: the target noted (noteRunTarget, onto the variation it was started for
+//   and the one loaded now), the target returned, and the step starts — only then (ASS-565, ASS-567: only where it is
+//   placed, after its hand-over succeeded);
+// - once it has failed, its error thrown, once: the caller holds the step with backoff (backoff.js) and tries again.
+// One per variation at a time: a variation with a hand-over in flight never starts another, even to another target; one
+// finished for a target the variation has left is forgotten, and the hand-over its target needs now started. Its
+// duration is logged as it ends (`handed over … in Ns`, or `hand-over to … failed after Ns`).
+// A control stopped while one runs leaves it to finish (its command is not a step's script, so not in ctx.scripts):
+// as before, when the forced shutdown (main.js STOP_GRACE_MS) ended a tick blocked in it.
+export const HANDING_OVER = Symbol('handing over');
+const HAND_OVER_WAIT = 2_000;
+const handOverKey = (project, ticket, variation) => `${project.id}/${ticket.key}/${variation.name}`;
+
 // readyTarget(ctx, project, ticket, variation) — the variation's branch handed over to its target when it moved
-// (see above); the target, or null when it holds none (Blocked's runs, a step without a seat: as before).
+// (see above); the target, or null when it holds none (Blocked's runs, a step without a seat: as before), or
+// HANDING_OVER while its hand-over runs in the background (ASS-585). A failed hand-over throws.
 export async function readyTarget(ctx, project, ticket, variation) {
   const h = handOverOf(project, ticket, variation);
   if (!h) return null;
-  const { target, last } = h;
-  if (!h.handOver) return target;
+  const { target } = h;
+  const handOvers = ((ctx.memory ??= {}).handOvers ??= new Map()), key = handOverKey(project, ticket, variation), who = `${ticket.key} ${variation.name}`;
+  let entry = handOvers.get(key);
+  if (entry?.ended) {
+    handOvers.delete(key);
+    if (entry.target === target) {
+      if (entry.error) throw entry.error;
+      noteRunTarget(variation, entry.record);
+      return target;
+    }
+    entry = undefined;   // finished for a target the variation has since left: forgotten
+  }
+  if (!entry) {
+    if (!h.handOver) return target;
+    entry = startHandOver(ctx, project, ticket, variation, h, who);
+    handOvers.set(key, entry);
+    const wait = ctx.handOverWait ?? HAND_OVER_WAIT;
+    let timer;
+    await Promise.race([entry.done, new Promise(resolve => { timer = setTimeout(resolve, wait); })]);
+    clearTimeout(timer);
+    if (entry.ended) return readyTarget(ctx, project, ticket, variation);
+  }
+  const said = `hand-over/${key}/${entry.started}/${target}`;
+  if (!ctx.memory.warned?.has(said)) {
+    ctx.memory.warned?.add(said);
+    ctx.log(PHASE, `${who}: waiting for its hand-over to ${entry.target}${entry.target === target ? '' : ` to end before handing over to ${target}`}; its step starts once it has succeeded`);
+  }
+  return HANDING_OVER;
+}
+
+// startHandOver(ctx, project, ticket, variation, h, who) — ASS-585: code:hand-over started in the background (untimed),
+// as an entry { target, started, done, ended, record | error }; its outcome logged as it ends (ASS-577's VM lines, the
+// move, and how long it took).
+function startHandOver(ctx, project, ticket, variation, { target, last }, who) {
+  const started = Date.now(), entry = { target, started: ctx.now().toISOString(), ended: false };
+  const took = () => `${Math.round((Date.now() - started) / 1000)}s`;
   // ASS-577: its Lima VM, which the hand-over may start, counted as worked in till it ends (the VM lifecycle stops it not).
   const vm = handOverVm(project, ticket, variation);
   const handOver = () => ctx.cli(['code:hand-over', project.id, ticket.key, variation.name, target]);
-  const out = await (vm ? trackMachineWork(ctx, project.id, ticket.key, variation.name, Promise.resolve().then(handOver)) : handOver());   // counted before it starts
-  const said = (() => { try { return JSON.parse(String(out).trim().split('\n').pop()); } catch { return {}; } })();
-  if (said?.['started-vm']) ctx.log(PHASE, `${ticket.key} ${variation.name}: started its stopped Lima VM ${said['started-vm']} to hand its branches over; ${said['stopped-again'] === false ? 'it would not stop again (the VM lifecycle stops it)' : 'stopped again'}`);
-  if (said?.['missing-vm']) ctx.log(PHASE, `${ticket.key} ${variation.name}: its Lima VM ${said['missing-vm']} no longer exists; its branches were taken from the forge instead. Lost: ${said.lost ?? 'nothing known'}`);
-  // ASS-565: noted beside the loaded variation, never written onto it (a deep-frozen parse, read.js deepFreeze).
-  // ASS-567: with the worktree folder it made or reused (local-worktree), which the loaded variation does not hold yet:
-  // dispatch.js agentFolder starts the agent there in this same tick, never in the project's workspace.
-  noteRunTarget(variation, { target, at: ctx.now().toISOString(), ...(target === 'local-worktree' && said?.folder ? { folder: said.folder } : {}) });
-  if (last !== target) ctx.log(PHASE, `${ticket.key} ${variation.name}: handed over ${last ? `from ${last} ` : ''}to ${target}${said?.branch ? ` (${said.branch}${said.folder ? ` in ${said.folder}` : ''})` : ''}`);
-  return target;
+  const untimed = ctx.untimed ?? (fn => fn());
+  const running = untimed(() => (vm ? trackMachineWork(ctx, project.id, ticket.key, variation.name, Promise.resolve().then(handOver)) : Promise.resolve().then(handOver)));   // counted before it starts
+  entry.done = running.then(out => {
+    const said = (() => { try { return JSON.parse(String(out).trim().split('\n').pop()); } catch { return {}; } })();
+    if (said?.['started-vm']) ctx.log(PHASE, `${who}: started its stopped Lima VM ${said['started-vm']} to hand its branches over; ${said['stopped-again'] === false ? 'it would not stop again (the VM lifecycle stops it)' : 'stopped again'}`);
+    if (said?.['missing-vm']) ctx.log(PHASE, `${who}: its Lima VM ${said['missing-vm']} no longer exists; its branches were taken from the forge instead. Lost: ${said.lost ?? 'nothing known'}`);
+    // ASS-565: noted beside the loaded variation, never written onto it (a deep-frozen parse, read.js deepFreeze).
+    // ASS-567: with the worktree folder it made or reused (local-worktree), which the loaded variation does not hold yet:
+    // dispatch.js agentFolder starts the agent there, never in the project's workspace.
+    entry.record = { target, at: ctx.now().toISOString(), ...(target === 'local-worktree' && said?.folder ? { folder: said.folder } : {}) };
+    noteRunTarget(variation, entry.record);
+    ctx.log(PHASE, `${who}: handed over ${last && last !== target ? `from ${last} ` : ''}to ${target}${said?.branch ? ` (${said.branch}${said.folder ? ` in ${said.folder}` : ''})` : ''} in ${took()}`);
+  }, error => {
+    entry.error = error;
+    ctx.log(PHASE, `${who}: hand-over to ${target} failed after ${took()}`);
+  }).finally(() => { entry.ended = true; });
+  return entry;
 }
 
 // heldElsewhere(project, key, name, planned) — ASS-565, ASS-567: whether the variation's current step must wait a tick

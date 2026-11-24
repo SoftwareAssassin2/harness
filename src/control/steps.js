@@ -15,10 +15,11 @@ import { fillArgs } from './placeholders.js';
 import { ticketFacts, ticketValues, runValues, parseOutput, cameFrom, sandboxRefusedFeedback } from './facts.js';
 import { heldByChecks } from './checks.js';
 import { firstStepId, levelChanges, contextOf, ticketPath, found, moveTicket, moveRun, endRun, isPaused, mayMove, gated, SKIPPED, STACK_SKIPPED, NO_CHOICE, TIMER } from './moves.js';
+import { orphanOf, endOrphan } from './moves.js';   // ASS-584
 import { skipsForStack, workModeNews } from './work-mode.js';
 import { failed, waiting, held as heldFor, ticketKey, runKey, cleared, BLOCK_AFTER, FAILED_STARTS } from './backoff.js';
 import { runsInVm, vmOf } from './vm.js';
-import { runsOnMachine, readyTarget, heldElsewhere, handOverWaits } from './run-target-places.js';
+import { runsOnMachine, readyTarget, heldElsewhere, handOverWaits, HANDING_OVER } from './run-target-places.js';
 import { onMacTarget, onSubstrateTarget, targetOf } from './seat-kinds.js';
 import { sandboxWaits, syncSandboxTicket, machineWork } from './sandboxes.js';
 import { machineOf } from './machine.js';
@@ -165,10 +166,11 @@ function scriptEnv(state, project, variation, key) {
 // handedOver(ctx, state, project, ticket, variation, held, who) — ASS-540: the variation's branch handed over to its run
 // target before its script starts (run-target-places.js readyTarget); false, the step held a while (backoff.js) and
 // the failure logged, when that fails. ASS-577: false too, nothing run and no failure counted, while the hand-over would
-// start its stopped Lima VM and the Mac is out of memory (handOverWaits).
+// start its stopped Lima VM and the Mac is out of memory (handOverWaits). ASS-585: false too, nothing run and no failure
+// counted, while the hand-over runs in the background (readyTarget's HANDING_OVER): its script starts once it succeeded.
 async function handedOver(ctx, state, project, ticket, variation, held, who) {
   if (await handOverWaits(ctx, state, project, ticket, variation, who)) return false;
-  try { await readyTarget(ctx, project, ticket, variation); return true; } catch (error) {
+  try { return await readyTarget(ctx, project, ticket, variation) !== HANDING_OVER; } catch (error) {
     const { until } = failed(ctx.memory, held, ctx.now().getTime(), error.message);
     ctx.log(PHASE, `${who}: could not hand its branch over to its run target: ${error.message}; tried again in ${Math.round((until - ctx.now().getTime()) / 1000)}s`);
     return false;
@@ -496,6 +498,11 @@ async function runTransient(ctx, state, id) {
       ctx.log(PHASE, `${who}: its step was removed from ${run['state-engine']}; moves on to ${to}`);
       continue;
     }
+    // ASS-584: a run whose ticket or variation is gone (left the sprint, deleted) or whose parent run is gone has nothing
+    // to work for: ended once, logged, never dispatched again — unless an agent still works it (ended after its turn).
+    // After ASS-236's step check above, which keeps its own line for a run at a removed step.
+    const orphan = orphanOf(state, run);
+    if (orphan) { if (!state.assignments.some(a => a['transient-state-engine'] === run.id)) await endOrphan(ctx, PHASE, run, orphan); return; }
     // A ticket step's own run (no trigger; its parent names the step) whose
     // ticket has left that step — moved by a human, a gap fixed, a run left
     // behind — has nothing to do, finished or not.
@@ -605,8 +612,8 @@ async function runTransient(ctx, state, id) {
         const next = nextState(step, engine, facts, changes), passed = passedItself(next), reject = rejected(next, facts);
         if (heldByChecks(ctx, facts)) return;   // ASS-493
         if (!await settle(next, undefined, humanCause(next, facts))) return;
-        if (passed) ctx.log(PHASE, `${context.workItem} ${context.variation} ${run['state-engine']}/${step.id}: ${passed}`);
-        if (reject) ctx.log(PHASE, `${context.workItem} ${context.variation} ${run['state-engine']}/${step.id}: ${rejectedLine(reject, next.to)}`);
+        if (passed) ctx.log(PHASE, `${context.workItem ?? '-'} ${context.variation ?? '-'} ${run['state-engine']}/${step.id}: ${passed}`);
+        if (reject) ctx.log(PHASE, `${context.workItem ?? '-'} ${context.variation ?? '-'} ${run['state-engine']}/${step.id}: ${rejectedLine(reject, next.to)}`);
         break;
       }
       default: return;

@@ -26,10 +26,11 @@ import { memoryMcpConfig, memoryPort, memoryAnswers } from '../agents/memory.js'
 import { accountOf, kindOfAccount } from '../agents/account.js';
 import { sessionDir } from '../agents/session.js';
 import { found, contextOf, ticketPath, isPaused, levelChanges, moveTicket, moveRun, mayMove, firstStepId, backgroundProject, weeklyLimit } from './moves.js';
+import { orphanOf } from './moves.js';   // ASS-584
 import { problemOf, ticketOf, blockHistory, questionsOf } from './facts.js';
 import { failed, waiting, held, ticketKey, runKey } from './backoff.js';
 import { runsInVm, vmOf } from './vm.js';
-import { runsOnMachine, readyTarget, heldElsewhere, handOverWaits } from './run-target-places.js';
+import { runsOnMachine, readyTarget, heldElsewhere, handOverWaits, HANDING_OVER } from './run-target-places.js';
 import { targetOf, onSubstrateTarget } from './seat-kinds.js';
 import { sandboxWaits, syncSandboxTicket } from './sandboxes.js';
 import { macHost } from './machine-substrate.js';
@@ -215,7 +216,7 @@ export const codeFolder = (project, vm, folder, repository) => (!vm ? folder : r
 function vmFor(state, project, step, key, variation) {
   if (!runsOnMachine(project, key, variation, step)) return null;
   const found = project.tickets.find(t => t.key === key)?.variations?.find(v => v.name === variation && !v['is-deleted']);
-  const target = targetOf(project, key, variation) ?? undefined, machine = vmOf(found, `${key} ${variation} ${step.id}`, target);
+  const target = targetOf(project, key, variation) ?? undefined, machine = vmOf(found, `${key ?? 'no ticket'} ${variation ?? '-'} ${step.id}`, target);   // ASS-584: never 'undefined'
   // ASS-581: never into a Lima VM its project doesn't run on (an old `vm` record from before run targets, with no seat
   // naming another place): held, and tried again once a seat on the project's targets is placed.
   if (!listsLocalVm(project) && target == null && machine === found?.vm?.name && (found.vm.kind ?? 'lima') === 'lima' && !found.workstation?.name) {
@@ -604,7 +605,7 @@ const takeWorkspace = (ctx, step, project, key, variation) =>
 // variation goes to Blocked instead (neverUp).
 async function vmDown(ctx, state, step, project, key, variation, at) {
   if (!runsInVm(step)) return false;
-  const v = found(state, { project, 'work-item': key, variation }), who = `${key} ${variation} ${at}`;
+  const v = found(state, { project, 'work-item': key, variation }), who = `${key ?? 'no ticket'} ${variation ?? '-'} ${at}`;   // ASS-584: never 'undefined'
   if (!runsOnMachine(v.project, key, variation, step)) return false;   // ASS-540: on a Mac target, no VM to wait for
   if (onSubstrateTarget(v.project, key, variation)) return false;   // ASS-535: its sandbox is waited for instead (sandboxWaits)
   const waits = awaitsVm(ctx, state, v.project, v.variation, who), name = v.variation?.vm?.name;
@@ -728,6 +729,7 @@ export async function dispatch(ctx, state) {
   const answering = waitsOnAnswer(ctx, state);
   for (const run of runOrder(state)) {   // ASS-531: a focused project's planning runs first
     if (run['is-done'] || state.assignments.some(a => a['transient-state-engine'] === run.id)) continue;
+    if (orphanOf(state, run)) continue;   // ASS-584: its ticket, variation or parent run gone: runSteps ends it, never dispatched
     const step = stepOf(engineSteps(enginesFor(state, run.project), run['state-engine']), run.state);
     if (step?.action?.type !== 'prompt' || !isActive(step)) continue;   // switched off (ASS-192): passed by steps.js, no agent
     const at = ticketPath(run, state.transient);
@@ -774,7 +776,7 @@ export async function dispatch(ctx, state) {
     await ctx.attempt(PHASE, `run ${run.id.slice(0, 8)}`, heldOnFailure(ctx, key, async () => {
       const where = nextRepository(ctx.memory, step, found(state, { project: run.project, 'work-item': context.workItem, variation: context.variation }).variation, visitOf({ run, changes: run['state-changes'] ?? [] }));
       if (where?.skip) return skip(ctx, step, engineSteps(enginesFor(state, run.project), run['state-engine']), run['state-changes'] ?? [], `run ${run.id.slice(0, 8)} ${run.state}`, to => moveRun(ctx, PHASE, run, to));
-      if (!waits.backlog) await readyTarget(ctx, project, waits.ticket, waits.variation);   // ASS-540: its branch where its target is
+      if (!waits.backlog && await readyTarget(ctx, project, waits.ticket, waits.variation) === HANDING_OVER) return;   // ASS-540: its branch where its target is (ASS-585: its hand-over still running: no agent yet)
       const vm = vmFor(state, project, step, context.workItem, context.variation);
       if (!waits.backlog) await syncSandboxTicket(ctx, project, waits.ticket, waits.variation, vm);   // ASS-535: its /mnt/ticket up to date
       await takeWorkspace(ctx, step, project, context.workItem, context.variation);
@@ -837,7 +839,7 @@ export async function dispatch(ctx, state) {
         const { ticket, variation } = at;
         const where = nextRepository(ctx.memory, step, variation, visitOf({ project, ticket, variation, changes: levelChanges(variation) }));
         if (where?.skip) return skip(ctx, step, project.engine, levelChanges(variation), who, to => mayMove(ctx, PHASE, state, project, variation, who, to) && moveTicket(ctx, PHASE, project, ticket, variation, to));
-        await readyTarget(ctx, project, ticket, variation);   // ASS-540: its branch where its target is
+        if (await readyTarget(ctx, project, ticket, variation) === HANDING_OVER) return;   // ASS-540: its branch where its target is (ASS-585: its hand-over still running: no agent yet)
         const vm = vmFor(state, project, step, item.key, item.variation);
         const refused = sandboxRefused(project, item.key, item.variation, vm);   // ASS-564: refuses nothing now (unsandboxed where the sandbox can't run)
         if (refused) throw new Error(refused);

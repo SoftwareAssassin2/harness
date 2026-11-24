@@ -134,21 +134,25 @@ lima_ready() {
   started_vm="$vm"
 }
 # forge_branches — "<repo>\t<branch>" for each of the variation's own branches (relay.bash relay_slug) on the origin of
-# each of the project's repositories.
+# each of the project's repositories. ASS-583: with the project's forge credential (forge-git.bash forge_git); a forge
+# that refuses or can't be reached fails it, forge_git naming the repository and why — never read as "no branches".
 forge_branches() {
-  local url name re
+  local url name re heads
   re="$(relay_slug "$key" "$variation")"
   while IFS= read -r url; do
     [[ -n "$url" ]] || continue
     name="$(basename "${url%.git}")"
-    git ls-remote --heads "$url" 2>/dev/null | awk '{ sub("^refs/heads/", "", $2); print $2 }' | { grep -E "$re" || true; } | sed "s|^|$name"$'\t'"|"
+    heads="$(forge_git "$project" "$url" ls-remote --heads "$url")" || return 1
+    awk '{ sub("^refs/heads/", "", $2); print $2 }' <<< "$heads" | { grep -E "$re" || true; } | sed "s|^|$name"$'\t'"|"
   done < <(jq -r '.repositories[]?.url // empty' "$projects/$project/project.json")
 }
 # forge_fallback <vm> — the VM the variation records is gone: said plainly; its branches are those on the forge, and what
 # could not be recovered is said (lost) — so the hand-over goes on, never retried for a VM that will not come back.
+# ASS-583: only once the forge has answered: one it couldn't check fails the hand-over (retried), no work reported lost.
 forge_fallback() {
   local found
-  missing_vm="$1"; found="$(forge_branches)"
+  missing_vm="$1"
+  found="$(forge_branches)" || { missing_vm=""; echo "$command: $key $variation's Lima VM $1 no longer exists, and its branches on the forge could not be checked; not handed over" >&2; exit 1; }
   if [[ -n "$found" ]]; then
     lost="whatever $1 held that was never pushed (on the forge: $(awk -F '\t' '{ printf "%s%s %s", (NR > 1 ? ", " : ""), $1, $2 }' <<< "$found"))"
   else lost="all of $key $variation's work in $1: none of its branches is on the forge"; fi
@@ -198,7 +202,7 @@ commit_and_push() {
   branch="$b"
   if git -C "$dir" rev-parse --verify --quiet "origin/$default" >/dev/null && [[ "$(git -C "$dir" rev-list --count "origin/$default..HEAD")" == 0 ]] \
     && ! git -C "$dir" show-ref --verify --quiet "refs/remotes/origin/$b"; then return 0; fi
-  git -C "$dir" push --quiet origin "HEAD:refs/heads/$b" || { echo "$command: could not push $b from $dir" >&2; exit 1; }
+  forge_git "$project" "$(git -C "$dir" remote get-url origin)" -C "$dir" push --quiet origin "HEAD:refs/heads/$b" || { echo "$command: could not push $b from $dir" >&2; exit 1; }
 }
 
 # Leaving where the last step ran.
@@ -224,7 +228,10 @@ elif [[ -n "$from" ]]; then
   if [[ $ready -eq 3 ]]; then
     # ASS-577: its Lima VM gone: the branch the Mac uses is the one recorded, else the workspace repository's on the forge.
     forge_fallback "$vm"
-    [[ -n "$branch" ]] || branch="$(awk -F '\t' -v r="$repo" '$1 == r { print $2; exit }' <<< "$(forge_branches)")"
+    if [[ -z "$branch" ]]; then
+      found="$(forge_branches)" || { echo "$command: $key $variation's Lima VM $vm no longer exists, and its branches on the forge could not be checked; not handed over" >&2; exit 1; }
+      branch="$(awk -F '\t' -v r="$repo" '$1 == r { print $2; exit }' <<< "$found")"
+    fi
   else
   # In the machine's checkout: leftovers committed, its branch pushed; it names the branch.
   b="$(machine_run --workdir "/repos/$repo" "$vm" -- bash -c '
@@ -245,7 +252,7 @@ wt="$(jq -r '.["worktree-folder"] // empty' <<< "$build")"
 if [[ "$to" == local-workspace ]]; then repo_dir="$workspace" clone_flag=()
 elif [[ "$to" == local-worktree && -n "$wt" && -d "$wt" ]] && worktree_repo "$wt" >/dev/null 2>&1; then repo_dir="$(worktree_repo "$wt")" clone_flag=(); [[ "$repo_dir" == "$(cd "$workspace" && pwd -P)" ]] || clone_flag=(--harness-clone)
 else repo_dir="$(harness_clone "$command" "$project")" clone_flag=(--harness-clone); fi
-git -C "$repo_dir" fetch --quiet origin 2>/dev/null || echo "$command: could not fetch origin; going on with what is here" >&2
+forge_git "$project" "$(git -C "$repo_dir" remote get-url origin)" -C "$repo_dir" fetch --quiet origin || echo "$command: could not fetch origin; going on with what is here" >&2
 if [[ -z "$branch" ]]; then branch="$("$here_code/create-branch.sh" "$project" "$key" "$variation" ${clone_flag[@]+"${clone_flag[@]}"} | jq -r .branch)"; fi
 if ! git -C "$repo_dir" show-ref --verify --quiet "refs/heads/$branch"; then
   if git -C "$repo_dir" show-ref --verify --quiet "refs/remotes/origin/$branch"; then git -C "$repo_dir" branch --quiet --track "$branch" "origin/$branch"

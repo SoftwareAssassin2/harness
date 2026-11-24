@@ -46,7 +46,14 @@
 # its origin on the Mac, <substrate dir>/relay/<project>/<name>.git (name: the
 # URL's last part), kept between moves so each fetch is small. Fails, naming
 # <command> and the repository, when a move fails; what moved before it stays.
+#
+# ASS-583: every call to a forge here (ls-remote, fetch, push, clone) goes through forge-git.bash forge_git: with the
+# forge credential the project declares for its VMs (vm-credentials.json's gitlab / github keychain item), read from
+# the keychain for that call alone, so a private forge over https answers the Mac (it had no login of its own there,
+# and the failure was hidden: "no branches"). A forge that refuses or can't be reached fails the move, naming the
+# repository and why ("authentication failed", "forge unreachable"), never taken for a repository with nothing to move.
 here_relay="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
+source "$here_relay/../forge-git.bash"
 substrate_dir="${substrate_dir:-${HARNESS_SUBSTRATE_DIR:-$HOME/.harness/substrate}}"
 
 # relay_slug <key> <variation> — the variation's branch names' regex (workstation-steps.js ownBranch).
@@ -93,14 +100,15 @@ relay_out() {
   while IFS=$'\t' read -r r b url d f; do
     [[ -n "$r" ]] || continue
     relay="$(relay_repo "$project" "$url")" || { rm -rf "$tmp"; echo "$command: no relay for $r ($url)" >&2; return 1; }
-    [[ -z "$d" ]] || git -C "$relay" fetch --quiet --filter=blob:none origin "+refs/heads/$d:refs/heads/$d" 2>/dev/null || true
+    [[ -z "$d" ]] || forge_git "$project" "$url" -C "$relay" fetch --quiet --filter=blob:none origin "+refs/heads/$d:refs/heads/$d" \
+      || { rm -rf "$tmp"; echo "$command: could not fetch $d of $r from origin" >&2; return 1; }
     if [[ "$f" == yes ]]; then
       git -C "$relay" fetch --quiet "$tmp/out/$r.bundle" "+refs/heads/$b:refs/heads/$b" || { rm -rf "$tmp"; echo "$command: $r's bundle of $b could not be read (its basis missing on the Mac?)" >&2; return 1; }
     fi
     sha="$(git -C "$relay" rev-parse -q --verify "refs/heads/$b^{commit}" 2>/dev/null || true)"
     [[ -n "$sha" ]] || { [[ "$f" == no ]] && continue; }
-    git -C "$relay" push --quiet origin "refs/heads/$b:refs/heads/$b" 2>/dev/null \
-      || { rm -rf "$tmp"; echo "$command: $b of $r could not be pushed to origin (diverged from origin's?)" >&2; return 1; }
+    forge_git "$project" "$url" -C "$relay" push --quiet origin "refs/heads/$b:refs/heads/$b" \
+      || { rm -rf "$tmp"; echo "$command: $b of $r could not be pushed to origin" >&2; return 1; }
     moved+="$r"$'\t'"$b"$'\n'
   done <<< "$lines"
   rm -rf "$tmp"
@@ -134,22 +142,25 @@ done
 rm -rf "$i" 2>/dev/null || true'
 
 relay_in() {
-  local command="$1" project="$2" key="$3" variation="$4" machine="$5" list r url basis relay b tmp pairs=() re
+  local command="$1" project="$2" key="$3" variation="$4" machine="$5" list r url basis relay b tmp pairs=() re heads
   re="$(relay_slug "$key" "$variation")"
   list="$(machine_run "$machine" -- bash -c "$relay_list_script" </dev/null)" || { echo "$command: could not list the repositories in $machine" >&2; return 1; }
   tmp="$(mktemp -d)"; mkdir -p "$tmp/harness-relay-in"
   while IFS=$'\t' read -r r url basis; do
     [[ -n "$r" && -n "$url" ]] || continue
+    # ASS-583: a forge that can't be listed fails the move (forge_git said why), never read as "none of its branches".
+    heads="$(forge_git "$project" "$url" ls-remote --heads "$url")" \
+      || { rm -rf "$tmp"; echo "$command: could not list $r's branches on origin" >&2; return 1; }
     while read -r b; do
       [[ -n "$b" ]] || continue
       relay="$(relay_repo "$project" "$url")" || { rm -rf "$tmp"; echo "$command: no relay for $r ($url)" >&2; return 1; }
-      git -C "$relay" fetch --quiet --filter=blob:none origin "+refs/heads/$b:refs/heads/$b" || { rm -rf "$tmp"; echo "$command: could not fetch $b of $r from origin" >&2; return 1; }
+      forge_git "$project" "$url" -C "$relay" fetch --quiet --filter=blob:none origin "+refs/heads/$b:refs/heads/$b" || { rm -rf "$tmp"; echo "$command: could not fetch $b of $r from origin" >&2; return 1; }
       if [[ -n "$basis" ]] && git -C "$relay" cat-file -e "$basis^{commit}" 2>/dev/null && ! git -C "$relay" merge-base --is-ancestor "refs/heads/$b" "$basis" 2>/dev/null; then
         git -C "$relay" bundle create "$tmp/harness-relay-in/$r--${b//\//_}.bundle" "refs/heads/$b" "^$basis" >/dev/null 2>&1
       else git -C "$relay" bundle create "$tmp/harness-relay-in/$r--${b//\//_}.bundle" "refs/heads/$b" >/dev/null 2>&1; fi \
         || { rm -rf "$tmp"; echo "$command: could not bundle $b of $r" >&2; return 1; }
       pairs+=("$r"$'\t'"$b")
-    done < <(git ls-remote --heads "$url" 2>/dev/null | awk '{ sub("^refs/heads/", "", $2); print $2 }' | grep -E "$re" || true)
+    done < <(awk '{ sub("^refs/heads/", "", $2); print $2 }' <<< "$heads" | grep -E "$re" || true)
   done <<< "$list"
   if [[ ${#pairs[@]} -gt 0 ]]; then
     machine_copy_in "$machine" "$tmp/harness-relay-in" /tmp/harness-relay-in \
@@ -174,9 +185,11 @@ fi
 rm -rf "$i" 2>/dev/null || true'
 
 relay_clone() {
-  local command="$1" machine="$2" name="$3" url="$4" tmp d
+  local command="$1" machine="$2" name="$3" url="$4" tmp d owner
+  # ASS-583: whose forge credential — the sandbox's project (substrate:<project>:…), else the caller's $project.
+  if [[ "$machine" == substrate:* ]]; then owner="${machine#substrate:}"; owner="${owner%%:*}"; else owner="${project:-}"; fi
   tmp="$(mktemp -d)"; mkdir -p "$tmp/harness-relay-clone"
-  if ! git clone --quiet --bare --single-branch "$url" "$tmp/$name.git" 2>"$tmp/err"; then
+  if ! forge_git "$owner" "$url" clone --quiet --bare --single-branch "$url" "$tmp/$name.git" 2>"$tmp/err"; then
     echo "$command: could not clone $url on the Mac: $(grep -m 1 . "$tmp/err")" >&2; rm -rf "$tmp"; return 1
   fi
   d="$(git -C "$tmp/$name.git" symbolic-ref --quiet --short HEAD)" \

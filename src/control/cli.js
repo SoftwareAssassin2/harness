@@ -10,11 +10,24 @@ import { machineCommand } from './machine.js';
 const MAX_OUTPUT = 16 * 1024 * 1024;   // a script's stdout and stderr kept, each, at most
 const show = argv => argv.map(a => (/\s/.test(a) ? JSON.stringify(a) : a)).join(' ');
 
+// failureText(error, stderr, stdout) — why a CLI command failed, for its error (and so control's error log line,
+// ASS-583): its stderr's last STDERR_LINES lines; with nothing on stderr, its exit status and stdout's last line —
+// never only node's "Command failed: <command>", which said nothing of why (a hand-over that exited 128 silently).
+export const STDERR_LINES = 10;
+export function failureText(error, stderr, stdout) {
+  const lines = String(stderr ?? '').trim().split('\n').filter(l => l.trim());
+  if (lines.length) return (lines.length > STDERR_LINES ? ['…', ...lines.slice(-STDERR_LINES)] : lines).join('\n');
+  const status = typeof error?.code === 'number' ? `exited ${error.code}` : error?.signal ? `killed by ${error.signal}` : (error?.message ?? 'failed');
+  const last = String(stdout ?? '').trim().split('\n').filter(l => l.trim()).pop();
+  return `${status} with nothing on stderr${last ? ` (stdout's last line: ${last})` : ''}`;
+}
+
 // runCli(ctx, args, env) — runs `<ctx.root>/agent.sh <args>` with ctx.env (the
 // agent-cli's path overrides, for tests) and `env` over it (a move's
 // MOVE_CAUSE, moves.js), logging "agent.sh <args>" and any
 // stderr under the phase "cli". Resolves to its stdout; rejects, the stderr
-// in the message, when it exits with anything but 0 — its exit status the
+// in the message (ASS-583: its last lines, or its exit status when it said
+// nothing: failureText), when it exits with anything but 0 — its exit status the
 // error's `code` (ASS-473: workstation:claim's 4, none free, and 5, an image
 // missing on the workstation, told apart by workstation-steps.js; until then
 // no `code` was ever set, so a 4 was taken for a failure).
@@ -24,7 +37,7 @@ export function runCli(ctx, args, env) {
     execFile(join(ctx.root, 'agent.sh'), args, { env: env ? { ...ctx.env, ...env } : ctx.env, maxBuffer: 16 * 1024 * 1024 }, (error, stdout, stderr) => {
       if (stderr.trim()) ctx.log('cli', `stderr: ${stderr.trim().replace(/\n/g, ' | ')}`);
       if (!error) return resolve(stdout);
-      const failure = new Error(`agent.sh ${show(args)}: ${stderr.trim() || error.message}`);
+      const failure = new Error(`agent.sh ${show(args)}: ${failureText(error, stderr, stdout)}`);
       if (typeof error.code === 'number') failure.code = error.code;
       // ASS-457 AC4: a write that failed for the data folder being gone stops the tick, as a failed read does (tick.js).
       const trouble = troubleOf(ctx, failure);

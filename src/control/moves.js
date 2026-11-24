@@ -326,3 +326,38 @@ export async function endRun(ctx, phase, run, why) {
   await ctx.cli(['transient-state-engine:remove', run.id]);
   ctx.log(phase, `run ${run['state-engine']} ${run.id.slice(0, 8)} ended${why ? ` (${why})` : ''}`);
 }
+
+// orphanOf(state, run) — ASS-584: why a run has nothing left to work for, or null while it has. A run is an orphan when
+// a parent run up its chain is gone (ended under it: its ticket can't be told), or when the ticket its chain names (moves.js
+// contextOf) is in neither the project's active sprint nor its backlog — left the sprint, or deleted (state.js reads a
+// deleted ticket as gone) — or the variation it names is gone or deleted. Such a run was dispatched and failed forever
+// ('no <KEY> in the active sprint', vm.js vmOf's 'the variation has none'). Never one: a run of a project this control
+// does not load (another control's, ASS-9); a memory review (trigger check-memory), which reviews a ticket after it is
+// deleted (ticket:delete starts it); a ticket not found while the project has no active sprint read (nothing to tell
+// "left the sprint" by). Returns { key (null when unknown), variation (null when none), why }.
+export function orphanOf(state, run) {
+  const project = state.projects.find(p => p.id === run.project);
+  if (!project) return null;
+  let root = run;
+  for (let r = run, seen = new Set(); r && !seen.has(r.id); r = state.transient.find(t => t.id === r.parent?.['transient-state-engine'])) {
+    seen.add(r.id);
+    root = r;
+    const parent = r.parent?.['transient-state-engine'];
+    if (parent != null && !state.transient.some(t => t.id === parent)) return { key: null, variation: null, why: `its parent run ${String(parent).slice(0, 8)} is gone` };
+  }
+  if (root.parent?.trigger === 'check-memory') return null;
+  const { workItem: key, variation: name } = contextOf(run, state.transient);
+  if (key == null) return null;
+  const { ticket, variation } = found(state, { project: run.project, 'work-item': key, variation: name });
+  if (!ticket) return project.sprint ? { key, variation: name ?? null, why: 'left the sprint or was deleted' } : null;
+  if (name != null && !variation) return { key, variation: name, why: `its variation ${name} is gone or deleted` };
+  return null;
+}
+
+// endOrphan(ctx, phase, run, orphan) — ASS-584: an orphan run (orphanOf) removed (transient-state-engine:remove), logged
+// once — its removal is what keeps it from being dispatched or logged again.
+export async function endOrphan(ctx, phase, run, orphan) {
+  await ctx.cli(['transient-state-engine:remove', run.id]);
+  const ticket = orphan.key == null ? 'unknown' : `${orphan.key}${orphan.variation ? ` ${orphan.variation}` : ''}`;
+  ctx.log(phase, `run ${run.id.slice(0, 8)} (${run['state-engine']}/${run.state}): ended — its ticket ${ticket} is no longer in the sprint (${orphan.why})`);
+}

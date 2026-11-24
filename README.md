@@ -590,7 +590,12 @@ Lima VM is stopped between steps, so a hand-over that reads from it (or brings
 the branch into it) starts it with `vm:start`, does its work and stops it again
 (ASS-577); while the Mac is out of memory the step waits instead (no failure
 counted). A VM that no longer exists is said so, the branches are taken from
-the forge, and what could not be recovered is logged. That start is the only one a
+the forge, and what could not be recovered is logged. The hand-over runs in
+the background, as a script step does (ASS-585): the tick goes on with every
+other ticket, the step waits (`waiting for its hand-over`) and starts only once
+it has succeeded, one hand-over per variation at a time; a failed one holds the
+step with backoff and is run again. Its duration is logged as it ends
+(`run-targets <KEY> <var>: handed over … in <n>s`). That start is the only one a
 project whose run targets leave out `local-vm` ever gets (ASS-581): for such a
 project control never makes, re-creates or starts a Lima VM, whatever old `vm`
 record a variation carries from before run targets (Blocked's runs included);
@@ -1667,6 +1672,14 @@ run targets' Docker rule sees to.
   a ticket whose agent steps run in a sandbox and whose Docker test step runs
   on the local VM keeps one branch moving between them. (Since ASS-538 a
   sandbox can reach its forges itself, below; the relay stays for now.)
+  ASS-583: the Mac's side of every move (`ls-remote`, `fetch`, `push`,
+  `clone`) authenticates with the project's declared forge credential (the
+  `gitlab` / `github` keychain item in `vm-credentials.json`, the one its VMs
+  and the egress gateway get), handed to that git call alone by a credential
+  helper that reads the keychain when git asks (`src/agent-cli/forge-git.bash`):
+  never in a git config, URL, file, argv or log. A forge that refuses it or
+  can't be reached fails the hand-over naming the repository and why
+  (`authentication failed`, `forge unreachable`), never read as "no branches".
 - **Seats** are the host's (ASS-528, ASS-529): a Mac seat for
   `local-substrate`, the machine's own for the others. A project on sandboxes
   counts one ticket at a sandbox's measured use — its worker pod's memory
