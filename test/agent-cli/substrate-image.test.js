@@ -250,6 +250,7 @@ test('AC2, AC5, AC6: the copy-out build — each service\'s files COPY --from it
   assert.ok(dockerfile.indexOf('provision.sh\n') < dockerfile.indexOf('git.sh\n'), 'provision.sh before git.sh, as in the golden VM');
   assert.deepEqual(s.file('context.1').trim().split('\n'), [
     './Dockerfile', './files/files/db.conf', './harness/command-server/go.mod', './harness/command-server/main.go',
+    './harness/command-server/reap_linux.go', './harness/command-server/reap_other.go',
     './harness/git.sh', './harness/provision.sh', './harness/repositories.sh', './harness/sandbox-docker', './harness/sandbox-login', './harness/sandbox-rootfs-exec', './harness/sandbox-services', './harness/services.json',
   ]);
   // Current: nothing built again.
