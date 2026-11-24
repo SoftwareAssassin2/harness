@@ -7,8 +7,11 @@ import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { createHash } from 'node:crypto';
-import { mkdirSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
+import { mkdirSync, writeFileSync, readFileSync, existsSync, mkdtempSync, chmodSync } from 'node:fs';
 import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { createServer } from 'node:http';
+import { within } from '../support/until.js';
 import { fixture } from '../agent-cli/harness-fixture.js';
 import { authorize, startForwarder, forwardedEnv } from '../../src/control/forwarder.js';
 
@@ -439,4 +442,195 @@ test('ASS-509: CATCH_UP_BASE only for verify-success and ci-checks:verify called
   assert.equal(forwardedEnv(env, ['work:append', 'harness', 'ASS-74', 'A'], b, []).CATCH_UP_BASE, undefined, 'no other command');
   assert.equal(forwardedEnv({ PATH: '/bin' }, ['ci-checks:verify'], tokens['ex-9-b'], assignments.filter(a => a.project === 'harness')).CATCH_UP_BASE, '1', 'another variation\'s agent is no agent of this one');
   assert.equal(forwardedEnv(env, ['ci-checks:verify'], b, []).PATH, '/bin');
+});
+
+// ASS-589: the in-machine client's file form. A stdin-taking command given one argument past its stdin form's count
+// (work:write, work:append 4; automated-tests:record, ticket:set-demo-plan 3) takes the last as a local file: its
+// bytes go as the base64 stdin field and the path is dropped from argv, so the forwarder still sees the stdin form.
+// A stub forwarder: records each posted body, answers exit 0.
+async function stubForwarder() {
+  const dir = mkdtempSync(join(tmpdir(), 'ass-589-'));
+  const cwd = join(dir, 'cwd'); mkdirSync(cwd);
+  writeFileSync(join(dir, 'token'), 'stub-token\n');
+  const bodies = [];
+  const server = createServer((req, res) => {
+    const chunks = [];
+    req.on('data', c => chunks.push(c));
+    req.on('end', () => { bodies.push(JSON.parse(Buffer.concat(chunks).toString())); res.end('{"exit":0}\n'); });
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  const env = { ...process.env, AGENT_FORWARDER_URL: `http://127.0.0.1:${server.address().port}/`, AGENT_TOKEN_FILE: join(dir, 'token') };
+  // input: bytes to pipe (the stdin form), or undefined to leave stdin empty and closed.
+  const call = (args, input) => new Promise(resolve => {
+    const child = execFile(CLIENT, args, { env, cwd, encoding: 'buffer', maxBuffer: 1 << 24 }, (error, stdout, stderr) => resolve({ code: error ? error.code : 0, stdout: stdout.toString(), stderr: stderr.toString() }));
+    child.stdin.on('error', () => {});
+    child.stdin.end(input ?? '');
+  });
+  const file = (name, content) => { const path = join(dir, name); mkdirSync(join(path, '..'), { recursive: true }); writeFileSync(path, content); return path; };
+  return { dir, cwd, env, bodies, call, file, close: () => server.close() };
+}
+const b64 = bytes => Buffer.from(bytes).toString('base64');
+const REPORT = '# Report\n\nünïcödé, "quotes", $dollars and `ticks`';
+
+test('ASS-589 AC1: work:write and work:append with a trailing local file send argv of 4 and the file\'s bytes as base64 stdin, exit 0, with the token', async () => {
+  const s = await stubForwarder();
+  try {
+    for (const command of ['work:write', 'work:append']) {
+      for (const content of [REPORT + '\n', REPORT]) {
+        const path = s.file(`${command.replace(':', '-')}.md`, content);
+        s.bodies.length = 0;
+        const r = await s.call([command, 'p', 'K', 'A', 'r.md', path]);
+        assert.equal(r.code, 0, r.stderr);
+        assert.equal(s.bodies.length, 1, command);
+        assert.deepEqual(s.bodies[0].argv, [command, 'p', 'K', 'A', 'r.md'], command);
+        assert.equal(s.bodies[0].stdin, b64(content), command);
+        assert.equal(s.bodies[0].token, 'stub-token');
+      }
+    }
+  } finally { s.close(); }
+});
+
+test('ASS-589 AC1: the file form goes by argument count, not by an argument naming a file: a report name that exists in the cwd is never read', async () => {
+  const s = await stubForwarder();
+  try {
+    writeFileSync(join(s.cwd, 'r.md'), 'decoy\n');
+    const path = s.file('real.md', REPORT);
+    const r = await s.call(['work:write', 'p', 'K', 'A', 'r.md', path]);
+    assert.equal(r.code, 0, r.stderr);
+    assert.deepEqual(s.bodies[0].argv, ['work:write', 'p', 'K', 'A', 'r.md']);
+    assert.equal(s.bodies[0].stdin, b64(REPORT));
+    const piped = await s.call(['work:write', 'p', 'K', 'A', 'r.md'], 'piped bytes\n');
+    assert.equal(piped.code, 0, piped.stderr);
+    assert.deepEqual(s.bodies[1].argv, ['work:write', 'p', 'K', 'A', 'r.md']);
+    assert.equal(s.bodies[1].stdin, b64('piped bytes\n'), 'the stdin form: its 4th argument is never taken as a file');
+  } finally { s.close(); }
+});
+
+test('ASS-589 AC1: automated-tests:record and ticket:set-demo-plan with a trailing local file send argv of 3 and the file as stdin', async () => {
+  const s = await stubForwarder();
+  try {
+    for (const command of ['automated-tests:record', 'ticket:set-demo-plan']) {
+      const content = '[{"list":"a","run":"b $x `y`"}]';
+      const path = s.file(`${command.replace(':', '-')}.json`, content);
+      s.bodies.length = 0;
+      const r = await s.call([command, 'p', 'K', 'A', path]);
+      assert.equal(r.code, 0, r.stderr);
+      assert.equal(s.bodies.length, 1, command);
+      assert.deepEqual(s.bodies[0].argv, [command, 'p', 'K', 'A'], command);
+      assert.equal(s.bodies[0].stdin, b64(content), command);
+    }
+  } finally { s.close(); }
+});
+
+test('ASS-589 AC1, AC3: through the real forwarder, work:write and work:append with a local file land in the work folder, and the RUN line shows 4 arguments, no path', async () => {
+  const { f, server, env, lines } = await served();
+  const dir = mkdtempSync(join(tmpdir(), 'ass-589-'));
+  const file = (name, content) => { const path = join(dir, name); writeFileSync(path, content); return path; };
+  const client = (...args) => new Promise(resolve => {
+    const child = execFile(CLIENT, args, { env, cwd: dir }, (error, stdout, stderr) => resolve({ code: error ? error.code : 0, stdout, stderr }));
+    child.stdin.on('error', () => {});
+    child.stdin.end();
+  });
+  const folder = join(f.dir, 'projects', 'p', 'work', 'ABC-3');
+  try {
+    const plan = file('plan.md', REPORT + '\n');
+    const wrote = await client('work:write', 'p', 'ABC-3', 'A', 'execution-plan.md', plan);
+    assert.equal(wrote.code, 0, wrote.stderr);
+    assert.equal(readFileSync(join(folder, 'execution-plan-A.md'), 'utf8'), REPORT + '\n');
+    for (const [name, text] of [['f1.md', '- one\n'], ['f2.md', '- two']]) {
+      const r = await client('work:append', 'p', 'ABC-3', 'A', 'change-log.md', file(name, text));
+      assert.equal(r.code, 0, r.stderr);
+    }
+    assert.equal(readFileSync(join(folder, 'change-log-A.md'), 'utf8'), '- one\n- two');
+    assert.ok(lines.includes('forwarder RUN abc-3-a ["work:write","p","ABC-3","A","execution-plan.md"]'), lines.join('\n'));
+    assert.ok(!lines.join('\n').includes(dir), 'no local path reaches the Mac');
+    const six = await client('work:write', 'p', 'ABC-3', 'A', 'execution-plan.md', plan, 'extra');
+    assert.equal(six.code, 77, 'a wrong count is still sent, and refused by the forwarder');
+    assert.match(six.stderr, /work:write takes at most 4 arguments/);
+  } finally { server.close(); }
+});
+
+test('ASS-589 AC1: the file form never reads stdin: an open, idle stdin cannot hold it up', async () => {
+  const s = await stubForwarder();
+  const path = s.file('r.md', REPORT);
+  const child = execFile(CLIENT, ['work:write', 'p', 'K', 'A', 'r.md', path], { env: s.env, cwd: s.cwd });
+  child.stdin.on('error', () => {});
+  try {
+    const code = await within(new Promise(resolve => child.on('exit', resolve)));   // hang guard only
+    assert.equal(code, 0);
+    assert.deepEqual(s.bodies[0]?.argv, ['work:write', 'p', 'K', 'A', 'r.md']);
+    assert.equal(s.bodies[0]?.stdin, b64(REPORT));
+  } finally { child.stdin.end(); child.kill(); s.close(); }
+});
+
+test('ASS-589 AC1: a file of exactly 1 MB is sent whole; a path with spaces is read', async () => {
+  const s = await stubForwarder();
+  try {
+    const big = s.file('big.md', Buffer.alloc(1 << 20, 'a'));
+    const r = await s.call(['work:write', 'p', 'K', 'A', 'r.md', big]);
+    assert.equal(r.code, 0, r.stderr);
+    assert.equal(Buffer.from(s.bodies[0].stdin, 'base64').length, 1 << 20);
+    const spaced = s.file('a b/report one.md', REPORT);
+    const r2 = await s.call(['work:append', 'p', 'K', 'A', 'r.md', spaced]);
+    assert.equal(r2.code, 0, r2.stderr);
+    assert.deepEqual(s.bodies[1].argv, ['work:append', 'p', 'K', 'A', 'r.md']);
+    assert.equal(s.bodies[1].stdin, b64(REPORT));
+  } finally { s.close(); }
+});
+
+test('ASS-589 AC2: a missing file exits 1 saying so, and nothing is sent', async () => {
+  const s = await stubForwarder();
+  try {
+    for (const command of ['work:write', 'work:append']) {
+      const r = await s.call([command, 'p', 'K', 'A', 'r.md', '/nonexistent/x.md']);
+      assert.equal(r.code, 1, command);
+      assert.match(r.stderr, new RegExp(`agent\\.sh: ${command}: no readable file /nonexistent/x\\.md: not sent`), command);
+    }
+    assert.equal(s.bodies.length, 0);
+  } finally { s.close(); }
+});
+
+test('ASS-589 AC2: a directory, an unreadable file or a file over 1 MB exits 1 and nothing is sent', async () => {
+  const s = await stubForwarder();
+  try {
+    const folder = join(s.dir, 'a-folder'); mkdirSync(folder);
+    assert.equal((await s.call(['work:write', 'p', 'K', 'A', 'r.md', folder])).code, 1, 'a directory');
+    if (process.getuid?.() !== 0) {
+      const locked = s.file('locked.md', 'x'); chmodSync(locked, 0o000);
+      assert.equal((await s.call(['work:write', 'p', 'K', 'A', 'r.md', locked])).code, 1, 'mode 000');
+    }
+    const over = await s.call(['work:write', 'p', 'K', 'A', 'r.md', s.file('over.md', Buffer.alloc((1 << 20) + 1, 'a'))]);
+    assert.equal(over.code, 1);
+    assert.match(over.stderr, /over 1 MB: not sent/);
+    assert.equal(s.bodies.length, 0);
+  } finally { s.close(); }
+});
+
+test('ASS-589 AC2: the stdin form is unchanged: work:write with 4 arguments and ticket:post-comment with "-" send the piped bytes', async () => {
+  const s = await stubForwarder();
+  try {
+    const r = await s.call(['work:write', 'p', 'K', 'A', 'r.md'], REPORT);
+    assert.equal(r.code, 0, r.stderr);
+    assert.deepEqual(s.bodies[0].argv, ['work:write', 'p', 'K', 'A', 'r.md']);
+    assert.equal(s.bodies[0].stdin, b64(REPORT));
+    const c = await s.call(['ticket:post-comment', 'p', 'K', '-'], 'a comment\n');
+    assert.equal(c.code, 0, c.stderr);
+    assert.deepEqual(s.bodies[1].argv, ['ticket:post-comment', 'p', 'K', '-']);
+    assert.equal(s.bodies[1].stdin, b64('a comment\n'));
+  } finally { s.close(); }
+});
+
+test('ASS-589 AC2: a wrong count, or a command that takes no stdin, is sent verbatim: no file read', async () => {
+  const s = await stubForwarder();
+  try {
+    const path = s.file('r.md', REPORT);
+    const six = await s.call(['work:write', 'p', 'K', 'A', 'r.md', path, 'y'], 'piped\n');
+    assert.equal(six.code, 0, six.stderr);
+    assert.deepEqual(s.bodies[0].argv, ['work:write', 'p', 'K', 'A', 'r.md', path, 'y']);
+    assert.equal(s.bodies[0].stdin, b64('piped\n'));
+    const other = await s.call(['ticket:questions-answered', 'p', 'K', path]);
+    assert.equal(other.code, 0, other.stderr);
+    assert.deepEqual(s.bodies[1].argv, ['ticket:questions-answered', 'p', 'K', path]);
+    assert.ok(!Object.hasOwn(s.bodies[1], 'stdin'), 'no stdin field');
+  } finally { s.close(); }
 });
