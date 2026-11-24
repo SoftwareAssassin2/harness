@@ -128,3 +128,10 @@ export function onIt(c) {
   }
   return out;
 }
+// crowd(p, n, { machine, from }) — ASS-590: n more tickets on one machine, each a worktree kept there between steps
+// (idle), keys ORB-<from>… in order; returns their keys. For cards with more than four tickets.
+export function crowd(p, n, { machine = 'ws-east', from = 201 } = {}) {
+  const keys = Array.from({ length: n }, (_, i) => `ORB-${from + i}`);
+  for (const key of keys) p.sprint.features.push({ key, title: 'T', variations: [{ name: 'A', ...at('review'), 'remote-worktrees': [{ name: machine }] }] });
+  return keys;
+}
